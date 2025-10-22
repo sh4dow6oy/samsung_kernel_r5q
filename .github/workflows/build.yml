@@ -10,12 +10,12 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
 
     steps:
       # 🔹 Checkout kernel source
       - name: Checkout kernel source
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           repository: sh4dow6oy/samsung_kernel_r5q
           ref: master
@@ -27,7 +27,7 @@ jobs:
         run: |
           git remote add upstream https://github.com/skye-tachyon/not_r8q.git
           git fetch upstream
-          git merge upstream/main --allow-unrelated-histories -m "Merge not_r8q upstream" || echo "Merge conflicts? Resolve manually"
+          git merge upstream/main --allow-unrelated-histories -m "Merge not_r8q upstream" || echo "⚠️ Merge conflicts, continuing"
 
       # 🔹 Install dependencies
       - name: Install dependencies
@@ -35,24 +35,30 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             build-essential git bc bison flex libssl-dev libncurses5-dev \
-            libelf-dev wget tar xz-utils ccache lld llvm unzip zip zstd
+            libelf-dev wget tar xz-utils ccache lld llvm unzip zip zstd \
+            python3 python3-distutils python3-setuptools
 
-      # 🔹 Setup Android Clang (from android.googlesource.com)
-      - name: Setup Android Clang toolchain
+      # 🔹 Setup Prebuilt Clang (Neutron)
+      - name: Setup Prebuilt Clang (Neutron)
         run: |
           TOOLCHAIN_PATH="$PWD/toolchain/clang"
           mkdir -p "$TOOLCHAIN_PATH"
           cd "$TOOLCHAIN_PATH"
-          # Latest Android Clang (Android 15 / r530567)
-          wget -O clang-r530567.tar.gz https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r530567.tar.gz
-          tar -xzf clang-r530567.tar.gz
-          TOOLCHAIN_BIN="$TOOLCHAIN_PATH/bin"
-          echo "PATH=$TOOLCHAIN_BIN:$PATH" >> $GITHUB_ENV
+
+          echo "⬇️ Downloading Neutron Clang toolchain..."
+          wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
+          echo "📦 Extracting..."
+          tar --use-compress-program=unzstd -xf neutron-clang-10032024.tar.zst --strip-components=1
+
+          echo "PATH=$TOOLCHAIN_PATH/bin:$PATH" >> $GITHUB_ENV
           echo "CC=clang" >> $GITHUB_ENV
           echo "LD=ld.lld" >> $GITHUB_ENV
+          echo "LLVM=1" >> $GITHUB_ENV
+          echo "LLVM_IAS=1" >> $GITHUB_ENV
+          clang --version
 
-            # 🔹 Setup GCC 12.2 aarch64
-      - name: Setup GCC 12.2 aarch64 prebuilt
+      # 🔹 Setup GCC 12.2 aarch64 (precompiled)
+      - name: Setup GCC 12.2 aarch64
         run: |
           GCC_PATH="$PWD/toolchain/aarch64-gcc-12.2"
           mkdir -p "$GCC_PATH"
@@ -62,12 +68,11 @@ jobs:
           echo "CROSS_COMPILE=aarch64-linux-" >> $GITHUB_ENV
           aarch64-linux-gcc --version
 
-
-      # 🔹 Clone AOSP core (for liblog)
-      - name: Clone AOSP core if missing
+      # 🔹 Clone AOSP core (optional)
+      - name: Clone AOSP core
         run: |
-          if [ ! -d "$PWD/aosp/system/core" ]; then
-            mkdir -p aosp
+          if [ ! -d "aosp/system/core" ]; then
+            mkdir -p aosp/system
             git clone https://android.googlesource.com/platform/system/core aosp/system/core
           fi
 
@@ -83,8 +88,8 @@ jobs:
           fi
           echo "DEFCONFIG_NAME=$(basename $DEFCONFIG)" >> $GITHUB_OUTPUT
 
-      # 🔹 Clean output directory
-      - name: Clean output directory
+      # 🔹 Clean output
+      - name: Clean output
         run: rm -rf out
 
       # 🔹 Configure kernel
@@ -92,12 +97,39 @@ jobs:
         run: |
           make O=out ARCH=arm64 ${{ steps.detect-config.outputs.DEFCONFIG_NAME }} CC=$CC CROSS_COMPILE=$CROSS_COMPILE
 
-      # 🔹 Patch kernel config (disable stack protector)
+      # 🔹 Patch kernel config (enable BPF + disable stack protector)
       - name: Patch kernel config
         run: |
-          sed -i 's/CONFIG_CC_STACKPROTECTOR_STRONG=y/# CONFIG_CC_STACKPROTECTOR_STRONG is not set/g' out/.config || true
-          sed -i 's/CONFIG_CC_STACKPROTECTOR=y/# CONFIG_CC_STACKPROTECTOR is not set/g' out/.config || true
-          echo "CONFIG_CC_STACKPROTECTOR_NONE=y" >> out/.config
+          CONFIG=out/.config
+          set_config() {
+            key="$1"
+            val="$2"
+            if grep -qE "^${key}=" "$CONFIG"; then
+              sed -i "s/^${key}=.*/${key}=${val}/" "$CONFIG"
+            elif grep -qE "^# ${key} is not set$" "$CONFIG"; then
+              sed -i "s/^# ${key} is not set$/${key}=${val}/" "$CONFIG"
+            else
+              echo "${key}=${val}" >> "$CONFIG"
+            fi
+          }
+
+          # Enable BPF
+          set_config "CONFIG_BPF" "y"
+          set_config "CONFIG_BPF_SYSCALL" "y"
+          set_config "CONFIG_BPF_JIT" "y"
+          set_config "CONFIG_CGROUP_BPF" "y"
+          set_config "CONFIG_BPF_EVENTS" "y"
+          set_config "CONFIG_NET_CLS_BPF" "y"
+          set_config "CONFIG_NET_ACT_BPF" "y"
+          set_config "CONFIG_LIBBPF" "y"
+          set_config "CONFIG_BPF_PRELOAD" "y"
+          set_config "CONFIG_BPF_LSM" "y"
+
+          # Disable stack protector
+          sed -i 's/CONFIG_CC_STACKPROTECTOR_STRONG=y/# CONFIG_CC_STACKPROTECTOR_STRONG is not set/' "$CONFIG" || true
+          sed -i 's/CONFIG_CC_STACKPROTECTOR=y/# CONFIG_CC_STACKPROTECTOR is not set/' "$CONFIG" || true
+          set_config "CONFIG_CC_STACKPROTECTOR_NONE" "y"
+
           make O=out ARCH=arm64 olddefconfig
 
       # 🔹 Build kernel
@@ -107,12 +139,13 @@ jobs:
             CC=clang \
             CROSS_COMPILE=$CROSS_COMPILE \
             LD=ld.lld \
+            LLVM=1 LLVM_IAS=1 \
             KCFLAGS="-fno-stack-protector" \
             KBUILD_CFLAGS="-fno-stack-protector" \
             KBUILD_CFLAGS_MODULE="-fno-stack-protector" \
             -j$(nproc)
 
-      # 🔹 Upload kernel artifacts
+      # 🔹 Upload kernel image
       - name: Upload kernel image
         uses: actions/upload-artifact@v4
         with:
