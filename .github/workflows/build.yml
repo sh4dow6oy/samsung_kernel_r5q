@@ -29,7 +29,7 @@ jobs:
           sudo apt-get install -y \
             build-essential git bc bison flex libssl-dev libncurses5-dev \
             libelf-dev wget tar xz-utils ccache lld llvm unzip zip zstd \
-            python3 python3-distutils python3-setuptools
+            python3 python3-distutils python3-setuptools curl
 
       # 🔹 Setup Clang prebuilt
       - name: Setup Clang prebuilt
@@ -45,13 +45,21 @@ jobs:
           echo "LLVM_IAS=1" >> $GITHUB_ENV
           clang --version
 
-      # 🔹 Setup GCC prebuilt
-      - name: Setup GCC prebuilt
+      # 🔹 Setup Official Samsung GCC Toolchain
+      - name: Setup Samsung GCC Toolchain
         run: |
-          GCC_PATH="$PWD/toolchain/aarch64-gcc"
+          GCC_PATH="$PWD/toolchain/samsung-gcc"
           mkdir -p "$GCC_PATH"
-          wget -q https://github.com/ravindu644/Android-Kernel-Tutorials/releases/download/toolchains/arm-gnu-toolchain-14.2.rel1-x86_64-aarch64-none-linux-gnu.tar.xz
-          tar -xf arm-gnu-toolchain-14.2.rel1-x86_64-aarch64-none-linux-gnu.tar.xz -C "$GCC_PATH" --strip-components=1
+          FILE_ID="1iBe8zBSBTqr9J55glKMRi2E_DNCoLrGv"
+          FILENAME="samsung-gcc-toolchain.tar.xz"
+
+          echo "⬇️ Downloading Samsung official GCC toolchain..."
+          curl -L -o ${FILENAME} "https://drive.google.com/uc?export=download&id=${FILE_ID}"
+          
+          echo "📦 Extracting toolchain..."
+          tar -xf ${FILENAME} -C "$GCC_PATH" --strip-components=1 || {
+            echo "❌ Eroare la extragerea toolchain-ului"; exit 1;
+          }
 
           BIN_GCC=$(find "$GCC_PATH/bin" -maxdepth 1 -type f -name "*gcc" | head -n1)
           if [ -z "$BIN_GCC" ]; then
