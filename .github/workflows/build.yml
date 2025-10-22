@@ -45,27 +45,19 @@ jobs:
           echo "LLVM_IAS=1" >> $GITHUB_ENV
           clang --version
 
-      # 🔹 Setup Official Samsung GCC Toolchain (Google Drive safe download)
+      # 🔹 Setup Official Samsung GCC Toolchain from GitHub Release
       - name: Setup Samsung GCC Toolchain
         run: |
           GCC_PATH="$PWD/toolchain/samsung-gcc"
           mkdir -p "$GCC_PATH"
-          FILE_ID="1iBe8zBSBTqr9J55glKMRi2E_DNCoLrGv"
-          FILENAME="samsung-gcc-toolchain.tar.xz"
-
-          echo "⬇️ Downloading Samsung official GCC toolchain from Google Drive..."
-          # Download the file using the "confirm" token bypass
-          CONFIRM=$(curl -sc /tmp/gcookie "https://drive.google.com/uc?export=download&id=${FILE_ID}" | \
-                    grep -o 'confirm=[^&]*' | sed 's/confirm=//')
-          curl -Lb /tmp/gcookie "https://drive.google.com/uc?export=download&confirm=${CONFIRM}&id=${FILE_ID}" -o ${FILENAME}
-
+          TOOL_URL="https://github.com/sh4dow6oy/samsung_kernel_r5q/releases/download/toolchain/toolchain.tar.gz"
+          FILENAME="toolchain.tar.gz"
+          echo "⬇️ Downloading Samsung official GCC toolchain from release..."
+          wget -q --show-progress "$TOOL_URL" -O ${FILENAME}
           echo "📦 Extracting toolchain..."
-          if ! tar -xf ${FILENAME} -C "$GCC_PATH" --strip-components=1; then
-            echo "❌ Eroare la extragerea toolchain-ului (verifică dacă fișierul e valid .tar.xz)"
-            file ${FILENAME} || true
-            exit 1
-          fi
-
+          tar -xzf ${FILENAME} -C "$GCC_PATH" --strip-components=1 || {
+            echo "❌ Eroare la extragerea toolchain-ului"; file ${FILENAME}; exit 1;
+          }
           BIN_GCC=$(find "$GCC_PATH/bin" -maxdepth 1 -type f -name "*gcc" | head -n1)
           if [ -z "$BIN_GCC" ]; then
             echo "❌ Nu am găsit gcc în $GCC_PATH/bin"
