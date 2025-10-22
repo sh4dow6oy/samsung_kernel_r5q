@@ -38,8 +38,17 @@ jobs:
             libelf-dev wget tar xz-utils ccache lld llvm unzip zip zstd \
             python3 python3-distutils python3-setuptools
 
+      # 🔹 Cache Clang toolchain
+      - name: Cache Neutron Clang
+        id: cache-clang
+        uses: actions/cache@v4
+        with:
+          path: toolchain/clang
+          key: neutron-clang-10032024
+
       # 🔹 Setup Prebuilt Clang (Neutron)
       - name: Setup Prebuilt Clang (Neutron)
+        if: steps.cache-clang.outputs.cache-hit != 'true'
         run: |
           TOOLCHAIN_PATH="$PWD/toolchain/clang"
           mkdir -p "$TOOLCHAIN_PATH"
@@ -50,6 +59,9 @@ jobs:
           echo "📦 Extracting..."
           tar --use-compress-program=unzstd -xf neutron-clang-10032024.tar.zst --strip-components=1
 
+      - name: Export Clang environment
+        run: |
+          TOOLCHAIN_PATH="$PWD/toolchain/clang"
           echo "PATH=$TOOLCHAIN_PATH/bin:$PATH" >> $GITHUB_ENV
           echo "CC=clang" >> $GITHUB_ENV
           echo "LD=ld.lld" >> $GITHUB_ENV
@@ -57,24 +69,29 @@ jobs:
           echo "LLVM_IAS=1" >> $GITHUB_ENV
           clang --version
 
+      # 🔹 Cache GCC 12.2
+      - name: Cache GCC 12.2 aarch64
+        id: cache-gcc
+        uses: actions/cache@v4
+        with:
+          path: toolchain/aarch64-gcc-12.2
+          key: gcc-12.2.0-prebuilt
+
       # 🔹 Setup GCC 12.2 aarch64 (precompiled)
       - name: Setup GCC 12.2 aarch64
+        if: steps.cache-gcc.outputs.cache-hit != 'true'
         run: |
           GCC_PATH="$PWD/toolchain/aarch64-gcc-12.2"
           mkdir -p "$GCC_PATH"
           wget -q https://www.kernel.org/pub/tools/crosstool/files/bin/x86_64/12.2.0/x86_64-gcc-12.2.0-nolibc-aarch64-linux.tar.gz
           tar -xzf x86_64-gcc-12.2.0-nolibc-aarch64-linux.tar.gz -C "$GCC_PATH" --strip-components=1
+
+      - name: Export GCC environment
+        run: |
+          GCC_PATH="$PWD/toolchain/aarch64-gcc-12.2"
           echo "PATH=$GCC_PATH/bin:$PATH" >> $GITHUB_ENV
           echo "CROSS_COMPILE=aarch64-linux-" >> $GITHUB_ENV
           aarch64-linux-gcc --version
-
-      # 🔹 Clone AOSP core (optional)
-      - name: Clone AOSP core
-        run: |
-          if [ ! -d "aosp/system/core" ]; then
-            mkdir -p aosp/system
-            git clone https://android.googlesource.com/platform/system/core aosp/system/core
-          fi
 
       # 🔹 Detect defconfig
       - name: Detect defconfig
