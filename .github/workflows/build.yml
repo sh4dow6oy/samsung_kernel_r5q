@@ -46,8 +46,8 @@ jobs:
           TOOLCHAIN_PATH="$PWD/toolchain/clang"
           mkdir -p "$TOOLCHAIN_PATH"
           cd "$TOOLCHAIN_PATH"
-          wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
-          tar --use-compress-program=unzstd -xf neutron-clang-10032024.tar.zst --strip-components=1
+          wget -q https://github.com/ravindu644/Android-Kernel-Tutorials/releases/download/toolchains/clang-r383902b.tar.gz
+          tar --use-compress-program=unzstd -xf clang-r383902b.tar.gz --strip-components=1
 
       # 🔹 Export Clang environment
       - name: Export Clang environment
