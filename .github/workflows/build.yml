@@ -17,8 +17,8 @@ jobs:
       - name: Checkout kernel source
         uses: actions/checkout@v3
         with:
-          repository: sh4dow6oy/samsung_kernel
-          ref: SM-G770F
+          repository: sh4dow6oy/samsung_kernel_r5q
+          ref: main
           submodules: recursive
           fetch-depth: 0
 
