@@ -52,24 +52,15 @@ jobs:
           echo "LD=ld.lld" >> $GITHUB_ENV
 
             # 🔹 Setup GCC 12.2 aarch64
-      - name: Setup GCC 12.2 aarch64
+      - name: Setup GCC 12.2 aarch64 prebuilt
         run: |
-          GCC_PATH="$PWD/toolchain/gcc-12.2.0"
+          GCC_PATH="$PWD/toolchain/aarch64-gcc-12.2"
           mkdir -p "$GCC_PATH"
-          wget -O gcc-12.2.0.tar.gz https://ftp.gnu.org/gnu/gcc/gcc-12.2.0/gcc-12.2.0.tar.gz
-          tar -xvzf gcc-12.2.0.tar.gz -C "$GCC_PATH" --strip-components=1
-          
-          # Build GCC (optional, if prebuilt not available)
-          cd "$GCC_PATH"
-          ./contrib/download_prerequisites
-          mkdir build && cd build
-          ../configure --prefix="$GCC_PATH/install" --enable-languages=c,c++ --disable-multilib
-          make -j$(nproc)
-          make install
-          
-          GCC_BIN="$GCC_PATH/install/bin"
-          echo "PATH=$GCC_BIN:$PATH" >> $GITHUB_ENV
-          echo "CROSS_COMPILE=$GCC_BIN/aarch64-linux-gnu-" >> $GITHUB_ENV
+          wget -q https://www.kernel.org/pub/tools/crosstool/files/bin/x86_64/12.2.0/x86_64-gcc-12.2.0-nolibc-aarch64-linux.tar.gz
+          tar -xzf x86_64-gcc-12.2.0-nolibc-aarch64-linux.tar.gz -C "$GCC_PATH" --strip-components=1
+          echo "PATH=$GCC_PATH/bin:$PATH" >> $GITHUB_ENV
+          echo "CROSS_COMPILE=aarch64-linux-" >> $GITHUB_ENV
+          aarch64-linux-gcc --version
 
 
       # 🔹 Clone AOSP core (for liblog)
