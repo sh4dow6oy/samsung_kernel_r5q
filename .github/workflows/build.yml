@@ -22,13 +22,6 @@ jobs:
           submodules: recursive
           fetch-depth: 0
 
-      # 🔹 Add upstream not_r8q
-      - name: Add not_r8q upstream
-        run: |
-          git remote add upstream https://github.com/skye-tachyon/not_r8q.git
-          git fetch upstream
-          git merge upstream/main --allow-unrelated-histories -m "Merge not_r8q upstream" || echo "⚠️ Merge conflicts, continuing"
-
       # 🔹 Install dependencies
       - name: Install dependencies
         run: |
@@ -83,14 +76,22 @@ jobs:
           mkdir -p "$GCC_PATH"
           wget -q https://www.kernel.org/pub/tools/crosstool/files/bin/x86_64/12.2.0/x86_64-gcc-12.2.0-nolibc-aarch64-linux.tar.gz
           tar -xzf x86_64-gcc-12.2.0-nolibc-aarch64-linux.tar.gz -C "$GCC_PATH" --strip-components=1
+          echo "✅ GCC extracted to $GCC_PATH"
 
       # 🔹 Export GCC environment
       - name: Export GCC environment
         run: |
           GCC_PATH="$PWD/toolchain/aarch64-gcc-12.2"
+          BIN_GCC=$(find "$GCC_PATH/bin" -maxdepth 1 -type f -name "*gcc" | head -n1)
+          if [ -z "$BIN_GCC" ]; then
+            echo "❌ Nu am găsit gcc în $GCC_PATH/bin"
+            exit 1
+          fi
+          PREFIX=$(basename "$BIN_GCC" | sed 's/gcc$//')
+          echo "Detected GCC prefix: $PREFIX"
           echo "PATH=$GCC_PATH/bin:$PATH" >> $GITHUB_ENV
-          echo "CROSS_COMPILE=$GCC_PATH/bin/aarch64-linux-" >> $GITHUB_ENV
-          $GCC_PATH/bin/aarch64-linux-gcc --version
+          echo "CROSS_COMPILE=$GCC_PATH/bin/$PREFIX" >> $GITHUB_ENV
+          $GCC_PATH/bin/${PREFIX}gcc --version
 
       # 🔹 Detect defconfig
       - name: Detect defconfig
