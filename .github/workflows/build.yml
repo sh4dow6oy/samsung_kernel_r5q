@@ -22,7 +22,7 @@ jobs:
           submodules: recursive
           fetch-depth: 0
 
-      # 🔹 Install dependencies
+      # 🔹 Install dependencies + GCC AArch64
       - name: Install dependencies
         run: |
           sudo apt-get update
@@ -30,6 +30,10 @@ jobs:
             build-essential git bc bison flex libssl-dev libncurses5-dev \
             libelf-dev wget tar xz-utils ccache lld llvm unzip zip zstd \
             python3 python3-distutils python3-setuptools
+          # Instalare GCC AArch64
+          wget -q http://launchpadlibrarian.net/556124680/gcc-10-aarch64-linux-gnu_10.3.0-8ubuntu1cross1_amd64.deb
+          sudo dpkg -i gcc-10-aarch64-linux-gnu_10.3.0-8ubuntu1cross1_amd64.deb
+          aarch64-linux-gnu-gcc --version
 
       # 🔹 Setup Clang prebuilt
       - name: Setup Clang prebuilt
@@ -44,25 +48,6 @@ jobs:
           echo "LLVM=1" >> $GITHUB_ENV
           echo "LLVM_IAS=1" >> $GITHUB_ENV
           clang --version
-
-      # 🔹 Setup GCC prebuilt
-      - name: Setup GCC prebuilt
-        run: |
-          GCC_PATH="$PWD/toolchain/aarch64-gcc"
-          mkdir -p "$GCC_PATH"
-          wget -q https://github.com/ravindu644/Android-Kernel-Tutorials/releases/download/toolchains/arm-gnu-toolchain-14.2.rel1-x86_64-aarch64-none-linux-gnu.tar.xz
-          tar -xf arm-gnu-toolchain-14.2.rel1-x86_64-aarch64-none-linux-gnu.tar.xz -C "$GCC_PATH" --strip-components=1
-
-          BIN_GCC=$(find "$GCC_PATH/bin" -maxdepth 1 -type f -name "*gcc" | head -n1)
-          if [ -z "$BIN_GCC" ]; then
-            echo "❌ Nu am găsit gcc în $GCC_PATH/bin"
-            exit 1
-          fi
-          PREFIX=$(basename "$BIN_GCC" | sed 's/gcc$//')
-          echo "Detected GCC prefix: $PREFIX"
-          echo "PATH=$GCC_PATH/bin:$PATH" >> $GITHUB_ENV
-          echo "CROSS_COMPILE=$GCC_PATH/bin/$PREFIX" >> $GITHUB_ENV
-          $GCC_PATH/bin/${PREFIX}gcc --version
 
       # 🔹 Detect defconfig
       - name: Detect defconfig
@@ -83,7 +68,7 @@ jobs:
       # 🔹 Configure kernel
       - name: Configure kernel
         run: |
-          make O=out ARCH=arm64 ${{ steps.detect-config.outputs.DEFCONFIG_NAME }} CC=$CC CROSS_COMPILE=$CROSS_COMPILE
+          make O=out ARCH=arm64 ${{ steps.detect-config.outputs.DEFCONFIG_NAME }} CC=$CC CROSS_COMPILE=aarch64-linux-gnu-
 
       # 🔹 Patch kernel config (enable BPF + disable stack protector)
       - name: Patch kernel config
@@ -125,7 +110,7 @@ jobs:
         run: |
           make O=out ARCH=arm64 \
             CC=clang \
-            CROSS_COMPILE=$CROSS_COMPILE \
+            CROSS_COMPILE=aarch64-linux-gnu- \
             LD=ld.lld \
             LLVM=1 LLVM_IAS=1 \
             KCFLAGS="-fno-stack-protector" \
