@@ -31,28 +31,13 @@ jobs:
             libelf-dev wget tar xz-utils ccache lld llvm unzip zip zstd \
             python3 python3-distutils python3-setuptools
 
-      # 🔹 Cache Neutron Clang
-      - name: Cache Neutron Clang
-        id: cache-clang
-        uses: actions/cache@v4
-        with:
-          path: toolchain/clang
-          key: neutron-clang-10032024
-
-      # 🔹 Setup Neutron Clang if not cached
-      - name: Setup Neutron Clang
-        if: steps.cache-clang.outputs.cache-hit != 'true'
+      # 🔹 Setup Clang prebuilt
+      - name: Setup Clang prebuilt
         run: |
           TOOLCHAIN_PATH="$PWD/toolchain/clang"
           mkdir -p "$TOOLCHAIN_PATH"
-          cd "$TOOLCHAIN_PATH"
           wget -q https://github.com/ravindu644/Android-Kernel-Tutorials/releases/download/toolchains/clang-r383902b.tar.gz
-          tar --use-compress-program=unzstd -xf clang-r383902b.tar.gz --strip-components=1
-
-      # 🔹 Export Clang environment
-      - name: Export Clang environment
-        run: |
-          TOOLCHAIN_PATH="$PWD/toolchain/clang"
+          tar -xzf clang-r383902b.tar.gz -C "$TOOLCHAIN_PATH" --strip-components=1
           echo "PATH=$TOOLCHAIN_PATH/bin:$PATH" >> $GITHUB_ENV
           echo "CC=clang" >> $GITHUB_ENV
           echo "LD=ld.lld" >> $GITHUB_ENV
@@ -60,28 +45,14 @@ jobs:
           echo "LLVM_IAS=1" >> $GITHUB_ENV
           clang --version
 
-      # 🔹 Cache GCC 12.2
-      - name: Cache GCC 12.2 aarch64
-        id: cache-gcc
-        uses: actions/cache@v4
-        with:
-          path: toolchain/aarch64-gcc-12.2
-          key: gcc-12.2.0-prebuilt
-
-      # 🔹 Setup GCC 12.2 aarch64 if not cached
-      - name: Setup GCC 12.2 aarch64
-        if: steps.cache-gcc.outputs.cache-hit != 'true'
+      # 🔹 Setup GCC prebuilt
+      - name: Setup GCC prebuilt
         run: |
-          GCC_PATH="$PWD/toolchain/aarch64-gcc-12.2"
+          GCC_PATH="$PWD/toolchain/aarch64-gcc"
           mkdir -p "$GCC_PATH"
-          wget -q https://www.kernel.org/pub/tools/crosstool/files/bin/x86_64/12.2.0/x86_64-gcc-12.2.0-nolibc-aarch64-linux.tar.gz
-          tar -xzf x86_64-gcc-12.2.0-nolibc-aarch64-linux.tar.gz -C "$GCC_PATH" --strip-components=1
-          echo "✅ GCC extracted to $GCC_PATH"
+          wget -q https://github.com/ravindu644/Android-Kernel-Tutorials/releases/download/toolchains/arm-gnu-toolchain-14.2.rel1-x86_64-aarch64-none-linux-gnu.tar.xz
+          tar -xf arm-gnu-toolchain-14.2.rel1-x86_64-aarch64-none-linux-gnu.tar.xz -C "$GCC_PATH" --strip-components=1
 
-      # 🔹 Export GCC environment
-      - name: Export GCC environment
-        run: |
-          GCC_PATH="$PWD/toolchain/aarch64-gcc-12.2"
           BIN_GCC=$(find "$GCC_PATH/bin" -maxdepth 1 -type f -name "*gcc" | head -n1)
           if [ -z "$BIN_GCC" ]; then
             echo "❌ Nu am găsit gcc în $GCC_PATH/bin"
