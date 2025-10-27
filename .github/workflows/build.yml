@@ -31,48 +31,41 @@ jobs:
             libelf-dev wget tar xz-utils ccache lld llvm unzip zip zstd \
             python3 python3-distutils python3-setuptools
 
-      # 🔹 Setup Samsung official Clang + GCC toolchain
-      - name: Setup Samsung official toolchain
+      # 🔹 Download & Setup Clang (Samsung)
+      - name: Setup Samsung Clang
         run: |
-          TOOLCHAIN_DIR="$PWD/toolchain/samsung"
-          mkdir -p "$TOOLCHAIN_DIR"
+          CLANG_PATH="$PWD/toolchain/clang"
+          mkdir -p "$CLANG_PATH"
+          wget -q https://github.com/sh4dow6oy/samsung_kernel_r5q/releases/download/GCC/clang-r416183b.tar
+          tar -xf clang-r416183b.tar -C "$CLANG_PATH" --strip-components=1
 
-          echo "⬇️ Downloading Samsung official Clang+GCC toolchain..."
-          wget -q https://github.com/sh4dow6oy/samsung_kernel_r5q/releases/download/toolchain/toolchain.tar.gz -O toolchain.tar.gz
-          
-          echo "📦 Extracting toolchain..."
-          tar -xzf toolchain.tar.gz -C "$TOOLCHAIN_DIR"
-
-          # 🔍 Detect Clang
-          CLANG_DIR=$(find "$TOOLCHAIN_DIR" -type d -name "clang-r*" | head -n1)
-          if [ -z "$CLANG_DIR" ]; then
-            echo "❌ Clang not found!"
-            exit 1
-          fi
-          echo "✅ Found Clang at: $CLANG_DIR"
-          echo "PATH=$CLANG_DIR/bin:$PATH" >> $GITHUB_ENV
+          echo "PATH=$CLANG_PATH/bin:$PATH" >> $GITHUB_ENV
           echo "CC=clang" >> $GITHUB_ENV
           echo "LD=ld.lld" >> $GITHUB_ENV
           echo "LLVM=1" >> $GITHUB_ENV
           echo "LLVM_IAS=1" >> $GITHUB_ENV
-          clang --version
+          clang --version || true
 
-          # 🔍 Detect GCC
-          GCC_DIR=$(find "$TOOLCHAIN_DIR" -type d -path "*/host/*/x86_64-linux-glibc2.17-4.8" | head -n1)
-          if [ -z "$GCC_DIR" ]; then
-            echo "❌ GCC not found!"
-            exit 1
-          fi
-          BIN_GCC=$(find "$GCC_DIR/bin" -maxdepth 1 -type f -executable -name "*-gcc" | head -n1)
+      # 🔹 Download & Setup GCC (Samsung)
+      - name: Setup Samsung GCC
+        run: |
+          GCC_PATH="$PWD/toolchain/gcc"
+          mkdir -p "$GCC_PATH"
+          wget -q https://github.com/sh4dow6oy/samsung_kernel_r5q/releases/download/GCC/prebuilts.tar
+          tar -xf prebuilts.tar -C "$GCC_PATH" --strip-components=3  # ajustează după structura exactă
+
+          BIN_GCC=$(find "$GCC_PATH" -type f -name "aarch64-linux-android-gcc" | head -n1)
           if [ -z "$BIN_GCC" ]; then
-            echo "❌ No gcc executable found in $GCC_DIR/bin"
+            echo "❌ Nu am găsit gcc în $GCC_PATH"
+            find "$GCC_PATH" -type f | head -n10
             exit 1
           fi
-          PREFIX=$(basename "$BIN_GCC" | sed 's/gcc$//')
-          echo "✅ Found GCC at: $GCC_DIR, prefix: $PREFIX"
-          echo "PATH=$GCC_DIR/bin:$PATH" >> $GITHUB_ENV
-          echo "CROSS_COMPILE=$GCC_DIR/bin/$PREFIX" >> $GITHUB_ENV
-          $GCC_DIR/bin/${PREFIX}gcc --version
+
+          PREFIX=$(dirname "$BIN_GCC")/aarch64-linux-android-
+          echo "Detected GCC prefix: $PREFIX"
+          echo "PATH=$(dirname "$BIN_GCC"):$PATH" >> $GITHUB_ENV
+          echo "CROSS_COMPILE=$PREFIX" >> $GITHUB_ENV
+          $BIN_GCC --version || true
 
       # 🔹 Detect defconfig
       - name: Detect defconfig
