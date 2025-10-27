@@ -32,33 +32,34 @@ jobs:
             python3 python3-distutils python3-setuptools
 
             
-  # 🔹 Setup Samsung GCC (glibc2.17-4.8)
-      
-      - name: Setup Clang r416183b1
+      # 🔹 Setup Clang r416183b (CodeLinaro)
+      - name: Setup Clang r416183b
         run: |
           CLANG_PATH="$PWD/toolchain/clang"
           mkdir -p "$CLANG_PATH"
       
-          echo "⬇️ Downloading Clang r416183b1..."
-          wget -q https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+/1c1069109f294e9ffbdc1ff8541394ab4b5d941d/clang-r416183b1
+          echo "⬇️ Downloading Clang r416183b..."
+          wget -q https://git.codelinaro.org/clo/la/platform/prebuilts/clang/host/linux-x86/-/archive/aosp-new/aosp-new/master/linux-x86-aosp-new-aosp-new-master.tar.gz -O clang-r416183b.tar.gz
       
           echo "📦 Extracting Clang..."
-          tar -xf clang-r416183b1.tar.gz -C "$CLANG_PATH"
+          tar -xzf clang-r416183b.tar.gz -C "$CLANG_PATH"
       
-          if [ ! -f "$CLANG_PATH/clang-r416183b1/bin/clang" ]; then
-            echo "❌ Clang binary not found at $CLANG_PATH/clang-r416183b1/bin/clang"
+          # Detect folder inside extracted archive
+          EXTRACTED_DIR=$(find "$CLANG_PATH" -maxdepth 1 -type d -name "linux-x86-aosp-new-aosp-new-master*")
+          if [ ! -f "$EXTRACTED_DIR/bin/clang" ]; then
+            echo "❌ Clang binary not found at $EXTRACTED_DIR/bin/clang"
             find "$CLANG_PATH" -type f | head -n20
             exit 1
           fi
       
-          echo "✅ Clang found at $CLANG_PATH/clang-r416183b1/bin/clang"
-          echo "PATH=$CLANG_PATH/clang-r416183b1/bin:$PATH" >> $GITHUB_ENV
+          echo "✅ Clang r416183b found at $EXTRACTED_DIR/bin/clang"
+          echo "PATH=$EXTRACTED_DIR/bin:$PATH" >> $GITHUB_ENV
           echo "CC=clang" >> $GITHUB_ENV
           echo "LD=ld.lld" >> $GITHUB_ENV
           echo "LLVM=1" >> $GITHUB_ENV
           echo "LLVM_IAS=1" >> $GITHUB_ENV
       
-          $CLANG_PATH/clang-r416183b1/bin/clang --version
+          $EXTRACTED_DIR/bin/clang --version
 
 
 
