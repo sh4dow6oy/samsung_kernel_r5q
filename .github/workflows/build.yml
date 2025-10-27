@@ -31,31 +31,33 @@ jobs:
             libelf-dev wget tar xz-utils ccache lld llvm unzip zip zstd \
             python3 python3-distutils python3-setuptools
 
-          - name: Setup Samsung Clang
-            run: |
-              CLANG_PATH="$PWD/toolchain/clang"
-              mkdir -p "$CLANG_PATH"
-          
-              echo "⬇️ Downloading Samsung Clang (r416183b)..."
-              wget -q https://github.com/droidian/android-platform-prebuilts-clang-host-linux-x86-32/archive/droidian/clang-r416183b.tar.gz
-          
-              echo "📦 Extracting Clang..."
-              tar -xzf clang-r416183b.tar.gz -C "$CLANG_PATH"
-          
-              if [ ! -f "$CLANG_PATH/android-platform-prebuilts-clang-host-linux-x86-32-droidian-clang-r416183b/bin/clang" ]; then
-                echo "❌ Clang binary not found at $CLANG_PATH/android-platform-prebuilts-clang-host-linux-x86-32-droidian-clang-r416183b/bin/clang"
-                find "$CLANG_PATH" -type f | head -n20
-                exit 1
-              fi
-          
-              echo "✅ Samsung Clang found at $CLANG_PATH/android-platform-prebuilts-clang-host-linux-x86-32-droidian-clang-r416183b/bin/clang"
-              echo "PATH=$CLANG_PATH/android-platform-prebuilts-clang-host-linux-x86-32-droidian-clang-r416183b/bin:$PATH" >> $GITHUB_ENV
-              echo "CC=clang" >> $GITHUB_ENV
-              echo "LD=ld.lld" >> $GITHUB_ENV
-              echo "LLVM=1" >> $GITHUB_ENV
-              echo "LLVM_IAS=1" >> $GITHUB_ENV
-          
-              $CLANG_PATH/android-platform-prebuilts-clang-host-linux-x86-32-droidian-clang-r416183b/bin/clang --version
+            
+  # 🔹 Setup Samsung GCC (glibc2.17-4.8)
+      - name: Setup Samsung Clang
+        run: |
+                  CLANG_PATH="$PWD/toolchain/clang"
+                  mkdir -p "$CLANG_PATH"
+              
+                  echo "⬇️ Downloading Samsung Clang (r416183b)..."
+                  wget -q https://github.com/droidian/android-platform-prebuilts-clang-host-linux-x86-32/archive/droidian/clang-r416183b.tar.gz
+              
+                  echo "📦 Extracting Clang..."
+                  tar -xzf clang-r416183b.tar.gz -C "$CLANG_PATH"
+              
+                  if [ ! -f "$CLANG_PATH/android-platform-prebuilts-clang-host-linux-x86-32-droidian-clang-r416183b/bin/clang" ]; then
+                    echo "❌ Clang binary not found at $CLANG_PATH/android-platform-prebuilts-clang-host-linux-x86-32-droidian-clang-r416183b/bin/clang"
+                    find "$CLANG_PATH" -type f | head -n20
+                    exit 1
+                  fi
+              
+                  echo "✅ Samsung Clang found at $CLANG_PATH/android-platform-prebuilts-clang-host-linux-x86-32-droidian-clang-r416183b/bin/clang"
+                  echo "PATH=$CLANG_PATH/android-platform-prebuilts-clang-host-linux-x86-32-droidian-clang-r416183b/bin:$PATH" >> $GITHUB_ENV
+                  echo "CC=clang" >> $GITHUB_ENV
+                  echo "LD=ld.lld" >> $GITHUB_ENV
+                  echo "LLVM=1" >> $GITHUB_ENV
+                  echo "LLVM_IAS=1" >> $GITHUB_ENV
+              
+                  $CLANG_PATH/android-platform-prebuilts-clang-host-linux-x86-32-droidian-clang-r416183b/bin/clang --version
 
 
 
