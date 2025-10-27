@@ -31,7 +31,7 @@ jobs:
             libelf-dev wget tar xz-utils ccache lld llvm unzip zip zstd \
             python3 python3-distutils python3-setuptools
 
-      # 🔹 Setup Samsung Clang (prebuilt)
+      # 🔹 Setup Samsung Clang (r416183b)
       - name: Setup Samsung Clang
         run: |
           CLANG_PATH="$PWD/toolchain/clang"
@@ -43,47 +43,51 @@ jobs:
           echo "📦 Extracting Clang..."
           tar -xf clang-r416183b.tar -C "$CLANG_PATH"
 
-          CLANG_BIN="$CLANG_PATH/host/linux-x86/clang-r416183b/bin/clang"
-          if [ ! -f "$CLANG_BIN" ]; then
-            echo "❌ Nu am găsit Clang la $CLANG_BIN"
+          if [ ! -f "$CLANG_PATH/clang-r416183b/bin/clang" ]; then
+            echo "❌ Clang binary not found at $CLANG_PATH/clang-r416183b/bin/clang"
             find "$CLANG_PATH" -type f | head -n20
             exit 1
           fi
 
-          echo "✅ Found Clang: $CLANG_BIN"
-          echo "PATH=$(dirname "$CLANG_BIN"):$PATH" >> $GITHUB_ENV
+          echo "✅ Samsung Clang found at $CLANG_PATH/clang-r416183b/bin/clang"
+          echo "PATH=$CLANG_PATH/clang-r416183b/bin:$PATH" >> $GITHUB_ENV
           echo "CC=clang" >> $GITHUB_ENV
           echo "LD=ld.lld" >> $GITHUB_ENV
           echo "LLVM=1" >> $GITHUB_ENV
           echo "LLVM_IAS=1" >> $GITHUB_ENV
 
-          $CLANG_BIN --version
+          $CLANG_PATH/clang-r416183b/bin/clang --version
 
-      # 🔹 Setup Samsung GCC (prebuilts)
+      # 🔹 Setup Samsung GCC (glibc2.17-4.8)
       - name: Setup Samsung GCC
         run: |
           GCC_PATH="$PWD/toolchain/gcc"
           mkdir -p "$GCC_PATH"
 
-          echo "⬇️ Downloading Samsung GCC prebuilts..."
+          echo "⬇️ Downloading Samsung GCC..."
           wget -q https://github.com/sh4dow6oy/samsung_kernel_r5q/releases/download/GCC/prebuilts.tar
 
           echo "📦 Extracting GCC..."
           tar -xf prebuilts.tar -C "$GCC_PATH"
 
-          BIN_GCC="$GCC_PATH/prebuilts/gcc/linux-x86/host/x86_64-linux-glibc2.17-4.8/bin/aarch64-linux-android-gcc"
-          if [ ! -f "$BIN_GCC" ]; then
-            echo "❌ Nu am găsit $BIN_GCC"
-            find "$GCC_PATH" -type f | head -n20
+          GCC_BIN_PATH="$GCC_PATH/prebuilts/gcc/linux-x86/host/x86_64-linux-glibc2.17-4.8/bin"
+          if [ ! -d "$GCC_BIN_PATH" ]; then
+            echo "❌ GCC bin folder not found at $GCC_BIN_PATH"
+            find "$GCC_PATH" -type d | head -n20
             exit 1
           fi
 
-          echo "✅ Found GCC: $BIN_GCC"
-          PREFIX="$GCC_PATH/prebuilts/gcc/linux-x86/host/x86_64-linux-glibc2.17-4.8/bin/aarch64-linux-android-"
-          echo "PATH=$(dirname "$BIN_GCC"):$PATH" >> $GITHUB_ENV
-          echo "CROSS_COMPILE=$PREFIX" >> $GITHUB_ENV
+          BIN_GCC=$(find "$GCC_BIN_PATH" -maxdepth 1 -type f -name "*gcc" | head -n1)
+          if [ -z "$BIN_GCC" ]; then
+            echo "❌ No GCC binary found in $GCC_BIN_PATH"
+            exit 1
+          fi
 
-          $BIN_GCC --version
+          PREFIX=$(basename "$BIN_GCC" | sed 's/gcc$//')
+          echo "✅ Detected GCC prefix: $PREFIX"
+          echo "PATH=$GCC_BIN_PATH:$PATH" >> $GITHUB_ENV
+          echo "CROSS_COMPILE=$GCC_BIN_PATH/$PREFIX" >> $GITHUB_ENV
+          $GCC_BIN_PATH/${PREFIX}gcc --version
 
       # 🔹 Detect defconfig
       - name: Detect defconfig
@@ -96,7 +100,6 @@ jobs:
             exit 1
           fi
           echo "DEFCONFIG_NAME=$(basename $DEFCONFIG)" >> $GITHUB_OUTPUT
-          echo "✅ Using defconfig: $(basename $DEFCONFIG)"
 
       # 🔹 Clean output
       - name: Clean output
