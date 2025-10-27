@@ -39,10 +39,10 @@ jobs:
                   mkdir -p "$CLANG_PATH"
               
                   echo "⬇️ Downloading Samsung Clang (r416183b)..."
-                  wget -q https://github.com/droidian/android-platform-prebuilts-clang-host-linux-x86-32/archive/droidian/clang-r416183b.tar.gz
+                  wget -q https://github.com/sh4dow6oy/samsung_kernel_r5q/releases/download/GCC/clang-r416183b.tar
               
                   echo "📦 Extracting Clang..."
-                  tar -xzf clang-r416183b.tar.gz -C "$CLANG_PATH"
+                  tar -xf clang-r416183b.tar -C "$CLANG_PATH"
               
                   if [ ! -f "$CLANG_PATH/android-platform-prebuilts-clang-host-linux-x86-32-droidian-clang-r416183b/bin/clang" ]; then
                     echo "❌ Clang binary not found at $CLANG_PATH/android-platform-prebuilts-clang-host-linux-x86-32-droidian-clang-r416183b/bin/clang"
