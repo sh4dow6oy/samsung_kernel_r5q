@@ -22,14 +22,15 @@ jobs:
           submodules: recursive
           fetch-depth: 0
 
-      # 🔹 Install dependencies
+      # 🔹 Install dependencies + libtinfo5
       - name: Install dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y \
             build-essential git bc bison flex libssl-dev libncurses5-dev \
             libelf-dev wget tar xz-utils ccache lld llvm unzip zip zstd \
-            python3 python3-distutils python3-setuptools
+            python3 python3-distutils python3-setuptools \
+            libtinfo5
 
       # 🔹 Setup Clang și GCC (corectat)
       - name: Setup Clang and GCC
