@@ -31,29 +31,29 @@ jobs:
             libelf-dev wget tar xz-utils ccache lld llvm unzip zip zstd \
             python3 python3-distutils python3-setuptools
 
-      # 🔹 Setup Clang (4639204-cfp-jopp) și GCC 4.9
+      # 🔹 Setup Clang și GCC (corectat)
       - name: Setup Clang and GCC
         run: |
           # Clang
           mkdir -p $GITHUB_WORKSPACE/toolchain/clang
           curl -L https://github.com/ravindu644/Android-Kernel-Tutorials/releases/download/toolchains/clang-4639204-cfp-jopp.tar.gz | tar -xz -C $GITHUB_WORKSPACE/toolchain/clang
-          CLANG_PATH=$(find $GITHUB_WORKSPACE/toolchain/clang -maxdepth 1 -type d -name "clang*")
-          echo "✅ Clang found at $CLANG_PATH/bin/clang"
-          echo "PATH=$CLANG_PATH/bin:$PATH" >> $GITHUB_ENV
+          CLANG_BIN=$(find $GITHUB_WORKSPACE/toolchain/clang -type f -name clang | head -n1 | xargs dirname)
+          echo "✅ Clang binary found at $CLANG_BIN/clang"
+          echo "PATH=$CLANG_BIN:$PATH" >> $GITHUB_ENV
           echo "CC=clang" >> $GITHUB_ENV
           echo "LD=ld.lld" >> $GITHUB_ENV
           echo "LLVM=1" >> $GITHUB_ENV
           echo "LLVM_IAS=1" >> $GITHUB_ENV
-          $CLANG_PATH/bin/clang --version
+          $CLANG_BIN/clang --version
 
           # GCC
           mkdir -p $GITHUB_WORKSPACE/toolchain/gcc
           curl -L https://github.com/ravindu644/Android-Kernel-Tutorials/releases/download/toolchains/aarch64-linux-android-4.9.tar.gz | tar -xz -C $GITHUB_WORKSPACE/toolchain/gcc
-          GCC_PATH=$(find $GITHUB_WORKSPACE/toolchain/gcc -maxdepth 1 -type d -name "aarch64*")
-          echo "✅ GCC found at $GCC_PATH/bin"
-          echo "PATH=$GCC_PATH/bin:$PATH" >> $GITHUB_ENV
-          echo "CROSS_COMPILE=$GCC_PATH/bin/aarch64-linux-android-" >> $GITHUB_ENV
-          $GCC_PATH/bin/aarch64-linux-android-gcc --version
+          GCC_BIN=$(find $GITHUB_WORKSPACE/toolchain/gcc -type f -name aarch64-linux-android-gcc | head -n1 | xargs dirname)
+          echo "✅ GCC binary found at $GCC_BIN"
+          echo "PATH=$GCC_BIN:$PATH" >> $GITHUB_ENV
+          echo "CROSS_COMPILE=$GCC_BIN/aarch64-linux-android-" >> $GITHUB_ENV
+          $GCC_BIN/aarch64-linux-android-gcc --version
 
       # 🔹 Detect defconfig
       - name: Detect defconfig
