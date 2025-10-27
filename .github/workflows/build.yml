@@ -125,9 +125,22 @@ jobs:
             KBUILD_CFLAGS_MODULE="-fno-stack-protector" \
             -j$(nproc)
 
+      # 🔹 Build BPF programs (ignore errors)
+      - name: Build BPF programs
+        run: |
+          echo "🔹 Building BPF programs (errors will be ignored)..."
+          make O=out -j$(nproc) M=tools/bpf/ || true
+
       # 🔹 Upload kernel image
       - name: Upload kernel image
         uses: actions/upload-artifact@v4
         with:
           name: kernel-image
           path: out/arch/arm64/boot/Image.gz-dtb
+
+      # 🔹 Upload BPF artifacts
+      - name: Upload BPF artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: bpf-artifacts
+          path: tools/bpf/**/*.o
