@@ -31,12 +31,12 @@ jobs:
             libelf-dev wget tar xz-utils ccache lld llvm unzip zip zstd \
             python3 python3-distutils python3-setuptools
 
-      # 🔹 Setup Clang and GCC toolchains
+      # 🔹 Setup Clang (4639204-cfp-jopp) și GCC 4.9
       - name: Setup Clang and GCC
         run: |
           # Clang
           mkdir -p $GITHUB_WORKSPACE/toolchain/clang
-          curl -L https://github.com/ravindu644/Android-Kernel-Tutorials/releases/download/toolchains/clang-4639204.tar.gz | tar -xz -C $GITHUB_WORKSPACE/toolchain/clang
+          curl -L https://github.com/ravindu644/Android-Kernel-Tutorials/releases/download/toolchains/clang-4639204-cfp-jopp.tar.gz | tar -xz -C $GITHUB_WORKSPACE/toolchain/clang
           CLANG_PATH=$(find $GITHUB_WORKSPACE/toolchain/clang -maxdepth 1 -type d -name "clang*")
           echo "✅ Clang found at $CLANG_PATH/bin/clang"
           echo "PATH=$CLANG_PATH/bin:$PATH" >> $GITHUB_ENV
