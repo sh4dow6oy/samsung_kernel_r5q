@@ -1,4 +1,4 @@
-name: S10 Lite Kernel - Android 15 Hybrid (SELinux Fix)
+name: S10 Lite Kernel - Android 15 Hybrid (Cgroup Arg Fix)
 
 on:
   push:
@@ -39,32 +39,40 @@ jobs:
           PATHS=("kernel/bpf/" "drivers/android/" "include/linux/bpf.h" "include/linux/filter.h" "include/linux/bpf_verifier.h" "include/linux/bpf-cgroup.h" "include/uapi/linux/bpf.h" "include/uapi/linux/bpf_common.h" "include/uapi/linux/filter.h" "arch/arm64/net/")
           for path in "${PATHS[@]}"; do git checkout FETCH_HEAD -- "$path" || echo "Skip: $path"; done
 
-      - name: Pre-build Fixes (SELinux Bypass & BPF Struct Injection)
+      - name: Pre-build Fixes (Inherit Argument Fix)
         run: |
-          # 1. Injectare campul 'security' in struct bpf_prog_aux (Rezolva erorile de tip "no member named security")
-          # Il adaugam chiar inainte de inchiderea structurii
-          sed -i '/struct bpf_prog_aux {/a \	void *security;' include/linux/bpf.h
-
-          # 2. Fix SELinux Hooks (Bypass BPF checks care cauzeaza erori de linkare)
-          if [ -f security/selinux/hooks.c ]; then
-            # Comentam sau neutralizam liniile care folosesc bpf_map_fops si bpf_prog_fops
-            sed -i 's/file->f_op == &bpf_map_fops/0/g' security/selinux/hooks.c
-            sed -i 's/file->f_op == &bpf_prog_fops/0/g' security/selinux/hooks.c
-            # Neutralizam accesul la aux->security prin transformarea lor in operatiuni NOP (No Operation)
-            sed -i 's/prog->aux->security/NULL/g' security/selinux/hooks.c
-            sed -i 's/aux->security =/ \/\/ /g' security/selinux/hooks.c
-            sed -i 's/struct bpf_security_struct \*bpfsec = aux->security;/void *bpfsec = NULL;/g' security/selinux/hooks.c
+          # 1. Fix cgroup_bpf_inherit calls in cgroup.c
+          # Schimbam apelul cu 1 argument intr-un apel cu 2 argumente (folosind NULL sau parintele unde e disponibil)
+          if [ -f kernel/cgroup/cgroup.c ]; then
+            sed -i 's/cgroup_bpf_inherit(root_cgrp)/cgroup_bpf_inherit(root_cgrp, NULL)/g' kernel/cgroup/cgroup.c
+            sed -i 's/cgroup_bpf_inherit(cgrp)/cgroup_bpf_inherit(cgrp, cgroup_parent(cgrp))/g' kernel/cgroup/cgroup.c
+            
+            # Alte simboluri cgroup bpf
+            sed -i 's/__cgroup_bpf_attach/cgroup_bpf_attach/g' kernel/cgroup/cgroup.c
+            sed -i 's/__cgroup_bpf_detach/cgroup_bpf_detach/g' kernel/cgroup/cgroup.c
           fi
 
-          # 3. Injectare BPF_PROG_RUN macro in bpf_trace.c
+          # 2. Fix SELinux & BPF Struct Injection
+          sed -i '/struct bpf_prog_aux {/a \	void *security;' include/linux/bpf.h
+          if [ -f security/selinux/hooks.c ]; then
+            sed -i 's/file->f_op == &bpf_map_fops/0/g' security/selinux/hooks.c
+            sed -i 's/file->f_op == &bpf_prog_fops/0/g' security/selinux/hooks.c
+            sed -i 's/prog->aux->security/NULL/g' security/selinux/hooks.c
+            sed -i 's/aux->security =/ \/\/ /g' security/selinux/hooks.c
+          fi
+
+          # 3. BPF_PROG_RUN Macro Injection
           if [ -f kernel/trace/bpf_trace.c ]; then
             sed -i '1i #include <linux/filter.h>' kernel/trace/bpf_trace.c
             sed -i '2i #ifndef BPF_PROG_RUN\n#define BPF_PROG_RUN(prog, ctx) 0\n#endif' kernel/trace/bpf_trace.c
             sed -i 's/BPF_PROG_RUN_ARRAY_CHECK([^)]*)/0/g' kernel/trace/bpf_trace.c
             sed -i 's/BPF_PROG_RUN_ARRAY([^)]*)/0/g' kernel/trace/bpf_trace.c
+            sed -i 's/bpf_prog_array_copy([^)]*)/0/g' kernel/trace/bpf_trace.c
+            sed -i 's/bpf_prog_array_free([^)]*)/((void)0)/g' kernel/trace/bpf_trace.c
+            sed -i 's/bpf_prog_array_delete_safe([^)]*)/0/g' kernel/trace/bpf_trace.c
           fi
 
-          # 4. Bypass Cgroup Update conflict & Alias injection
+          # 4. Alias Injection in core.c for missing symbols
           if [ -f include/linux/bpf-cgroup.h ]; then
             sed -i 's/int cgroup_bpf_update/int __unused_cgroup_bpf_update/g' include/linux/bpf-cgroup.h
           fi
@@ -73,7 +81,7 @@ jobs:
           void *bpf_prog_get_type_path(const char *path, int type) { return (void *)-22; }
           EOF
 
-          # 5. Fix Samsung Specifics
+          # 5. Samsung & Python Fixes
           if [ -f drivers/staging/android/freecess_pkg.c ]; then
             sed -i 's/extern int binders_in_transcation;/int binders_in_transcation = 0;/g' drivers/staging/android/freecess_pkg.c
           fi
