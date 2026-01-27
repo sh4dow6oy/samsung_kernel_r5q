@@ -17,7 +17,7 @@ jobs:
       - name: Install required packages
         run: |
           sudo apt-get update
-          sudo apt-get install -y wget bc bison flex libssl-dev libelf-dev
+          sudo apt-get install -y wget bc bison flex libssl-dev libelf-dev unzip
 
       - name: Install Python 2.7 (Debian packages)
         run: |
@@ -35,7 +35,10 @@ jobs:
           dpkg-deb -x python2.7_2.7.18-8+deb11u1_amd64.deb $HOME/python2
 
           echo "$HOME/python2/usr/bin" >> $GITHUB_PATH
-          sudo ln -sf $HOME/python2/usr/bin/python2 /usr/bin/python2
+
+          # Ensure python2 exists
+          sudo ln -sf $HOME/python2/usr/bin/python2.7 /usr/bin/python2
+          sudo ln -sf $HOME/python2/usr/bin/python2.7 /usr/bin/python
 
       - name: Setup Clang toolchain
         run: |
@@ -50,16 +53,21 @@ jobs:
           echo "PATH=$TOOLCHAIN_PATH/clang-r416183b/bin:$PATH" >> $GITHUB_ENV
           echo "CC=clang" >> $GITHUB_ENV
 
-      - name: Setup Android NDK (includes ld)
+      - name: Setup Android NDK (provides ld.lld)
         run: |
           NDK_URL="https://dl.google.com/android/repository/android-ndk-r25b-linux.zip"
           wget -O ndk.zip "$NDK_URL"
           unzip ndk.zip -d "$PWD/toolchain/ndk"
 
           export NDK_PATH="$PWD/toolchain/ndk/android-ndk-r25b"
-          export PATH="$NDK_PATH/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH"
+          export NDK_BIN="$NDK_PATH/toolchains/llvm/prebuilt/linux-x86_64/bin"
 
-          echo "PATH=$PATH" >> $GITHUB_ENV
+          mkdir -p "$PWD/toolchain/bin"
+          ln -sf "$NDK_BIN/clang" "$PWD/toolchain/bin/clang"
+          ln -sf "$NDK_BIN/ld.lld" "$PWD/toolchain/bin/aarch64-linux-android-ld"
+
+          echo "PATH=$PWD/toolchain/bin:$NDK_BIN:$PATH" >> $GITHUB_ENV
+          echo "LD=aarch64-linux-android-ld" >> $GITHUB_ENV
 
       - name: Configure kernel
         run: |
