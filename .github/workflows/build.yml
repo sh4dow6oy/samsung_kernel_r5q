@@ -1,4 +1,4 @@
-name: S10 Lite Kernel Build - Upstream CIP & A15 Fixes
+name: S10 Lite Kernel - Clean Build - Upstream CIP
 
 on:
   push:
@@ -13,7 +13,8 @@ jobs:
       - name: Checkout Source
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0 # Esențial pentru a permite merge-ul upstream
+          fetch-depth: 0
+          clean: true # Asigură un mediu de lucru curat la fiecare rulare
 
       - name: Install Dependencies
         run: |
@@ -23,50 +24,92 @@ jobs:
             libncurses-dev git wget unzip make python2 \
             python3 python3-minimal lz4 xz-utils gcc g++ pahole
 
-      - name: Download Proton Clang
+      - name: Cache Proton Clang
+        id: cache-toolchain
+        uses: actions/cache@v4
+        with:
+          path: toolchain/proton-clang
+          key: ${{ runner.os }}-proton-clang-v1
+
+      - name: Download Proton Clang (if not cached)
+        if: steps.cache-toolchain.outputs.cache-hit != 'true'
         run: |
           mkdir -p toolchain
           git clone --depth=1 https://github.com/kdrag0n/proton-clang.git toolchain/proton-clang
 
-      - name: Upstream Integration (Linux-CIP)
+      - name: Upstream Integration (Linux-CIP 4.14.y)
         run: |
           git config --global user.email "action@github.com"
           git config --global user.name "GitHub Action"
-
-          # Adăugăm sursa oficială stabilă CIP (Civil Infrastructure Platform)
           git remote add upstream https://git.kernel.org/pub/scm/linux/kernel/git/cip/linux-cip.git
-          
-          # Facem fetch la ramura stabilă 4.14
           git fetch upstream linux-4.14.y --depth=100
 
-          # Încercăm un merge. Folosim strategy-option 'theirs' pentru a favoriza patch-urile de securitate
-          # Dacă merge-ul eșuează din cauza conflictelor masive, ignorăm eroarea și trecem la checkout selectiv
-          git merge upstream/linux-4.14.y -m "Merge Linux-CIP Upstream" || echo "Conflicte detectate, trecem la extragere selectivă..."
-
-          # FORȚĂM subsystemul BPF și headerele critice să fie cele din upstream (CIP)
-          # Aceasta rezolvă eroarea btf.h și lipsa tipurilor de date pentru Android 15
-          git checkout upstream/linux-4.14.y -- kernel/bpf/
-          git checkout upstream/linux-4.14.y -- include/linux/bpf.h
-          git checkout upstream/linux-4.14.y -- include/uapi/linux/bpf.h
-          git checkout upstream/linux-4.14.y -- include/uapi/linux/btf.h
-          git checkout upstream/linux-4.14.y -- include/linux/btf.h || true
-          git checkout upstream/linux-4.14.y -- arch/arm64/net/
+          # Merge-ul aduce baza la 4.14.336+ (CIP)
+          git merge upstream/linux-4.14.y -m "Merge Linux-CIP Upstream" || echo "Conflicts ignored"
           
-          echo "Upstream eBPF components updated successfully."
+          # Checkout forțat pentru eBPF și Binder (esențial pentru Android 15)
+          git checkout upstream/linux-4.14.y -- kernel/bpf/ drivers/android/ include/linux/bpf.h include/uapi/linux/bpf.h include/uapi/linux/btf.h include/linux/btf.h arch/arm64/net/
 
       - name: Pre-build Fixes
         run: |
-          # 1. Injectăm __poll_t în types.h dacă încă lipsește (fix pentru bpf.h)
+          # Fix pentru tipuri de date și headere Samsung lipsă
           grep -q "__poll_t" include/uapi/linux/types.h || echo "typedef unsigned int __poll_t;" >> include/uapi/linux/types.h
+          mkdir -p system/core/liblog/include/log system/logging/liblog/include/log
+          touch system/core/liblog/include/log/perflog.h system/logging/liblog/include/log/perflog.h
           
-          # 2. Fix log-uri Samsung (perflog.h)
-          mkdir -p system/core/liblog/include/log
-          mkdir -p system/logging/liblog/include/log
-          touch system/core/liblog/include/log/perflog.h
-          touch system/logging/liblog/include/log/perflog.h
-          
-          # 3. Rezolvarea referințelor btf.h în core.c (pentru a căuta în linux/ nu în uapi/)
+          # Corecție referințe headere
           find kernel/bpf/ -name "*.c" | xargs sed -i 's|<uapi/linux/btf.h>|<linux/btf.h>|g' || true
           
-          # 4. Dezactivare wrapper Samsung și link Python2
-          [ -f
+          # Setări mediu
+          [ -f scripts/gcc-wrapper.py ] && mv scripts/gcc-wrapper.py scripts/gcc-wrapper.py.disabled || true
+          sudo ln -sf /usr/bin/python2 /usr/bin/python
+
+      - name: Build Kernel
+        run: |
+          export PATH=$(pwd)/toolchain/proton-clang/bin:$PATH
+          
+          # Definim argumentele. Observă lipsa oricărui cache pentru folderul 'out'
+          MAKE_ARGS="
+            O=out \
+            ARCH=arm64 \
+            CC=clang \
+            HOSTCC=gcc \
+            HOSTCXX=g++ \
+            LD=ld.lld \
+            AR=llvm-ar \
+            NM=llvm-nm \
+            OBJCOPY=llvm-objcopy \
+            OBJDUMP=llvm-objdump \
+            STRIP=llvm-strip \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            LLVM=1 \
+            LLVM_IAS=1 \
+            KCFLAGS=-Wno-error \
+            TECHPACK=true
+          "
+
+          # Ștergem folderul out dacă există (pentru Clean Build garantat)
+          rm -rf out && mkdir -p out
+          
+          make $MAKE_ARGS r5q_eur_open_defconfig
+          
+          # Config Android 15
+          ./scripts/config --file out/.config --enable CONFIG_BPF_SYSCALL
+          ./scripts/config --file out/.config --enable CONFIG_BPF_JIT
+          ./scripts/config --file out/.config --enable CONFIG_HAVE_EBPF_JIT
+          ./scripts/config --file out/.config --enable CONFIG_ANDROID_BINDERFS
+          ./scripts/config --file out/.config --enable CONFIG_ANDROID_BINDER_IPC
+          ./scripts/config --file out/.config --disable CONFIG_DEBUG_INFO_BTF
+          
+          make $MAKE_ARGS olddefconfig
+          make -j$(nproc --all) $MAKE_ARGS
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: Kernel-S10Lite-Clean-Build
+          path: |
+            out/arch/arm64/boot/Image
+            out/arch/arm64/boot/dtbo.img
+            out/arch/arm64/boot/dts/vendor/qcom/*.dtb
