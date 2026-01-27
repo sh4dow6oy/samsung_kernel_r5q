@@ -1,4 +1,4 @@
-name: S10 Lite Kernel - Clean Build - Upstream CIP
+name: S10 Lite Kernel - Clean Build - 4.19 Backport for A15
 
 on:
   push:
@@ -13,7 +13,6 @@ jobs:
       - name: Checkout Source
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
           clean: true
 
       - name: Install Dependencies
@@ -37,41 +36,47 @@ jobs:
           mkdir -p toolchain
           git clone --depth=1 https://github.com/kdrag0n/proton-clang.git toolchain/proton-clang
 
-      - name: Upstream Integration
+      - name: Backport from Android 4.19 (eBPF & Binder)
         run: |
-          git config --global user.email "action@github.com"
-          git config --global user.name "GitHub Action"
-
-          # Adăugăm sursa oficială
-          git remote add upstream https://git.kernel.org/pub/scm/linux/kernel/git/cip/linux-cip.git
+          # Aceasta metoda trage doar codul modern necesar pentru Android 15
+          # Fara sa distruga driverele Samsung de pe 4.14
           
-          # Încercăm să aducem ambele variante posibile de nume pentru branch
-          git fetch upstream linux-4.14.y:upstream_branch --depth=100 || git fetch upstream 4.14.y:upstream_branch --depth=100
+          mkdir -p backport_temp
+          cd backport_temp
           
-          # Merge preventiv - ignorăm erorile pentru a trece la checkout forțat
-          git merge upstream_branch -m "Merge Upstream" -X theirs || echo "Merge automat eșuat, forțăm componentele eBPF..."
-
-          # PASUL CRITIC: Checkout forțat pentru Android 15
-          git checkout upstream_branch -- kernel/bpf/
-          git checkout upstream_branch -- drivers/android/
-          git checkout upstream_branch -- include/linux/bpf.h
-          git checkout upstream_branch -- include/uapi/linux/bpf.h
-          git checkout upstream_branch -- include/uapi/linux/btf.h
-          git checkout upstream_branch -- include/linux/btf.h || true
-          git checkout upstream_branch -- arch/arm64/net/
+          # Descarcam modulele de networking si binder din kernelul Android 4.19
+          wget https://android.googlesource.com/kernel/common/+archive/refs/heads/android-4.19-stable/kernel/bpf.tar.gz
+          wget https://android.googlesource.com/kernel/common/+archive/refs/heads/android-4.19-stable/drivers/android.tar.gz
+          wget https://android.googlesource.com/kernel/common/+archive/refs/heads/android-4.19-stable/include/uapi/linux.tar.gz -O uapi.tar.gz
           
-          echo "Sincronizare cu Upstream CIP finalizată."
+          cd ..
+          # Curatam folderele vechi si aplicam codul de 4.19
+          rm -rf kernel/bpf/*
+          tar -xzf backport_temp/bpf.tar.gz -C kernel/bpf/
+          
+          # Actualizam Binder-ul (Android 15 il cere pe cel nou)
+          rm -rf drivers/android/*
+          tar -xzf backport_temp/android.tar.gz -C drivers/android/
+          
+          # Actualizam headerele critice pentru BTF/BPF
+          mkdir -p uapi_temp
+          tar -xzf backport_temp/uapi.tar.gz -C uapi_temp/
+          cp uapi_temp/bpf.h include/uapi/linux/
+          cp uapi_temp/btf.h include/uapi/linux/
+          cp uapi_temp/types.h include/uapi/linux/
+          
+          echo "Backport de componente 4.19 pe baza 4.14 finalizat."
 
       - name: Pre-build Fixes
         run: |
-          # Injectare tipuri de date pentru BPF
+          # Fix pentru __poll_t (4.19 il foloseste masiv)
           grep -q "__poll_t" include/uapi/linux/types.h || echo "typedef unsigned int __poll_t;" >> include/uapi/linux/types.h
           
-          # Fix-uri specifice Samsung
+          # Fix log-uri Samsung
           mkdir -p system/core/liblog/include/log system/logging/liblog/include/log
           touch system/core/liblog/include/log/perflog.h system/logging/liblog/include/log/perflog.h
           
-          # Aliniere headere BTF
+          # Aliniere headere
           find kernel/bpf/ -name "*.c" | xargs sed -i 's|<uapi/linux/btf.h>|<linux/btf.h>|g' || true
           
           # Setup Python
@@ -105,7 +110,7 @@ jobs:
           rm -rf out && mkdir -p out
           make $MAKE_ARGS r5q_eur_open_defconfig
           
-          # Configurație necesară Android 15
+          # Configurații Android 15 (Forțate pentru compatibilitate 4.19-like)
           ./scripts/config --file out/.config --enable CONFIG_BPF_SYSCALL
           ./scripts/config --file out/.config --enable CONFIG_BPF_JIT
           ./scripts/config --file out/.config --enable CONFIG_HAVE_EBPF_JIT
@@ -119,7 +124,7 @@ jobs:
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-S10Lite-A15-Ready
+          name: Kernel-S10Lite-4.19-Backport
           path: |
             out/arch/arm64/boot/Image
             out/arch/arm64/boot/dtbo.img
