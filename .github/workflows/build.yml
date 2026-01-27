@@ -11,20 +11,22 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repo
+        uses: actions/checkout@v4
 
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            wget bc bison flex libssl-dev libelf-dev software-properties-common
+          sudo apt-get install -y wget bc bison flex libssl-dev libelf-dev
 
-      - name: Install python2 (deadsnakes)
+      - name: Install Python 2.7
+        uses: actions/setup-python@v5
+        with:
+          python-version: '2.7'
+
+      - name: Create python2 symlink
         run: |
-          sudo add-apt-repository ppa:deadsnakes/ppa -y
-          sudo apt-get update
-          sudo apt-get install -y python2
-          sudo ln -sf /usr/bin/python2 /usr/bin/python
+          sudo ln -sf $(which python) /usr/bin/python2
 
       - name: Setup Clang toolchain
         run: |
@@ -36,39 +38,34 @@ jobs:
           mkdir -p "$PWD/toolchain/llvm-arm-toolchain-ship/10.0/bin"
           ln -s "$TOOLCHAIN_PATH/clang-r416183b/bin/clang" "$PWD/toolchain/llvm-arm-toolchain-ship/10.0/bin/clang"
 
-          echo "PATH=$PATH" >> $GITHUB_ENV
+          echo "PATH=$TOOLCHAIN_PATH/clang-r416183b/bin:$PATH" >> $GITHUB_ENV
           echo "CC=clang" >> $GITHUB_ENV
 
-      - name: Setup AArch64 Linaro toolchain
+      - name: Setup Android NDK (GCC + ld included)
         run: |
-          TOOLCHAIN_PATH="$PWD/toolchain/gcc"
-          mkdir -p "$TOOLCHAIN_PATH"
-          wget -O linaro.tar.xz "https://releases.linaro.org/components/toolchain/binaries/latest-7/aarch64-linux-gnu/gcc-linaro-7.5.0-2019.12-x86_64_aarch64-linux-gnu.tar.xz"
-          tar -xf linaro.tar.xz -C "$TOOLCHAIN_PATH"
+          NDK_URL="https://dl.google.com/android/repository/android-ndk-r25b-linux.zip"
+          wget -O ndk.zip "$NDK_URL"
+          unzip ndk.zip -d "$PWD/toolchain/ndk"
 
-          export PATH="$TOOLCHAIN_PATH/gcc-linaro-7.5.0-2019.12-x86_64_aarch64-linux-gnu/bin:$PATH"
-          export CROSS_COMPILE=aarch64-linux-gnu-
-          export LD=aarch64-linux-gnu-ld
+          export NDK_PATH="$PWD/toolchain/ndk/android-ndk-r25b"
+          export PATH="$NDK_PATH/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH"
 
+          # Android NDK uses clang, but provides the full toolchain
           echo "PATH=$PATH" >> $GITHUB_ENV
-          echo "CROSS_COMPILE=$CROSS_COMPILE" >> $GITHUB_ENV
-          echo "LD=$LD" >> $GITHUB_ENV
 
       - name: Configure kernel
         run: |
           export ARCH=arm64
+          export CROSS_COMPILE=aarch64-linux-android-
           make ARCH=arm64 r5q_eur_open_defconfig
 
       - name: Build kernel
         run: |
           export ARCH=arm64
+          export CROSS_COMPILE=aarch64-linux-android-
           make -j$(nproc) ARCH=arm64
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: kernel
-          path: |
-            arch/arm64/boot/Image
-            arch/arm64/boot/dts/*.dtb
-            .config
+          name: kern
