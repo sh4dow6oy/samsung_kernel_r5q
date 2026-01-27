@@ -1,4 +1,4 @@
-name: S10 Lite - Integrated Pascua Hybrid 5.1
+name: S10 Lite - Pascua Hybrid (Fixed Duplicates)
 
 on:
   push:
@@ -23,52 +23,48 @@ jobs:
         run: |
           git remote add linux-stable https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git || true
           git fetch linux-stable linux-5.1.y --depth=1
-          
-          # Pascua importa doar "creierul" BPF, nu si driverele dependente care ar rupe kernelul 4.14
+          # Importăm structura BPF 5.1 originală
           PATHS=("kernel/bpf/" "include/linux/bpf.h" "include/linux/filter.h" "include/uapi/linux/bpf.h" "include/linux/bpf-cgroup.h")
           for path in "${PATHS[@]}"; do git checkout FETCH_HEAD -- "$path" || echo "Skip: $path"; done
 
-      - name: Integration Patches (Shim Layer)
+      - name: Integration Patches (Clean Shim)
         run: |
-          # 1. Reparăm structura bpf_prog_aux pentru a evita Kernel Panic în SELinux
-          # Pascua a observat că SELinux-ul Samsung caută pointerul de securitate exact la începutul structurii
-          sed -i '/struct bpf_prog_aux {/a \	void *security;' include/linux/bpf.h
-
-          # 2. Fix cgroup_bpf_inherit (Manual Sync)
-          # În 5.1, această funcție cere părintele. Samsung 4.14 nu îl oferă mereu.
-          # Îl forțăm la NULL sau folosim macro-ul de parinte.
-          if [ -f kernel/cgroup/cgroup.c ]; then
-            sed -i 's/cgroup_bpf_inherit(root_cgrp)/cgroup_bpf_inherit(root_cgrp, NULL)/g' kernel/cgroup/cgroup.c
-            sed -i 's/cgroup_bpf_inherit(cgrp)/cgroup_bpf_inherit(cgrp, cgroup_parent(cgrp))/g' kernel/cgroup/cgroup.c
-          fi
-
-          # 3. Rezolvarea conflictului de simboluri 'weak' (Metoda Pascua)
-          # În loc de macro-uri în YAML, edităm direct core.c pentru a satisface Linker-ul
-          cat <<EOF >> kernel/bpf/core.c
-          #include <linux/bpf-cgroup.h>
-          int cgroup_bpf_update(struct cgroup *cgrp, struct bpf_prog *prog, struct bpf_prog *old_prog, enum bpf_attach_type type) { return 0; }
-          EOF
-
-          # 4. Dezactivăm mizeriile Samsung care intră în conflict cu eBPF 5.1
+          # 1. NU mai injectăm 'security', deoarece e deja prezent în BPF 5.1 (fix duplicate error)
+          # Ne asigurăm doar că SELinux nu se blochează în simboluri lipsă
           if [ -f security/selinux/hooks.c ]; then
             sed -i 's/file->f_op == \&bpf_map_fops/0/g' security/selinux/hooks.c
             sed -i 's/file->f_op == \&bpf_prog_fops/0/g' security/selinux/hooks.c
           fi
 
+          # 2. Fix cgroup_bpf_inherit (Pascua Method)
+          if [ -f kernel/cgroup/cgroup.c ]; then
+            sed -i 's/cgroup_bpf_inherit(root_cgrp)/cgroup_bpf_inherit(root_cgrp, NULL)/g' kernel/cgroup/cgroup.c
+            sed -i 's/cgroup_bpf_inherit(cgrp)/cgroup_bpf_inherit(cgrp, NULL)/g' kernel/cgroup/cgroup.c
+          fi
+
+          # 3. Injectare stub-uri necesare în core.c pentru Linker
+          cat <<EOF >> kernel/bpf/core.c
+          #include <linux/bpf-cgroup.h>
+          int cgroup_bpf_update(struct cgroup *cgrp, struct bpf_prog *prog, struct bpf_prog *old_prog, enum bpf_attach_type type) { return 0; }
+          EOF
+
+          # 4. Samsung Specific Headers
+          mkdir -p include/linux/ && touch include/linux/perflog.h
+          echo -e "#ifndef _LINUX_PERFLOG_H\n#define _LINUX_PERFLOG_H\n#endif" > include/linux/perflog.h
+
       - name: Build S10 Lite Hybrid
         run: |
           export PATH=$(pwd)/toolchain/proton-clang/bin:$PATH
-          MAKE_ARGS="O=out ARCH=arm64 CC=clang HOSTCC=gcc CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1 TECHPACK=true"
+          MAKE_ARGS="O=out ARCH=arm64 CC=clang HOSTCC=gcc CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1"
           
-          # Relaxăm verificările de tipuri pentru a permite hibridizarea
-          export KCFLAGS="-Wno-error -Wno-incompatible-pointer-types -Wno-implicit-function-declaration -Wno-return-type"
+          # KCFLAGS pentru a ignora restul nepotrivirilor minore
+          export KCFLAGS="-Wno-error -Wno-incompatible-pointer-types -Wno-implicit-function-declaration -Wno-return-type -Wno-implicit-int"
 
           make $MAKE_ARGS r5q_eur_open_defconfig
           
-          # Configurații critice pentru Android 15 (Direct din repo-ul lui Pascua)
+          # Configurații pentru stabilitate
           ./scripts/config --file out/.config --disable CONFIG_MODVERSIONS
           ./scripts/config --file out/.config --enable CONFIG_BPF_SYSCALL
-          ./scripts/config --file out/.config --enable CONFIG_BPF_JIT
           ./scripts/config --file out/.config --enable CONFIG_CGROUP_BPF
           ./scripts/config --file out/.config --disable CONFIG_SAMSUNG_PRODUCT_SHIP
           ./scripts/config --file out/.config --disable CONFIG_DEFEX
@@ -76,8 +72,8 @@ jobs:
           make $MAKE_ARGS olddefconfig
           make -j$(nproc --all) $MAKE_ARGS Image.gz-dtb
 
-      - name: Upload Artifact
+      - name: Upload Build
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-A15-Hybrid-Kernel
+          name: S10Lite-Fixed-Hybrid
           path: out/arch/arm64/boot/Image.gz-dtb
