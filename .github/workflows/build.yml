@@ -1,4 +1,4 @@
-name: S10 Lite Kernel - Android 15 Hybrid (Full Fixes)
+name: S10 Lite Kernel - Android 15 Hybrid (Final Fixes)
 
 on:
   push:
@@ -39,9 +39,15 @@ jobs:
           PATHS=("kernel/bpf/" "drivers/android/" "include/linux/bpf.h" "include/linux/filter.h" "include/linux/bpf_verifier.h" "include/linux/bpf-cgroup.h" "include/uapi/linux/bpf.h" "include/uapi/linux/bpf_common.h" "include/uapi/linux/filter.h" "arch/arm64/net/")
           for path in "${PATHS[@]}"; do git checkout FETCH_HEAD -- "$path" || echo "Skip: $path"; done
 
-      - name: Pre-build Fixes (BPF, SELinux & Tracing)
+      - name: Pre-build Fixes (Cgroup, SELinux & BPF)
         run: |
-          # 1. Fix SELinux & BPF Structs (Pascua Sixteen Technique)
+          # 1. Fix Cgroup Argument Mismatch (Rezolvă eroarea actuală)
+          if [ -f kernel/cgroup/cgroup.c ]; then
+            # Căutăm orice apel al funcției cgroup_bpf_inherit cu un singur argument și adăugăm NULL
+            sed -i 's/cgroup_bpf_inherit(\([^,)]*\))/cgroup_bpf_inherit(\1, NULL)/g' kernel/cgroup/cgroup.c
+          fi
+
+          # 2. Fix SELinux & BPF Structs (Pascua Sixteen Technique)
           sed -i '/struct bpf_prog_aux {/a \	void *security;' include/linux/bpf.h
           if [ -f security/selinux/hooks.c ]; then
             sed -i '/#include "layers.h"/a #include <linux/bpf.h>' security/selinux/hooks.c
@@ -51,18 +57,11 @@ jobs:
             sed -i 's/file->f_op == \&bpf_prog_fops/0/g' security/selinux/hooks.c
           fi
 
-          # 2. Fix bpf_trace.c (Eroarea BPF_PROG_RUN / BPF_PROG_RUN_ARRAY_CHECK)
+          # 3. Fix bpf_trace.c
           if [ -f kernel/trace/bpf_trace.c ]; then
             sed -i '1i #include <linux/filter.h>' kernel/trace/bpf_trace.c
             sed -i 's/BPF_PROG_RUN_ARRAY_CHECK([^)]*)/0/g' kernel/trace/bpf_trace.c
             sed -i 's/BPF_PROG_RUN_ARRAY([^)]*)/0/g' kernel/trace/bpf_trace.c
-            sed -i 's/bpf_prog_array_copy([^)]*)/0/g' kernel/trace/bpf_trace.c
-            sed -i 's/bpf_prog_array_free([^)]*)/((void)0)/g' kernel/trace/bpf_trace.c
-          fi
-
-          # 3. Injectare definitie BPF_PROG_RUN in filter.h (daca lipseste)
-          if ! grep -q "#define BPF_PROG_RUN" include/linux/filter.h; then
-            echo '#define BPF_PROG_RUN(prog, ctx) ((*prog->bpf_func)(ctx, prog->insnsi))' >> include/linux/filter.h
           fi
 
           # 4. Fix Samsung-specifics & Python
@@ -79,17 +78,16 @@ jobs:
           rm -rf out && mkdir -p out
           make $MAKE_ARGS r5q_eur_open_defconfig
           
-          # Config Android 15
+          # Force Enable BPF for Android 15
           ./scripts/config --file out/.config --enable CONFIG_BPF_SYSCALL --enable CONFIG_BPF_JIT --enable CONFIG_HAVE_EBPF_JIT --enable CONFIG_ANDROID_BINDERFS --disable CONFIG_SAMSUNG_PRODUCT_SHIP --disable CONFIG_DEFEX --disable CONFIG_CC_STACKPROTECTOR_STRONG
           
           make $MAKE_ARGS olddefconfig
-          make -j$(nproc --all) $MAKE_ARGS Image.gz-dtb dtbs || (echo "Attempting single-thread..." && make -j1 $MAKE_ARGS Image.gz-dtb dtbs)
+          make -j$(nproc --all) $MAKE_ARGS Image.gz-dtb dtbs || make -j1 $MAKE_ARGS Image.gz-dtb dtbs
 
       - name: Prepare Artifacts
         run: |
           mkdir -p deploy
-          [ -f out/arch/arm64/boot/Image.gz-dtb ] && cp out/arch/arm64/boot/Image.gz-dtb deploy/
-          [ -f out/arch/arm64/boot/Image ] && cp out/arch/arm64/boot/Image deploy/
+          cp out/arch/arm64/boot/Image.gz-dtb deploy/ 2>/dev/null || cp out/arch/arm64/boot/Image deploy/
           find out/arch/arm64/boot/dts/ -name "*.dtb" -exec cp {} deploy/ \;
           find out/arch/arm64/boot/dts/ -name "*.dtbo" -exec cp {} deploy/ \; 2>/dev/null || true
 
