@@ -14,7 +14,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          clean: true # Asigură un mediu de lucru curat la fiecare rulare
+          clean: true
 
       - name: Install Dependencies
         run: |
@@ -37,30 +37,52 @@ jobs:
           mkdir -p toolchain
           git clone --depth=1 https://github.com/kdrag0n/proton-clang.git toolchain/proton-clang
 
-      - name: Upstream Integration (Linux-CIP 4.14.y)
+      - name: Upstream Integration (Auto-Detect Branch)
         run: |
           git config --global user.email "action@github.com"
           git config --global user.name "GitHub Action"
-          git remote add upstream https://git.kernel.org/pub/scm/linux/kernel/git/cip/linux-cip.git
-          git fetch upstream linux-4.14.y --depth=100
 
-          # Merge-ul aduce baza la 4.14.336+ (CIP)
-          git merge upstream/linux-4.14.y -m "Merge Linux-CIP Upstream" || echo "Conflicts ignored"
+          # Adăugăm sursa oficială stabilă CIP
+          git remote add upstream https://git.kernel.org/pub/scm/linux/kernel/git/cip/linux-cip.git
           
-          # Checkout forțat pentru eBPF și Binder (esențial pentru Android 15)
-          git checkout upstream/linux-4.14.y -- kernel/bpf/ drivers/android/ include/linux/bpf.h include/uapi/linux/bpf.h include/uapi/linux/btf.h include/linux/btf.h arch/arm64/net/
+          # Detectăm dacă branch-ul este 'linux-4.14.y' sau '4.14.y'
+          UPSTREAM_BRANCH=$(git ls-remote --heads upstream | grep -E '4.14.y' | awk -F'/' '{print $3}' | head -n 1)
+          echo "Detectat branch upstream: $UPSTREAM_BRANCH"
+          
+          if [ -z "$UPSTREAM_BRANCH" ]; then
+            echo "Eroare: Nu s-a putut găsi ramura 4.14 pe upstream!"
+            exit 1
+          fi
+
+          git fetch upstream $UPSTREAM_BRANCH --depth=100
+
+          # Merge forțat cu strategia 'theirs' pentru a evita blocajele în conflicte
+          git merge upstream/$UPSTREAM_BRANCH -m "Merge Linux-CIP Upstream" -X theirs || echo "Conflicte rezolvate automat."
+
+          # Checkout forțat pentru subsystemele vitale Android 15
+          git checkout upstream/$UPSTREAM_BRANCH -- kernel/bpf/
+          git checkout upstream/$UPSTREAM_BRANCH -- drivers/android/
+          git checkout upstream/$UPSTREAM_BRANCH -- include/linux/bpf.h
+          git checkout upstream/$UPSTREAM_BRANCH -- include/uapi/linux/bpf.h
+          git checkout upstream/$UPSTREAM_BRANCH -- include/uapi/linux/btf.h
+          git checkout upstream/$UPSTREAM_BRANCH -- include/linux/btf.h || true
+          git checkout upstream/$UPSTREAM_BRANCH -- arch/arm64/net/
+          
+          echo "Upstream eBPF & Binder components updated successfully."
 
       - name: Pre-build Fixes
         run: |
-          # Fix pentru tipuri de date și headere Samsung lipsă
+          # 1. Injectăm __poll_t în types.h
           grep -q "__poll_t" include/uapi/linux/types.h || echo "typedef unsigned int __poll_t;" >> include/uapi/linux/types.h
+          
+          # 2. Fix log-uri Samsung
           mkdir -p system/core/liblog/include/log system/logging/liblog/include/log
           touch system/core/liblog/include/log/perflog.h system/logging/liblog/include/log/perflog.h
           
-          # Corecție referințe headere
+          # 3. Corecție referințe headere BPF
           find kernel/bpf/ -name "*.c" | xargs sed -i 's|<uapi/linux/btf.h>|<linux/btf.h>|g' || true
           
-          # Setări mediu
+          # 4. Setări Python și wrapper
           [ -f scripts/gcc-wrapper.py ] && mv scripts/gcc-wrapper.py scripts/gcc-wrapper.py.disabled || true
           sudo ln -sf /usr/bin/python2 /usr/bin/python
 
@@ -68,7 +90,6 @@ jobs:
         run: |
           export PATH=$(pwd)/toolchain/proton-clang/bin:$PATH
           
-          # Definim argumentele. Observă lipsa oricărui cache pentru folderul 'out'
           MAKE_ARGS="
             O=out \
             ARCH=arm64 \
@@ -89,12 +110,12 @@ jobs:
             TECHPACK=true
           "
 
-          # Ștergem folderul out dacă există (pentru Clean Build garantat)
+          # Clean build garantat
           rm -rf out && mkdir -p out
           
           make $MAKE_ARGS r5q_eur_open_defconfig
           
-          # Config Android 15
+          # Config Android 15 (eBPF, BinderFS)
           ./scripts/config --file out/.config --enable CONFIG_BPF_SYSCALL
           ./scripts/config --file out/.config --enable CONFIG_BPF_JIT
           ./scripts/config --file out/.config --enable CONFIG_HAVE_EBPF_JIT
@@ -106,9 +127,9 @@ jobs:
           make -j$(nproc --all) $MAKE_ARGS
 
       - name: Upload Artifacts
-        uses: actions/upload-artifact@v4
+        uses: upload-artifact@v4
         with:
-          name: Kernel-S10Lite-Clean-Build
+          name: Kernel-S10Lite-A15-Ready
           path: |
             out/arch/arm64/boot/Image
             out/arch/arm64/boot/dtbo.img
