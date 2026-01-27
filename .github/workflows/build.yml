@@ -1,4 +1,4 @@
-name: Build S10 Lite Kernel (4.14) Android 15 Ready
+name: Build S10 Lite Kernel (4.14) A15-BPF Backport
 
 on:
   push:
@@ -26,29 +26,46 @@ jobs:
           mkdir -p toolchain
           git clone --depth=1 https://github.com/kdrag0n/proton-clang.git toolchain/proton-clang
 
-      - name: Pre-build Fixes (Samsung & BPF)
+      - name: Backport BPF Headers from Pascua28
         run: |
-          # 1. Rezolvăm eroarea btf.h prin modificarea căii de include
-          find . -name "*.c" -type f | xargs sed -i 's|<uapi/linux/btf.h>|<linux/btf.h>|g' || true
+          # Clonăm doar headerele necesare pentru a repara eroarea btf.h
+          git clone --depth=1 https://github.com/pascua28/android_kernel_samsung_sm8250 -b seventeen tmp_repo
           
-          # 2. Creăm fișierele dummy pentru a evita erorile de stat (perflog.h)
+          # Creăm directoarele dacă nu există
+          mkdir -p include/uapi/linux/
+          mkdir -p include/linux/
+          
+          # Copiem fișierele critice pentru BPF/BTF
+          cp tmp_repo/include/uapi/linux/btf.h include/uapi/linux/btf.h
+          cp tmp_repo/include/linux/btf.h include/linux/btf.h || cp tmp_repo/include/uapi/linux/btf.h include/linux/btf.h
+          
+          # Opțional: Copiem și restul definitiilor BPF pentru a evita erori ulterioare în core.c
+          cp tmp_repo/include/uapi/linux/bpf.h include/uapi/linux/bpf.h
+          cp tmp_repo/include/linux/bpf.h include/linux/bpf.h
+          
+          rm -rf tmp_repo
+          echo "Backport BPF headers completed."
+
+      - name: Pre-build Fixes
+        run: |
+          # 1. Forțăm core.c să găsească btf.h folosind noua locație
+          find . -name "core.c" -path "*/kernel/bpf/*" | xargs sed -i 's|<uapi/linux/btf.h>|<linux/btf.h>|g' || true
+          
+          # 2. Fix pentru log-urile Samsung (perflog.h) - varianta extinsă
           mkdir -p system/core/liblog/include/log
           mkdir -p system/logging/liblog/include/log
+          # Creăm fișierul fizic în toate locațiile posibile căutate de Makefile
           touch system/core/liblog/include/log/perflog.h
           touch system/logging/liblog/include/log/perflog.h
           
-          # 3. Dezactivăm wrapper-ul de GCC al Samsung
+          # 3. Dezactivăm wrapper-ul Samsung și setăm Python
           [ -f scripts/gcc-wrapper.py ] && mv scripts/gcc-wrapper.py scripts/gcc-wrapper.py.disabled || true
-          
-          # 4. Setăm Python2 ca implicit (multe scripturi 4.14 au nevoie de el)
           sudo ln -sf /usr/bin/python2 /usr/bin/python
 
       - name: Build Kernel
         run: |
           export PATH=$(pwd)/toolchain/proton-clang/bin:$PATH
           
-          # Definim argumentele globale de build
-          # Adăugăm TECHPACK=true pentru driverele Qualcomm
           MAKE_ARGS="
             O=out \
             ARCH=arm64 \
@@ -70,30 +87,27 @@ jobs:
           "
 
           mkdir -p out
-
-          # Pasul A: Generăm defconfig-ul (folosește r5q_eur_open_defconfig conform log-ului tău)
           make $MAKE_ARGS r5q_eur_open_defconfig
 
-          # Pasul B: Injectăm setările BPF necesare pentru Android 15
+          # Injectăm configurările pentru eBPF modern (Android 15)
           ./scripts/config --file out/.config --enable CONFIG_BPF_SYSCALL
           ./scripts/config --file out/.config --enable CONFIG_BPF_JIT
           ./scripts/config --file out/.config --enable CONFIG_HAVE_EBPF_JIT
           ./scripts/config --file out/.config --enable CONFIG_NET_CLS_BPF
           ./scripts/config --file out/.config --enable CONFIG_NET_ACT_BPF
-          ./scripts/config --file out/.config --enable CONFIG_CGROUP_BPF
-          ./scripts/config --file out/.config --disable CONFIG_ANDROID_PARANOID_NETWORK
+          ./scripts/config --file out/.config --enable CONFIG_BPF_EVENTS
+          ./scripts/config --file out/.config --enable CONFIG_DEBUG_INFO_BTF
 
-          # Pasul C: FIX PENTRU RESTART CONFIG (olddefconfig)
-          # Această comandă acceptă automat toate opțiunile noi și previne eroarea 'aborted!'
+          # Rezolvăm conflictele de configurare automat
           make $MAKE_ARGS olddefconfig
 
-          # Pasul D: Compilarea efectivă
+          # Compilarea principală
           make -j$(nproc --all) $MAKE_ARGS
 
-      - name: Upload Kernel Image
+      - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-S10Lite-A15-Ready
+          name: Kernel-S10Lite-Backported
           path: |
             out/arch/arm64/boot/Image
             out/arch/arm64/boot/dtbo.img
