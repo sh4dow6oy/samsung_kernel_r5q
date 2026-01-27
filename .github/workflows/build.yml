@@ -1,4 +1,4 @@
-name: Build Samsung Kernel r5q (Clang)
+name: Build Samsung Kernel r5q (Proton Clang)
 
 on:
   push:
@@ -11,14 +11,6 @@ jobs:
     runs-on: ubuntu-24.04
 
     steps:
-      - name: Install tar + enable universe repo
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y software-properties-common
-          sudo add-apt-repository universe
-          sudo apt-get update
-          sudo apt-get install -y tar
-
       - name: Checkout
         uses: actions/checkout@v4
 
@@ -27,39 +19,63 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             bc bison flex libssl-dev libelf-dev dwarves \
-            libncurses-dev git wget unzip make \
-            python3 python3-distutils
+            libncurses-dev git wget unzip make python3 \
+            python3-minimal lz4 xz-utils
 
-      - name: Download Android NDK
+      - name: Download Proton Clang
         run: |
           mkdir -p toolchain
-          cd toolchain
-          wget https://dl.google.com/android/repository/android-ndk-r25b-linux.zip -O ndk.zip
-          unzip ndk.zip -d ndk
-          rm ndk.zip
+          git clone --depth=1 https://github.com/kdrag0n/proton-clang.git toolchain/proton-clang
 
       - name: Disable gcc-wrapper
         run: |
-          mv scripts/gcc-wrapper.py scripts/gcc-wrapper.py.disabled || true
+          # Samsung forțează adesea utilizarea GCC prin acest script; îl redenumim pentru a-l ignora
+          [ -f scripts/gcc-wrapper.py ] && mv scripts/gcc-wrapper.py scripts/gcc-wrapper.py.disabled || true
 
-      - name: Make defconfig
+      - name: Build Kernel
         run: |
-          make O=out ARCH=arm64 r5q_eur_open_defconfig
-
-      - name: Build kernel
-        env:
-          PATH: ${{ github.workspace }}/toolchain/ndk/toolchains/llvm/prebuilt/linux-x86_64/bin:${{ env.PATH }}
-        run: |
-          make -j$(nproc) O=out ARCH=arm64 LLVM=1 \
-            CC=clang LD=ld.lld \
+          # Setări variabile de mediu
+          export PATH=$(pwd)/toolchain/proton-clang/bin:$PATH
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export HEADER_ARCH=arm64
+          
+          # Parametrii pentru compilare
+          MAKE_ARGS="
+            O=out \
+            ARCH=arm64 \
+            CC=clang \
+            LD=ld.lld \
+            AR=llvm-ar \
+            NM=llvm-nm \
+            OBJCOPY=llvm-objcopy \
+            OBJDUMP=llvm-objdump \
+            STRIP=llvm-strip \
             CROSS_COMPILE=aarch64-linux-gnu- \
-            CLANG_TRIPLE=aarch64-linux-gnu-
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            LLVM=1 \
+            LLVM_IAS=1
+          "
+          
+          # 1. Creare director out
+          mkdir -p out
+          
+          # 2. Generare defconfig
+          make $MAKE_ARGS r5q_eur_open_defconfig
+          
+          # 3. Compilare (folosim toți nucleii disponibili)
+          make -j$(nproc --all) $MAKE_ARGS
 
-      - name: Upload artifacts
+      - name: Upload Image
         uses: actions/upload-artifact@v4
         with:
-          name: kernel-artifacts
+          name: Image-r5q
+          path: out/arch/arm64/boot/Image
+
+      - name: Upload DTBs & Modules
+        uses: actions/upload-artifact@v4
+        with:
+          name: dtbs-and-modules
           path: |
-            out/arch/arm64/boot/Image
-            out/arch/arm64/boot/dts/*.dtb
+            out/arch/arm64/boot/dts/vendor/*.dtb
             out/vmlinux
