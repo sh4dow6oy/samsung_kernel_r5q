@@ -1,4 +1,4 @@
-name: S10 Lite Kernel - Clean Build - 4.19 Backport for A15
+name: S10 Lite Kernel - 4.19 Sparse Backport
 
 on:
   push:
@@ -13,15 +13,12 @@ jobs:
       - name: Checkout Source
         uses: actions/checkout@v4
         with:
-          clean: true
+          fetch-depth: 0
 
       - name: Install Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            bc bison flex libssl-dev libelf-dev dwarves \
-            libncurses-dev git wget unzip make python2 \
-            python3 python3-minimal lz4 xz-utils gcc g++ pahole
+          sudo apt-get install -y bc bison flex libssl-dev libelf-dev dwarves libncurses-dev git wget make python2 python3 pahole
 
       - name: Cache Proton Clang
         id: cache-toolchain
@@ -30,94 +27,33 @@ jobs:
           path: toolchain/proton-clang
           key: ${{ runner.os }}-proton-clang-v1
 
-      - name: Download Proton Clang (if not cached)
+      - name: Download Proton Clang
         if: steps.cache-toolchain.outputs.cache-hit != 'true'
         run: |
-          mkdir -p toolchain
           git clone --depth=1 https://github.com/kdrag0n/proton-clang.git toolchain/proton-clang
 
-      - name: Backport from Android 4.19 (eBPF & Binder)
+      - name: Backport 4.19 Components
         run: |
-          # Aceasta metoda trage doar codul modern necesar pentru Android 15
-          # Fara sa distruga driverele Samsung de pe 4.14
-          
-          mkdir -p backport_temp
-          cd backport_temp
-          
-          # Descarcam modulele de networking si binder din kernelul Android 4.19
-          wget https://android.googlesource.com/kernel/common/+archive/refs/heads/android-4.19-stable/kernel/bpf.tar.gz
-          wget https://android.googlesource.com/kernel/common/+archive/refs/heads/android-4.19-stable/drivers/android.tar.gz
-          wget https://android.googlesource.com/kernel/common/+archive/refs/heads/android-4.19-stable/include/uapi/linux.tar.gz -O uapi.tar.gz
-          
-          cd ..
-          # Curatam folderele vechi si aplicam codul de 4.19
-          rm -rf kernel/bpf/*
-          tar -xzf backport_temp/bpf.tar.gz -C kernel/bpf/
-          
-          # Actualizam Binder-ul (Android 15 il cere pe cel nou)
-          rm -rf drivers/android/*
-          tar -xzf backport_temp/android.tar.gz -C drivers/android/
-          
-          # Actualizam headerele critice pentru BTF/BPF
-          mkdir -p uapi_temp
-          tar -xzf backport_temp/uapi.tar.gz -C uapi_temp/
-          cp uapi_temp/bpf.h include/uapi/linux/
-          cp uapi_temp/btf.h include/uapi/linux/
-          cp uapi_temp/types.h include/uapi/linux/
-          
-          echo "Backport de componente 4.19 pe baza 4.14 finalizat."
+          git remote add android https://android.googlesource.com/kernel/common
+          git fetch android android-4.19-stable --depth=1
+          git checkout android/android-4.19-stable -- kernel/bpf/ drivers/android/ include/uapi/linux/bpf.h include/uapi/linux/btf.h include/linux/bpf.h arch/arm64/net/
 
       - name: Pre-build Fixes
         run: |
-          # Fix pentru __poll_t (4.19 il foloseste masiv)
           grep -q "__poll_t" include/uapi/linux/types.h || echo "typedef unsigned int __poll_t;" >> include/uapi/linux/types.h
-          
-          # Fix log-uri Samsung
           mkdir -p system/core/liblog/include/log system/logging/liblog/include/log
           touch system/core/liblog/include/log/perflog.h system/logging/liblog/include/log/perflog.h
-          
-          # Aliniere headere
           find kernel/bpf/ -name "*.c" | xargs sed -i 's|<uapi/linux/btf.h>|<linux/btf.h>|g' || true
-          
-          # Setup Python
           [ -f scripts/gcc-wrapper.py ] && mv scripts/gcc-wrapper.py scripts/gcc-wrapper.py.disabled || true
           sudo ln -sf /usr/bin/python2 /usr/bin/python
 
       - name: Build Kernel
         run: |
           export PATH=$(pwd)/toolchain/proton-clang/bin:$PATH
-          
-          MAKE_ARGS="
-            O=out \
-            ARCH=arm64 \
-            CC=clang \
-            HOSTCC=gcc \
-            HOSTCXX=g++ \
-            LD=ld.lld \
-            AR=llvm-ar \
-            NM=llvm-nm \
-            OBJCOPY=llvm-objcopy \
-            OBJDUMP=llvm-objdump \
-            STRIP=llvm-strip \
-            CROSS_COMPILE=aarch64-linux-gnu- \
-            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-            LLVM=1 \
-            LLVM_IAS=1 \
-            KCFLAGS=-Wno-error \
-            TECHPACK=true
-          "
-
+          MAKE_ARGS="O=out ARCH=arm64 CC=clang HOSTCC=gcc HOSTCXX=g++ LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1 KCFLAGS=-Wno-error TECHPACK=true"
           rm -rf out && mkdir -p out
           make $MAKE_ARGS r5q_eur_open_defconfig
-          
-          # Configurații Android 15 (Forțate pentru compatibilitate 4.19-like)
-          ./scripts/config --file out/.config --enable CONFIG_BPF_SYSCALL
-          ./scripts/config --file out/.config --enable CONFIG_BPF_JIT
-          ./scripts/config --file out/.config --enable CONFIG_HAVE_EBPF_JIT
-          ./scripts/config --file out/.config --enable CONFIG_ANDROID_BINDERFS
-          ./scripts/config --file out/.config --enable CONFIG_ANDROID_BINDER_IPC
-          ./scripts/config --file out/.config --disable CONFIG_DEBUG_INFO_BTF
-          
+          ./scripts/config --file out/.config --enable CONFIG_BPF_SYSCALL --enable CONFIG_BPF_JIT --enable CONFIG_HAVE_EBPF_JIT --enable CONFIG_ANDROID_BINDERFS --enable CONFIG_ANDROID_BINDER_IPC --disable CONFIG_DEBUG_INFO_BTF
           make $MAKE_ARGS olddefconfig
           make -j$(nproc --all) $MAKE_ARGS
 
@@ -125,7 +61,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: Kernel-S10Lite-4.19-Backport
-          path: |
-            out/arch/arm64/boot/Image
-            out/arch/arm64/boot/dtbo.img
-            out/arch/arm64/boot/dts/vendor/qcom/*.dtb
+          path: out/arch/arm64/boot/Image
