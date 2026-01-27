@@ -15,7 +15,7 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Install dependencies
+      - name: Install build dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -31,16 +31,30 @@ jobs:
             python3 \
             wget
 
-      - name: Install python2 (Debian package)
+      - name: Install python2 (Debian package + deps)
         run: |
           mkdir -p /tmp/python2
           cd /tmp/python2
 
+          # Dependencies
+          wget http://ftp.debian.org/debian/pool/main/o/openssl1.1/libssl1.1_1.1.1n-0+deb11u4_amd64.deb
+          wget http://ftp.debian.org/debian/pool/main/libf/libffi/libffi7_3.3-6_amd64.deb
+          wget http://ftp.debian.org/debian/pool/main/n/nsl/libnsl2_2.0.0-2_amd64.deb
+          wget http://ftp.debian.org/debian/pool/main/m/mime-support/mime-support_3.68_all.deb
+
+          # Python2 packages
           wget http://ftp.debian.org/debian/pool/main/p/python2.7/python2.7_2.7.18-8+deb11u1_amd64.deb
           wget http://ftp.debian.org/debian/pool/main/p/python2.7/python2.7-minimal_2.7.18-8+deb11u1_amd64.deb
           wget http://ftp.debian.org/debian/pool/main/p/python2.7/libpython2.7-stdlib_2.7.18-8+deb11u1_amd64.deb
           wget http://ftp.debian.org/debian/pool/main/p/python2.7/libpython2.7-minimal_2.7.18-8+deb11u1_amd64.deb
 
+          # Install dependencies
+          sudo dpkg -i libssl1.1_1.1.1n-0+deb11u4_amd64.deb
+          sudo dpkg -i libffi7_3.3-6_amd64.deb
+          sudo dpkg -i libnsl2_2.0.0-2_amd64.deb
+          sudo dpkg -i mime-support_3.68_all.deb
+
+          # Install Python2
           sudo dpkg -i libpython2.7-minimal_2.7.18-8+deb11u1_amd64.deb
           sudo dpkg -i python2.7-minimal_2.7.18-8+deb11u1_amd64.deb
           sudo dpkg -i libpython2.7-stdlib_2.7.18-8+deb11u1_amd64.deb
