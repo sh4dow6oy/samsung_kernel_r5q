@@ -8,7 +8,7 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-22.04 # Compatibilitate maximă pentru toolchain-uri vechi
 
     steps:
       - name: Checkout
@@ -20,7 +20,7 @@ jobs:
           sudo apt-get install -y \
             bc bison flex libssl-dev libelf-dev dwarves \
             libncurses-dev git wget unzip make python3 \
-            python3-minimal lz4 xz-utils
+            python3-minimal lz4 xz-utils gcc g++
 
       - name: Download Proton Clang
         run: |
@@ -29,22 +29,19 @@ jobs:
 
       - name: Disable gcc-wrapper
         run: |
-          # Samsung forțează adesea utilizarea GCC prin acest script; îl redenumim pentru a-l ignora
           [ -f scripts/gcc-wrapper.py ] && mv scripts/gcc-wrapper.py scripts/gcc-wrapper.py.disabled || true
 
       - name: Build Kernel
         run: |
-          # Setări variabile de mediu
           export PATH=$(pwd)/toolchain/proton-clang/bin:$PATH
-          export ARCH=arm64
-          export SUBARCH=arm64
-          export HEADER_ARCH=arm64
           
-          # Parametrii pentru compilare
+          # Argumente optimizate pentru a evita conflictele de linker
           MAKE_ARGS="
             O=out \
             ARCH=arm64 \
             CC=clang \
+            HOSTCC=gcc \
+            HOSTCXX=g++ \
             LD=ld.lld \
             AR=llvm-ar \
             NM=llvm-nm \
@@ -57,25 +54,6 @@ jobs:
             LLVM_IAS=1
           "
           
-          # 1. Creare director out
           mkdir -p out
-          
-          # 2. Generare defconfig
           make $MAKE_ARGS r5q_eur_open_defconfig
-          
-          # 3. Compilare (folosim toți nucleii disponibili)
           make -j$(nproc --all) $MAKE_ARGS
-
-      - name: Upload Image
-        uses: actions/upload-artifact@v4
-        with:
-          name: Image-r5q
-          path: out/arch/arm64/boot/Image
-
-      - name: Upload DTBs & Modules
-        uses: actions/upload-artifact@v4
-        with:
-          name: dtbs-and-modules
-          path: |
-            out/arch/arm64/boot/dts/vendor/*.dtb
-            out/vmlinux
