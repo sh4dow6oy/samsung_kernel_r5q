@@ -2,19 +2,18 @@ name: Build Samsung Kernel r5q (Proton Clang)
 
 on:
   push:
-    branches:
-      - main
+    branches: [ main ]
   workflow_dispatch:
 
 jobs:
   build:
-    runs-on: ubuntu-22.04 # Compatibilitate maximă pentru toolchain-uri vechi
+    runs-on: ubuntu-22.04 # Folosim 22.04 pentru compatibilitate cu Proton Clang
 
     steps:
-      - name: Checkout
+      - name: Checkout Source
         uses: actions/checkout@v4
 
-      - name: Install dependencies
+      - name: Install Dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -27,15 +26,27 @@ jobs:
           mkdir -p toolchain
           git clone --depth=1 https://github.com/kdrag0n/proton-clang.git toolchain/proton-clang
 
-      - name: Disable gcc-wrapper
+      - name: Pre-build Fixes (Samsung & BPF)
         run: |
+          # 1. Fix pentru eroarea btf.h (BPF)
+          # Schimbăm calea de include pentru a fi compatibilă cu Clang
+          find . -name "*.c" -type f | xargs sed -i 's|<uapi/linux/btf.h>|<linux/btf.h>|g' || true
+          
+          # 2. Creare fișiere dummy pentru erorile de log Samsung
+          # Kernel-ul tău caută fișiere în afara folderului curent, le creăm local să nu dea eroare
+          mkdir -p system/core/liblog/include/log
+          mkdir -p system/logging/liblog/include/log
+          touch system/core/liblog/include/log/perflog.h
+          touch system/logging/liblog/include/log/perflog.h
+          
+          # 3. Dezactivăm gcc-wrapper-ul Samsung
           [ -f scripts/gcc-wrapper.py ] && mv scripts/gcc-wrapper.py scripts/gcc-wrapper.py.disabled || true
 
       - name: Build Kernel
         run: |
           export PATH=$(pwd)/toolchain/proton-clang/bin:$PATH
           
-          # Argumente optimizate pentru a evita conflictele de linker
+          # Argumente de compilare
           MAKE_ARGS="
             O=out \
             ARCH=arm64 \
@@ -51,9 +62,31 @@ jobs:
             CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             LLVM=1 \
-            LLVM_IAS=1
+            LLVM_IAS=1 \
+            KCFLAGS=-Wno-error
           "
-          
-          mkdir -p out
+
+          # Pasul 1: Generare Configurație
           make $MAKE_ARGS r5q_eur_open_defconfig
+
+          # Pasul 2: Activare BPF (Apropiat de 5.1)
+          # Activăm manual opțiunile necesare în fișierul .config
+          ./scripts/config --file out/.config --enable CONFIG_BPF_SYSCALL
+          ./scripts/config --file out/.config --enable CONFIG_BPF_JIT
+          ./scripts/config --file out/.config --enable CONFIG_HAVE_EBPF_JIT
+          ./scripts/config --file out/.config --enable CONFIG_BPF_EVENTS
+          
+          # Pasul 3: Compilarea efectivă
           make -j$(nproc --all) $MAKE_ARGS
+
+      - name: Upload Kernel Image
+        uses: actions/upload-artifact@v4
+        with:
+          name: Kernel-r5q-Image
+          path: out/arch/arm64/boot/Image
+
+      - name: Upload DTBs
+        uses: actions/upload-artifact@v4
+        with:
+          name: Kernel-r5q-DTBs
+          path: out/arch/arm64/boot/dts/vendor/*.dtb
