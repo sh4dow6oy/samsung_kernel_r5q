@@ -41,6 +41,10 @@ jobs:
         run: |
           NDK_URL="https://dl.google.com/android/repository/android-ndk-r25b-linux.zip"
           wget -O ndk.zip "$NDK_URL"
+
+          # Create directory first
+          mkdir -p "$PWD/toolchain/ndk"
+
           unzip ndk.zip -d "$PWD/toolchain/ndk"
 
           export NDK_PATH="$PWD/toolchain/ndk/android-ndk-r25b"
