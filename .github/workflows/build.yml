@@ -1,4 +1,4 @@
-name: S10 Lite - Pascua Hybrid (Access Fix v2)
+name: S10 Lite - Pascua Hybrid (Final Tracepoint Fix)
 
 on:
   push:
@@ -26,26 +26,23 @@ jobs:
           PATHS=("kernel/bpf/" "include/linux/bpf.h" "include/linux/filter.h" "include/uapi/linux/bpf.h" "include/uapi/linux/btf.h" "include/linux/btf.h" "include/linux/bpf-cgroup.h")
           for path in "${PATHS[@]}"; do git checkout FETCH_HEAD -- "$path" || echo "Skip: $path"; done
 
-      - name: Integration Patches (Hard Patching)
+      - name: Integration Patches (Hard Fixes)
         run: |
-          # 1. Rezolvare access_ok prin redenumire directă în sursă
-          # În loc de macro global, injectăm o definiție locală unică după include-uri
-          # și schimbăm apelurile în syscall.c
+          # 1. Fix access_ok (redenumire și injectare după include-uri)
           sed -i 's/access_ok(uaddr, actual_size)/__access_ok_bpf(uaddr, actual_size)/g' kernel/bpf/syscall.c
           sed -i 's/access_ok(uattr, size)/__access_ok_bpf(uattr, size)/g' kernel/bpf/syscall.c
-          
-          # Injectăm definiția funcției __access_ok_bpf imediat după include-uri
           sed -i '/#include <linux\/uaccess.h>/a #define __access_ok_bpf(addr, size) __range_ok((unsigned long)(addr), size)' kernel/bpf/syscall.c
 
-          # 2. Neutralizare PERF & Tracepoints (Pascua Bypass)
-          sed -i 's/perf_event_bpf_event/(void)/g' kernel/bpf/syscall.c
-          sed -i 's/PERF_BPF_EVENT_PROG_LOAD/0/g' kernel/bpf/syscall.c
-          sed -i 's/PERF_BPF_EVENT_PROG_UNLOAD/0/g' kernel/bpf/syscall.c
+          # 2. Neutralizare brută a întregului bloc de Raw Tracepoint (Liniile 2640-2660 aprox)
+          # Aceasta elimină eroarea "incomplete definition of type 'struct bpf_raw_event_map'"
+          sed -i 's/btp->tp->name/""/g' kernel/bpf/syscall.c
+          sed -i '/perf_event_bpf_event/d' kernel/bpf/syscall.c
           
-          # Fix bpf_get_raw_tracepoint (care returnează int în 4.14 sau lipsește)
-          sed -i 's/btp = bpf_get_raw_tracepoint(tp_name);/btp = NULL; \/\/ /g' kernel/bpf/syscall.c
+          # Fix pentru asignările perf care dau warning-uri/erori de tip int-to-pointer
+          sed -i 's/event = perf_get_event(file);/event = (void *)ERR_PTR(-EINVAL);/g' kernel/bpf/syscall.c
+          sed -i 's/btp = bpf_get_raw_tracepoint(tp_name);/btp = (void *)ERR_PTR(-EINVAL);/g' kernel/bpf/syscall.c
 
-          # 3. Cgroup fix (2 args)
+          # 3. Cgroup fix & Stubs
           if [ -f kernel/cgroup/cgroup.c ]; then
             sed -i 's/cgroup_bpf_inherit(root_cgrp)/cgroup_bpf_inherit(root_cgrp, NULL)/g' kernel/cgroup/cgroup.c
             sed -i 's/cgroup_bpf_inherit(cgrp)/cgroup_bpf_inherit(cgrp, NULL)/g' kernel/cgroup/cgroup.c
@@ -60,7 +57,8 @@ jobs:
         run: |
           export PATH=$(pwd)/toolchain/proton-clang/bin:$PATH
           MAKE_ARGS="O=out ARCH=arm64 CC=clang HOSTCC=gcc HOSTCFLAGS='-Wno-deprecated-declarations' CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1"
-          export KCFLAGS="-Wno-error -Wno-incompatible-pointer-types -Wno-implicit-function-declaration -Wno-return-type"
+          # Adăugăm flags pentru a ignora pointer conversions (necesar pentru shim-ul de perf)
+          export KCFLAGS="-Wno-error -Wno-incompatible-pointer-types -Wno-int-conversion -Wno-implicit-function-declaration -Wno-return-type"
 
           make $MAKE_ARGS r5q_eur_open_defconfig
           
@@ -77,6 +75,6 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-A15-Hybrid-v5
+          name: S10Lite-A15-Hybrid-v6
           path: out/arch/arm64/boot/Image.gz-dtb
           
