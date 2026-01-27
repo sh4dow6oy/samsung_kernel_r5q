@@ -28,7 +28,25 @@ jobs:
             curl \
             unzip \
             git \
-            python3
+            python3 \
+            wget
+
+      - name: Install python2 (Debian package)
+        run: |
+          mkdir -p /tmp/python2
+          cd /tmp/python2
+
+          wget http://ftp.debian.org/debian/pool/main/p/python2.7/python2.7_2.7.18-8+deb11u1_amd64.deb
+          wget http://ftp.debian.org/debian/pool/main/p/python2.7/python2.7-minimal_2.7.18-8+deb11u1_amd64.deb
+          wget http://ftp.debian.org/debian/pool/main/p/python2.7/libpython2.7-stdlib_2.7.18-8+deb11u1_amd64.deb
+          wget http://ftp.debian.org/debian/pool/main/p/python2.7/libpython2.7-minimal_2.7.18-8+deb11u1_amd64.deb
+
+          sudo dpkg -i libpython2.7-minimal_2.7.18-8+deb11u1_amd64.deb
+          sudo dpkg -i python2.7-minimal_2.7.18-8+deb11u1_amd64.deb
+          sudo dpkg -i libpython2.7-stdlib_2.7.18-8+deb11u1_amd64.deb
+          sudo dpkg -i python2.7_2.7.18-8+deb11u1_amd64.deb
+
+          sudo ln -sf /usr/bin/python2.7 /usr/bin/python2
 
       - name: Download Android NDK r25b
         run: |
@@ -48,9 +66,14 @@ jobs:
           echo "ARCH=arm64" >> $GITHUB_ENV
           echo "LLVM=1" >> $GITHUB_ENV
           echo "CLANG_TRIPLE=aarch64-linux-android" >> $GITHUB_ENV
-          echo "CROSS_COMPILE=aarch64-linux-android-" >> $GITHUB_ENV
+          echo "CROSS_COMPILE=" >> $GITHUB_ENV
           echo "CC=aarch64-linux-android21-clang" >> $GITHUB_ENV
           echo "LD=ld.lld" >> $GITHUB_ENV
+          echo "AR=llvm-ar" >> $GITHUB_ENV
+          echo "NM=llvm-nm" >> $GITHUB_ENV
+          echo "OBJCOPY=llvm-objcopy" >> $GITHUB_ENV
+          echo "OBJDUMP=llvm-objdump" >> $GITHUB_ENV
+          echo "STRIP=llvm-strip" >> $GITHUB_ENV
 
       - name: Configure kernel
         run: |
@@ -67,4 +90,3 @@ jobs:
           path: |
             arch/arm64/boot/Image
             arch/arm64/boot/dts/*
-            *.ko
