@@ -1,4 +1,4 @@
-name: S10 Lite Kernel - 4.19 Hybrid Backport
+name: S10 Lite Kernel - 4.19 Hybrid - GitHub Mirror
 
 on:
   push:
@@ -14,15 +14,11 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          clean: true
 
       - name: Install Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            bc bison flex libssl-dev libelf-dev dwarves \
-            libncurses-dev git wget unzip make python2 \
-            python3 python3-minimal lz4 xz-utils gcc g++ pahole
+          sudo apt-get install -y bc bison flex libssl-dev libelf-dev dwarves libncurses-dev git wget make python2 python3 pahole
 
       - name: Cache Proton Clang
         id: cache-toolchain
@@ -31,84 +27,33 @@ jobs:
           path: toolchain/proton-clang
           key: ${{ runner.os }}-proton-clang-v1
 
-      - name: Download Proton Clang (if not cached)
+      - name: Download Proton Clang
         if: steps.cache-toolchain.outputs.cache-hit != 'true'
         run: |
-          mkdir -p toolchain
           git clone --depth=1 https://github.com/kdrag0n/proton-clang.git toolchain/proton-clang
 
-      - name: Backport 4.19 Components (BPF & Binder)
+      - name: Backport 4.19 Components
         run: |
-          git config --global user.email "action@github.com"
-          git config --global user.name "GitHub Action"
-          
-          # Adăugăm sursa Google Android Common
-          git remote add android https://android.googlesource.com/kernel/common || true
-          
-          # Fetch la ramura stabilă 4.19 folosind referința absolută
-          git fetch android refs/heads/android-4.19-stable --depth=1
-          
-          # Suprascriem subsystemele vechi cu cele noi de 4.19 (Android 15 Ready)
-          git checkout FETCH_HEAD -- kernel/bpf/
-          git checkout FETCH_HEAD -- drivers/android/
-          git checkout FETCH_HEAD -- include/uapi/linux/bpf.h
-          git checkout FETCH_HEAD -- include/uapi/linux/btf.h
-          git checkout FETCH_HEAD -- include/linux/bpf.h
-          git checkout FETCH_HEAD -- arch/arm64/net/
-          
-          echo "Componentele 4.19 au fost injectate peste baza 4.14."
+          git remote add android https://github.com/aosp-mirror/kernel_common.git || true
+          git fetch android android-4.19-stable --depth=1
+          git checkout FETCH_HEAD -- kernel/bpf/ drivers/android/ include/uapi/linux/bpf.h include/uapi/linux/btf.h include/linux/bpf.h arch/arm64/net/
 
       - name: Pre-build Fixes
         run: |
-          # 1. Injectăm __poll_t (vital pentru noul bpf/syscall.c din 4.19)
           grep -q "__poll_t" include/uapi/linux/types.h || echo "typedef unsigned int __poll_t;" >> include/uapi/linux/types.h
-          
-          # 2. Fix-uri pentru log-urile Samsung (previn erori de header lipsă)
           mkdir -p system/core/liblog/include/log system/logging/liblog/include/log
           touch system/core/liblog/include/log/perflog.h system/logging/liblog/include/log/perflog.h
-          
-          # 3. Ajustăm path-urile pentru BTF (Backport Fix)
           find kernel/bpf/ -name "*.c" | xargs sed -i 's|<uapi/linux/btf.h>|<linux/btf.h>|g' || true
-          
-          # 4. Setup mediu compilare (Python 2 fix)
           [ -f scripts/gcc-wrapper.py ] && mv scripts/gcc-wrapper.py scripts/gcc-wrapper.py.disabled || true
           sudo ln -sf /usr/bin/python2 /usr/bin/python
 
       - name: Build Kernel
         run: |
           export PATH=$(pwd)/toolchain/proton-clang/bin:$PATH
-          
-          MAKE_ARGS="
-            O=out \
-            ARCH=arm64 \
-            CC=clang \
-            HOSTCC=gcc \
-            HOSTCXX=g++ \
-            LD=ld.lld \
-            AR=llvm-ar \
-            NM=llvm-nm \
-            OBJCOPY=llvm-objcopy \
-            OBJDUMP=llvm-objdump \
-            STRIP=llvm-strip \
-            CROSS_COMPILE=aarch64-linux-gnu- \
-            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-            LLVM=1 \
-            LLVM_IAS=1 \
-            KCFLAGS=-Wno-error \
-            TECHPACK=true
-          "
-
+          MAKE_ARGS="O=out ARCH=arm64 CC=clang HOSTCC=gcc HOSTCXX=g++ LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1 KCFLAGS=-Wno-error TECHPACK=true"
           rm -rf out && mkdir -p out
           make $MAKE_ARGS r5q_eur_open_defconfig
-          
-          # Activăm suportul pentru Android 15 și Binder modern
-          ./scripts/config --file out/.config --enable CONFIG_BPF_SYSCALL
-          ./scripts/config --file out/.config --enable CONFIG_BPF_JIT
-          ./scripts/config --file out/.config --enable CONFIG_HAVE_EBPF_JIT
-          ./scripts/config --file out/.config --enable CONFIG_ANDROID_BINDERFS
-          ./scripts/config --file out/.config --enable CONFIG_ANDROID_BINDER_IPC
-          ./scripts/config --file out/.config --disable CONFIG_DEBUG_INFO_BTF
-          
+          ./scripts/config --file out/.config --enable CONFIG_BPF_SYSCALL --enable CONFIG_BPF_JIT --enable CONFIG_HAVE_EBPF_JIT --enable CONFIG_ANDROID_BINDERFS --enable CONFIG_ANDROID_BINDER_IPC --disable CONFIG_DEBUG_INFO_BTF
           make $MAKE_ARGS olddefconfig
           make -j$(nproc --all) $MAKE_ARGS
 
@@ -119,4 +64,3 @@ jobs:
           path: |
             out/arch/arm64/boot/Image
             out/arch/arm64/boot/dtbo.img
-            out/arch/arm64/boot/dts/vendor/qcom/*.dtb
