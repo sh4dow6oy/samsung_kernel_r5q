@@ -1,4 +1,4 @@
-name: S10 Lite Kernel - Android 15 Hybrid (Final Fixes)
+name: S10 Lite Kernel - Android 15 Hybrid (Cgroup Void Fix)
 
 on:
   push:
@@ -39,15 +39,17 @@ jobs:
           PATHS=("kernel/bpf/" "drivers/android/" "include/linux/bpf.h" "include/linux/filter.h" "include/linux/bpf_verifier.h" "include/linux/bpf-cgroup.h" "include/uapi/linux/bpf.h" "include/uapi/linux/bpf_common.h" "include/uapi/linux/filter.h" "arch/arm64/net/")
           for path in "${PATHS[@]}"; do git checkout FETCH_HEAD -- "$path" || echo "Skip: $path"; done
 
-      - name: Pre-build Fixes (Cgroup, SELinux & BPF)
+      - name: Pre-build Fixes (Void Cgroup & BPF)
         run: |
-          # 1. Fix Cgroup Argument Mismatch (Rezolvă eroarea actuală)
+          # 1. Fix Cgroup Argument & Return Mismatch (Rezolvă eroarea 'void' to 'int')
           if [ -f kernel/cgroup/cgroup.c ]; then
-            # Căutăm orice apel al funcției cgroup_bpf_inherit cu un singur argument și adăugăm NULL
-            sed -i 's/cgroup_bpf_inherit(\([^,)]*\))/cgroup_bpf_inherit(\1, NULL)/g' kernel/cgroup/cgroup.c
+            # Ștergem "ret =" și adăugăm argumentul NULL cerut de backport
+            sed -i 's/ret = cgroup_bpf_inherit(\([^,)]*\))/cgroup_bpf_inherit(\1, NULL)/g' kernel/cgroup/cgroup.c
+            # În unele locuri s-ar putea să fie apelată direct fără 'ret =', reparăm și acolo
+            sed -i 's/cgroup_bpf_inherit(\([^,)]*\))/cgroup_bpf_inherit(\1, NULL)/g' kernel/cgroup/cgroup.c 2>/dev/null | true
           fi
 
-          # 2. Fix SELinux & BPF Structs (Pascua Sixteen Technique)
+          # 2. Fix SELinux & BPF Structs (Pascua Technique)
           sed -i '/struct bpf_prog_aux {/a \	void *security;' include/linux/bpf.h
           if [ -f security/selinux/hooks.c ]; then
             sed -i '/#include "layers.h"/a #include <linux/bpf.h>' security/selinux/hooks.c
@@ -57,14 +59,14 @@ jobs:
             sed -i 's/file->f_op == \&bpf_prog_fops/0/g' security/selinux/hooks.c
           fi
 
-          # 3. Fix bpf_trace.c
+          # 3. Fix bpf_trace.c Tracing
           if [ -f kernel/trace/bpf_trace.c ]; then
             sed -i '1i #include <linux/filter.h>' kernel/trace/bpf_trace.c
             sed -i 's/BPF_PROG_RUN_ARRAY_CHECK([^)]*)/0/g' kernel/trace/bpf_trace.c
             sed -i 's/BPF_PROG_RUN_ARRAY([^)]*)/0/g' kernel/trace/bpf_trace.c
           fi
 
-          # 4. Fix Samsung-specifics & Python
+          # 4. Samsung-specifics & Python 3
           mkdir -p system/core/liblog/include/log
           echo -e "#ifndef _PERFLOG_H\n#define _PERFLOG_H\n#endif" > system/core/liblog/include/log/perflog.h
           sudo ln -sf /usr/bin/python3 /usr/bin/python
@@ -78,7 +80,7 @@ jobs:
           rm -rf out && mkdir -p out
           make $MAKE_ARGS r5q_eur_open_defconfig
           
-          # Force Enable BPF for Android 15
+          # Android 15 essentials
           ./scripts/config --file out/.config --enable CONFIG_BPF_SYSCALL --enable CONFIG_BPF_JIT --enable CONFIG_HAVE_EBPF_JIT --enable CONFIG_ANDROID_BINDERFS --disable CONFIG_SAMSUNG_PRODUCT_SHIP --disable CONFIG_DEFEX --disable CONFIG_CC_STACKPROTECTOR_STRONG
           
           make $MAKE_ARGS olddefconfig
