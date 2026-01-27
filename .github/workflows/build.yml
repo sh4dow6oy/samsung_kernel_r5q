@@ -52,7 +52,7 @@ jobs:
           cd $HOME/python2
 
           # Dependencies
-          wget http://ftp.debian.org/debian/pool/main/o/openssl/libssl1.1_1.1.1n-0+deb11u4_amd64.deb
+          wget https://ftp.debian.org/debian/pool/main/o/openssl/libssl1.1_1.1.1w-0+deb11u1_amd64.deb
           wget http://ftp.debian.org/debian/pool/main/libf/libffi/libffi7_3.3-6_amd64.deb
           wget http://ftp.debian.org/debian/pool/main/libn/libnsl/libnsl2_1.3.0-2_amd64.deb
           wget http://ftp.debian.org/debian/pool/main/m/mime-support/mime-support_3.66_all.deb
