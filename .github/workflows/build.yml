@@ -1,56 +1,75 @@
-name: Build Samsung SM-G770F Custom Kernel
+name: Build Samsung R5Q Kernel
 
 on:
-  workflow_dispatch:
+  push:
+    branches:
+      - master
+  pull_request:
 
 jobs:
   build:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
 
     steps:
-    - name: Checkout kernel source
-      uses: actions/checkout@v3
-      with:
-        submodules: recursive
+      - name: Checkout repo
+        uses: actions/checkout@v4
 
-    - name: Install dependencies
-      run: |
-        sudo apt update
-        sudo apt install -y \
-          bc bison flex libssl-dev make \
-          libelf-dev dwarves \
-          gcc-aarch64-linux-gnu \
-          clang llvm lld \
-          git zip unzip
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y wget bc bison flex libssl-dev libelf-dev python2
 
-    - name: Setup environment
-      run: |
-        echo "ARCH=arm64" >> $GITHUB_ENV
-        echo "SUBARCH=arm64" >> $GITHUB_ENV
-        echo "CC=clang" >> $GITHUB_ENV
-        echo "LLVM=1" >> $GITHUB_ENV
-        echo "LLVM_IAS=1" >> $GITHUB_ENV
-        echo "CROSS_COMPILE=aarch64-linux-gnu-" >> $GITHUB_ENV
+      - name: Setup python2
+        run: |
+          sudo ln -sf /usr/bin/python2 /usr/bin/python
 
-    - name: Clean kernel tree
-      run: make mrproper
+      - name: Setup Clang toolchain
+        run: |
+          TOOLCHAIN_PATH="$PWD/toolchain/clang"
+          mkdir -p "$TOOLCHAIN_PATH"
+          wget -O clang.tar.gz "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/413febb26cbd05d9a1e44f089190ac892f72e684.tar.gz"
+          tar -xf clang.tar.gz -C "$TOOLCHAIN_PATH"
 
-    - name: Load defconfig
-      run: make r5q_eur_open_defconfig
+          # Create expected path for your build system
+          mkdir -p "$PWD/toolchain/llvm-arm-toolchain-ship/10.0/bin"
+          ln -s "$TOOLCHAIN_PATH/clang-r416183b/bin/clang" "$PWD/toolchain/llvm-arm-toolchain-ship/10.0/bin/clang"
 
-    - name: Build kernel
-      run: make -j$(nproc)
+          export PATH="$TOOLCHAIN_PATH/clang-r416183b/bin:$PATH"
+          export CC=clang
 
-    - name: Collect outputs
-      run: |
-        mkdir -p out
-        cp arch/arm64/boot/Image out/
-        if [ -f arch/arm64/boot/dtbo.img ]; then
-          cp arch/arm64/boot/dtbo.img out/
-        fi
+          echo "PATH=$PATH" >> $GITHUB_ENV
+          echo "CC=$CC" >> $GITHUB_ENV
 
-    - name: Upload artifacts
-      uses: actions/upload-artifact@v4
-      with:
-        name: r5q-custom-kernel
-        path: out/*
+      - name: Setup GCC AArch64 toolchain
+        run: |
+          TOOLCHAIN_PATH="$PWD/toolchain/gcc"
+          mkdir -p "$TOOLCHAIN_PATH"
+          wget -O gcc-aarch64.tar.gz "https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/+archive/refs/heads/master.tar.gz"
+          tar -xf gcc-aarch64.tar.gz -C "$TOOLCHAIN_PATH"
+
+          export PATH="$TOOLCHAIN_PATH/aarch64-linux-android-4.9/bin:$PATH"
+          export CROSS_COMPILE=aarch64-linux-android-
+          export LD=aarch64-linux-android-ld
+
+          echo "PATH=$PATH" >> $GITHUB_ENV
+          echo "CROSS_COMPILE=$CROSS_COMPILE" >> $GITHUB_ENV
+          echo "LD=$LD" >> $GITHUB_ENV
+
+      - name: Configure kernel
+        run: |
+          export ARCH=arm64
+          make ARCH=arm64 r5q_eur_open_defconfig
+
+      - name: Build kernel
+        run: |
+          export ARCH=arm64
+          make -j$(nproc) ARCH=arm64
+
+      - name: Package artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-build
+          path: |
+            arch/arm64/boot/Image
+            arch/arm64/boot/dts/*.dtb
+            .config
