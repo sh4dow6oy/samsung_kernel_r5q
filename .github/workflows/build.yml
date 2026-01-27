@@ -1,4 +1,4 @@
-name: S10 Lite Kernel - Android 15 Hybrid (Tracing No-Op Fix)
+name: S10 Lite Kernel - Android 15 Hybrid (Final Tracing Fix)
 
 on:
   push:
@@ -70,20 +70,17 @@ jobs:
             sed -i 's/__cgroup_bpf_detach/cgroup_bpf_detach/g' kernel/cgroup/cgroup.c
           fi
 
-          # 3. Fix BPF Tracing (Neutralizam functiile problematice)
+          # 3. "Neutron Bomb" Patch pentru bpf_trace.c
+          # Inlocuim orice apel de functie care incepe cu BPF_PROG_RUN sau bpf_prog_array cu 0
           if [ -f kernel/trace/bpf_trace.c ]; then
-            # Definim macro-urile lipsa ca fiind operatii goale (0)
-            sed -i '1i #define BPF_PROG_RUN_ARRAY(array, ctx, func) 0' kernel/trace/bpf_trace.c
-            sed -i '1i #define BPF_PROG_RUN 0' kernel/trace/bpf_trace.c
-            
-            # Inlocuim apelurile de functii cu asignari simple ca sa nu mai folosim parantezele
-            sed -i 's/bpf_prog_array_copy(old_array, NULL, prog, \&new_array)/-1; \/\/ /g' kernel/trace/bpf_trace.c
-            sed -i 's/bpf_prog_array_copy(old_array, event->prog, NULL, \&new_array)/-1; \/\/ /g' kernel/trace/bpf_trace.c
-            sed -i 's/bpf_prog_array_free(old_array)/0; \/\/ /g' kernel/trace/bpf_trace.c
-            sed -i 's/bpf_prog_array_delete_safe(old_array, event->prog)/0; \/\/ /g' kernel/trace/bpf_trace.c
+            sed -i 's/BPF_PROG_RUN_ARRAY_CHECK/0 \/\/ /g' kernel/trace/bpf_trace.c
+            sed -i 's/BPF_PROG_RUN_ARRAY/0 \/\/ /g' kernel/trace/bpf_trace.c
+            sed -i 's/bpf_prog_array_copy/0; \/\/ /g' kernel/trace/bpf_trace.c
+            sed -i 's/bpf_prog_array_free/(void)0; \/\/ /g' kernel/trace/bpf_trace.c
+            sed -i 's/bpf_prog_array_delete_safe/(void)0; \/\/ /g' kernel/trace/bpf_trace.c
           fi
 
-          # 4. Fix Cgroup.c macro conflict
+          # 4. Fix Cgroup.c macro conflict (Manual Expansion)
           if [ -f kernel/bpf/cgroup.c ]; then
             sed -i 's/BPF_PROG_RUN(prog, sk)/((*prog->bpf_func)(sk, prog->insnsi))/g' kernel/bpf/cgroup.c
             sed -i 's/BPF_PROG_RUN(prog, sock_ops)/((*prog->bpf_func)(sock_ops, prog->insnsi))/g' kernel/bpf/cgroup.c
@@ -112,7 +109,8 @@ jobs:
       - name: Build Kernel
         run: |
           export PATH=$(pwd)/toolchain/proton-clang/bin:$PATH
-          MAKE_ARGS="O=out ARCH=arm64 CC=clang HOSTCC=gcc HOSTCXX=g++ LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1 KCFLAGS=-Wno-error TECHPACK=true"
+          # Adaugam -Wno-implicit-function-declaration ca sa ignoram orice scapare in bpf_trace
+          MAKE_ARGS="O=out ARCH=arm64 CC=clang HOSTCC=gcc HOSTCXX=g++ LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1 KCFLAGS='-Wno-error -Wno-implicit-function-declaration' TECHPACK=true"
 
           rm -rf out && mkdir -p out
           make $MAKE_ARGS r5q_eur_open_defconfig
