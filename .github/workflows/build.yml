@@ -29,7 +29,7 @@ jobs:
             bc bison flex libssl-dev libelf-dev dwarves \
             libncurses-dev git wget unzip make \
             gcc-11 g++-11 \
-            gcc-aarch64-linux-gnu-11 g++-aarch64-linux-gnu-11 \
+            gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
             binutils-aarch64-linux-gnu \
             python3
 
@@ -37,8 +37,6 @@ jobs:
         run: |
           sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-11 100
           sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-11 100
-          sudo update-alternatives --install /usr/bin/aarch64-linux-gnu-gcc aarch64-linux-gnu-gcc /usr/bin/aarch64-linux-gnu-gcc-11 100
-          sudo update-alternatives --install /usr/bin/aarch64-linux-gnu-g++ aarch64-linux-gnu-g++ /usr/bin/aarch64-linux-gnu-g++-11 100
 
       - name: Disable gcc-wrapper
         run: |
