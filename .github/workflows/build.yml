@@ -10,17 +10,12 @@ jobs:
   build:
     runs-on: ubuntu-24.04
 
-    env:
-      ARCH: arm64
-      KERNEL_DIR: ${{ github.workspace }}
-      OUTPUT_DIR: ${{ github.workspace }}/out
-      DEFCONFIG: r5q_eur_open_defconfig
-      LLVM: 1
-      CLANG_TRIPLE: aarch64-linux-gnu-
-      CROSS_COMPILE: aarch64-linux-gnu-
-      PATH: ${{ github.workspace }}/toolchain/ndk/toolchains/llvm/prebuilt/linux-x86_64/bin:${PATH}
-
     steps:
+      - name: Install tar (required for checkout)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y tar
+
       - name: Checkout
         uses: actions/checkout@v4
 
@@ -42,21 +37,20 @@ jobs:
 
       - name: Disable gcc-wrapper
         run: |
-          cd $KERNEL_DIR
           mv scripts/gcc-wrapper.py scripts/gcc-wrapper.py.disabled || true
 
       - name: Make defconfig
         run: |
-          cd $KERNEL_DIR
-          make O=$OUTPUT_DIR ARCH=$ARCH $DEFCONFIG
+          make O=out ARCH=arm64 r5q_eur_open_defconfig
 
       - name: Build kernel
+        env:
+          PATH: ${{ github.workspace }}/toolchain/ndk/toolchains/llvm/prebuilt/linux-x86_64/bin:${{ env.PATH }}
         run: |
-          cd $KERNEL_DIR
-          make -j$(nproc) O=$OUTPUT_DIR ARCH=$ARCH LLVM=1 \
+          make -j$(nproc) O=out ARCH=arm64 LLVM=1 \
             CC=clang LD=ld.lld \
-            CROSS_COMPILE=$CROSS_COMPILE \
-            CLANG_TRIPLE=$CLANG_TRIPLE
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CLANG_TRIPLE=aarch64-linux-gnu-
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
