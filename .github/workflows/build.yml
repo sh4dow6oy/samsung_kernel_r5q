@@ -19,7 +19,9 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             wget bc bison flex libssl-dev libelf-dev \
-            python3 python3.12-distutils python-is-python3
+            python3 python3-pip python-is-python3
+
+          python3 -m pip install --upgrade pip setuptools
 
       - name: Create python2 symlink
         run: |
