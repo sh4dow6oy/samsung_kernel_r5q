@@ -1,4 +1,4 @@
-name: S10 Lite Kernel - Android 15 Hybrid (Final Tracing Fix)
+name: S10 Lite Kernel - Android 15 Hybrid (Syntax & Stack Fix)
 
 on:
   push:
@@ -70,8 +70,7 @@ jobs:
             sed -i 's/__cgroup_bpf_detach/cgroup_bpf_detach/g' kernel/cgroup/cgroup.c
           fi
 
-          # 3. "Neutron Bomb" Patch pentru bpf_trace.c
-          # Inlocuim orice apel de functie care incepe cu BPF_PROG_RUN sau bpf_prog_array cu 0
+          # 3. Patch bpf_trace.c (Neutron Bomb - Clean version)
           if [ -f kernel/trace/bpf_trace.c ]; then
             sed -i 's/BPF_PROG_RUN_ARRAY_CHECK/0 \/\/ /g' kernel/trace/bpf_trace.c
             sed -i 's/BPF_PROG_RUN_ARRAY/0 \/\/ /g' kernel/trace/bpf_trace.c
@@ -80,7 +79,7 @@ jobs:
             sed -i 's/bpf_prog_array_delete_safe/(void)0; \/\/ /g' kernel/trace/bpf_trace.c
           fi
 
-          # 4. Fix Cgroup.c macro conflict (Manual Expansion)
+          # 4. Fix Cgroup.c macro conflict
           if [ -f kernel/bpf/cgroup.c ]; then
             sed -i 's/BPF_PROG_RUN(prog, sk)/((*prog->bpf_func)(sk, prog->insnsi))/g' kernel/bpf/cgroup.c
             sed -i 's/BPF_PROG_RUN(prog, sock_ops)/((*prog->bpf_func)(sock_ops, prog->insnsi))/g' kernel/bpf/cgroup.c
@@ -98,7 +97,7 @@ jobs:
           echo "#define BPF_ALU_IMMEDIATE 1" >> include/linux/filter.h
           echo "#define BPF_ALU_NON_IMM 0" >> include/linux/filter.h
 
-          # 7. Samsung specific fixes
+          # 7. Samsung specific fixes & Python
           mkdir -p system/core/liblog/include/log system/logging/liblog/include/log
           echo -e "#ifndef _PERFLOG_H\n#define _PERFLOG_H\n#endif" > system/core/liblog/include/log/perflog.h
           sudo sh -c 'echo "#!/bin/bash" > /usr/bin/secgetspf'
@@ -109,14 +108,25 @@ jobs:
       - name: Build Kernel
         run: |
           export PATH=$(pwd)/toolchain/proton-clang/bin:$PATH
-          # Adaugam -Wno-implicit-function-declaration ca sa ignoram orice scapare in bpf_trace
-          MAKE_ARGS="O=out ARCH=arm64 CC=clang HOSTCC=gcc HOSTCXX=g++ LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1 KCFLAGS='-Wno-error -Wno-implicit-function-declaration' TECHPACK=true"
+          
+          # Argumente de baza fara flag-uri complexe (pentru a evita erorile de sh)
+          MAKE_ARGS="O=out ARCH=arm64 CC=clang HOSTCC=gcc HOSTCXX=g++ LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1 TECHPACK=true"
+          
+          # Flag-uri de compilare trimise global
+          export KCFLAGS="-Wno-error -Wno-implicit-function-declaration -Wno-macro-redefined"
 
           rm -rf out && mkdir -p out
           make $MAKE_ARGS r5q_eur_open_defconfig
+          
+          # Fix Stack Protector mismatch
+          sed -i 's/CONFIG_CC_STACKPROTECTOR_STRONG=y/CONFIG_CC_STACKPROTECTOR_NONE=y/g' out/.config
+          
+          # Activare cerinte Android 15
           ./scripts/config --file out/.config --enable CONFIG_BPF_SYSCALL --enable CONFIG_BPF_JIT --enable CONFIG_ANDROID_BINDERFS --enable CONFIG_ANDROID_BINDER_IPC --disable CONFIG_DEBUG_INFO_BTF
+          
           make $MAKE_ARGS olddefconfig
           
+          # Build principal
           make -j$(nproc --all) $MAKE_ARGS || (echo "DIAGNOSTIC J1..." && make -j1 $MAKE_ARGS)
 
           if [ -f out/arch/arm64/boot/Image ]; then
