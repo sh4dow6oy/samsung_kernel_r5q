@@ -35,50 +35,33 @@ jobs:
           dpkg-deb -x python2.7_2.7.18-8+deb11u1_amd64.deb $HOME/python2
 
           echo "$HOME/python2/usr/bin" >> $GITHUB_PATH
-
-          # Ensure python2 exists
           sudo ln -sf $HOME/python2/usr/bin/python2.7 /usr/bin/python2
-          sudo ln -sf $HOME/python2/usr/bin/python2.7 /usr/bin/python
 
-      - name: Setup Clang toolchain
-        run: |
-          TOOLCHAIN_PATH="$PWD/toolchain/clang"
-          mkdir -p "$TOOLCHAIN_PATH"
-          wget -O clang.tar.gz "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/413febb26cbd05d9a1e44f089190ac892f72e684.tar.gz"
-          tar -xf clang.tar.gz -C "$TOOLCHAIN_PATH"
-
-          mkdir -p "$PWD/toolchain/llvm-arm-toolchain-ship/10.0/bin"
-          ln -s "$TOOLCHAIN_PATH/clang-r416183b/bin/clang" "$PWD/toolchain/llvm-arm-toolchain-ship/10.0/bin/clang"
-
-          echo "PATH=$TOOLCHAIN_PATH/clang-r416183b/bin:$PATH" >> $GITHUB_ENV
-          echo "CC=clang" >> $GITHUB_ENV
-
-      - name: Setup Android NDK (provides ld.lld)
+      - name: Setup Android NDK (clang + ld.lld)
         run: |
           NDK_URL="https://dl.google.com/android/repository/android-ndk-r25b-linux.zip"
           wget -O ndk.zip "$NDK_URL"
           unzip ndk.zip -d "$PWD/toolchain/ndk"
 
           export NDK_PATH="$PWD/toolchain/ndk/android-ndk-r25b"
-          export NDK_BIN="$NDK_PATH/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          export PATH="$NDK_PATH/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH"
 
-          mkdir -p "$PWD/toolchain/bin"
-          ln -sf "$NDK_BIN/clang" "$PWD/toolchain/bin/clang"
-          ln -sf "$NDK_BIN/ld.lld" "$PWD/toolchain/bin/aarch64-linux-android-ld"
-
-          echo "PATH=$PWD/toolchain/bin:$NDK_BIN:$PATH" >> $GITHUB_ENV
-          echo "LD=aarch64-linux-android-ld" >> $GITHUB_ENV
+          echo "PATH=$PATH" >> $GITHUB_ENV
 
       - name: Configure kernel
         run: |
           export ARCH=arm64
           export CROSS_COMPILE=aarch64-linux-android-
+          export CC=aarch64-linux-android21-clang
+          export LD=ld.lld
           make ARCH=arm64 r5q_eur_open_defconfig
 
       - name: Build kernel
         run: |
           export ARCH=arm64
           export CROSS_COMPILE=aarch64-linux-android-
+          export CC=aarch64-linux-android21-clang
+          export LD=ld.lld
           make -j$(nproc) ARCH=arm64
 
       - name: Upload artifacts
