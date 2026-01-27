@@ -1,4 +1,4 @@
-name: Build Samsung S10 Lite Kernel (4.14)
+name: Build S10 Lite Kernel (4.14) Android 15 Ready
 
 on:
   push:
@@ -18,31 +18,37 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             bc bison flex libssl-dev libelf-dev dwarves \
-            libncurses-dev git wget unzip make python3 \
-            python2 python3-minimal lz4 xz-utils gcc g++
+            libncurses-dev git wget unzip make python2 \
+            python3 python3-minimal lz4 xz-utils gcc g++
 
       - name: Download Proton Clang
         run: |
           mkdir -p toolchain
           git clone --depth=1 https://github.com/kdrag0n/proton-clang.git toolchain/proton-clang
 
-      - name: Pre-build Fixes (4.14 Specific)
+      - name: Pre-build Fixes (Techpack & BPF)
         run: |
-          # 1. Fix pentru btf.h și erori de include
+          # 1. Fix pentru btf.h (esențial pentru Android 15)
           find . -name "*.c" -type f | xargs sed -i 's|<uapi/linux/btf.h>|<linux/btf.h>|g' || true
           
-          # 2. Creare foldere dummy pentru log-uri Samsung (esențial pe S10 Lite)
-          mkdir -p system/core/liblog/include/log
-          touch system/core/liblog/include/log/perflog.h
+          # 2. Fix Techpack - Unele kernel-uri Samsung caută scripturi în techpack/audio
+          chmod +x techpack/audio/scripts/*.sh || true
           
-          # 3. Rezolvare problemă script python2/3 (4.14 folosește des python2)
-          sudo ln -sf /usr/bin/python3 /usr/bin/python
+          # 3. Dummy files pentru erorile de log Samsung (perflog.h)
+          mkdir -p system/core/liblog/include/log
+          mkdir -p system/logging/liblog/include/log
+          touch system/core/liblog/include/log/perflog.h
+          touch system/logging/liblog/include/log/perflog.h
+          
+          # 4. Asigurăm că scripturile vechi folosesc python2 dacă e nevoie
+          sudo ln -sf /usr/bin/python2 /usr/bin/python
 
       - name: Build Kernel
         run: |
           export PATH=$(pwd)/toolchain/proton-clang/bin:$PATH
           
-          # Argumente Build pentru Snapdragon 855 (SM8150)
+          # Definim variabilele pentru Techpack și BPF
+          # Adăugăm flag-ul -fno-stack-protector dacă apar erori de regiștri pe 4.14
           MAKE_ARGS="
             O=out \
             ARCH=arm64 \
@@ -59,28 +65,31 @@ jobs:
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             LLVM=1 \
             LLVM_IAS=1 \
-            KCFLAGS=-Wno-error
+            KCFLAGS=-Wno-error \
+            TECHPACK=true
           "
 
-          # 1. Configurația pentru S10 Lite (verifică numele exact în arch/arm64/configs)
-          # Probabil este r5q_eur_open_defconfig sau sm8150_defconfig
+          # 1. Configurare (folosește defconfig-ul tău corect)
           make $MAKE_ARGS r5q_eur_open_defconfig
 
-          # 2. Forțare module BPF pentru compatibilitate Android 15
-          ./scripts/config --file out/.config --enable CONFIG_BPF
+          # 2. Activare suport BPF avansat pentru Android 15
+          # Fără aceste opțiuni, Android 15 nu va avea internet (netd fail)
           ./scripts/config --file out/.config --enable CONFIG_BPF_SYSCALL
-          ./scripts/config --file out/.config --enable CONFIG_NET_CLS_BPF
-          ./scripts/config --file out/.config --enable CONFIG_NET_ACT_BPF
           ./scripts/config --file out/.config --enable CONFIG_BPF_JIT
           ./scripts/config --file out/.config --enable CONFIG_HAVE_EBPF_JIT
-          
+          ./scripts/config --file out/.config --enable CONFIG_NET_CLS_BPF
+          ./scripts/config --file out/.config --enable CONFIG_NET_ACT_BPF
+          ./scripts/config --file out/.config --enable CONFIG_CGROUP_BPF
+          ./scripts/config --file out/.config --disable CONFIG_ANDROID_PARANOID_NETWORK
+
           # 3. Compilare
           make -j$(nproc --all) $MAKE_ARGS
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-S10Lite-4.14
+          name: Kernel-S10Lite-A15-Ready
           path: |
             out/arch/arm64/boot/Image
             out/arch/arm64/boot/dtbo.img
+            out/arch/arm64/boot/dts/vendor/qcom/*.dtb
