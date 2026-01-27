@@ -1,4 +1,4 @@
-name: S10 Lite Kernel - 4.19 Hybrid - GitHub Mirror
+name: S10 Lite Kernel - 4.19 Hybrid - Stable Upstream
 
 on:
   push:
@@ -32,18 +32,41 @@ jobs:
         run: |
           git clone --depth=1 https://github.com/kdrag0n/proton-clang.git toolchain/proton-clang
 
-      - name: Backport 4.19 Components
+      - name: Backport 4.19 Components (Kernel.org)
         run: |
-          git remote add android https://github.com/aosp-mirror/kernel_common.git || true
-          git fetch android android-4.19-stable --depth=1
-          git checkout FETCH_HEAD -- kernel/bpf/ drivers/android/ include/uapi/linux/bpf.h include/uapi/linux/btf.h include/linux/bpf.h arch/arm64/net/
+          git config --global user.email "action@github.com"
+          git config --global user.name "GitHub Action"
+          
+          # Adaugam sursa oficiala Linux Stable
+          git remote add linux-stable https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git || true
+          
+          # Facem fetch la ramura stabila 4.19.y
+          git fetch linux-stable linux-4.19.y --depth=1
+          
+          # Injectam modulele de 4.19 peste kernel-ul tau 4.14
+          # Aceasta este piesa centrala pentru compatibilitatea Android 15
+          git checkout FETCH_HEAD -- kernel/bpf/
+          git checkout FETCH_HEAD -- drivers/android/
+          git checkout FETCH_HEAD -- include/uapi/linux/bpf.h
+          git checkout FETCH_HEAD -- include/uapi/linux/btf.h
+          git checkout FETCH_HEAD -- include/linux/bpf.h
+          git checkout FETCH_HEAD -- arch/arm64/net/bpf_jit_comp.c
+          
+          echo "Backport de componente 4.19.y finalizat cu succes."
 
       - name: Pre-build Fixes
         run: |
+          # Injectam __poll_t pentru a evita erorile in bpf/syscall.c
           grep -q "__poll_t" include/uapi/linux/types.h || echo "typedef unsigned int __poll_t;" >> include/uapi/linux/types.h
+          
+          # Fix-uri obligatorii pentru log-urile Samsung
           mkdir -p system/core/liblog/include/log system/logging/liblog/include/log
           touch system/core/liblog/include/log/perflog.h system/logging/liblog/include/log/perflog.h
+          
+          # Redirectionare headere BTF
           find kernel/bpf/ -name "*.c" | xargs sed -i 's|<uapi/linux/btf.h>|<linux/btf.h>|g' || true
+          
+          # Setup Python 2
           [ -f scripts/gcc-wrapper.py ] && mv scripts/gcc-wrapper.py scripts/gcc-wrapper.py.disabled || true
           sudo ln -sf /usr/bin/python2 /usr/bin/python
 
@@ -51,9 +74,13 @@ jobs:
         run: |
           export PATH=$(pwd)/toolchain/proton-clang/bin:$PATH
           MAKE_ARGS="O=out ARCH=arm64 CC=clang HOSTCC=gcc HOSTCXX=g++ LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1 KCFLAGS=-Wno-error TECHPACK=true"
+          
           rm -rf out && mkdir -p out
           make $MAKE_ARGS r5q_eur_open_defconfig
+          
+          # Activam cerintele vitale pentru Android 15
           ./scripts/config --file out/.config --enable CONFIG_BPF_SYSCALL --enable CONFIG_BPF_JIT --enable CONFIG_HAVE_EBPF_JIT --enable CONFIG_ANDROID_BINDERFS --enable CONFIG_ANDROID_BINDER_IPC --disable CONFIG_DEBUG_INFO_BTF
+          
           make $MAKE_ARGS olddefconfig
           make -j$(nproc --all) $MAKE_ARGS
 
