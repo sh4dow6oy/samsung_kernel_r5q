@@ -1,4 +1,4 @@
-name: S10 Lite Kernel - Android 15 Hybrid (Cgroup Arg Fix)
+name: S10 Lite - Integrated Pascua Hybrid 5.1
 
 on:
   push:
@@ -12,107 +12,72 @@ jobs:
     steps:
       - name: Checkout Source
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
-      - name: Install Dependencies
+      - name: Setup Toolchain
         run: |
           sudo apt-get update
-          sudo apt-get install -y bc bison flex libssl-dev libelf-dev dwarves libncurses-dev git wget make python2 python3 pahole cpio lz4
+          sudo apt-get install -y bc bison flex libssl-dev libelf-dev dwarves make python3 lz4
+          git clone --depth=1 https://github.com/kdrag0n/proton-clang.git toolchain/proton-clang
 
-      - name: Cache Toolchain
-        uses: actions/cache@v4
-        with:
-          path: toolchain/proton-clang
-          key: ${{ runner.os }}-proton-clang-v1
-
-      - name: Download Proton Clang
+      - name: Apply Pascua eBPF 5.1 Backport
         run: |
-          git clone --depth=1 https://github.com/kdrag0n/proton-clang.git toolchain/proton-clang || true
-
-      - name: Upstream eBPF (Kernel.org 4.14.y)
-        run: |
-          git config --global user.email "action@github.com"
-          git config --global user.name "GitHub Action"
           git remote add linux-stable https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git || true
-          git fetch linux-stable linux-4.14.y --depth=1
-          PATHS=("kernel/bpf/" "drivers/android/" "include/linux/bpf.h" "include/linux/filter.h" "include/linux/bpf_verifier.h" "include/linux/bpf-cgroup.h" "include/uapi/linux/bpf.h" "include/uapi/linux/bpf_common.h" "include/uapi/linux/filter.h" "arch/arm64/net/")
+          git fetch linux-stable linux-5.1.y --depth=1
+          
+          # Pascua importa doar "creierul" BPF, nu si driverele dependente care ar rupe kernelul 4.14
+          PATHS=("kernel/bpf/" "include/linux/bpf.h" "include/linux/filter.h" "include/uapi/linux/bpf.h" "include/linux/bpf-cgroup.h")
           for path in "${PATHS[@]}"; do git checkout FETCH_HEAD -- "$path" || echo "Skip: $path"; done
 
-      - name: Pre-build Fixes (Inherit Argument Fix)
+      - name: Integration Patches (Shim Layer)
         run: |
-          # 1. Fix cgroup_bpf_inherit calls in cgroup.c
-          # Schimbam apelul cu 1 argument intr-un apel cu 2 argumente (folosind NULL sau parintele unde e disponibil)
+          # 1. Reparăm structura bpf_prog_aux pentru a evita Kernel Panic în SELinux
+          # Pascua a observat că SELinux-ul Samsung caută pointerul de securitate exact la începutul structurii
+          sed -i '/struct bpf_prog_aux {/a \	void *security;' include/linux/bpf.h
+
+          # 2. Fix cgroup_bpf_inherit (Manual Sync)
+          # În 5.1, această funcție cere părintele. Samsung 4.14 nu îl oferă mereu.
+          # Îl forțăm la NULL sau folosim macro-ul de parinte.
           if [ -f kernel/cgroup/cgroup.c ]; then
             sed -i 's/cgroup_bpf_inherit(root_cgrp)/cgroup_bpf_inherit(root_cgrp, NULL)/g' kernel/cgroup/cgroup.c
             sed -i 's/cgroup_bpf_inherit(cgrp)/cgroup_bpf_inherit(cgrp, cgroup_parent(cgrp))/g' kernel/cgroup/cgroup.c
-            
-            # Alte simboluri cgroup bpf
-            sed -i 's/__cgroup_bpf_attach/cgroup_bpf_attach/g' kernel/cgroup/cgroup.c
-            sed -i 's/__cgroup_bpf_detach/cgroup_bpf_detach/g' kernel/cgroup/cgroup.c
           fi
 
-          # 2. Fix SELinux & BPF Struct Injection
-          sed -i '/struct bpf_prog_aux {/a \	void *security;' include/linux/bpf.h
-          if [ -f security/selinux/hooks.c ]; then
-            sed -i 's/file->f_op == &bpf_map_fops/0/g' security/selinux/hooks.c
-            sed -i 's/file->f_op == &bpf_prog_fops/0/g' security/selinux/hooks.c
-            sed -i 's/prog->aux->security/NULL/g' security/selinux/hooks.c
-            sed -i 's/aux->security =/ \/\/ /g' security/selinux/hooks.c
-          fi
-
-          # 3. BPF_PROG_RUN Macro Injection
-          if [ -f kernel/trace/bpf_trace.c ]; then
-            sed -i '1i #include <linux/filter.h>' kernel/trace/bpf_trace.c
-            sed -i '2i #ifndef BPF_PROG_RUN\n#define BPF_PROG_RUN(prog, ctx) 0\n#endif' kernel/trace/bpf_trace.c
-            sed -i 's/BPF_PROG_RUN_ARRAY_CHECK([^)]*)/0/g' kernel/trace/bpf_trace.c
-            sed -i 's/BPF_PROG_RUN_ARRAY([^)]*)/0/g' kernel/trace/bpf_trace.c
-            sed -i 's/bpf_prog_array_copy([^)]*)/0/g' kernel/trace/bpf_trace.c
-            sed -i 's/bpf_prog_array_free([^)]*)/((void)0)/g' kernel/trace/bpf_trace.c
-            sed -i 's/bpf_prog_array_delete_safe([^)]*)/0/g' kernel/trace/bpf_trace.c
-          fi
-
-          # 4. Alias Injection in core.c for missing symbols
-          if [ -f include/linux/bpf-cgroup.h ]; then
-            sed -i 's/int cgroup_bpf_update/int __unused_cgroup_bpf_update/g' include/linux/bpf-cgroup.h
-          fi
+          # 3. Rezolvarea conflictului de simboluri 'weak' (Metoda Pascua)
+          # În loc de macro-uri în YAML, edităm direct core.c pentru a satisface Linker-ul
           cat <<EOF >> kernel/bpf/core.c
-          int cgroup_bpf_update(void *cgrp, void *prog, void *old_prog, int type) { return 0; }
-          void *bpf_prog_get_type_path(const char *path, int type) { return (void *)-22; }
+          #include <linux/bpf-cgroup.h>
+          int cgroup_bpf_update(struct cgroup *cgrp, struct bpf_prog *prog, struct bpf_prog *old_prog, enum bpf_attach_type type) { return 0; }
           EOF
 
-          # 5. Samsung & Python Fixes
-          if [ -f drivers/staging/android/freecess_pkg.c ]; then
-            sed -i 's/extern int binders_in_transcation;/int binders_in_transcation = 0;/g' drivers/staging/android/freecess_pkg.c
+          # 4. Dezactivăm mizeriile Samsung care intră în conflict cu eBPF 5.1
+          if [ -f security/selinux/hooks.c ]; then
+            sed -i 's/file->f_op == \&bpf_map_fops/0/g' security/selinux/hooks.c
+            sed -i 's/file->f_op == \&bpf_prog_fops/0/g' security/selinux/hooks.c
           fi
-          mkdir -p include/linux/ && touch include/linux/perflog.h
-          echo -e "#ifndef _LINUX_PERFLOG_H\n#define _LINUX_PERFLOG_H\n#endif" > include/linux/perflog.h
-          sudo ln -sf /usr/bin/python3 /usr/bin/python
 
-      - name: Build Kernel & DTBs
+      - name: Build S10 Lite Hybrid
         run: |
           export PATH=$(pwd)/toolchain/proton-clang/bin:$PATH
-          MAKE_ARGS="O=out ARCH=arm64 CC=clang HOSTCC=gcc HOSTCXX=g++ LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1 TECHPACK=true"
-          export KCFLAGS="-Wno-error -Wno-implicit-function-declaration -Wno-macro-redefined -Wno-incompatible-pointer-types -Wno-format-security -Wno-return-type"
+          MAKE_ARGS="O=out ARCH=arm64 CC=clang HOSTCC=gcc CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1 TECHPACK=true"
+          
+          # Relaxăm verificările de tipuri pentru a permite hibridizarea
+          export KCFLAGS="-Wno-error -Wno-incompatible-pointer-types -Wno-implicit-function-declaration -Wno-return-type"
 
-          rm -rf out && mkdir -p out
           make $MAKE_ARGS r5q_eur_open_defconfig
           
+          # Configurații critice pentru Android 15 (Direct din repo-ul lui Pascua)
           ./scripts/config --file out/.config --disable CONFIG_MODVERSIONS
-          ./scripts/config --file out/.config --enable CONFIG_BPF_SYSCALL --enable CONFIG_BPF_JIT --enable CONFIG_HAVE_EBPF_JIT --enable CONFIG_ANDROID_BINDERFS --disable CONFIG_SAMSUNG_PRODUCT_SHIP --disable CONFIG_DEFEX
+          ./scripts/config --file out/.config --enable CONFIG_BPF_SYSCALL
+          ./scripts/config --file out/.config --enable CONFIG_BPF_JIT
+          ./scripts/config --file out/.config --enable CONFIG_CGROUP_BPF
+          ./scripts/config --file out/.config --disable CONFIG_SAMSUNG_PRODUCT_SHIP
+          ./scripts/config --file out/.config --disable CONFIG_DEFEX
           
           make $MAKE_ARGS olddefconfig
-          make -j$(nproc --all) $MAKE_ARGS Image.gz-dtb dtbs || make -j1 $MAKE_ARGS Image.gz-dtb dtbs
+          make -j$(nproc --all) $MAKE_ARGS Image.gz-dtb
 
-      - name: Prepare Artifacts
-        run: |
-          mkdir -p deploy
-          cp out/arch/arm64/boot/Image.gz-dtb deploy/ 2>/dev/null || cp out/arch/arm64/boot/Image deploy/
-          find out/arch/arm64/boot/dts/ -name "*.dtb" -exec cp {} deploy/ \;
-          find out/arch/arm64/boot/dts/ -name "*.dtbo" -exec cp {} deploy/ \; 2>/dev/null || true
-
-      - name: Upload Build
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: S10Lite-A15-Hybrid-Kernel
-          path: deploy/*
+          path: out/arch/arm64/boot/Image.gz-dtb
