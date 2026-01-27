@@ -1,4 +1,4 @@
-name: Build Samsung Kernel r5q (GCC11)
+name: Build Samsung Kernel r5q (Clang)
 
 on:
   push:
@@ -12,11 +12,13 @@ jobs:
 
     env:
       ARCH: arm64
-      CROSS_COMPILE: aarch64-linux-gnu-
-      CC: gcc
       KERNEL_DIR: ${{ github.workspace }}
       OUTPUT_DIR: ${{ github.workspace }}/out
       DEFCONFIG: r5q_eur_open_defconfig
+      LLVM: 1
+      CLANG_TRIPLE: aarch64-linux-gnu-
+      CROSS_COMPILE: aarch64-linux-gnu-
+      PATH: ${{ github.workspace }}/toolchain/ndk/toolchains/llvm/prebuilt/linux-x86_64/bin:${PATH}
 
     steps:
       - name: Checkout
@@ -28,15 +30,15 @@ jobs:
           sudo apt-get install -y \
             bc bison flex libssl-dev libelf-dev dwarves \
             libncurses-dev git wget unzip make \
-            gcc-11 g++-11 \
-            gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
-            binutils-aarch64-linux-gnu \
-            python3
+            python3 python3-distutils
 
-      - name: Set GCC 11
+      - name: Download Android NDK
         run: |
-          sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-11 100
-          sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-11 100
+          mkdir -p toolchain
+          cd toolchain
+          wget https://dl.google.com/android/repository/android-ndk-r25b-linux.zip -O ndk.zip
+          unzip ndk.zip -d ndk
+          rm ndk.zip
 
       - name: Disable gcc-wrapper
         run: |
@@ -51,8 +53,10 @@ jobs:
       - name: Build kernel
         run: |
           cd $KERNEL_DIR
-          make -j$(nproc) O=$OUTPUT_DIR ARCH=$ARCH \
-            CC=$CC CROSS_COMPILE=$CROSS_COMPILE
+          make -j$(nproc) O=$OUTPUT_DIR ARCH=$ARCH LLVM=1 \
+            CC=clang LD=ld.lld \
+            CROSS_COMPILE=$CROSS_COMPILE \
+            CLANG_TRIPLE=$CLANG_TRIPLE
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
