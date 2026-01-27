@@ -1,4 +1,4 @@
-name: S10 Lite Kernel - Android 15 Hybrid (Linker Alias Fix)
+name: S10 Lite Kernel - Android 15 Hybrid (BPF_PROG_RUN Fix)
 
 on:
   push:
@@ -39,10 +39,24 @@ jobs:
           PATHS=("kernel/bpf/" "drivers/android/" "include/linux/bpf.h" "include/linux/filter.h" "include/linux/bpf_verifier.h" "include/linux/bpf-cgroup.h" "include/uapi/linux/bpf.h" "include/uapi/linux/bpf_common.h" "include/uapi/linux/filter.h" "arch/arm64/net/")
           for path in "${PATHS[@]}"; do git checkout FETCH_HEAD -- "$path" || echo "Skip: $path"; done
 
-      - name: Pre-build Fixes (Alias & Trace Sanitization)
+      - name: Pre-build Fixes (Macro Injection & Linker Alias)
         run: |
-          # 1. Bypass Cgroup Update conflict using linker alias
-          # Comentăm declarația originală și injectăm un stub curat
+          # 1. Definitie BPF_PROG_RUN pentru a evita "undeclared identifier"
+          # Adaugam definitia in filter.h (unde ar trebui sa fie) si in bpf_trace.c
+          echo '#define BPF_PROG_RUN(prog, ctx) ((*prog->bpf_func)(ctx, prog->insnsi))' >> include/linux/filter.h
+          
+          # 2. Fix bpf_trace.c - Înlocuim apelurile problematice și injectăm macro-ul local
+          if [ -f kernel/trace/bpf_trace.c ]; then
+            sed -i '1i #include <linux/filter.h>' kernel/trace/bpf_trace.c
+            sed -i '2i #ifndef BPF_PROG_RUN\n#define BPF_PROG_RUN(prog, ctx) 0\n#endif' kernel/trace/bpf_trace.c
+            sed -i 's/BPF_PROG_RUN_ARRAY_CHECK([^)]*)/0/g' kernel/trace/bpf_trace.c
+            sed -i 's/BPF_PROG_RUN_ARRAY([^)]*)/0/g' kernel/trace/bpf_trace.c
+            sed -i 's/bpf_prog_array_copy([^)]*)/0/g' kernel/trace/bpf_trace.c
+            sed -i 's/bpf_prog_array_free([^)]*)/((void)0)/g' kernel/trace/bpf_trace.c
+            sed -i 's/bpf_prog_array_delete_safe([^)]*)/0/g' kernel/trace/bpf_trace.c
+          fi
+
+          # 3. Bypass Cgroup Update conflict
           if [ -f include/linux/bpf-cgroup.h ]; then
             sed -i 's/int cgroup_bpf_update/int __cgroup_bpf_update_unused/g' include/linux/bpf-cgroup.h
           fi
@@ -52,22 +66,14 @@ jobs:
           void *bpf_prog_get_type_path(const char *path, int type) { return (void *)-22; }
           EOF
 
-          # 2. Fix bpf_trace.c - Înlocuire sigură fără a rupe label-urile
-          if [ -f kernel/trace/bpf_trace.c ]; then
-            sed -i '1i #include <linux/filter.h>' kernel/trace/bpf_trace.c
-            sed -i 's/bpf_prog_array_copy([^)]*)/0/g' kernel/trace/bpf_trace.c
-            sed -i 's/bpf_prog_array_free([^)]*)/((void)0)/g' kernel/trace/bpf_trace.c
-            sed -i 's/bpf_prog_array_delete_safe([^)]*)/0/g' kernel/trace/bpf_trace.c
-          fi
-
-          # 3. Fix Cgroup & BPF Symbols (Underscore)
+          # 4. Fix Cgroup & BPF Symbols
           if [ -f kernel/cgroup/cgroup.c ]; then
             sed -i 's/__cgroup_bpf_attach/cgroup_bpf_attach/g' kernel/cgroup/cgroup.c
             sed -i 's/__cgroup_bpf_detach/cgroup_bpf_detach/g' kernel/cgroup/cgroup.c
             sed -i 's/ret = cgroup_bpf_inherit(\([^,)]*\))/cgroup_bpf_inherit(\1, NULL)/g' kernel/cgroup/cgroup.c
           fi
 
-          # 4. Samsung Specifics
+          # 5. Samsung Specifics (Freecess & Perflog)
           if [ -f drivers/staging/android/freecess_pkg.c ]; then
             sed -i 's/extern int binders_in_transcation;/int binders_in_transcation = 0;/g' drivers/staging/android/freecess_pkg.c
           fi
