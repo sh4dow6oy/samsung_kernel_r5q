@@ -19,42 +19,40 @@ jobs:
           sudo apt-get install -y \
             bc bison flex libssl-dev libelf-dev dwarves \
             libncurses-dev git wget unzip make python2 \
-            python3 python3-minimal lz4 xz-utils gcc g++
+            python3 python3-minimal lz4 xz-utils gcc g++ pahole
 
       - name: Download Proton Clang
         run: |
           mkdir -p toolchain
           git clone --depth=1 https://github.com/kdrag0n/proton-clang.git toolchain/proton-clang
 
-      - name: Backport BPF Headers from Pascua28
+      - name: Backport BPF Headers (Pascua28 sixteen)
         run: |
-          # Clonăm doar headerele necesare pentru a repara eroarea btf.h
-          git clone --depth=1 https://github.com/pascua28/android_kernel_samsung_sm8250 -b seventeen tmp_repo
+          # Clonăm specific branch-ul 'sixteen'
+          git clone --depth=1 https://github.com/pascua28/android_kernel_samsung_sm8250 -b sixteen tmp_repo
           
-          # Creăm directoarele dacă nu există
           mkdir -p include/uapi/linux/
           mkdir -p include/linux/
           
-          # Copiem fișierele critice pentru BPF/BTF
-          cp tmp_repo/include/uapi/linux/btf.h include/uapi/linux/btf.h
-          cp tmp_repo/include/linux/btf.h include/linux/btf.h || cp tmp_repo/include/uapi/linux/btf.h include/linux/btf.h
+          # Copiem fișierele critice BTF și BPF din sursa lui Pascua28
+          cp -f tmp_repo/include/uapi/linux/btf.h include/uapi/linux/btf.h || true
+          cp -f tmp_repo/include/linux/btf.h include/linux/btf.h || cp -f tmp_repo/include/uapi/linux/btf.h include/linux/btf.h
+          cp -f tmp_repo/include/uapi/linux/bpf.h include/uapi/linux/bpf.h || true
+          cp -f tmp_repo/include/linux/bpf.h include/linux/bpf.h || true
           
-          # Opțional: Copiem și restul definitiilor BPF pentru a evita erori ulterioare în core.c
-          cp tmp_repo/include/uapi/linux/bpf.h include/uapi/linux/bpf.h
-          cp tmp_repo/include/linux/bpf.h include/linux/bpf.h
-          
+          # Curățăm repo-ul temporar
           rm -rf tmp_repo
-          echo "Backport BPF headers completed."
+          echo "Backport din branch-ul 'sixteen' finalizat."
 
       - name: Pre-build Fixes
         run: |
-          # 1. Forțăm core.c să găsească btf.h folosind noua locație
-          find . -name "core.c" -path "*/kernel/bpf/*" | xargs sed -i 's|<uapi/linux/btf.h>|<linux/btf.h>|g' || true
+          # 1. Rezolvăm eroarea 'btf.h file not found' în kernel/bpf/core.c
+          # Schimbăm includerea pentru a căuta în calea de sistem corectă
+          sed -i 's|<uapi/linux/btf.h>|<linux/btf.h>|g' kernel/bpf/core.c || true
           
-          # 2. Fix pentru log-urile Samsung (perflog.h) - varianta extinsă
+          # 2. Fix log-uri Samsung (perflog.h)
           mkdir -p system/core/liblog/include/log
           mkdir -p system/logging/liblog/include/log
-          # Creăm fișierul fizic în toate locațiile posibile căutate de Makefile
           touch system/core/liblog/include/log/perflog.h
           touch system/logging/liblog/include/log/perflog.h
           
@@ -89,25 +87,25 @@ jobs:
           mkdir -p out
           make $MAKE_ARGS r5q_eur_open_defconfig
 
-          # Injectăm configurările pentru eBPF modern (Android 15)
+          # Activăm manual suportul BPF cerut de Android 15
           ./scripts/config --file out/.config --enable CONFIG_BPF_SYSCALL
           ./scripts/config --file out/.config --enable CONFIG_BPF_JIT
           ./scripts/config --file out/.config --enable CONFIG_HAVE_EBPF_JIT
           ./scripts/config --file out/.config --enable CONFIG_NET_CLS_BPF
           ./scripts/config --file out/.config --enable CONFIG_NET_ACT_BPF
-          ./scripts/config --file out/.config --enable CONFIG_BPF_EVENTS
+          ./scripts/config --file out/.config --enable CONFIG_CGROUP_BPF
           ./scripts/config --file out/.config --enable CONFIG_DEBUG_INFO_BTF
 
-          # Rezolvăm conflictele de configurare automat
+          # Rezolvăm automat noile opțiuni din config
           make $MAKE_ARGS olddefconfig
 
-          # Compilarea principală
+          # Start compilare
           make -j$(nproc --all) $MAKE_ARGS
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-S10Lite-Backported
+          name: Kernel-S10Lite-A15-Ready
           path: |
             out/arch/arm64/boot/Image
             out/arch/arm64/boot/dtbo.img
