@@ -17,7 +17,9 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y wget bc bison flex libssl-dev libelf-dev python3 python3-distutils python-is-python3
+          sudo apt-get install -y \
+            wget bc bison flex libssl-dev libelf-dev \
+            python3 python3.12-distutils python-is-python3
 
       - name: Create python2 symlink
         run: |
