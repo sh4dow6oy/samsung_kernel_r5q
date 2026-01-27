@@ -1,4 +1,4 @@
-name: S10 Lite - Pascua Hybrid (LIRC & Syscall Fix)
+name: S10 Lite - Pascua Hybrid (API & Access Fix)
 
 on:
   push:
@@ -31,38 +31,59 @@ jobs:
             "include/uapi/linux/btf.h"
             "include/linux/btf.h"
             "include/linux/bpf-cgroup.h"
-            "include/uapi/linux/bpf_common.h"
           )
           for path in "${PATHS[@]}"; do git checkout FETCH_HEAD -- "$path" || echo "Skip: $path"; done
 
-      - name: Integration Patches (Header Shim)
+      - name: Integration Patches (Shim Layer 2.0)
         run: |
-          # 1. Creăm headere dummy pentru subsisteme care nu există în 4.14
-          # bpf_lirc.h este necesar pentru syscall.c din 5.1
-          mkdir -p include/linux/
-          touch include/linux/bpf_lirc.h
+          # 1. Fix access_ok mismatch (3 args in 4.14 vs 2 args in 5.1)
+          # Injectăm un macro care ignoră tipul (de obicei VERIFY_READ/WRITE)
+          sed -i '1i #define access_ok(addr, size) __range_ok((unsigned long)(addr), size)' kernel/bpf/syscall.c
           
-          # 2. Fix cgroup_bpf_inherit (Pascua method)
+          # 2. Neutralizare PERF_BPF_EVENT (lipsesc în 4.14)
+          sed -i 's/PERF_BPF_EVENT_PROG_UNLOAD/0/g' kernel/bpf/syscall.c
+          sed -i 's/PERF_BPF_EVENT_PROG_LOAD/0/g' kernel/bpf/syscall.c
+          sed -i 's/perf_event_bpf_event/ (void) /g' kernel/bpf/syscall.c
+
+          # 3. Fix struct bpf_raw_event_map (Forward declaration conflict)
+          # Pascua dezactivează funcțiile de raw tracepoints dacă nu sunt suportate
+          sed -i 's/btp->tp->name/""/g' kernel/bpf/syscall.c
+          
+          # 4. Fix cgroup_bpf_inherit & stub-uri
           if [ -f kernel/cgroup/cgroup.c ]; then
             sed -i 's/cgroup_bpf_inherit(root_cgrp)/cgroup_bpf_inherit(root_cgrp, NULL)/g' kernel/cgroup/cgroup.c
             sed -i 's/cgroup_bpf_inherit(cgrp)/cgroup_bpf_inherit(cgrp, NULL)/g' kernel/cgroup/cgroup.c
           fi
 
-          # 3. Injectare stub-uri în core.c
-          grep -q "cgroup_bpf_update" kernel/bpf/core.c || cat <<EOF >> kernel/bpf/core.c
-          #include <linux/bpf-cgroup.h>
-          int cgroup_bpf_update(struct cgroup *cgrp, struct bpf_prog *prog, struct bpf_prog *old_prog, enum bpf_attach_type type) { return 0; }
-          EOF
-
-          # 4. Samsung Fixes & Perflog
-          mkdir -p include/linux/ && touch include/linux/perflog.h
+          # 5. Missing Headers Dummy
+          mkdir -p include/linux/
+          touch include/linux/bpf_lirc.h
           echo -e "#ifndef _LINUX_PERFLOG_H\n#define _LINUX_PERFLOG_H\n#endif" > include/linux/perflog.h
 
       - name: Build S10 Lite Hybrid
         run: |
           export PATH=$(pwd)/toolchain/proton-clang/bin:$PATH
           MAKE_ARGS="O=out ARCH=arm64 CC=clang HOSTCC=gcc HOSTCFLAGS='-Wno-deprecated-declarations' CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1"
-          export KCFLAGS="-Wno-error -Wno-incompatible-pointer-types -Wno-implicit-function-declaration -Wno-return-type"
+          # Adăugăm -Wno-error pentru a lăsa linker-ul să decidă
+          export KCFLAGS="-Wno-error -Wno-incompatible-pointer-types -Wno-implicit-function-declaration -Wno-return-type -Wno-typedef-redefinition"
+
+          make $MAKE_ARGS r5q_eur_open_defconfig
+          
+          ./scripts/config --file out/.config --disable CONFIG_MODVERSIONS
+          ./scripts/config --file out/.config --enable CONFIG_BPF_SYSCALL
+          ./scripts/config --file out/.config --enable CONFIG_CGROUP_BPF
+          ./scripts/config --file out/.config --disable CONFIG_SAMSUNG_PRODUCT_SHIP
+          ./scripts/config --file out/.config --disable CONFIG_DEFEX
+          
+          make $MAKE_ARGS olddefconfig
+          make -j$(nproc --all) $MAKE_ARGS Image.gz-dtb || make -j1 $MAKE_ARGS Image.gz-dtb
+
+      - name: Upload Build
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: S10Lite-A15-Hybrid-v4
+          path: out/arch/arm64/boot/Image.gz-dtb
 
           make $MAKE_ARGS r5q_eur_open_defconfig
           
