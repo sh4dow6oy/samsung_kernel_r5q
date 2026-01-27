@@ -1,85 +1,56 @@
-name: Build Samsung SM-G770F Kernel
+name: Build Samsung SM-G770F Custom Kernel
 
 on:
   workflow_dispatch:
 
 jobs:
-  build-kernel:
-    runs-on: ubuntu-latest
+  build:
+    runs-on: ubuntu-22.04
 
     steps:
-      # 1️⃣ Checkout the kernel repository
-      - name: Checkout kernel source
-        uses: actions/checkout@v3
-        with:
-          repository: sh4dow6oy/samsung_kernel_r5q
-          ref: master
-          submodules: recursive
+    - name: Checkout kernel source
+      uses: actions/checkout@v4
+      with:
+        submodules: recursive
 
-      # 2️⃣ Install build dependencies
-      - name: Install build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential clang make gcc git bc bison flex libssl-dev libncurses5-dev libelf-dev wget tar
+    - name: Install dependencies
+      run: |
+        sudo apt update
+        sudo apt install -y \
+          bc bison flex libssl-dev make \
+          libelf-dev dwarves \
+          gcc-aarch64-linux-gnu \
+          clang llvm lld \
+          git zip unzip
 
-      # 3️⃣ Setup Clang toolchain
-      - name: Setup Clang toolchain
-        run: |
-          TOOLCHAIN_PATH="$PWD/kernel/toolchain/clang"
-          mkdir -p "$TOOLCHAIN_PATH"
-          wget -O clang.tar.gz "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/413febb26cbd05d9a1e44f089190ac892f72e684.tar.gz"
-          tar -xf clang.tar.gz -C "$TOOLCHAIN_PATH"
-          export PATH="$TOOLCHAIN_PATH/clang-r416183b/bin:$PATH"
-          export CC=clang
-          echo "PATH=$PATH" >> $GITHUB_ENV
-          echo "CC=$CC" >> $GITHUB_ENV
-          echo "Clang toolchain setup complete"
+    - name: Setup environment
+      run: |
+        echo "ARCH=arm64" >> $GITHUB_ENV
+        echo "SUBARCH=arm64" >> $GITHUB_ENV
+        echo "CC=clang" >> $GITHUB_ENV
+        echo "LLVM=1" >> $GITHUB_ENV
+        echo "LLVM_IAS=1" >> $GITHUB_ENV
+        echo "CROSS_COMPILE=aarch64-linux-gnu-" >> $GITHUB_ENV
 
-      # 4️⃣ Setup GCC AArch64 toolchain
-      - name: Setup GCC AArch64 toolchain
-        run: |
-          TOOLCHAIN_PATH="$PWD/kernel/toolchain/gcc"
-          mkdir -p "$TOOLCHAIN_PATH"
-          wget -O gcc-aarch64.tar.gz "https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/+archive/refs/heads/master.tar.gz"
-          tar -xf gcc-aarch64.tar.gz -C "$TOOLCHAIN_PATH"
-          export PATH="$TOOLCHAIN_PATH/aarch64-linux-android-4.9/bin:$PATH"
-          export CROSS_COMPILE=aarch64-linux-android-
-          echo "PATH=$PATH" >> $GITHUB_ENV
-          echo "CROSS_COMPILE=$CROSS_COMPILE" >> $GITHUB_ENV
-          echo "GCC AArch64 toolchain setup complete"
+    - name: Clean kernel tree
+      run: make mrproper
 
-      # 5️⃣ Clean output folder
-      - name: Clean output folder
-        run: rm -rf kernel/out
+    - name: Load defconfig
+      run: make r5q_eur_open_defconfig
 
-      # 6️⃣ Generate defconfig if missing
-      - name: Generate defconfig if missing
-        run: |
-          DEFCONFIG_FILE="arch/arm64/configs/g770f_defconfig"
-          if [ ! -f "$DEFCONFIG_FILE" ]; then
-            echo "Defconfig not found. Generating default..."
-            make O=out ARCH=arm64 defconfig CC=$CC CROSS_COMPILE=$CROSS_COMPILE
-            mkdir -p arch/arm64/configs
-            cp out/.config "$DEFCONFIG_FILE"
-            echo "Generated $DEFCONFIG_FILE"
-          else
-            echo "Defconfig already exists: $DEFCONFIG_FILE"
-          fi
-        working-directory: ./kernel
+    - name: Build kernel
+      run: make -j$(nproc)
 
-      # 7️⃣ Configure kernel
-      - name: Configure kernel
-        run: make O=out ARCH=arm64 g770f_defconfig CC=$CC CROSS_COMPILE=$CROSS_COMPILE
-        working-directory: ./kernel
+    - name: Collect outputs
+      run: |
+        mkdir -p out
+        cp arch/arm64/boot/Image out/
+        if [ -f arch/arm64/boot/dtbo.img ]; then
+          cp arch/arm64/boot/dtbo.img out/
+        fi
 
-      # 8️⃣ Build kernel
-      - name: Build kernel
-        run: make O=out ARCH=arm64 CC=$CC CROSS_COMPILE=$CROSS_COMPILE -j$(nproc)
-        working-directory: ./kernel
-
-      # 9️⃣ Upload kernel image
-      - name: Upload kernel image
-        uses: actions/upload-artifact@v4
-        with:
-          name: kernel-image
-          path: kernel/out/arch/arm64/boot/Image.gz-dtb
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: r5q-custom-kernel
+        path: out/*
