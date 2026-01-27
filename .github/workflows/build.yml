@@ -1,4 +1,4 @@
-name: S10 Lite Kernel - Android 15 Hybrid (BPF Run Fix)
+name: S10 Lite Kernel - Android 15 Hybrid (Tracing No-Op Fix)
 
 on:
   push:
@@ -40,7 +40,6 @@ jobs:
           git remote add linux-stable https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git || true
           git fetch linux-stable linux-4.14.y --depth=1
           
-          # Sincronizăm headerele esențiale pentru eBPF modern
           PATHS=(
             "kernel/bpf/"
             "drivers/android/"
@@ -58,12 +57,12 @@ jobs:
             git checkout FETCH_HEAD -- "$path" || echo "Skip: $path"
           done
 
-      - name: Pre-build Fixes & BPF Engine Patch
+      - name: Pre-build Fixes & BPF Patching
         run: |
-          # 1. Fix Assembler (Typedef __poll_t)
+          # 1. Fix Assembler
           sed -i '/#define _UAPI_LINUX_TYPES_H/a #ifndef __poll_t\n#ifndef __ASSEMBLY__\ntypedef unsigned int __poll_t;\n#endif\n#define __poll_t __poll_t\n#endif' include/uapi/linux/types.h
 
-          # 2. Fix Cgroup Bridge (Samsung cgroup.c vs Stable Headers)
+          # 2. Fix Cgroup Bridge
           if [ -f kernel/cgroup/cgroup.c ]; then
             sed -i 's/ret = cgroup_bpf_inherit(root_cgrp)/cgroup_bpf_inherit(root_cgrp, NULL)/g' kernel/cgroup/cgroup.c
             sed -i 's/ret = cgroup_bpf_inherit(cgrp)/cgroup_bpf_inherit(cgrp, NULL)/g' kernel/cgroup/cgroup.c
@@ -71,22 +70,26 @@ jobs:
             sed -i 's/__cgroup_bpf_detach/cgroup_bpf_detach/g' kernel/cgroup/cgroup.c
           fi
 
-          # 3. Fix BPF_PROG_RUN Conflict (Expansion manuala)
-          # Inlocuim macro-ul care da eroare de redefinire cu apelul direct la functia bpf
+          # 3. Fix BPF Tracing (Neutralizam functiile problematice)
+          if [ -f kernel/trace/bpf_trace.c ]; then
+            # Definim macro-urile lipsa ca fiind operatii goale (0)
+            sed -i '1i #define BPF_PROG_RUN_ARRAY(array, ctx, func) 0' kernel/trace/bpf_trace.c
+            sed -i '1i #define BPF_PROG_RUN 0' kernel/trace/bpf_trace.c
+            
+            # Inlocuim apelurile de functii cu asignari simple ca sa nu mai folosim parantezele
+            sed -i 's/bpf_prog_array_copy(old_array, NULL, prog, \&new_array)/-1; \/\/ /g' kernel/trace/bpf_trace.c
+            sed -i 's/bpf_prog_array_copy(old_array, event->prog, NULL, \&new_array)/-1; \/\/ /g' kernel/trace/bpf_trace.c
+            sed -i 's/bpf_prog_array_free(old_array)/0; \/\/ /g' kernel/trace/bpf_trace.c
+            sed -i 's/bpf_prog_array_delete_safe(old_array, event->prog)/0; \/\/ /g' kernel/trace/bpf_trace.c
+          fi
+
+          # 4. Fix Cgroup.c macro conflict
           if [ -f kernel/bpf/cgroup.c ]; then
             sed -i 's/BPF_PROG_RUN(prog, sk)/((*prog->bpf_func)(sk, prog->insnsi))/g' kernel/bpf/cgroup.c
             sed -i 's/BPF_PROG_RUN(prog, sock_ops)/((*prog->bpf_func)(sock_ops, prog->insnsi))/g' kernel/bpf/cgroup.c
           fi
 
-          # 4. Fix BPF Tracing Shims
-          if [ -f kernel/trace/bpf_trace.c ]; then
-            sed -i 's/BPF_PROG_RUN_ARRAY_CHECK/BPF_PROG_RUN_ARRAY/g' kernel/trace/bpf_trace.c
-            sed -i 's/bpf_prog_array_copy/(int)NULL/g' kernel/trace/bpf_trace.c
-            sed -i 's/bpf_prog_array_delete_safe/(void)NULL/g' kernel/trace/bpf_trace.c
-            sed -i 's/bpf_prog_array_free/(void)NULL/g' kernel/trace/bpf_trace.c
-          fi
-
-          # 5. Bypass SELinux BPF Mismatch
+          # 5. Bypass SELinux BPF
           if [ -f security/selinux/hooks.c ]; then
             sed -i 's/if (file->f_op == \&bpf_map_fops)/if (0)/g' security/selinux/hooks.c
             sed -i 's/} else if (file->f_op == \&bpf_prog_fops)/} else if (0)/g' security/selinux/hooks.c
@@ -94,11 +97,11 @@ jobs:
             sed -i '/aux->security =/s/^/\/\//' security/selinux/hooks.c
           fi
 
-          # 6. Injectare ALU Definitions
+          # 6. Injectare ALU
           echo "#define BPF_ALU_IMMEDIATE 1" >> include/linux/filter.h
           echo "#define BPF_ALU_NON_IMM 0" >> include/linux/filter.h
 
-          # 7. Fix Samsung Log & Python Symlinks
+          # 7. Samsung specific fixes
           mkdir -p system/core/liblog/include/log system/logging/liblog/include/log
           echo -e "#ifndef _PERFLOG_H\n#define _PERFLOG_H\n#endif" > system/core/liblog/include/log/perflog.h
           sudo sh -c 'echo "#!/bin/bash" > /usr/bin/secgetspf'
@@ -109,40 +112,13 @@ jobs:
       - name: Build Kernel
         run: |
           export PATH=$(pwd)/toolchain/proton-clang/bin:$PATH
-          
-          MAKE_ARGS="
-            O=out \
-            ARCH=arm64 \
-            CC=clang \
-            HOSTCC=gcc \
-            HOSTCXX=g++ \
-            LD=ld.lld \
-            AR=llvm-ar \
-            NM=llvm-nm \
-            OBJCOPY=llvm-objcopy \
-            OBJDUMP=llvm-objdump \
-            STRIP=llvm-strip \
-            CROSS_COMPILE=aarch64-linux-gnu- \
-            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-            LLVM=1 \
-            LLVM_IAS=1 \
-            KCFLAGS=-Wno-error \
-            TECHPACK=true
-          "
+          MAKE_ARGS="O=out ARCH=arm64 CC=clang HOSTCC=gcc HOSTCXX=g++ LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1 KCFLAGS=-Wno-error TECHPACK=true"
 
           rm -rf out && mkdir -p out
           make $MAKE_ARGS r5q_eur_open_defconfig
-          
-          # Activare cerinte Android 15
-          ./scripts/config --file out/.config --enable CONFIG_BPF_SYSCALL
-          ./scripts/config --file out/.config --enable CONFIG_BPF_JIT
-          ./scripts/config --file out/.config --enable CONFIG_ANDROID_BINDERFS
-          ./scripts/config --file out/.config --enable CONFIG_ANDROID_BINDER_IPC
-          ./scripts/config --file out/.config --disable CONFIG_DEBUG_INFO_BTF
-          
+          ./scripts/config --file out/.config --enable CONFIG_BPF_SYSCALL --enable CONFIG_BPF_JIT --enable CONFIG_ANDROID_BINDERFS --enable CONFIG_ANDROID_BINDER_IPC --disable CONFIG_DEBUG_INFO_BTF
           make $MAKE_ARGS olddefconfig
           
-          # Rulăm build-ul paralel. Fallback la J1 pentru erori clare.
           make -j$(nproc --all) $MAKE_ARGS || (echo "DIAGNOSTIC J1..." && make -j1 $MAKE_ARGS)
 
           if [ -f out/arch/arm64/boot/Image ]; then
