@@ -32,7 +32,12 @@ jobs:
             gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu \
             python3
 
-      - name: Kernel defconfig
+      - name: Disable gcc-wrapper
+        run: |
+          cd $KERNEL_DIR
+          mv scripts/gcc-wrapper.py scripts/gcc-wrapper.py.disabled || true
+
+      - name: Make defconfig
         run: |
           cd $KERNEL_DIR
           make O=$OUTPUT_DIR ARCH=$ARCH $DEFCONFIG
@@ -40,7 +45,8 @@ jobs:
       - name: Build kernel
         run: |
           cd $KERNEL_DIR
-          make -j$(nproc) O=$OUTPUT_DIR ARCH=$ARCH
+          make -j$(nproc) O=$OUTPUT_DIR ARCH=$ARCH \
+            CC=$CC CROSS_COMPILE=$CROSS_COMPILE NO_CC_WRAPPER=1
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
