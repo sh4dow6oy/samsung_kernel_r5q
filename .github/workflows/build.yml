@@ -1,78 +1,70 @@
-name: Build Samsung R5Q Kernel
+name: Build r5q Kernel
 
 on:
   push:
-    branches:
-      - master
+    branches: [ main ]
   pull_request:
+    branches: [ main ]
+  workflow_dispatch:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Install required packages
+      - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y wget bc bison flex libssl-dev libelf-dev unzip
+          sudo apt-get install -y \
+            build-essential \
+            bc \
+            bison \
+            flex \
+            libssl-dev \
+            libncurses-dev \
+            curl \
+            unzip \
+            git \
+            python3
 
-      - name: Install Python 2.7 (Debian packages)
+      - name: Download Android NDK r25b
         run: |
-          mkdir -p $HOME/python2
-          cd $HOME/python2
+          mkdir -p toolchain
+          cd toolchain
+          curl -L -o ndk.zip https://dl.google.com/android/repository/android-ndk-r25b-linux.zip
+          unzip ndk.zip
+          rm ndk.zip
 
-          wget http://ftp.debian.org/debian/pool/main/p/python2.7/python2.7_2.7.18-8+deb11u1_amd64.deb
-          wget http://ftp.debian.org/debian/pool/main/p/python2.7/python2.7-minimal_2.7.18-8+deb11u1_amd64.deb
-          wget http://ftp.debian.org/debian/pool/main/p/python2.7/libpython2.7-stdlib_2.7.18-8+deb11u1_amd64.deb
-          wget http://ftp.debian.org/debian/pool/main/p/python2.7/libpython2.7-minimal_2.7.18-8+deb11u1_amd64.deb
-
-          dpkg-deb -x python2.7-minimal_2.7.18-8+deb11u1_amd64.deb $HOME/python2
-          dpkg-deb -x libpython2.7-minimal_2.7.18-8+deb11u1_amd64.deb $HOME/python2
-          dpkg-deb -x libpython2.7-stdlib_2.7.18-8+deb11u1_amd64.deb $HOME/python2
-          dpkg-deb -x python2.7_2.7.18-8+deb11u1_amd64.deb $HOME/python2
-
-          echo "$HOME/python2/usr/bin" >> $GITHUB_PATH
-          sudo ln -sf $HOME/python2/usr/bin/python2.7 /usr/bin/python2
-
-      - name: Setup Android NDK (clang + ld.lld)
+      - name: Export NDK Path
         run: |
-          NDK_URL="https://dl.google.com/android/repository/android-ndk-r25b-linux.zip"
-          wget -O ndk.zip "$NDK_URL"
+          echo "NDK_PATH=$PWD/toolchain/android-ndk-r25b" >> $GITHUB_ENV
+          echo "PATH=$PWD/toolchain/android-ndk-r25b/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH" >> $GITHUB_ENV
 
-          # Create directory first
-          mkdir -p "$PWD/toolchain/ndk"
-
-          unzip ndk.zip -d "$PWD/toolchain/ndk"
-
-          export NDK_PATH="$PWD/toolchain/ndk/android-ndk-r25b"
-          export PATH="$NDK_PATH/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH"
-
-          echo "PATH=$PATH" >> $GITHUB_ENV
+      - name: Set build env variables
+        run: |
+          echo "ARCH=arm64" >> $GITHUB_ENV
+          echo "LLVM=1" >> $GITHUB_ENV
+          echo "CLANG_TRIPLE=aarch64-linux-android" >> $GITHUB_ENV
+          echo "CROSS_COMPILE=aarch64-linux-android-" >> $GITHUB_ENV
+          echo "CC=aarch64-linux-android21-clang" >> $GITHUB_ENV
+          echo "LD=ld.lld" >> $GITHUB_ENV
 
       - name: Configure kernel
         run: |
-          export ARCH=arm64
-          export CROSS_COMPILE=aarch64-linux-android-
-          export CC=aarch64-linux-android21-clang
-          export LD=ld.lld
           make ARCH=arm64 r5q_eur_open_defconfig
 
       - name: Build kernel
         run: |
-          export ARCH=arm64
-          export CROSS_COMPILE=aarch64-linux-android-
-          export CC=aarch64-linux-android21-clang
-          export LD=ld.lld
           make -j$(nproc) ARCH=arm64
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: kernel
+          name: kernel-artifacts
           path: |
             arch/arm64/boot/Image
-            arch/arm64/boot/dts/*.dtb
-            .config
+            arch/arm64/boot/dts/*
+            *.ko
