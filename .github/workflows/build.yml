@@ -38,26 +38,32 @@ jobs:
             gcc \
             g++ \
             python3 \
-            python3-distutils
+            python3-venv \
+            python3-pip
+
+      - name: Ensure distutils exists
+        run: |
+          python3 -m pip install --upgrade pip
+          python3 -m pip install setuptools
 
       - name: Install Python 2.7 (Debian packages)
         run: |
           mkdir -p $HOME/python2
           cd $HOME/python2
 
-          # Download dependencies
+          # Dependencies
           wget http://ftp.debian.org/debian/pool/main/o/openssl/libssl1.1_1.1.1n-0+deb11u4_amd64.deb
           wget http://ftp.debian.org/debian/pool/main/libf/libffi/libffi7_3.3-6_amd64.deb
           wget http://ftp.debian.org/debian/pool/main/libn/libnsl/libnsl2_1.3.0-2_amd64.deb
           wget http://ftp.debian.org/debian/pool/main/m/mime-support/mime-support_3.66_all.deb
 
-          # Download python2.7
+          # Python2 packages
           wget http://ftp.debian.org/debian/pool/main/p/python2.7/python2.7_2.7.18-8+deb11u1_amd64.deb
           wget http://ftp.debian.org/debian/pool/main/p/python2.7/python2.7-minimal_2.7.18-8+deb11u1_amd64.deb
           wget http://ftp.debian.org/debian/pool/main/p/python2.7/libpython2.7-stdlib_2.7.18-8+deb11u1_amd64.deb
           wget http://ftp.debian.org/debian/pool/main/p/python2.7/libpython2.7-minimal_2.7.18-8+deb11u1_amd64.deb
 
-          # Install dependencies first
+          # Install dependencies
           sudo dpkg -i libssl1.1_1.1.1n-0+deb11u4_amd64.deb \
             libffi7_3.3-6_amd64.deb \
             libnsl2_1.3.0-2_amd64.deb \
@@ -69,10 +75,7 @@ jobs:
             libpython2.7-stdlib_2.7.18-8+deb11u1_amd64.deb \
             python2.7_2.7.18-8+deb11u1_amd64.deb || true
 
-          # Fix broken dependencies
           sudo apt-get install -f -y
-
-          # Create symlink for python2
           sudo ln -sf /usr/bin/python2.7 /usr/bin/python2
 
       - name: Setup Clang toolchain
@@ -102,4 +105,3 @@ jobs:
           cd $KERNEL_DIR
           make O=$OUTPUT_DIR ARCH=$ARCH $DEFCONFIG
           make -j$(nproc) O=$OUTPUT_DIR ARCH=$ARCH
-
