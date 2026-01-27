@@ -13,7 +13,7 @@ jobs:
       - name: Checkout Source
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0 # Avem nevoie de tot istoricul pentru Upstream
+          fetch-depth: 0 # Esențial pentru a permite merge-ul upstream
 
       - name: Install Dependencies
         run: |
@@ -33,15 +33,40 @@ jobs:
           git config --global user.email "action@github.com"
           git config --global user.name "GitHub Action"
 
-          # Adăugăm sursa oficială stabilă
+          # Adăugăm sursa oficială stabilă CIP (Civil Infrastructure Platform)
           git remote add upstream https://git.kernel.org/pub/scm/linux/kernel/git/cip/linux-cip.git
-          git fetch upstream linux-4.14.y-cip --depth=100
+          
+          # Facem fetch la ramura stabilă 4.14
+          git fetch upstream linux-4.14.y --depth=100
 
-          # Încercăm un merge automat. 
-          # Folosim '-X theirs' pentru a accepta patch-urile de securitate oficiale peste codul vechi
-          git merge upstream/linux-4.14.y-cip -m "Merge Linux-CIP Upstream" || echo "Conflicte detectate, rezolvăm selectiv..."
+          # Încercăm un merge. Folosim strategy-option 'theirs' pentru a favoriza patch-urile de securitate
+          # Dacă merge-ul eșuează din cauza conflictelor masive, ignorăm eroarea și trecem la checkout selectiv
+          git merge upstream/linux-4.14.y -m "Merge Linux-CIP Upstream" || echo "Conflicte detectate, trecem la extragere selectivă..."
 
-          # FORȚĂM subsystemul BPF să fie cel din CIP (pentru compatibilitate Android 15)
-          git checkout upstream/linux-4.14.y-cip -- kernel/bpf/
-          git checkout upstream/linux-4.14.y-cip -- include/linux/bpf.h
-          git checkout upstream/linux
+          # FORȚĂM subsystemul BPF și headerele critice să fie cele din upstream (CIP)
+          # Aceasta rezolvă eroarea btf.h și lipsa tipurilor de date pentru Android 15
+          git checkout upstream/linux-4.14.y -- kernel/bpf/
+          git checkout upstream/linux-4.14.y -- include/linux/bpf.h
+          git checkout upstream/linux-4.14.y -- include/uapi/linux/bpf.h
+          git checkout upstream/linux-4.14.y -- include/uapi/linux/btf.h
+          git checkout upstream/linux-4.14.y -- include/linux/btf.h || true
+          git checkout upstream/linux-4.14.y -- arch/arm64/net/
+          
+          echo "Upstream eBPF components updated successfully."
+
+      - name: Pre-build Fixes
+        run: |
+          # 1. Injectăm __poll_t în types.h dacă încă lipsește (fix pentru bpf.h)
+          grep -q "__poll_t" include/uapi/linux/types.h || echo "typedef unsigned int __poll_t;" >> include/uapi/linux/types.h
+          
+          # 2. Fix log-uri Samsung (perflog.h)
+          mkdir -p system/core/liblog/include/log
+          mkdir -p system/logging/liblog/include/log
+          touch system/core/liblog/include/log/perflog.h
+          touch system/logging/liblog/include/log/perflog.h
+          
+          # 3. Rezolvarea referințelor btf.h în core.c (pentru a căuta în linux/ nu în uapi/)
+          find kernel/bpf/ -name "*.c" | xargs sed -i 's|<uapi/linux/btf.h>|<linux/btf.h>|g' || true
+          
+          # 4. Dezactivare wrapper Samsung și link Python2
+          [ -f
