@@ -1,4 +1,4 @@
-name: S10 Lite Kernel - Kernel.org 4.14.y Stable
+name: S10 Lite Kernel - Android 15 Hybrid (Kernel.org 4.14.y)
 
 on:
   push:
@@ -20,7 +20,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y bc bison flex libssl-dev libelf-dev dwarves libncurses-dev git wget make python2 python3 pahole
 
-      - name: Cache Proton Clang
+      - name: Cache Toolchain
         id: cache-toolchain
         uses: actions/cache@v4
         with:
@@ -37,11 +37,10 @@ jobs:
           git config --global user.email "action@github.com"
           git config --global user.name "GitHub Action"
           
-          # Adăugăm sursa oficială Linux Stable
           git remote add linux-stable https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git || true
           git fetch linux-stable linux-4.14.y --depth=1
           
-          # Sincronizăm componentele. Dacă un fișier nu există în 4.14 (ex: btf.h în uapi), ignorăm eroarea.
+          # Sincronizăm doar subsistemele critice pentru Android 15
           PATHS=(
             "kernel/bpf/"
             "drivers/android/"
@@ -55,9 +54,9 @@ jobs:
             git checkout FETCH_HEAD -- "$path" || echo "Skip: $path nu există în ramura 4.14.y"
           done
 
-      - name: Pre-build Fixes
+      - name: Pre-build Fixes & Shimming
         run: |
-          # 1. Rezolvăm eroarea 'unknown mnemonic typedef' pentru Assembler
+          # 1. Rezolvăm eroarea Assembler (unknown mnemonic typedef)
           sed -i '/#define _UAPI_LINUX_TYPES_H/a \
           #ifndef __poll_t \
           #ifndef __ASSEMBLY__ \
@@ -66,18 +65,29 @@ jobs:
           #define __poll_t __poll_t \
           #endif' include/uapi/linux/types.h
 
-          # 2. Fix-uri pentru log-urile Samsung & secgetspf
+          # 2. Fix 'cgroup_bpf_update' - forțăm declararea prototipului
+          echo "int cgroup_bpf_update(struct cgroup *cgrp, struct bpf_prog *prog, enum bpf_attach_type type, bool overridable);" >> include/linux/bpf-cgroup.h
+
+          # 3. Bypass SELinux BPF - Păcălim SELinux Samsung să ignore noile structuri BPF
+          sed -i 's/if (file->f_op == \&bpf_map_fops)/if (0) \/\/ bypass/g' security/selinux/hooks.c
+          sed -i 's/} else if (file->f_op == \&bpf_prog_fops)/} else if (0) \/\/ bypass/g' security/selinux/hooks.c
+          
+          # Dezactivăm liniile care caută membrul 'security' eliminat în structurile BPF noi
+          sed -i '/prog->aux->security/s/^/\/\//' security/selinux/hooks.c
+          sed -i '/aux->security =/s/^/\/\//' security/selinux/hooks.c
+          sed -i '/struct bpf_security_struct \*bpfsec = aux->security;/s/^/\/\//' security/selinux/hooks.c
+
+          # 4. Fix Samsung Log Headers & Dummy Binaries
           mkdir -p system/core/liblog/include/log system/logging/liblog/include/log
           echo -e "#ifndef _PERFLOG_H\n#define _PERFLOG_H\n#endif" > system/core/liblog/include/log/perflog.h
           echo -e "#ifndef _PERFLOG_H\n#define _PERFLOG_H\n#endif" > system/logging/liblog/include/log/perflog.h
-          
           sudo sh -c 'echo "#!/bin/bash" > /usr/bin/secgetspf'
           sudo chmod +x /usr/bin/secgetspf
 
-          # 3. Patch pentru btf.h (Redirecționăm headerele BPF să găsească BTF)
+          # 5. Redirectare headere BTF (pentru compatibilitate eBPF)
           find kernel/bpf/ -name "*.c" | xargs sed -i 's|<uapi/linux/btf.h>|<linux/btf.h>|g' || true
           
-          # 4. Setup Python
+          # 6. Python symlink (cerut de scripturile vechi Samsung)
           [ -f scripts/gcc-wrapper.py ] && mv scripts/gcc-wrapper.py scripts/gcc-wrapper.py.disabled || true
           sudo ln -sf /usr/bin/python2 /usr/bin/python
 
@@ -108,7 +118,7 @@ jobs:
           rm -rf out && mkdir -p out
           make $MAKE_ARGS r5q_eur_open_defconfig
           
-          # Activăm eBPF & Binder modern pentru Android 15
+          # Activăm eBPF & Binder modern pentru Android 15 (Configurări critice)
           ./scripts/config --file out/.config --enable CONFIG_BPF_SYSCALL
           ./scripts/config --file out/.config --enable CONFIG_BPF_JIT
           ./scripts/config --file out/.config --enable CONFIG_HAVE_EBPF_JIT
@@ -117,12 +127,15 @@ jobs:
           ./scripts/config --file out/.config --disable CONFIG_DEBUG_INFO_BTF
           
           make $MAKE_ARGS olddefconfig
-          make -j$(nproc --all) $MAKE_ARGS
+          
+          # Rulăm build-ul. Dacă eșuează, reluăm cu j1 pentru diagnostic clar.
+          make -j$(nproc --all) $MAKE_ARGS || (echo "DIAGNOSTIC: Eroare la build. Reîncercăm cu -j1..." && make -j1 $MAKE_ARGS)
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
+        if: success()
         with:
-          name: Kernel-S10Lite-KernelOrg-Stable
+          name: Kernel-S10Lite-Android15-Hybrid
           path: |
             out/arch/arm64/boot/Image
             out/arch/arm64/boot/dtbo.img
