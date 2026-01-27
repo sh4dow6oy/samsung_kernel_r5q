@@ -1,4 +1,4 @@
-name: S10 Lite Kernel - OpenELA Hybrid - Fixed
+name: S10 Lite Kernel - Kernel.org 4.14.y Stable
 
 on:
   push:
@@ -32,28 +32,32 @@ jobs:
         run: |
           git clone --depth=1 https://github.com/kdrag0n/proton-clang.git toolchain/proton-clang
 
-      - name: Upstream from OpenELA (Linux 4.14.y)
+      - name: Upstream from Kernel.org (Linux 4.14.y)
         run: |
           git config --global user.email "action@github.com"
           git config --global user.name "GitHub Action"
           
-          git remote add openela https://github.com/openela/kernel-lts.git || true
-          git fetch openela linux-4.14.y --depth=1
+          # Adăugăm sursa oficială Linux Stable
+          git remote add linux-stable https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git || true
+          git fetch linux-stable linux-4.14.y --depth=1
           
-          # Injectăm componentele OpenELA (sunt mult mai stabile decât 4.19 pe hardware S10 Lite)
-          git checkout FETCH_HEAD -- kernel/bpf/
-          git checkout FETCH_HEAD -- drivers/android/
-          git checkout FETCH_HEAD -- include/uapi/linux/bpf.h
-          git checkout FETCH_HEAD -- include/uapi/linux/btf.h
-          git checkout FETCH_HEAD -- include/linux/bpf.h
-          git checkout FETCH_HEAD -- arch/arm64/net/
-          
-          echo "Upstream via OpenELA finalizat."
+          # Sincronizăm componentele. Dacă un fișier nu există în 4.14 (ex: btf.h în uapi), ignorăm eroarea.
+          PATHS=(
+            "kernel/bpf/"
+            "drivers/android/"
+            "include/linux/bpf.h"
+            "include/linux/btf.h"
+            "include/uapi/linux/bpf.h"
+            "arch/arm64/net/"
+          )
+
+          for path in "${PATHS[@]}"; do
+            git checkout FETCH_HEAD -- "$path" || echo "Skip: $path nu există în ramura 4.14.y"
+          done
 
       - name: Pre-build Fixes
         run: |
           # 1. Rezolvăm eroarea 'unknown mnemonic typedef' pentru Assembler
-          # Introducem __poll_t cu protecție pentru fișierele .S
           sed -i '/#define _UAPI_LINUX_TYPES_H/a \
           #ifndef __poll_t \
           #ifndef __ASSEMBLY__ \
@@ -67,11 +71,10 @@ jobs:
           echo -e "#ifndef _PERFLOG_H\n#define _PERFLOG_H\n#endif" > system/core/liblog/include/log/perflog.h
           echo -e "#ifndef _PERFLOG_H\n#define _PERFLOG_H\n#endif" > system/logging/liblog/include/log/perflog.h
           
-          # Creăm dummy secgetspf pentru a trece de Makefile-ul Samsung
           sudo sh -c 'echo "#!/bin/bash" > /usr/bin/secgetspf'
           sudo chmod +x /usr/bin/secgetspf
 
-          # 3. Patch pentru btf.h location
+          # 3. Patch pentru btf.h (Redirecționăm headerele BPF să găsească BTF)
           find kernel/bpf/ -name "*.c" | xargs sed -i 's|<uapi/linux/btf.h>|<linux/btf.h>|g' || true
           
           # 4. Setup Python
@@ -87,3 +90,39 @@ jobs:
             ARCH=arm64 \
             CC=clang \
             HOSTCC=gcc \
+            HOSTCXX=g++ \
+            LD=ld.lld \
+            AR=llvm-ar \
+            NM=llvm-nm \
+            OBJCOPY=llvm-objcopy \
+            OBJDUMP=llvm-objdump \
+            STRIP=llvm-strip \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            LLVM=1 \
+            LLVM_IAS=1 \
+            KCFLAGS=-Wno-error \
+            TECHPACK=true
+          "
+
+          rm -rf out && mkdir -p out
+          make $MAKE_ARGS r5q_eur_open_defconfig
+          
+          # Activăm eBPF & Binder modern pentru Android 15
+          ./scripts/config --file out/.config --enable CONFIG_BPF_SYSCALL
+          ./scripts/config --file out/.config --enable CONFIG_BPF_JIT
+          ./scripts/config --file out/.config --enable CONFIG_HAVE_EBPF_JIT
+          ./scripts/config --file out/.config --enable CONFIG_ANDROID_BINDERFS
+          ./scripts/config --file out/.config --enable CONFIG_ANDROID_BINDER_IPC
+          ./scripts/config --file out/.config --disable CONFIG_DEBUG_INFO_BTF
+          
+          make $MAKE_ARGS olddefconfig
+          make -j$(nproc --all) $MAKE_ARGS
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: Kernel-S10Lite-KernelOrg-Stable
+          path: |
+            out/arch/arm64/boot/Image
+            out/arch/arm64/boot/dtbo.img
