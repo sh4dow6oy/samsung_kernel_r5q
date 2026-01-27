@@ -1,4 +1,4 @@
-name: S10 Lite Kernel - Android 15 Hybrid (Linker Master Fix)
+name: S10 Lite Kernel - Android 15 Hybrid (Weak Symbols Fix)
 
 on:
   push:
@@ -36,45 +36,44 @@ jobs:
           git config --global user.name "GitHub Action"
           git remote add linux-stable https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git || true
           git fetch linux-stable linux-4.14.y --depth=1
-          PATHS=("kernel/bpf/" "drivers/android/" "include/linux/bpf.h" "include/linux/filter.h" "include/linux/bpf_verifier.h" "include/linux/bpf-cgroup.h" "include/uapi/linux/bpf.h" "include/uapi/linux/bpf_common.h" "include/uapi/linux/filter.h" "arch/arm64/net/")
+          PATHS=("kernel/bpf/" "drivers/android/" "include/linux/bpf.h" "include/linux/filter.h" "include/linux/bpf_verifier.h" "include/linux/bpf-cgroup.h" "include/uapi/linux/bpf.h" "include/uapi/linux/bapi/linux/bpf_common.h" "include/uapi/linux/filter.h" "arch/arm64/net/")
           for path in "${PATHS[@]}"; do git checkout FETCH_HEAD -- "$path" || echo "Skip: $path"; done
 
-      - name: Pre-build Fixes (Final Linker Neutralization)
+      - name: Pre-build Fixes (Final Sanitization)
         run: |
-          # 1. Fix Cgroup & BPF Missing Symbols in Linker (Inject Stubs)
-          # Adaugam definitii goale direct in codul sursa pentru a multumi linker-ul
-          echo "int cgroup_bpf_update(struct cgroup *cgrp, struct bpf_prog *prog, struct bpf_prog *old_prog, enum bpf_attach_type type) { return 0; }" >> kernel/bpf/core.c
-          echo "struct bpf_prog *bpf_prog_get_type_path(const char *path, enum bpf_prog_type type) { return ERR_PTR(-EINVAL); }" >> kernel/bpf/core.c
-          
-          # 2. Fix Samsung Freecess typo/missing symbol
-          if [ -f drivers/staging/android/freecess_pkg.c ]; then
-            sed -i 's/extern int binders_in_transcation;/int binders_in_transcation = 0;/g' drivers/staging/android/freecess_pkg.c
-            sed -i 's/binders_in_transcation = binders_in_transcation/binders_in_transcation = 0/g' drivers/staging/android/freecess_pkg.c
+          # 1. Injectare Stubs cu atribut __attribute__((weak)) în core.c
+          # Aceasta previne eroarea de "conflicting types"
+          cat <<EOF >> kernel/bpf/core.c
+          #include <linux/bpf-cgroup.h>
+          int __attribute__((weak)) cgroup_bpf_update(struct cgroup *cgrp, struct bpf_prog *prog, struct bpf_prog *old_prog, enum bpf_attach_type type) { return 0; }
+          struct bpf_prog * __attribute__((weak)) bpf_prog_get_type_path(const char *path, enum bpf_prog_type type) { return ERR_PTR(-EINVAL); }
+          EOF
+
+          # 2. Fix bpf_trace.c - Curățare totală apeluri array
+          if [ -f kernel/trace/bpf_trace.c ]; then
+            sed -i '1i #include <linux/filter.h>' kernel/trace/bpf_trace.c
+            sed -i 's/bpf_prog_array_copy([^)]*)/0/g' kernel/trace/bpf_trace.c
+            sed -i 's/bpf_prog_array_free([^)]*)/((void)0)/g' kernel/trace/bpf_trace.c
+            sed -i 's/bpf_prog_array_delete_safe([^)]*)/0/g' kernel/trace/bpf_trace.c
+            sed -i 's/BPF_PROG_RUN_ARRAY_CHECK([^)]*)/0/g' kernel/trace/bpf_trace.c
+            sed -i 's/BPF_PROG_RUN_ARRAY([^)]*)/0/g' kernel/trace/bpf_trace.c
           fi
 
-          # 3. Fix Cgroup Arguments & Symbols
+          # 3. Fix Cgroup & BPF Symbols (Underscore & Inherit)
           if [ -f kernel/cgroup/cgroup.c ]; then
             sed -i 's/__cgroup_bpf_attach/cgroup_bpf_attach/g' kernel/cgroup/cgroup.c
             sed -i 's/__cgroup_bpf_detach/cgroup_bpf_detach/g' kernel/cgroup/cgroup.c
             sed -i 's/ret = cgroup_bpf_inherit(\([^,)]*\))/cgroup_bpf_inherit(\1, NULL)/g' kernel/cgroup/cgroup.c
           fi
 
-          # 4. Fix Tracing Symbols (Bypass through C-code instead of headers)
-          if [ -f kernel/trace/bpf_trace.c ]; then
-            sed -i '1i #include <linux/filter.h>' kernel/trace/bpf_trace.c
-            sed -i 's/bpf_prog_array_copy/0; \/\/ /g' kernel/trace/bpf_trace.c
-            sed -i 's/bpf_prog_array_free/(void)0; \/\/ /g' kernel/trace/bpf_trace.c
-            sed -i 's/bpf_prog_array_delete_safe/0; \/\/ /g' kernel/trace/bpf_trace.c
+          # 4. Fix Samsung Freecess & Perflog
+          if [ -f drivers/staging/android/freecess_pkg.c ]; then
+            sed -i 's/extern int binders_in_transcation;/int binders_in_transcation = 0;/g' drivers/staging/android/freecess_pkg.c
           fi
+          mkdir -p include/linux/ && touch include/linux/perflog.h
+          echo -e "#ifndef _LINUX_PERFLOG_H\n#define _LINUX_PERFLOG_H\n#endif" > include/linux/perflog.h
 
-          # 5. Fix Samsung Perflog missing headers (Force create)
-          mkdir -p include/linux/
-          touch include/linux/perflog.h
-          echo "#ifndef _LINUX_PERFLOG_H" > include/linux/perflog.h
-          echo "#define _LINUX_PERFLOG_H" >> include/linux/perflog.h
-          echo "#endif" >> include/linux/perflog.h
-
-          # 6. SELinux fix
+          # 5. Fix SELinux
           if [ -f security/selinux/hooks.c ]; then
             sed -i 's/file->f_op == \&bpf_map_fops/0/g' security/selinux/hooks.c
             sed -i 's/file->f_op == \&bpf_prog_fops/0/g' security/selinux/hooks.c
