@@ -1,4 +1,4 @@
-name: S10 Lite Kernel - Android 15 Hybrid (Header Fix)
+name: S10 Lite Kernel - Android 15 Hybrid (Trace Logic Fix)
 
 on:
   push:
@@ -39,48 +39,44 @@ jobs:
           PATHS=("kernel/bpf/" "drivers/android/" "include/linux/bpf.h" "include/linux/filter.h" "include/linux/bpf_verifier.h" "include/linux/bpf-cgroup.h" "include/uapi/linux/bpf.h" "include/uapi/linux/bpf_common.h" "include/uapi/linux/filter.h" "arch/arm64/net/")
           for path in "${PATHS[@]}"; do git checkout FETCH_HEAD -- "$path" || echo "Skip: $path"; done
 
-      - name: Pre-build Fixes (BPF Header Sanitization)
+      - name: Pre-build Fixes (Sanitizing BPF Tracing)
         run: |
-          # 1. Fix Cgroup Symbols & Return Types
+          # 1. Fix Cgroup Argument Mismatch
           if [ -f kernel/cgroup/cgroup.c ]; then
             sed -i 's/__cgroup_bpf_attach/cgroup_bpf_attach/g' kernel/cgroup/cgroup.c
             sed -i 's/__cgroup_bpf_detach/cgroup_bpf_detach/g' kernel/cgroup/cgroup.c
             sed -i 's/ret = cgroup_bpf_inherit(\([^,)]*\))/cgroup_bpf_inherit(\1, NULL)/g' kernel/cgroup/cgroup.c
           fi
 
-          # 2. Fix Conflict in bpf-cgroup.h (Eliminăm declarația care se bate cu linker-ul)
-          if [ -f include/linux/bpf-cgroup.h ]; then
-            sed -i 's/int cgroup_bpf_update/static inline int cgroup_bpf_update_unused/g' include/linux/bpf-cgroup.h
-          fi
-
-          # 3. Injectare struct bpf_prog_aux security (Pascua Technique)
-          sed -i '/struct bpf_prog_aux {/a \	void *security;' include/linux/bpf.h
-
-          # 4. Fix bpf_trace.c
+          # 2. Fix bpf_trace.c (Clean Replacement)
+          # Înlocuim apelurile funcțiilor lipsă cu constanta 0, dar păstrăm restul liniei
           if [ -f kernel/trace/bpf_trace.c ]; then
             sed -i '1i #include <linux/filter.h>' kernel/trace/bpf_trace.c
             sed -i 's/BPF_PROG_RUN_ARRAY_CHECK([^)]*)/0/g' kernel/trace/bpf_trace.c
             sed -i 's/BPF_PROG_RUN_ARRAY([^)]*)/0/g' kernel/trace/bpf_trace.c
-            # Neutralizăm apelurile către funcțiile de array direct în C pentru a nu strica headerele
-            sed -i 's/bpf_prog_array_copy/0 \/\/ /g' kernel/trace/bpf_trace.c
-            sed -i 's/bpf_prog_array_free/(void) \/\/ /g' kernel/trace/bpf_trace.c
-            sed -i 's/bpf_prog_array_delete_safe/(void) \/\/ /g' kernel/trace/bpf_trace.c
+            sed -i 's/bpf_prog_array_copy([^)]*)/0/g' kernel/trace/bpf_trace.c
+            sed -i 's/bpf_prog_array_free([^)]*)/((void)0)/g' kernel/trace/bpf_trace.c
+            sed -i 's/bpf_prog_array_delete_safe([^)]*)/0/g' kernel/trace/bpf_trace.c
           fi
 
-          # 5. Fix SELinux
+          # 3. Fix conflict in bpf-cgroup.h
+          if [ -f include/linux/bpf-cgroup.h ]; then
+            sed -i 's/int cgroup_bpf_update/static inline int cgroup_bpf_update_unused/g' include/linux/bpf-cgroup.h
+          fi
+
+          # 4. Injectare struct bpf_prog_aux security & SELinux bypass
+          sed -i '/struct bpf_prog_aux {/a \	void *security;' include/linux/bpf.h
           if [ -f security/selinux/hooks.c ]; then
-            sed -i '/#include "layers.h"/a #include <linux/bpf.h>' security/selinux/hooks.c
             sed -i 's/file->f_op == \&bpf_map_fops/0/g' security/selinux/hooks.c
             sed -i 's/file->f_op == \&bpf_prog_fops/0/g' security/selinux/hooks.c
           fi
 
-          # 6. Samsung Freecess Typo & Python Fix
+          # 5. Fix Samsung Freecess
           if [ -f drivers/staging/android/freecess_pkg.c ]; then
             sed -i 's/extern int binders_in_transcation;/int binders_in_transcation = 0;/g' drivers/staging/android/freecess_pkg.c
           fi
+
           sudo ln -sf /usr/bin/python3 /usr/bin/python
-          mkdir -p system/core/liblog/include/log
-          echo -e "#ifndef _PERFLOG_H\n#define _PERFLOG_H\n#endif" > system/core/liblog/include/log/perflog.h
 
       - name: Build Kernel & DTBs
         run: |
@@ -91,9 +87,8 @@ jobs:
           rm -rf out && mkdir -p out
           make $MAKE_ARGS r5q_eur_open_defconfig
           
-          # Dezactivăm CONFIG_MODVERSIONS pentru a scăpa de eroarea CRC GSI
           ./scripts/config --file out/.config --disable CONFIG_MODVERSIONS
-          ./scripts/config --file out/.config --enable CONFIG_BPF_SYSCALL --enable CONFIG_BPF_JIT --enable CONFIG_HAVE_EBPF_JIT --enable CONFIG_ANDROID_BINDERFS --disable CONFIG_SAMSUNG_PRODUCT_SHIP --disable CONFIG_DEFEX --disable CONFIG_CC_STACKPROTECTOR_STRONG
+          ./scripts/config --file out/.config --enable CONFIG_BPF_SYSCALL --enable CONFIG_BPF_JIT --enable CONFIG_HAVE_EBPF_JIT --enable CONFIG_ANDROID_BINDERFS --disable CONFIG_SAMSUNG_PRODUCT_SHIP --disable CONFIG_DEFEX
           
           make $MAKE_ARGS olddefconfig
           make -j$(nproc --all) $MAKE_ARGS Image.gz-dtb dtbs || make -j1 $MAKE_ARGS Image.gz-dtb dtbs
