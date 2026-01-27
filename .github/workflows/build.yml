@@ -1,106 +1,105 @@
-name: Build r5q Kernel
+name: Build Samsung Kernel R5Q
 
 on:
   push:
-    branches: [ main ]
-  pull_request:
-    branches: [ main ]
+    branches:
+      - main
   workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-24.04
 
+    env:
+      ARCH: arm64
+      KERNEL_DIR: ${{ github.workspace }}
+      DEFCONFIG: r5q_eur_open_defconfig
+      OUTPUT_DIR: ${{ github.workspace }}/out
+
     steps:
-      - name: Checkout repo
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install build dependencies
+      - name: Install dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            build-essential \
             bc \
             bison \
             flex \
             libssl-dev \
+            libelf-dev \
+            dwarves \
             libncurses-dev \
-            curl \
-            unzip \
             git \
+            wget \
+            unzip \
+            make \
+            gcc \
+            g++ \
             python3 \
-            wget
+            python3-distutils
 
-      - name: Install python2 (Debian package + deps)
+      - name: Install Python 2.7 (Debian packages)
         run: |
-          mkdir -p /tmp/python2
-          cd /tmp/python2
+          mkdir -p $HOME/python2
+          cd $HOME/python2
 
-          # Dependencies
-          wget http://ftp.debian.org/debian/pool/main/o/openssl1.1/libssl1.1_1.1.1n-0+deb11u4_amd64.deb
+          # Download dependencies
+          wget http://ftp.debian.org/debian/pool/main/o/openssl/libssl1.1_1.1.1n-0+deb11u4_amd64.deb
           wget http://ftp.debian.org/debian/pool/main/libf/libffi/libffi7_3.3-6_amd64.deb
-          wget http://ftp.debian.org/debian/pool/main/n/nsl/libnsl2_2.0.0-2_amd64.deb
-          wget http://ftp.debian.org/debian/pool/main/m/mime-support/mime-support_3.68_all.deb
+          wget http://ftp.debian.org/debian/pool/main/libn/libnsl/libnsl2_1.3.0-2_amd64.deb
+          wget http://ftp.debian.org/debian/pool/main/m/mime-support/mime-support_3.66_all.deb
 
-          # Python2 packages
+          # Download python2.7
           wget http://ftp.debian.org/debian/pool/main/p/python2.7/python2.7_2.7.18-8+deb11u1_amd64.deb
           wget http://ftp.debian.org/debian/pool/main/p/python2.7/python2.7-minimal_2.7.18-8+deb11u1_amd64.deb
           wget http://ftp.debian.org/debian/pool/main/p/python2.7/libpython2.7-stdlib_2.7.18-8+deb11u1_amd64.deb
           wget http://ftp.debian.org/debian/pool/main/p/python2.7/libpython2.7-minimal_2.7.18-8+deb11u1_amd64.deb
 
-          # Install dependencies
-          sudo dpkg -i libssl1.1_1.1.1n-0+deb11u4_amd64.deb
-          sudo dpkg -i libffi7_3.3-6_amd64.deb
-          sudo dpkg -i libnsl2_2.0.0-2_amd64.deb
-          sudo dpkg -i mime-support_3.68_all.deb
+          # Install dependencies first
+          sudo dpkg -i libssl1.1_1.1.1n-0+deb11u4_amd64.deb \
+            libffi7_3.3-6_amd64.deb \
+            libnsl2_1.3.0-2_amd64.deb \
+            mime-support_3.66_all.deb || true
 
-          # Install Python2
-          sudo dpkg -i libpython2.7-minimal_2.7.18-8+deb11u1_amd64.deb
-          sudo dpkg -i python2.7-minimal_2.7.18-8+deb11u1_amd64.deb
-          sudo dpkg -i libpython2.7-stdlib_2.7.18-8+deb11u1_amd64.deb
-          sudo dpkg -i python2.7_2.7.18-8+deb11u1_amd64.deb
+          # Install python2 packages
+          sudo dpkg -i python2.7-minimal_2.7.18-8+deb11u1_amd64.deb \
+            libpython2.7-minimal_2.7.18-8+deb11u1_amd64.deb \
+            libpython2.7-stdlib_2.7.18-8+deb11u1_amd64.deb \
+            python2.7_2.7.18-8+deb11u1_amd64.deb || true
 
+          # Fix broken dependencies
+          sudo apt-get install -f -y
+
+          # Create symlink for python2
           sudo ln -sf /usr/bin/python2.7 /usr/bin/python2
 
-      - name: Download Android NDK r25b
+      - name: Setup Clang toolchain
         run: |
-          mkdir -p toolchain
-          cd toolchain
-          curl -L -o ndk.zip https://dl.google.com/android/repository/android-ndk-r25b-linux.zip
-          unzip ndk.zip
-          rm ndk.zip
+          TOOLCHAIN_PATH="$PWD/toolchain/clang"
+          mkdir -p "$TOOLCHAIN_PATH"
+          wget -O clang.tar.gz "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/413febb26cbd05d9a1e44f089190ac892f72e684.tar.gz"
+          tar -xf clang.tar.gz -C "$TOOLCHAIN_PATH"
+          export PATH="$TOOLCHAIN_PATH/clang-r416183b/bin:$PATH"
+          export CC=clang
+          echo "PATH=$PATH" >> $GITHUB_ENV
+          echo "CC=$CC" >> $GITHUB_ENV
 
-      - name: Export NDK Path
+      - name: Setup GCC AArch64 toolchain
         run: |
-          echo "NDK_PATH=$PWD/toolchain/android-ndk-r25b" >> $GITHUB_ENV
-          echo "PATH=$PWD/toolchain/android-ndk-r25b/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH" >> $GITHUB_ENV
+          TOOLCHAIN_PATH="$PWD/toolchain/gcc"
+          mkdir -p "$TOOLCHAIN_PATH"
+          wget -O gcc-aarch64.tar.gz "https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/+archive/refs/heads/master.tar.gz"
+          tar -xf gcc-aarch64.tar.gz -C "$TOOLCHAIN_PATH"
+          export PATH="$TOOLCHAIN_PATH/aarch64-linux-android-4.9/bin:$PATH"
+          export CROSS_COMPILE=aarch64-linux-android-
+          echo "PATH=$PATH" >> $GITHUB_ENV
+          echo "CROSS_COMPILE=$CROSS_COMPILE" >> $GITHUB_ENV
 
-      - name: Set build env variables
+      - name: Build Kernel
         run: |
-          echo "ARCH=arm64" >> $GITHUB_ENV
-          echo "LLVM=1" >> $GITHUB_ENV
-          echo "CLANG_TRIPLE=aarch64-linux-android" >> $GITHUB_ENV
-          echo "CROSS_COMPILE=" >> $GITHUB_ENV
-          echo "CC=aarch64-linux-android21-clang" >> $GITHUB_ENV
-          echo "LD=ld.lld" >> $GITHUB_ENV
-          echo "AR=llvm-ar" >> $GITHUB_ENV
-          echo "NM=llvm-nm" >> $GITHUB_ENV
-          echo "OBJCOPY=llvm-objcopy" >> $GITHUB_ENV
-          echo "OBJDUMP=llvm-objdump" >> $GITHUB_ENV
-          echo "STRIP=llvm-strip" >> $GITHUB_ENV
+          cd $KERNEL_DIR
+          make O=$OUTPUT_DIR ARCH=$ARCH $DEFCONFIG
+          make -j$(nproc) O=$OUTPUT_DIR ARCH=$ARCH
 
-      - name: Configure kernel
-        run: |
-          make ARCH=arm64 r5q_eur_open_defconfig
-
-      - name: Build kernel
-        run: |
-          make -j$(nproc) ARCH=arm64
-
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: kernel-artifacts
-          path: |
-            arch/arm64/boot/Image
-            arch/arm64/boot/dts/*
