@@ -17,11 +17,11 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y wget bc bison flex libssl-dev libelf-dev python2
+          sudo apt-get install -y wget bc bison flex libssl-dev libelf-dev python3 python3-distutils python-is-python3
 
-      - name: Setup python2
+      - name: Create python2 symlink
         run: |
-          sudo ln -sf /usr/bin/python2 /usr/bin/python
+          sudo ln -sf /usr/bin/python3 /usr/bin/python2
 
       - name: Setup Clang toolchain
         run: |
@@ -30,7 +30,6 @@ jobs:
           wget -O clang.tar.gz "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/413febb26cbd05d9a1e44f089190ac892f72e684.tar.gz"
           tar -xf clang.tar.gz -C "$TOOLCHAIN_PATH"
 
-          # Create expected path for your build system
           mkdir -p "$PWD/toolchain/llvm-arm-toolchain-ship/10.0/bin"
           ln -s "$TOOLCHAIN_PATH/clang-r416183b/bin/clang" "$PWD/toolchain/llvm-arm-toolchain-ship/10.0/bin/clang"
 
