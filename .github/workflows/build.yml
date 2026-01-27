@@ -1,4 +1,4 @@
-name: S10 Lite Kernel - Android 15 Hybrid (Ultimate Fix)
+name: S10 Lite Kernel - Android 15 Hybrid (Cgroup Fix)
 
 on:
   push:
@@ -40,7 +40,6 @@ jobs:
           git remote add linux-stable https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git || true
           git fetch linux-stable linux-4.14.y --depth=1
           
-          # Sincronizăm tot setul de headere necesar pentru noul Verifier BPF
           PATHS=(
             "kernel/bpf/"
             "drivers/android/"
@@ -55,43 +54,41 @@ jobs:
           )
 
           for path in "${PATHS[@]}"; do
-            git checkout FETCH_HEAD -- "$path" || echo "Skip: $path nu a fost găsit"
+            git checkout FETCH_HEAD -- "$path" || echo "Skip: $path"
           done
 
-      - name: Pre-build Fixes & BPF Patching
+      - name: Pre-build Fixes & Cgroup Bridge
         run: |
-          # 1. Rezolvăm eroarea Assembler (unknown mnemonic typedef)
-          sed -i '/#define _UAPI_LINUX_TYPES_H/a \
-          #ifndef __poll_t \
-          #ifndef __ASSEMBLY__ \
-          typedef unsigned int __poll_t; \
-          #endif \
-          #define __poll_t __poll_t \
-          #endif' include/uapi/linux/types.h
+          # 1. Rezolvăm eroarea Assembler
+          sed -i '/#define _UAPI_LINUX_TYPES_H/a #ifndef __poll_t\n#ifndef __ASSEMBLY__\ntypedef unsigned int __poll_t;\n#endif\n#define __poll_t __poll_t\n#endif' include/uapi/linux/types.h
 
-          # 2. Bypass SELinux BPF (Păcălim SELinux Samsung să ignore noile structuri)
-          if [ -f security/selinux/hooks.c ]; then
-            sed -i 's/if (file->f_op == \&bpf_map_fops)/if (0) \/\/ bypass/g' security/selinux/hooks.c
-            sed -i 's/} else if (file->f_op == \&bpf_prog_fops)/} else if (0) \/\/ bypass/g' security/selinux/hooks.c
-            sed -i '/prog->aux->security/s/^/\/\//' security/selinux/hooks.c
-            sed -i '/aux->security =/s/^/\/\//' security/selinux/hooks.c
-            sed -i '/struct bpf_security_struct \*bpfsec = aux->security;/s/^/\/\//' security/selinux/hooks.c
+          # 2. Fix Cgroup Bridge (Samsung cgroup.c vs Stable Headers)
+          # Ajustăm apelurile de funcții pentru a se potrivi cu noile headere
+          if [ -f kernel/cgroup/cgroup.c ]; then
+            sed -i 's/cgroup_bpf_inherit(root_cgrp)/cgroup_bpf_inherit(root_cgrp, NULL)/g' kernel/cgroup/cgroup.c
+            sed -i 's/cgroup_bpf_inherit(cgrp)/cgroup_bpf_inherit(cgrp, NULL)/g' kernel/cgroup/cgroup.c
+            sed -i 's/__cgroup_bpf_attach/cgroup_bpf_attach/g' kernel/cgroup/cgroup.c
+            sed -i 's/__cgroup_bpf_detach/cgroup_bpf_detach/g' kernel/cgroup/cgroup.c
           fi
 
-          # 3. Forțăm definițiile BPF care lipseau în verifier.c
-          # Adăugăm BPF_ALU_IMMEDIATE manual dacă filter.h are probleme
+          # 3. Bypass SELinux BPF Mismatch
+          if [ -f security/selinux/hooks.c ]; then
+            sed -i 's/if (file->f_op == \&bpf_map_fops)/if (0)/g' security/selinux/hooks.c
+            sed -i 's/} else if (file->f_op == \&bpf_prog_fops)/} else if (0)/g' security/selinux/hooks.c
+            sed -i '/prog->aux->security/s/^/\/\//' security/selinux/hooks.c
+            sed -i '/aux->security =/s/^/\/\//' security/selinux/hooks.c
+          fi
+
+          # 4. Injectăm definițiile BPF critice în filter.h
           echo "#define BPF_ALU_IMMEDIATE 1" >> include/linux/filter.h
           echo "#define BPF_ALU_NON_IMM 0" >> include/linux/filter.h
 
-          # 4. Fix Samsung Log Headers & Dummy Binaries
+          # 5. Fix Samsung Log Headers & Dummy Binaries
           mkdir -p system/core/liblog/include/log system/logging/liblog/include/log
           echo -e "#ifndef _PERFLOG_H\n#define _PERFLOG_H\n#endif" > system/core/liblog/include/log/perflog.h
           sudo sh -c 'echo "#!/bin/bash" > /usr/bin/secgetspf'
           sudo chmod +x /usr/bin/secgetspf
 
-          # 5. Patch pentru headere BTF
-          find kernel/bpf/ -name "*.c" | xargs sed -i 's|<uapi/linux/btf.h>|<linux/btf.h>|g' || true
-          
           # 6. Python symlink
           [ -f scripts/gcc-wrapper.py ] && mv scripts/gcc-wrapper.py scripts/gcc-wrapper.py.disabled || true
           sudo ln -sf /usr/bin/python2 /usr/bin/python
@@ -123,24 +120,33 @@ jobs:
           rm -rf out && mkdir -p out
           make $MAKE_ARGS r5q_eur_open_defconfig
           
-          # Forțăm activarea eBPF & BinderFS (Android 15 Requirments)
+          # Configurații obligatorii Android 15
           ./scripts/config --file out/.config --enable CONFIG_BPF_SYSCALL
           ./scripts/config --file out/.config --enable CONFIG_BPF_JIT
-          ./scripts/config --file out/.config --enable CONFIG_HAVE_EBPF_JIT
           ./scripts/config --file out/.config --enable CONFIG_ANDROID_BINDERFS
           ./scripts/config --file out/.config --enable CONFIG_ANDROID_BINDER_IPC
           ./scripts/config --file out/.config --disable CONFIG_DEBUG_INFO_BTF
           
           make $MAKE_ARGS olddefconfig
           
-          # Build principal. J1 este folosit doar dacă j$(nproc) eșuează.
-          make -j$(nproc --all) $MAKE_ARGS || (echo "Eroare detectată. Rulăm cu J1 pentru log-uri clare..." && make -j1 $MAKE_ARGS)
+          # Compilare paralelă cu fallback la J1 pentru erori clare
+          make -j$(nproc --all) $MAKE_ARGS || (echo "Eroare detectată. Trecem la J1 pentru diagnostic..." && make -j1 $MAKE_ARGS)
+
+          # Verificăm prezența fișierului final
+          if [ -f out/arch/arm64/boot/Image ]; then
+            echo "KERNEL_READY=true" >> $GITHUB_ENV
+            cp out/arch/arm64/boot/Image .
+            [ -f out/arch/arm64/boot/dtbo.img ] && cp out/arch/arm64/boot/dtbo.img .
+          else
+            echo "EROARE: Imaginea nu a fost generată."
+            exit 1
+          fi
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
-        if: success()
+        if: env.KERNEL_READY == 'true'
         with:
-          name: Kernel-S10Lite-Final-Image
+          name: Kernel-S10Lite-A15-Hybrid
           path: |
-            out/arch/arm64/boot/Image
-            out/arch/arm64/boot/dtbo.img
+            Image
+            dtbo.img
