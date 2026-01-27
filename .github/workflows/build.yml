@@ -12,6 +12,8 @@ jobs:
 
     env:
       ARCH: arm64
+      CROSS_COMPILE: aarch64-linux-gnu-
+      CC: gcc
       KERNEL_DIR: ${{ github.workspace }}
       DEFCONFIG: r5q_eur_open_defconfig
       OUTPUT_DIR: ${{ github.workspace }}/out
@@ -24,52 +26,34 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            bc \
-            bison \
-            flex \
-            libssl-dev \
-            libelf-dev \
-            dwarves \
-            libncurses-dev \
-            git \
-            wget \
-            unzip \
-            make \
-            gcc \
-            g++ \
-            python3 \
-            python3-venv \
-            python3-pip
+            bc bison flex libssl-dev libelf-dev dwarves \
+            libncurses-dev git wget unzip make gcc g++ \
+            gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu \
+            python3 python3-venv python3-pip
 
       - name: Ensure distutils exists
         run: |
-          python3 -m pip install --upgrade pip
-          python3 -m pip install setuptools
+          python3 -m pip install --upgrade pip setuptools
 
       - name: Install Python 2.7 (Debian packages)
         run: |
           mkdir -p $HOME/python2
           cd $HOME/python2
 
-          # Dependencies
-          wget https://ftp.debian.org/debian/pool/main/o/openssl/libssl1.1_1.1.1w-0+deb11u1_amd64.deb
+          wget http://ftp.debian.org/debian/pool/main/o/openssl/libssl1.1_1.1.1w-0+deb11u1_amd64.deb
           wget http://ftp.debian.org/debian/pool/main/libf/libffi/libffi7_3.3-6_amd64.deb
           wget http://ftp.debian.org/debian/pool/main/libn/libnsl/libnsl2_1.3.0-2_amd64.deb
           wget http://ftp.debian.org/debian/pool/main/m/mime-support/mime-support_3.66_all.deb
 
-          # Python2 packages
           wget http://ftp.debian.org/debian/pool/main/p/python2.7/python2.7_2.7.18-8+deb11u1_amd64.deb
           wget http://ftp.debian.org/debian/pool/main/p/python2.7/python2.7-minimal_2.7.18-8+deb11u1_amd64.deb
           wget http://ftp.debian.org/debian/pool/main/p/python2.7/libpython2.7-stdlib_2.7.18-8+deb11u1_amd64.deb
           wget http://ftp.debian.org/debian/pool/main/p/python2.7/libpython2.7-minimal_2.7.18-8+deb11u1_amd64.deb
 
-          # Install dependencies
           sudo dpkg -i libssl1.1_1.1.1n-0+deb11u4_amd64.deb \
-            libffi7_3.3-6_amd64.deb \
-            libnsl2_1.3.0-2_amd64.deb \
+            libffi7_3.3-6_amd64.deb libnsl2_1.3.0-2_amd64.deb \
             mime-support_3.66_all.deb || true
 
-          # Install python2 packages
           sudo dpkg -i python2.7-minimal_2.7.18-8+deb11u1_amd64.deb \
             libpython2.7-minimal_2.7.18-8+deb11u1_amd64.deb \
             libpython2.7-stdlib_2.7.18-8+deb11u1_amd64.deb \
@@ -77,28 +61,6 @@ jobs:
 
           sudo apt-get install -f -y
           sudo ln -sf /usr/bin/python2.7 /usr/bin/python2
-
-      - name: Setup Clang toolchain
-        run: |
-          TOOLCHAIN_PATH="$PWD/toolchain/clang"
-          mkdir -p "$TOOLCHAIN_PATH"
-          wget -O clang.tar.gz "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/413febb26cbd05d9a1e44f089190ac892f72e684.tar.gz"
-          tar -xf clang.tar.gz -C "$TOOLCHAIN_PATH"
-          export PATH="$TOOLCHAIN_PATH/clang-r416183b/bin:$PATH"
-          export CC=clang
-          echo "PATH=$PATH" >> $GITHUB_ENV
-          echo "CC=$CC" >> $GITHUB_ENV
-
-      - name: Setup GCC AArch64 toolchain
-        run: |
-          TOOLCHAIN_PATH="$PWD/toolchain/gcc"
-          mkdir -p "$TOOLCHAIN_PATH"
-          wget -O gcc-aarch64.tar.gz "https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/+archive/refs/heads/master.tar.gz"
-          tar -xf gcc-aarch64.tar.gz -C "$TOOLCHAIN_PATH"
-          export PATH="$TOOLCHAIN_PATH/aarch64-linux-android-4.9/bin:$PATH"
-          export CROSS_COMPILE=aarch64-linux-android-
-          echo "PATH=$PATH" >> $GITHUB_ENV
-          echo "CROSS_COMPILE=$CROSS_COMPILE" >> $GITHUB_ENV
 
       - name: Build Kernel
         run: |
