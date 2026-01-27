@@ -78,4 +78,69 @@ jobs:
             sed -i '/struct bpf_security_struct \*bpfsec = aux->security;/s/^/\/\//' security/selinux/hooks.c
           fi
 
-          # 3. Forțăm definițiile BPF care lipseau
+          # 3. Forțăm definițiile BPF care lipseau în verifier.c
+          # Adăugăm BPF_ALU_IMMEDIATE manual dacă filter.h are probleme
+          echo "#define BPF_ALU_IMMEDIATE 1" >> include/linux/filter.h
+          echo "#define BPF_ALU_NON_IMM 0" >> include/linux/filter.h
+
+          # 4. Fix Samsung Log Headers & Dummy Binaries
+          mkdir -p system/core/liblog/include/log system/logging/liblog/include/log
+          echo -e "#ifndef _PERFLOG_H\n#define _PERFLOG_H\n#endif" > system/core/liblog/include/log/perflog.h
+          sudo sh -c 'echo "#!/bin/bash" > /usr/bin/secgetspf'
+          sudo chmod +x /usr/bin/secgetspf
+
+          # 5. Patch pentru headere BTF
+          find kernel/bpf/ -name "*.c" | xargs sed -i 's|<uapi/linux/btf.h>|<linux/btf.h>|g' || true
+          
+          # 6. Python symlink
+          [ -f scripts/gcc-wrapper.py ] && mv scripts/gcc-wrapper.py scripts/gcc-wrapper.py.disabled || true
+          sudo ln -sf /usr/bin/python2 /usr/bin/python
+
+      - name: Build Kernel
+        run: |
+          export PATH=$(pwd)/toolchain/proton-clang/bin:$PATH
+          
+          MAKE_ARGS="
+            O=out \
+            ARCH=arm64 \
+            CC=clang \
+            HOSTCC=gcc \
+            HOSTCXX=g++ \
+            LD=ld.lld \
+            AR=llvm-ar \
+            NM=llvm-nm \
+            OBJCOPY=llvm-objcopy \
+            OBJDUMP=llvm-objdump \
+            STRIP=llvm-strip \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            LLVM=1 \
+            LLVM_IAS=1 \
+            KCFLAGS=-Wno-error \
+            TECHPACK=true
+          "
+
+          rm -rf out && mkdir -p out
+          make $MAKE_ARGS r5q_eur_open_defconfig
+          
+          # Forțăm activarea eBPF & BinderFS (Android 15 Requirments)
+          ./scripts/config --file out/.config --enable CONFIG_BPF_SYSCALL
+          ./scripts/config --file out/.config --enable CONFIG_BPF_JIT
+          ./scripts/config --file out/.config --enable CONFIG_HAVE_EBPF_JIT
+          ./scripts/config --file out/.config --enable CONFIG_ANDROID_BINDERFS
+          ./scripts/config --file out/.config --enable CONFIG_ANDROID_BINDER_IPC
+          ./scripts/config --file out/.config --disable CONFIG_DEBUG_INFO_BTF
+          
+          make $MAKE_ARGS olddefconfig
+          
+          # Build principal. J1 este folosit doar dacă j$(nproc) eșuează.
+          make -j$(nproc --all) $MAKE_ARGS || (echo "Eroare detectată. Rulăm cu J1 pentru log-uri clare..." && make -j1 $MAKE_ARGS)
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: Kernel-S10Lite-Final-Image
+          path: |
+            out/arch/arm64/boot/Image
+            out/arch/arm64/boot/dtbo.img
