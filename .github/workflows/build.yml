@@ -1,4 +1,4 @@
-name: Build Samsung Kernel r5q (GCC)
+name: Build Samsung Kernel r5q (GCC11)
 
 on:
   push:
@@ -14,7 +14,6 @@ jobs:
       ARCH: arm64
       CROSS_COMPILE: aarch64-linux-gnu-
       CC: gcc
-      NO_CC_WRAPPER: 1
       KERNEL_DIR: ${{ github.workspace }}
       OUTPUT_DIR: ${{ github.workspace }}/out
       DEFCONFIG: r5q_eur_open_defconfig
@@ -28,9 +27,18 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             bc bison flex libssl-dev libelf-dev dwarves \
-            libncurses-dev git wget unzip make gcc g++ \
-            gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu \
+            libncurses-dev git wget unzip make \
+            gcc-11 g++-11 \
+            gcc-aarch64-linux-gnu-11 g++-aarch64-linux-gnu-11 \
+            binutils-aarch64-linux-gnu \
             python3
+
+      - name: Set GCC 11
+        run: |
+          sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-11 100
+          sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-11 100
+          sudo update-alternatives --install /usr/bin/aarch64-linux-gnu-gcc aarch64-linux-gnu-gcc /usr/bin/aarch64-linux-gnu-gcc-11 100
+          sudo update-alternatives --install /usr/bin/aarch64-linux-gnu-g++ aarch64-linux-gnu-g++ /usr/bin/aarch64-linux-gnu-g++-11 100
 
       - name: Disable gcc-wrapper
         run: |
@@ -46,7 +54,7 @@ jobs:
         run: |
           cd $KERNEL_DIR
           make -j$(nproc) O=$OUTPUT_DIR ARCH=$ARCH \
-            CC=$CC CROSS_COMPILE=$CROSS_COMPILE NO_CC_WRAPPER=1
+            CC=$CC CROSS_COMPILE=$CROSS_COMPILE
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
