@@ -1,4 +1,4 @@
-name: Build Samsung Kernel r5q (Proton Clang)
+name: Build Samsung S10 Lite Kernel (4.14)
 
 on:
   push:
@@ -7,7 +7,7 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-22.04 # Folosim 22.04 pentru compatibilitate cu Proton Clang
+    runs-on: ubuntu-22.04
 
     steps:
       - name: Checkout Source
@@ -19,34 +19,30 @@ jobs:
           sudo apt-get install -y \
             bc bison flex libssl-dev libelf-dev dwarves \
             libncurses-dev git wget unzip make python3 \
-            python3-minimal lz4 xz-utils gcc g++
+            python2 python3-minimal lz4 xz-utils gcc g++
 
       - name: Download Proton Clang
         run: |
           mkdir -p toolchain
           git clone --depth=1 https://github.com/kdrag0n/proton-clang.git toolchain/proton-clang
 
-      - name: Pre-build Fixes (Samsung & BPF)
+      - name: Pre-build Fixes (4.14 Specific)
         run: |
-          # 1. Fix pentru eroarea btf.h (BPF)
-          # Schimbăm calea de include pentru a fi compatibilă cu Clang
+          # 1. Fix pentru btf.h și erori de include
           find . -name "*.c" -type f | xargs sed -i 's|<uapi/linux/btf.h>|<linux/btf.h>|g' || true
           
-          # 2. Creare fișiere dummy pentru erorile de log Samsung
-          # Kernel-ul tău caută fișiere în afara folderului curent, le creăm local să nu dea eroare
+          # 2. Creare foldere dummy pentru log-uri Samsung (esențial pe S10 Lite)
           mkdir -p system/core/liblog/include/log
-          mkdir -p system/logging/liblog/include/log
           touch system/core/liblog/include/log/perflog.h
-          touch system/logging/liblog/include/log/perflog.h
           
-          # 3. Dezactivăm gcc-wrapper-ul Samsung
-          [ -f scripts/gcc-wrapper.py ] && mv scripts/gcc-wrapper.py scripts/gcc-wrapper.py.disabled || true
+          # 3. Rezolvare problemă script python2/3 (4.14 folosește des python2)
+          sudo ln -sf /usr/bin/python3 /usr/bin/python
 
       - name: Build Kernel
         run: |
           export PATH=$(pwd)/toolchain/proton-clang/bin:$PATH
           
-          # Argumente de compilare
+          # Argumente Build pentru Snapdragon 855 (SM8150)
           MAKE_ARGS="
             O=out \
             ARCH=arm64 \
@@ -66,27 +62,25 @@ jobs:
             KCFLAGS=-Wno-error
           "
 
-          # Pasul 1: Generare Configurație
+          # 1. Configurația pentru S10 Lite (verifică numele exact în arch/arm64/configs)
+          # Probabil este r5q_eur_open_defconfig sau sm8150_defconfig
           make $MAKE_ARGS r5q_eur_open_defconfig
 
-          # Pasul 2: Activare BPF (Apropiat de 5.1)
-          # Activăm manual opțiunile necesare în fișierul .config
+          # 2. Forțare module BPF pentru compatibilitate Android 15
+          ./scripts/config --file out/.config --enable CONFIG_BPF
           ./scripts/config --file out/.config --enable CONFIG_BPF_SYSCALL
+          ./scripts/config --file out/.config --enable CONFIG_NET_CLS_BPF
+          ./scripts/config --file out/.config --enable CONFIG_NET_ACT_BPF
           ./scripts/config --file out/.config --enable CONFIG_BPF_JIT
           ./scripts/config --file out/.config --enable CONFIG_HAVE_EBPF_JIT
-          ./scripts/config --file out/.config --enable CONFIG_BPF_EVENTS
           
-          # Pasul 3: Compilarea efectivă
+          # 3. Compilare
           make -j$(nproc --all) $MAKE_ARGS
 
-      - name: Upload Kernel Image
+      - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-r5q-Image
-          path: out/arch/arm64/boot/Image
-
-      - name: Upload DTBs
-        uses: actions/upload-artifact@v4
-        with:
-          name: Kernel-r5q-DTBs
-          path: out/arch/arm64/boot/dts/vendor/*.dtb
+          name: Kernel-S10Lite-4.14
+          path: |
+            out/arch/arm64/boot/Image
+            out/arch/arm64/boot/dtbo.img
