@@ -37,52 +37,44 @@ jobs:
           mkdir -p toolchain
           git clone --depth=1 https://github.com/kdrag0n/proton-clang.git toolchain/proton-clang
 
-      - name: Upstream Integration (Auto-Detect Branch)
+      - name: Upstream Integration
         run: |
           git config --global user.email "action@github.com"
           git config --global user.name "GitHub Action"
 
-          # Adăugăm sursa oficială stabilă CIP
+          # Adăugăm sursa oficială
           git remote add upstream https://git.kernel.org/pub/scm/linux/kernel/git/cip/linux-cip.git
           
-          # Detectăm dacă branch-ul este 'linux-4.14.y' sau '4.14.y'
-          UPSTREAM_BRANCH=$(git ls-remote --heads upstream | grep -E '4.14.y' | awk -F'/' '{print $3}' | head -n 1)
-          echo "Detectat branch upstream: $UPSTREAM_BRANCH"
+          # Încercăm să aducem ambele variante posibile de nume pentru branch
+          git fetch upstream linux-4.14.y:upstream_branch --depth=100 || git fetch upstream 4.14.y:upstream_branch --depth=100
           
-          if [ -z "$UPSTREAM_BRANCH" ]; then
-            echo "Eroare: Nu s-a putut găsi ramura 4.14 pe upstream!"
-            exit 1
-          fi
+          # Merge preventiv - ignorăm erorile pentru a trece la checkout forțat
+          git merge upstream_branch -m "Merge Upstream" -X theirs || echo "Merge automat eșuat, forțăm componentele eBPF..."
 
-          git fetch upstream $UPSTREAM_BRANCH --depth=100
-
-          # Merge forțat cu strategia 'theirs' pentru a evita blocajele în conflicte
-          git merge upstream/$UPSTREAM_BRANCH -m "Merge Linux-CIP Upstream" -X theirs || echo "Conflicte rezolvate automat."
-
-          # Checkout forțat pentru subsystemele vitale Android 15
-          git checkout upstream/$UPSTREAM_BRANCH -- kernel/bpf/
-          git checkout upstream/$UPSTREAM_BRANCH -- drivers/android/
-          git checkout upstream/$UPSTREAM_BRANCH -- include/linux/bpf.h
-          git checkout upstream/$UPSTREAM_BRANCH -- include/uapi/linux/bpf.h
-          git checkout upstream/$UPSTREAM_BRANCH -- include/uapi/linux/btf.h
-          git checkout upstream/$UPSTREAM_BRANCH -- include/linux/btf.h || true
-          git checkout upstream/$UPSTREAM_BRANCH -- arch/arm64/net/
+          # PASUL CRITIC: Checkout forțat pentru Android 15
+          git checkout upstream_branch -- kernel/bpf/
+          git checkout upstream_branch -- drivers/android/
+          git checkout upstream_branch -- include/linux/bpf.h
+          git checkout upstream_branch -- include/uapi/linux/bpf.h
+          git checkout upstream_branch -- include/uapi/linux/btf.h
+          git checkout upstream_branch -- include/linux/btf.h || true
+          git checkout upstream_branch -- arch/arm64/net/
           
-          echo "Upstream eBPF & Binder components updated successfully."
+          echo "Sincronizare cu Upstream CIP finalizată."
 
       - name: Pre-build Fixes
         run: |
-          # 1. Injectăm __poll_t în types.h
+          # Injectare tipuri de date pentru BPF
           grep -q "__poll_t" include/uapi/linux/types.h || echo "typedef unsigned int __poll_t;" >> include/uapi/linux/types.h
           
-          # 2. Fix log-uri Samsung
+          # Fix-uri specifice Samsung
           mkdir -p system/core/liblog/include/log system/logging/liblog/include/log
           touch system/core/liblog/include/log/perflog.h system/logging/liblog/include/log/perflog.h
           
-          # 3. Corecție referințe headere BPF
+          # Aliniere headere BTF
           find kernel/bpf/ -name "*.c" | xargs sed -i 's|<uapi/linux/btf.h>|<linux/btf.h>|g' || true
           
-          # 4. Setări Python și wrapper
+          # Setup Python
           [ -f scripts/gcc-wrapper.py ] && mv scripts/gcc-wrapper.py scripts/gcc-wrapper.py.disabled || true
           sudo ln -sf /usr/bin/python2 /usr/bin/python
 
@@ -110,12 +102,10 @@ jobs:
             TECHPACK=true
           "
 
-          # Clean build garantat
           rm -rf out && mkdir -p out
-          
           make $MAKE_ARGS r5q_eur_open_defconfig
           
-          # Config Android 15 (eBPF, BinderFS)
+          # Configurație necesară Android 15
           ./scripts/config --file out/.config --enable CONFIG_BPF_SYSCALL
           ./scripts/config --file out/.config --enable CONFIG_BPF_JIT
           ./scripts/config --file out/.config --enable CONFIG_HAVE_EBPF_JIT
@@ -127,7 +117,7 @@ jobs:
           make -j$(nproc --all) $MAKE_ARGS
 
       - name: Upload Artifacts
-        uses: upload-artifact@v4
+        uses: actions/upload-artifact@v4
         with:
           name: Kernel-S10Lite-A15-Ready
           path: |
