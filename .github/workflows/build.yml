@@ -26,29 +26,29 @@ jobs:
           mkdir -p toolchain
           git clone --depth=1 https://github.com/kdrag0n/proton-clang.git toolchain/proton-clang
 
-      - name: Pre-build Fixes (Techpack & BPF)
+      - name: Pre-build Fixes (Samsung & BPF)
         run: |
-          # 1. Fix pentru btf.h (esențial pentru Android 15)
+          # 1. Rezolvăm eroarea btf.h prin modificarea căii de include
           find . -name "*.c" -type f | xargs sed -i 's|<uapi/linux/btf.h>|<linux/btf.h>|g' || true
           
-          # 2. Fix Techpack - Unele kernel-uri Samsung caută scripturi în techpack/audio
-          chmod +x techpack/audio/scripts/*.sh || true
-          
-          # 3. Dummy files pentru erorile de log Samsung (perflog.h)
+          # 2. Creăm fișierele dummy pentru a evita erorile de stat (perflog.h)
           mkdir -p system/core/liblog/include/log
           mkdir -p system/logging/liblog/include/log
           touch system/core/liblog/include/log/perflog.h
           touch system/logging/liblog/include/log/perflog.h
           
-          # 4. Asigurăm că scripturile vechi folosesc python2 dacă e nevoie
+          # 3. Dezactivăm wrapper-ul de GCC al Samsung
+          [ -f scripts/gcc-wrapper.py ] && mv scripts/gcc-wrapper.py scripts/gcc-wrapper.py.disabled || true
+          
+          # 4. Setăm Python2 ca implicit (multe scripturi 4.14 au nevoie de el)
           sudo ln -sf /usr/bin/python2 /usr/bin/python
 
       - name: Build Kernel
         run: |
           export PATH=$(pwd)/toolchain/proton-clang/bin:$PATH
           
-          # Definim variabilele pentru Techpack și BPF
-          # Adăugăm flag-ul -fno-stack-protector dacă apar erori de regiștri pe 4.14
+          # Definim argumentele globale de build
+          # Adăugăm TECHPACK=true pentru driverele Qualcomm
           MAKE_ARGS="
             O=out \
             ARCH=arm64 \
@@ -69,11 +69,12 @@ jobs:
             TECHPACK=true
           "
 
-          # 1. Configurare (folosește defconfig-ul tău corect)
+          mkdir -p out
+
+          # Pasul A: Generăm defconfig-ul (folosește r5q_eur_open_defconfig conform log-ului tău)
           make $MAKE_ARGS r5q_eur_open_defconfig
 
-          # 2. Activare suport BPF avansat pentru Android 15
-          # Fără aceste opțiuni, Android 15 nu va avea internet (netd fail)
+          # Pasul B: Injectăm setările BPF necesare pentru Android 15
           ./scripts/config --file out/.config --enable CONFIG_BPF_SYSCALL
           ./scripts/config --file out/.config --enable CONFIG_BPF_JIT
           ./scripts/config --file out/.config --enable CONFIG_HAVE_EBPF_JIT
@@ -82,10 +83,14 @@ jobs:
           ./scripts/config --file out/.config --enable CONFIG_CGROUP_BPF
           ./scripts/config --file out/.config --disable CONFIG_ANDROID_PARANOID_NETWORK
 
-          # 3. Compilare
+          # Pasul C: FIX PENTRU RESTART CONFIG (olddefconfig)
+          # Această comandă acceptă automat toate opțiunile noi și previne eroarea 'aborted!'
+          make $MAKE_ARGS olddefconfig
+
+          # Pasul D: Compilarea efectivă
           make -j$(nproc --all) $MAKE_ARGS
 
-      - name: Upload Artifacts
+      - name: Upload Kernel Image
         uses: actions/upload-artifact@v4
         with:
           name: Kernel-S10Lite-A15-Ready
