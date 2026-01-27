@@ -11,27 +11,28 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repo
+        uses: actions/checkout@v4
 
-      - name: Install dependencies
+      - name: Install required packages
         run: |
           sudo apt-get update
-          sudo apt-get install -y wget bc bison flex libssl-dev libelf-dev unzip
+          sudo apt-get install -y wget bc bison flex libssl-dev libelf-dev
 
       - name: Install Python 2.7 manually
         run: |
           mkdir -p $HOME/python2
           cd $HOME/python2
 
-          wget http://archive.ubuntu.com/ubuntu/pool/main/p/python2.7/python2.7_2.7.18-1ubuntu1_amd64.deb
-          wget http://archive.ubuntu.com/ubuntu/pool/main/p/python2.7/python2.7-minimal_2.7.18-1ubuntu1_amd64.deb
-          wget http://archive.ubuntu.com/ubuntu/pool/main/p/python2.7/libpython2.7-stdlib_2.7.18-1ubuntu1_amd64.deb
-          wget http://archive.ubuntu.com/ubuntu/pool/main/p/python2.7/libpython2.7-minimal_2.7.18-1ubuntu1_amd64.deb
+          wget http://deb.debian.org/debian/pool/main/p/python2.7/python2.7_2.7.18-1_amd64.deb
+          wget http://deb.debian.org/debian/pool/main/p/python2.7/python2.7-minimal_2.7.18-1_amd64.deb
+          wget http://deb.debian.org/debian/pool/main/p/python2.7/libpython2.7-stdlib_2.7.18-1_amd64.deb
+          wget http://deb.debian.org/debian/pool/main/p/python2.7/libpython2.7-minimal_2.7.18-1_amd64.deb
 
-          dpkg-deb -x python2.7-minimal_2.7.18-1ubuntu1_amd64.deb $HOME/python2
-          dpkg-deb -x libpython2.7-minimal_2.7.18-1ubuntu1_amd64.deb $HOME/python2
-          dpkg-deb -x libpython2.7-stdlib_2.7.18-1ubuntu1_amd64.deb $HOME/python2
-          dpkg-deb -x python2.7_2.7.18-1ubuntu1_amd64.deb $HOME/python2
+          dpkg-deb -x python2.7-minimal_2.7.18-1_amd64.deb $HOME/python2
+          dpkg-deb -x libpython2.7-minimal_2.7.18-1_amd64.deb $HOME/python2
+          dpkg-deb -x libpython2.7-stdlib_2.7.18-1_amd64.deb $HOME/python2
+          dpkg-deb -x python2.7_2.7.18-1_amd64.deb $HOME/python2
 
           echo "$HOME/python2/usr/bin" >> $GITHUB_PATH
           sudo ln -sf $HOME/python2/usr/bin/python2 /usr/bin/python2
@@ -49,7 +50,7 @@ jobs:
           echo "PATH=$TOOLCHAIN_PATH/clang-r416183b/bin:$PATH" >> $GITHUB_ENV
           echo "CC=clang" >> $GITHUB_ENV
 
-      - name: Setup Android NDK
+      - name: Setup Android NDK (includes ld)
         run: |
           NDK_URL="https://dl.google.com/android/repository/android-ndk-r25b-linux.zip"
           wget -O ndk.zip "$NDK_URL"
