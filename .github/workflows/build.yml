@@ -1,4 +1,4 @@
-name: S10 Lite - Full Pascua Integration
+name: S10 Lite - Full Pascua Integration (Syntax Fix)
 
 on:
   push:
@@ -23,8 +23,6 @@ jobs:
         run: |
           git remote add linux-stable https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git || true
           git fetch linux-stable linux-5.1.y --depth=1
-          
-          # Importăm LOGICA COMPLETĂ (fără de care verifier-ul moare)
           PATHS=(
             "kernel/bpf/" 
             "include/linux/bpf.h" 
@@ -41,32 +39,29 @@ jobs:
 
       - name: Apply Pascua "Glue" Patches
         run: |
-          # 1. Shim pentru Headerele lipsă (LIRC, Perflog)
+          # 1. Shim pentru Headerele lipsă (Fix Syntax Error)
           mkdir -p include/linux/
-          echo "#ifndef _BPF_LIRC_H\n#define _BPF_LIRC_H\n#endif" > include/linux/bpf_lirc.h
-          echo "#ifndef _PERFLOG_H\n#define _PERFLOG_H\n#endif" > include/linux/perflog.h
+          printf "#ifndef _BPF_LIRC_H\n#define _BPF_LIRC_H\n#endif\n" > include/linux/bpf_lirc.h
+          printf "#ifndef _PERFLOG_H\n#define _PERFLOG_H\n#endif\n" > include/linux/perflog.h
 
-          # 2. Fix API Mismatch (Metoda Pascua pentru access_ok)
-          # Înlocuim apelul 5.1 (2 args) cu cel de 4.14 (3 args) injectând tipul generic
+          # 2. Fix API Mismatch (Pascua Regex)
+          # Corectăm access_ok pentru 3 argumente (specific 4.14)
           sed -i 's/access_ok(\([^,]*\), \([^)]*\))/access_ok(VERIFY_READ, \1, \2)/g' kernel/bpf/syscall.c
           sed -i 's/access_ok(\([^,]*\), \([^)]*\))/access_ok(VERIFY_READ, \1, \2)/g' kernel/bpf/verifier.c
 
-          # 3. Rezolvarea conflictelor de Tracepoints (Pascua Bypass)
-          # Samsung 4.14 nu are structurile de tracepoint din 5.1
+          # 3. Neutralizare PERF_BPF_EVENT (Erorile tale de acum)
+          # Înlocuim constantele lipsă cu 0 și funcția cu un empty body
+          sed -i 's/PERF_BPF_EVENT_PROG_UNLOAD/0/g' kernel/bpf/syscall.c
+          sed -i 's/PERF_BPF_EVENT_PROG_LOAD/0/g' kernel/bpf/syscall.c
+          sed -i 's/perf_event_bpf_event((void \*)prog, 0, 0);/;/g' kernel/bpf/syscall.c
+          
+          # 4. Fix Tracepoints (Struct Incomplete)
           sed -i 's/btp->tp->name/""/g' kernel/bpf/syscall.c
           sed -i 's/event = perf_get_event(file);/event = (void *)ERR_PTR(-EINVAL);/g' kernel/bpf/syscall.c
           sed -i 's/btp = bpf_get_raw_tracepoint(tp_name);/btp = (void *)ERR_PTR(-EINVAL);/g' kernel/bpf/syscall.c
 
-          # 4. Fix Cgroup Inherit (Semnătura Pascua)
-          if [ -f kernel/cgroup/cgroup.c ]; then
-             sed -i 's/cgroup_bpf_inherit(root_cgrp)/cgroup_bpf_inherit(root_cgrp, NULL)/g' kernel/cgroup/cgroup.c
-             sed -i 's/cgroup_bpf_inherit(cgrp)/cgroup_bpf_inherit(cgrp, NULL)/g' kernel/cgroup/cgroup.c
-          fi
-
-          # 5. Forțăm compilarea tnum.o în Makefile-ul BPF
-          # Uneori Makefile-ul importat nu include tnum.o automat în 4.14
+          # 5. Makefile Fix (Asigurăm TNUM)
           if ! grep -q "tnum.o" kernel/bpf/Makefile; then
-            sed -i 'obj-y += core.o' kernel/bpf/Makefile
             sed -i '/obj-y += core.o/a obj-y += tnum.o' kernel/bpf/Makefile
           fi
 
@@ -75,12 +70,11 @@ jobs:
           export PATH=$(pwd)/toolchain/proton-clang/bin:$PATH
           MAKE_ARGS="O=out ARCH=arm64 CC=clang HOSTCC=gcc CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1"
           
-          # KCFLAGS ultra-permisive (Secretul build-urilor hibride Pascua)
+          # KCFLAGS ultra-permisive
           export KCFLAGS="-Wno-error -Wno-incompatible-pointer-types -Wno-int-conversion -Wno-implicit-function-declaration -Wno-return-type -Wno-unused-variable -Wno-unused-function"
 
           make $MAKE_ARGS r5q_eur_open_defconfig
           
-          # Activăm eBPF JIT și tot ce cere Android 15
           ./scripts/config --file out/.config --enable CONFIG_BPF_SYSCALL
           ./scripts/config --file out/.config --enable CONFIG_BPF_JIT
           ./scripts/config --file out/.config --enable CONFIG_CGROUP_BPF
@@ -93,6 +87,6 @@ jobs:
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-Full-Pascua-Hybrid
+          name: S10Lite-Pascua-Hybrid-A15
           path: out/arch/arm64/boot/Image.gz-dtb
           
