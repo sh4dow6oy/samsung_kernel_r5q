@@ -1,4 +1,4 @@
-name: S10 Lite - Kernel sh4dow6oy v21
+name: S10 Lite - Kernel sh4dow6oy v22
 
 on:
   push:
@@ -19,7 +19,7 @@ jobs:
           sudo apt-get install -y bc bison flex libssl-dev libelf-dev dwarves make python3 lz4 perl
           git clone --depth=1 https://github.com/kdrag0n/proton-clang.git toolchain/proton-clang
 
-      - name: Core Pascua Backport
+      - name: Core Pascua Backport (eBPF 5.1)
         run: |
           git remote add linux-stable https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git || true
           git fetch linux-stable linux-5.1.y --depth=1
@@ -31,30 +31,35 @@ jobs:
           )
           for path in "${PATHS[@]}"; do git checkout FETCH_HEAD -- "$path"; done
 
-      - name: Apply Glue Patches (v21 - Header & Syscall Fix)
+      - name: Nuclear Cleaning (v22)
         run: |
-          # 1. Curățare fișiere și creare Dummy Headers
+          # 1. Ștergem fizic referințele la LIRC din codul importat
+          sed -i '/bpf_lirc\.h/d' kernel/bpf/syscall.c
+          sed -i '/bpf_lirc\.h/d' include/linux/bpf.h
+          
+          # 2. Creăm headere dummy în toate locațiile posibile
           mkdir -p include/linux/
-          echo "#ifndef _BPF_LIRC_H\n#define _BPF_LIRC_H\n#endif" > include/linux/bpf_lirc.h
-          rm -f kernel/bpf/devmap.c kernel/bpf/cpumap.c kernel/bpf/offload.c kernel/bpf/bpf_lirc.c kernel/bpf/reuseport_array.c
-          touch kernel/bpf/devmap.c kernel/bpf/cpumap.c kernel/bpf/offload.c kernel/bpf/bpf_lirc.c kernel/bpf/reuseport_array.c
+          printf "#ifndef _BPF_LIRC_H\n#define _BPF_LIRC_H\n#endif" > include/linux/bpf_lirc.h
+          mkdir -p out/include/linux/ || true
+          
+          # 3. Neutralizăm fișierele problematice
+          rm -f kernel/bpf/bpf_lirc.c kernel/bpf/devmap.c kernel/bpf/cpumap.c
+          touch kernel/bpf/bpf_lirc.c kernel/bpf/devmap.c kernel/bpf/cpumap.c
 
-          # 2. Curățare Syscall.c (Nuke LIRC include și adăugare Stubs)
-          sed -i '/linux\/bpf_lirc.h/d' kernel/bpf/syscall.c
-          sed -i '1i #include <linux/types.h>\n#include <linux/err.h>\n#define PERF_BPF_EVENT_PROG_LOAD 0\n#define PERF_BPF_EVENT_PROG_UNLOAD 0\nstatic inline void bpf_probe_unregister(void *a, void *b) {}\nstatic inline void bpf_put_raw_tracepoint(void *a) {}\nstatic inline void *bpf_get_raw_tracepoint(void *a) { return NULL; }\nstatic inline int bpf_probe_register(void *a, void *b) { return -1; }\nstatic inline int lirc_prog_attach(void *a, void *b) { return -1; }\nstatic inline int lirc_prog_detach(void *a) { return -1; }\nstatic inline int lirc_prog_query(void *a, void *b) { return -1; }\nstatic inline int skb_flow_dissector_bpf_prog_attach(void *a, void *b) { return -1; }\nstatic inline int skb_flow_dissector_bpf_prog_detach(void *a) { return -1; }\nstatic inline void *perf_get_event(void *a) { return ERR_PTR(-1); }\nstatic inline int bpf_get_perf_event_info(void *a, void *b, void *c, void *d, void *e) { return -1; }' kernel/bpf/syscall.c
+          # 4. Injectăm Stubs (Funcții goale) ca să nu mai avem erori de linkare
+          sed -i '1i #include <linux/err.h>\nstatic inline int lirc_prog_attach(void *a, void *b) { return -1; }\nstatic inline int lirc_prog_detach(void *a) { return -1; }\nstatic inline int lirc_prog_query(void *a, void *b) { return -1; }\nstatic inline int skb_flow_dissector_bpf_prog_attach(void *a, void *b) { return -1; }\nstatic inline int skb_flow_dissector_bpf_prog_detach(void *a) { return -1; }\nstatic inline void *perf_get_event(void *a) { return ERR_PTR(-1); }\nstatic inline int bpf_get_perf_event_info(void *a, void *b, void *c, void *d, void *e) { return -1; }\nstatic inline void bpf_probe_unregister(void *a, void *b) {}\nstatic inline void bpf_put_raw_tracepoint(void *a) {}\nstatic inline void *bpf_get_raw_tracepoint(void *a) { return NULL; }\nstatic inline int bpf_probe_register(void *a, void *b) { return -1; }' kernel/bpf/syscall.c
 
-          # 3. Fix Atomic Fallback
+          # 5. Fix Atomic (5.1 -> 4.14)
           sed -i 's/atomic_fetch_add_unless/atomic_add_unless/g' kernel/bpf/syscall.c
 
-          # 4. Fix Filter.h & Networking (sh4dow6oy sync)
-          sed -i '/#include <linux\/skbuff.h>/a static inline int skb_metadata_len(const struct sk_buff *skb) { return 0; }\n#ifndef cant_sleep\n#define cant_sleep() do { } while (0)\n#endif\nstatic inline bool kallsyms_show_value(void) { return false; }' include/linux/filter.h
+          # 6. Fix Filter & Network (Restaurăm ce a funcționat la v16)
+          sed -i '/#include <linux\/skbuff.h>/a static inline int skb_metadata_len(const struct sk_buff *skb) { return 0; }\n#define cant_sleep() do { } while (0)\nstatic inline bool kallsyms_show_value(void) { return false; }' include/linux/filter.h
+          sed -i 's/static const struct bpf_func_proto bpf_sk_redirect_map_proto/const struct bpf_func_proto bpf_sk_redirect_map_proto/g' net/core/filter.c
+          
+          # Trick-ul de mapping pentru rețea
           sed -i '/int xdp_do_generic_redirect(/i #define xdp_do_generic_redirect(dev, skb, prog) __xdp_do_generic_redirect(dev, skb, NULL, prog)' include/linux/filter.h
           sed -i 's/int xdp_do_generic_redirect(/int __xdp_do_generic_redirect(/g' include/linux/filter.h
           sed -i 's/int xdp_do_generic_redirect(/int __xdp_do_generic_redirect(/g' net/core/filter.c
-
-          # 5. Access_ok Fix
-          sed -i 's/access_ok(\([^,]*\), \([^)]*\))/access_ok(VERIFY_READ, \1, \2)/g' kernel/bpf/syscall.c
-          sed -i 's/access_ok(\([^,]*\), \([^)]*\))/access_ok(VERIFY_READ, \1, \2)/g' kernel/bpf/verifier.c
 
       - name: Build Kernel
         run: |
@@ -63,14 +68,12 @@ jobs:
           
           make $MAKE_ARGS r5q_eur_open_defconfig
           
-          # Injectăm header-ul și în folderul de build imediat după defconfig
+          # Forțăm header-ul în folderul de build (unde l-a căutat ultima oară)
           mkdir -p out/include/linux/
           echo "#ifndef _BPF_LIRC_H\n#define _BPF_LIRC_H\n#endif" > out/include/linux/bpf_lirc.h
-          
+
           ./scripts/config --file out/.config --set-str CONFIG_LOCALVERSION "-sh4dow6oy"
           ./scripts/config --file out/.config --enable CONFIG_BPF_SYSCALL
-          ./scripts/config --file out/.config --enable CONFIG_BPF_JIT
-          ./scripts/config --file out/.config --enable CONFIG_CGROUP_BPF
           ./scripts/config --file out/.config --disable CONFIG_KPERFMON
           ./scripts/config --file out/.config --disable CONFIG_DEFEX
           
@@ -81,5 +84,5 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-sh4dow6oy-v21
+          name: S10Lite-sh4dow6oy-v22
           path: out/arch/arm64/boot/Image.gz-dtb
