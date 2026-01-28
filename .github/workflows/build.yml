@@ -38,11 +38,12 @@ jobs:
           )
           for path in "${PATHS[@]}"; do git checkout FETCH_HEAD -- "$path"; done
 
-      - name: Apply Glue Patches (XDP & Networking)
+      - name: Apply Glue Patches (Aggressive Bypass)
         run: |
-          # 1. Creare headere Net/XDP lipsă (Fix devmap.c error)
-          mkdir -p include/net/
-          printf "#ifndef _NET_XDP_H\n#define _NET_XDP_H\nstruct xdp_buff { void *data; };\n#endif\n" > include/net/xdp.h
+          # 1. Neutralizare XDP (devmap.c și cpumap.c)
+          # Le golim conținutul pentru a evita dependențele de net/xdp.h care nu există în 4.14
+          echo "/* Neutralized by build script */" > kernel/bpf/devmap.c
+          echo "/* Neutralized by build script */" > kernel/bpf/cpumap.c
           
           # 2. Fix Perf API mismatch (4 args -> 2 args)
           sed -i 's/perf_event_read_local(event, \&value, NULL, NULL)/perf_event_read_local(event, \&value)/g' kernel/bpf/arraymap.c
@@ -50,10 +51,12 @@ jobs:
           # 3. Fix Atomic VAL (Compatibility loop)
           sed -i 's/atomic_cond_read_relaxed(l, !VAL);/while (atomic_read(l));/g' kernel/bpf/helpers.c
 
-          # 4. Create Dummy Headers (LIRC & Perflog)
+          # 4. Create Dummy Headers
           mkdir -p include/linux/
+          mkdir -p include/net/
           printf "#ifndef _BPF_LIRC_H\n#define _BPF_LIRC_H\n#endif\n" > include/linux/bpf_lirc.h
           printf "#ifndef _PERFLOG_H\n#define _PERFLOG_H\n#endif\n" > include/linux/perflog.h
+          printf "#ifndef _NET_XDP_H\n#define _NET_XDP_H\nstruct xdp_buff { void *data; };\n#endif\n" > include/net/xdp.h
 
           # 5. Global Regex Fix for access_ok
           sed -i 's/access_ok(\([^,]*\), \([^)]*\))/access_ok(VERIFY_READ, \1, \2)/g' kernel/bpf/syscall.c
@@ -67,14 +70,10 @@ jobs:
           sed -i 's/event = perf_get_event(file);/event = (void *)ERR_PTR(-EINVAL);/g' kernel/bpf/syscall.c
           sed -i 's/btp = bpf_get_raw_tracepoint(tp_name);/btp = (void *)ERR_PTR(-EINVAL);/g' kernel/bpf/syscall.c
 
-          # 7. Ensure TNUM & Fix Makefile for missing devmap dependencies
+          # 7. Ensure TNUM is compiled
           if ! grep -q "tnum.o" kernel/bpf/Makefile; then
             sed -i '/obj-y += core.o/a obj-y += tnum.o' kernel/bpf/Makefile
           fi
-          
-          # Dezactivăm compilarea devmap.o și cpumap.o dacă XDP lipsește în kernel-ul de bază
-          # Aceasta este metoda cea mai curată pentru a evita erori de rețea în cascadă
-          sed -i 's/obj-$(CONFIG_BPF_SYSCALL) += devmap.o cpumap.o//g' kernel/bpf/Makefile
 
       - name: Build Kernel
         run: |
@@ -83,7 +82,6 @@ jobs:
           export KCFLAGS="-Wno-error -Wno-incompatible-pointer-types -Wno-int-conversion -Wno-implicit-function-declaration -Wno-return-type -Wno-unused-variable -Wno-unused-function"
 
           make $MAKE_ARGS r5q_eur_open_defconfig
-          
           ./scripts/config --file out/.config --enable CONFIG_BPF_SYSCALL
           ./scripts/config --file out/.config --enable CONFIG_BPF_JIT
           ./scripts/config --file out/.config --enable CONFIG_CGROUP_BPF
