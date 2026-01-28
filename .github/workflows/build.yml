@@ -1,4 +1,4 @@
-name: S10 Lite - Pascua Hybrid (Headers & Path Fix)
+name: S10 Lite - Full Pascua Integration
 
 on:
   push:
@@ -19,69 +19,80 @@ jobs:
           sudo apt-get install -y bc bison flex libssl-dev libelf-dev dwarves make python3 lz4
           git clone --depth=1 https://github.com/kdrag0n/proton-clang.git toolchain/proton-clang
 
-      - name: Apply Pascua eBPF 5.1 (Full)
+      - name: Core Pascua Backport (eBPF 5.1 Full)
         run: |
           git remote add linux-stable https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git || true
           git fetch linux-stable linux-5.1.y --depth=1
+          
+          # Importăm LOGICA COMPLETĂ (fără de care verifier-ul moare)
           PATHS=(
             "kernel/bpf/" 
             "include/linux/bpf.h" 
             "include/linux/filter.h" 
             "include/linux/bpf_verifier.h"
             "include/linux/tnum.h"
+            "include/linux/btf.h"
             "include/uapi/linux/bpf.h" 
             "include/uapi/linux/btf.h"
-            "include/linux/btf.h"
+            "include/uapi/linux/bpf_common.h"
             "include/linux/bpf-cgroup.h"
           )
-          for path in "${PATHS[@]}"; do git checkout FETCH_HEAD -- "$path" || echo "Skip: $path"; done
+          for path in "${PATHS[@]}"; do git checkout FETCH_HEAD -- "$path"; done
 
-      - name: Manual Header Injection (Fix missing LIRC)
+      - name: Apply Pascua "Glue" Patches
         run: |
-          # Creăm headerele lipsă direct în sursă pentru a fi vizibile de orice build stage
+          # 1. Shim pentru Headerele lipsă (LIRC, Perflog)
           mkdir -p include/linux/
-          echo "/* Dummy Header */" > include/linux/bpf_lirc.h
-          echo "/* Dummy Header */" > include/linux/perflog.h
-          
-          # Fix access_ok mismatch (3 args vs 2 args)
-          # Aplicăm sed direct pe fișierul syscall.c descărcat
-          sed -i 's/access_ok(uaddr, actual_size)/__access_ok_bpf(uaddr, actual_size)/g' kernel/bpf/syscall.c
-          sed -i 's/access_ok(uattr, size)/__access_ok_bpf(uattr, size)/g' kernel/bpf/syscall.c
-          # Injectăm definitia imediat după headerele standard
-          sed -i '/#include <linux\/uaccess.h>/a #define __access_ok_bpf(addr, size) __range_ok((unsigned long)(addr), size)' kernel/bpf/syscall.c
+          echo "#ifndef _BPF_LIRC_H\n#define _BPF_LIRC_H\n#endif" > include/linux/bpf_lirc.h
+          echo "#ifndef _PERFLOG_H\n#define _PERFLOG_H\n#endif" > include/linux/perflog.h
 
-          # Bypass erori structură Verifier (btp)
+          # 2. Fix API Mismatch (Metoda Pascua pentru access_ok)
+          # Înlocuim apelul 5.1 (2 args) cu cel de 4.14 (3 args) injectând tipul generic
+          sed -i 's/access_ok(\([^,]*\), \([^)]*\))/access_ok(VERIFY_READ, \1, \2)/g' kernel/bpf/syscall.c
+          sed -i 's/access_ok(\([^,]*\), \([^)]*\))/access_ok(VERIFY_READ, \1, \2)/g' kernel/bpf/verifier.c
+
+          # 3. Rezolvarea conflictelor de Tracepoints (Pascua Bypass)
+          # Samsung 4.14 nu are structurile de tracepoint din 5.1
           sed -i 's/btp->tp->name/""/g' kernel/bpf/syscall.c
-          sed -i 's/btp = bpf_get_raw_tracepoint(tp_name);/btp = (void *)0;/g' kernel/bpf/syscall.c
-          
-          # Fix tnum mismatch
-          sed -i '1i #include <linux/tnum.h>' kernel/bpf/verifier.c
-          sed -i '1i #include <linux/bpf_verifier.h>' kernel/bpf/verifier.c
+          sed -i 's/event = perf_get_event(file);/event = (void *)ERR_PTR(-EINVAL);/g' kernel/bpf/syscall.c
+          sed -i 's/btp = bpf_get_raw_tracepoint(tp_name);/btp = (void *)ERR_PTR(-EINVAL);/g' kernel/bpf/syscall.c
 
-      - name: Build S10 Lite Hybrid
+          # 4. Fix Cgroup Inherit (Semnătura Pascua)
+          if [ -f kernel/cgroup/cgroup.c ]; then
+             sed -i 's/cgroup_bpf_inherit(root_cgrp)/cgroup_bpf_inherit(root_cgrp, NULL)/g' kernel/cgroup/cgroup.c
+             sed -i 's/cgroup_bpf_inherit(cgrp)/cgroup_bpf_inherit(cgrp, NULL)/g' kernel/cgroup/cgroup.c
+          fi
+
+          # 5. Forțăm compilarea tnum.o în Makefile-ul BPF
+          # Uneori Makefile-ul importat nu include tnum.o automat în 4.14
+          if ! grep -q "tnum.o" kernel/bpf/Makefile; then
+            sed -i 'obj-y += core.o' kernel/bpf/Makefile
+            sed -i '/obj-y += core.o/a obj-y += tnum.o' kernel/bpf/Makefile
+          fi
+
+      - name: Build Kernel
         run: |
           export PATH=$(pwd)/toolchain/proton-clang/bin:$PATH
-          # O=out tinde să ignore headerele noi dacă nu sunt în rădăcina sursei
           MAKE_ARGS="O=out ARCH=arm64 CC=clang HOSTCC=gcc CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1"
-          export KCFLAGS="-Wno-error -Wno-incompatible-pointer-types -Wno-int-conversion -Wno-implicit-function-declaration -Wno-return-type -Wno-macro-redefined"
+          
+          # KCFLAGS ultra-permisive (Secretul build-urilor hibride Pascua)
+          export KCFLAGS="-Wno-error -Wno-incompatible-pointer-types -Wno-int-conversion -Wno-implicit-function-declaration -Wno-return-type -Wno-unused-variable -Wno-unused-function"
 
           make $MAKE_ARGS r5q_eur_open_defconfig
           
-          # Configurații necesare pentru BPF în Android 15
-          ./scripts/config --file out/.config --disable CONFIG_MODVERSIONS
+          # Activăm eBPF JIT și tot ce cere Android 15
           ./scripts/config --file out/.config --enable CONFIG_BPF_SYSCALL
           ./scripts/config --file out/.config --enable CONFIG_BPF_JIT
           ./scripts/config --file out/.config --enable CONFIG_CGROUP_BPF
+          ./scripts/config --file out/.config --disable CONFIG_MODVERSIONS
           ./scripts/config --file out/.config --disable CONFIG_SAMSUNG_PRODUCT_SHIP
           
           make $MAKE_ARGS olddefconfig
-          # Forțăm build-ul; dacă pică, j1 ne va arăta exact linia
           make -j$(nproc --all) $MAKE_ARGS Image.gz-dtb || make -j1 $MAKE_ARGS Image.gz-dtb
 
-      - name: Upload Build
-        if: success()
+      - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-A15-Hybrid-Final
+          name: S10Lite-Full-Pascua-Hybrid
           path: out/arch/arm64/boot/Image.gz-dtb
           
