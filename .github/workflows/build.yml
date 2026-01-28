@@ -1,4 +1,4 @@
-name: S10 Lite - OneUI 7 Ready v28.1
+name: S10 Lite - OneUI 7 Ready v29
 
 on:
   push:
@@ -37,65 +37,54 @@ jobs:
           )
           for path in "${PATHS[@]}"; do git checkout FETCH_HEAD -- "$path"; done
 
-      - name: Final Glue Cleanup
+      - name: Final Linker Glue
         run: |
-          # 1. FIX: XDP Redirect - Revenim strict la 3 argumente (skb->dev, skb, xdp_prog)
-          # Această comandă curăță orice variație de 4 argumente introdusă anterior
+          # 1. FIX: Reactivăm devmap.c (Esențial pentru Linker)
+          # Nu îl mai neutralizăm, îl lăsăm original din Lineage
+          
+          # 2. FIX: _perflog Undefined (Stubbing Samsung Logging)
+          # Injectăm o funcție goală în kernel/panic.c pentru a satisface linker-ul
+          echo 'void _perflog(void *a, ...) { }' >> kernel/panic.c
+          echo 'void *dev_map_ops;' >> kernel/bpf/syscall.c # Doar dacă lipsește referința
+
+          # 3. FIX: XDP Redirect Sync
           sed -i 's/xdp_do_generic_redirect(skb->dev, skb, NULL, xdp_prog)/xdp_do_generic_redirect(skb->dev, skb, xdp_prog)/g' net/core/dev.c
-          sed -i 's/xdp_do_generic_redirect(dev, skb, NULL, proto)/xdp_do_generic_redirect(dev, skb, proto)/g' net/core/filter.c || true
 
-          # 2. FIX: bpf_trace.c - Sincronizare 3 argumente (off, size, size_default)
-          sed -i 's/bpf_ctx_narrow_access_ok(BPF_READ, off, size, size_sp)/bpf_ctx_narrow_access_ok(off, size, size_sp)/g' kernel/trace/bpf_trace.c
-
-          # 3. FIX: access_ok (Standard Samsung 3-args: type, addr, size)
-          # Aplicăm un patch curat pentru a evita dublarea argumentelor
+          # 4. FIX: access_ok (Standard Samsung 3-args)
           find kernel/bpf/ -type f -name "*.c" -exec sed -i 's/access_ok(VERIFY_READ, VERIFY_READ, /access_ok(VERIFY_READ, /g' {} +
           grep -rl "access_ok(" kernel/bpf/ | xargs sed -i 's/access_ok(\([^,]*\), \([^)]*\))/access_ok(VERIFY_READ, \1, \2)/g'
           find kernel/bpf/ -type f -name "*.c" -exec sed -i 's/access_ok(VERIFY_READ, VERIFY_READ, /access_ok(VERIFY_READ, /g' {} +
 
-          # 4. Samsung Dummy Folders (Eliminăm erorile estetice 'cannot stat')
+          # 5. Samsung Dummy Folders
           mkdir -p system/core/liblog/include/log/
           mkdir -p system/logging/liblog/include/log/
           touch system/core/liblog/include/log/perflog.h
-          touch system/logging/liblog/include/log/perflog.h
 
-          # 5. Neutralize unused BPF modules
-          for f in devmap.c cpumap.c offload.c bpf_lirc.c; do
-            echo "/* Disabled */" > kernel/bpf/$f
-          done
-
-          # 6. Samsung secgetspf Fix
-          mkdir -p scripts
-          echo -e "#!/bin/bash\necho 0" > scripts/secgetspf
-          chmod +x scripts/secgetspf
-          sudo cp scripts/secgetspf /usr/bin/secgetspf
+          # 6. Bypass SELinux Relocation Error
+          # Forțăm dezactivarea RTIC (Samsung Real Time Integrity Check) care cauzează eroarea de relocation
+          sed -i 's/CONFIG_RTIC=y/CONFIG_RTIC=n/g' arch/arm64/configs/r5q_eur_open_defconfig || true
 
       - name: Build Kernel
         run: |
           export PATH=$(pwd)/toolchain/proton-clang/bin:$PATH
           MAKE_ARGS="O=out ARCH=arm64 CC=clang HOSTCC=gcc CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1"
-          export KCFLAGS="-Wno-error -Wno-incompatible-pointer-types -Wno-implicit-function-declaration -Wno-int-conversion -Wno-return-type"
+          # Adăugăm flag-ul de linkare pentru a ignora relocările dubioase din GSI (Qualcomm)
+          export KCFLAGS="-Wno-error -fno-pic"
 
           make $MAKE_ARGS r5q_eur_open_defconfig
           
           mkdir -p out/scripts
-          cp scripts/secgetspf out/scripts/
+          echo -e "#!/bin/bash\necho 0" > out/scripts/secgetspf
+          chmod +x out/scripts/secgetspf
 
-          # Config OneUI 7 / Android 15
+          # Config Android 15
           ./scripts/config --file out/.config --enable CONFIG_BPF_SYSCALL
           ./scripts/config --file out/.config --enable CONFIG_BPF_JIT
           ./scripts/config --file out/.config --enable CONFIG_CGROUP_BPF
           ./scripts/config --file out/.config --enable CONFIG_NET_CLS_BPF
-          ./scripts/config --file out/.config --enable CONFIG_NET_ACT_BPF
           ./scripts/config --file out/.config --disable CONFIG_KPERFMON
           ./scripts/config --file out/.config --disable CONFIG_DEFEX
+          ./scripts/config --file out/.config --disable CONFIG_RTIC
           
           make $MAKE_ARGS olddefconfig
           make -j$(nproc --all) $MAKE_ARGS Image.gz-dtb
-
-      - name: Upload Artifact
-        if: success()
-        uses: actions/upload-artifact@v4
-        with:
-          name: S10Lite-OneUI7-v28.1
-          path: out/arch/arm64/boot/Image.gz-dtb
