@@ -55,9 +55,12 @@ jobs:
           mkdir -p include/linux/ include/net/
           printf "#ifndef _BPF_LIRC_H\n#define _BPF_LIRC_H\n#endif\n" > include/linux/bpf_lirc.h
           printf "#ifndef _PERFLOG_H\n#define _PERFLOG_H\n#endif\n" > include/linux/perflog.h
-          printf "#ifndef _NET_XDP_H\n#define _NET_XDP_H\nstruct xdp_buff { void *data; };\n#endif\n" > include/net/xdp.h
 
-          # 4. Fix access_ok & BPF Symbols
+          # 4. Global XDP Struct Fix (Injectare în bpf.h pentru vizibilitate în drivers/net/tun.c)
+          sed -i '/struct xdp_buff;/d' include/linux/bpf.h
+          sed -i '/#define _LINUX_BPF_H/a struct xdp_buff { void *data; void *data_end; void *data_meta; void *data_hard_start; void *rxq; };' include/linux/bpf.h
+
+          # 5. Fix access_ok & BPF Symbols
           sed -i 's/access_ok(\([^,]*\), \([^)]*\))/access_ok(VERIFY_READ, \1, \2)/g' kernel/bpf/syscall.c
           sed -i 's/access_ok(\([^,]*\), \([^)]*\))/access_ok(VERIFY_READ, \1, \2)/g' kernel/bpf/verifier.c
           sed -i 's/PERF_BPF_EVENT_PROG_UNLOAD/0/g' kernel/bpf/syscall.c
@@ -67,15 +70,14 @@ jobs:
           sed -i 's/event = perf_get_event(file);/event = (void *)ERR_PTR(-EINVAL);/g' kernel/bpf/syscall.c
           sed -i 's/btp = bpf_get_raw_tracepoint(tp_name);/btp = (void *)ERR_PTR(-EINVAL);/g' kernel/bpf/syscall.c
 
-          # 5. FIX CGROUP API
+          # 6. FIX CGROUP API
           sed -i 's/__cgroup_bpf_detach(cgrp, prog, type, flags)/__cgroup_bpf_detach(cgrp, prog, type)/g' kernel/cgroup/cgroup.c
           sed -i 's/cgroup_bpf_inherit(\([^,]*\), [^)]*)/cgroup_bpf_inherit(\1)/g' kernel/cgroup/cgroup.c
 
-          # 6. FORCE DISABLE KPERFMON (Plan B)
-          # Aceasta este piesa lipsa - scoatem driverul din procesul de build
+          # 7. FORCE DISABLE KPERFMON (Bypass drivers/kperfmon)
           find drivers -name Makefile -exec sed -i 's/obj-$(CONFIG_KPERFMON)/obj-n/g' {} +
           
-          # 7. Makefile Force TNUM
+          # 8. Makefile Force TNUM
           if ! grep -q "tnum.o" kernel/bpf/Makefile; then
             sed -i '/obj-y += core.o/a obj-y += tnum.o' kernel/bpf/Makefile
           fi
@@ -102,5 +104,5 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-A15-Hybrid-v8
+          name: S10Lite-A15-Hybrid-v9
           path: out/arch/arm64/boot/Image.gz-dtb
