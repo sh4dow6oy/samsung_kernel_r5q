@@ -25,16 +25,10 @@ jobs:
           git fetch linux-stable linux-5.1.y --depth=1
           
           PATHS=(
-            "kernel/bpf/" 
-            "include/linux/bpf.h" 
-            "include/linux/filter.h" 
-            "include/linux/bpf_verifier.h"
-            "include/linux/tnum.h"
-            "include/linux/btf.h"
-            "include/uapi/linux/bpf.h" 
-            "include/uapi/linux/btf.h"
-            "include/uapi/linux/bpf_common.h"
-            "include/linux/bpf-cgroup.h"
+            "kernel/bpf/" "include/linux/bpf.h" "include/linux/filter.h" 
+            "include/linux/bpf_verifier.h" "include/linux/tnum.h" "include/linux/btf.h"
+            "include/uapi/linux/bpf.h" "include/uapi/linux/btf.h"
+            "include/uapi/linux/bpf_common.h" "include/linux/bpf-cgroup.h"
           )
           for path in "${PATHS[@]}"; do git checkout FETCH_HEAD -- "$path"; done
 
@@ -47,7 +41,7 @@ jobs:
           echo "/* Neutralized */" > kernel/bpf/bpf_lirc.c
           echo "/* Neutralized */" > kernel/bpf/reuseport_array.c
           
-          # 2. Fix Perf API & Atomic
+          # 2. API Fixes
           sed -i 's/perf_event_read_local(event, \&value, NULL, NULL)/perf_event_read_local(event, \&value)/g' kernel/bpf/arraymap.c
           sed -i 's/atomic_cond_read_relaxed(l, !VAL);/while (atomic_read(l));/g' kernel/bpf/helpers.c
 
@@ -63,19 +57,15 @@ jobs:
           # 5. Fix access_ok & BPF Symbols
           sed -i 's/access_ok(\([^,]*\), \([^)]*\))/access_ok(VERIFY_READ, \1, \2)/g' kernel/bpf/syscall.c
           sed -i 's/access_ok(\([^,]*\), \([^)]*\))/access_ok(VERIFY_READ, \1, \2)/g' kernel/bpf/verifier.c
-          sed -i 's/PERF_BPF_EVENT_PROG_UNLOAD/0/g' kernel/bpf/syscall.c
-          sed -i 's/PERF_BPF_EVENT_PROG_LOAD/0/g' kernel/bpf/syscall.c
           sed -i 's/perf_event_bpf_event((void \*)prog, 0, 0);/;/g' kernel/bpf/syscall.c
-          sed -i 's/btp->tp->name/""/g' kernel/bpf/syscall.c
-          sed -i 's/event = perf_get_event(file);/event = (void *)ERR_PTR(-EINVAL);/g' kernel/bpf/syscall.c
-          sed -i 's/btp = bpf_get_raw_tracepoint(tp_name);/btp = (void *)ERR_PTR(-EINVAL);/g' kernel/bpf/syscall.c
 
           # 6. FIX CGROUP API
           sed -i 's/__cgroup_bpf_detach(cgrp, prog, type, flags)/__cgroup_bpf_detach(cgrp, prog, type)/g' kernel/cgroup/cgroup.c
           sed -i 's/cgroup_bpf_inherit(\([^,]*\), [^)]*)/cgroup_bpf_inherit(\1)/g' kernel/cgroup/cgroup.c
 
-          # 7. NET CORE API FIX (v10)
-          sed -i 's/xdp_do_generic_redirect(\([^,]*\), \([^,]*\), \([^)]*\))/xdp_do_generic_redirect(\1, \2, NULL, \3)/g' net/core/dev.c
+          # 7. NET CORE API FIX (v11 - Specific fix for dev.c)
+          # Injectăm NULL ca al treilea argument în apelul xdp_do_generic_redirect
+          sed -i 's/xdp_do_generic_redirect(\([^,]*\), \([^,]*\), /xdp_do_generic_redirect(\1, \2, NULL, /g' net/core/dev.c
 
           # 8. FORCE DISABLE KPERFMON
           find drivers -name Makefile -exec sed -i 's/obj-$(CONFIG_KPERFMON)/obj-n/g' {} +
@@ -107,5 +97,5 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-A15-Hybrid-v10
+          name: S10Lite-A15-Hybrid-v11
           path: out/arch/arm64/boot/Image.gz-dtb
