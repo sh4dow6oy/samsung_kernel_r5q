@@ -1,4 +1,4 @@
-name: S10 Lite - OneUI 7 Ready v31.1
+name: S10 Lite - OneUI 7 Ready v33
 
 on:
   push:
@@ -10,8 +10,12 @@ jobs:
     runs-on: ubuntu-22.04
 
     steps:
-      - name: Checkout Source
+      - name: Checkout Source (Pascua28 v4.0)
         uses: actions/checkout@v4
+        with:
+          repository: pascua28/android_kernel_samsung_sm7150
+          ref: v4.0
+          fetch-depth: 1
 
       - name: Setup Toolchain
         run: |
@@ -19,52 +23,41 @@ jobs:
           sudo apt-get install -y bc bison flex libssl-dev libelf-dev dwarves make python3 lz4 perl
           git clone --depth=1 https://github.com/kdrag0n/proton-clang.git toolchain/proton-clang
 
-      - name: Upstream to 4.14.356
+      - name: Kernel Customization & Fixes
         run: |
-          git config user.email "bot@example.com"
-          git config user.name "KernelBot"
-          git remote add stable https://kernel.googlesource.com/pub/scm/linux/kernel/git/stable/linux-stable.git || true
-          git fetch stable linux-4.14.y --depth=1
-          git merge v4.14.356 -m "Upstream to 4.14.356" || echo "Merge OK"
+          # 1. Identitate Kernel (Va apărea în Setări -> Despre Telefon)
+          sed -i 's/CONFIG_LOCALVERSION=.*/CONFIG_LOCALVERSION="-OneUI7-v33"/g' arch/arm64/configs/r5q_eur_open_defconfig
 
-      - name: Precise eBPF Backport
-        run: |
-          git remote add lineage-bpf https://github.com/LineageOS/android_kernel_google_msm-4.14.git || true
-          git fetch lineage-bpf lineage-21 --depth=1
-          git checkout FETCH_HEAD -- kernel/bpf/ include/linux/bpf.h include/uapi/linux/bpf.h include/linux/bpf_verifier.h
-
-      - name: Global Fixes (No Conflict)
-        run: |
-          # 1. FIX: _perflog (Neutralizăm macro-ul Samsung direct în ologk.h)
-          # Asta transformă orice apel perflog(...) în nimic, eliminând eroarea din psi.c și fs
-          sed -i 's/#define perflog(...).*/#define perflog(...) do {} while (0)/g' include/linux/ologk.h
-
-          # 2. FIX: access_ok (Standard Samsung 3-args pentru kernel/bpf)
-          find kernel/bpf/ -type f -name "*.c" -exec sed -i 's/access_ok(\([^,]*\), \([^)]*\))/access_ok(VERIFY_READ, \1, \2)/g' {} +
-
-          # 3. FIX: Samsung Security & RTIC
-          sed -i 's/CONFIG_RTIC=y/CONFIG_RTIC=n/g' arch/arm64/configs/r5q_eur_open_defconfig || true
-          sed -i 's/CONFIG_SECURITY_DEFEX=y/CONFIG_SECURITY_DEFEX=n/g' arch/arm64/configs/r5q_eur_open_defconfig || true
+          # 2. Samsung Security Bypass (Esențial pentru boot pe OneUI custom/Android 15)
+          ./scripts/config --file arch/arm64/configs/r5q_eur_open_defconfig --disable CONFIG_RTIC
+          ./scripts/config --file arch/arm64/configs/r5q_eur_open_defconfig --disable CONFIG_SECURITY_DEFEX
+          ./scripts/config --file arch/arm64/configs/r5q_eur_open_defconfig --disable CONFIG_SECURITY_RTIC
+          
+          # 3. Asigurare eBPF (Pascua v4.0 le are, dar forțăm pentru siguranță)
+          ./scripts/config --file arch/arm64/configs/r5q_eur_open_defconfig --enable CONFIG_BPF_SYSCALL
+          ./scripts/config --file arch/arm64/configs/r5q_eur_open_defconfig --enable CONFIG_BPF_JIT
 
       - name: Build Kernel
         run: |
           export PATH=$(pwd)/toolchain/proton-clang/bin:$PATH
           MAKE_ARGS="O=out ARCH=arm64 CC=clang HOSTCC=gcc CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1"
-          export KCFLAGS="-Wno-error -Wno-implicit-function-declaration -fno-pic"
+          
+          # KCFLAGS optimizate pentru Clang/Proton
+          export KCFLAGS="-Wno-error -fno-pic -fno-strict-aliasing"
 
           make $MAKE_ARGS r5q_eur_open_defconfig
           
-          # Creăm dummy secgetspf pentru a preveni eroarea de scripts
+          # Fix pentru scriptul de securitate Samsung în timpul compilării
           mkdir -p out/scripts
           echo -e "#!/bin/bash\necho 0" > out/scripts/secgetspf
           chmod +x out/scripts/secgetspf
-          sudo cp out/scripts/secgetspf /usr/bin/secgetspf
-
-          # Config OneUI 7
-          ./scripts/config --file out/.config --enable CONFIG_BPF_SYSCALL
-          ./scripts/config --file out/.config --enable CONFIG_BPF_JIT
-          ./scripts/config --file out/.config --disable CONFIG_RTIC
-          ./scripts/config --file out/.config --disable CONFIG_MODVERSIONS
           
           make $MAKE_ARGS olddefconfig
           make -j$(nproc --all) $MAKE_ARGS Image.gz-dtb
+
+      - name: Upload Artifact
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: S10Lite-OneUI7-v33-Final
+          path: out/arch/arm64/boot/Image.gz-dtb
