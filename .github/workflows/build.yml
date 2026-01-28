@@ -16,7 +16,7 @@ jobs:
       - name: Setup Toolchain
         run: |
           sudo apt-get update
-          sudo apt-get install -y bc bison flex libssl-dev libelf-dev dwarves make python3 lz4 perl
+          sudo apt-get install -y bc bison flex libssl-dev libelf-dev dwarves make python3 lz4
           git clone --depth=1 https://github.com/kdrag0n/proton-clang.git toolchain/proton-clang
 
       - name: Core Pascua Backport (eBPF 5.1 Full)
@@ -32,56 +32,48 @@ jobs:
           )
           for path in "${PATHS[@]}"; do git checkout FETCH_HEAD -- "$path"; done
 
-      - name: Apply Glue Patches (Final Synchronization)
+      - name: Apply Glue Patches (v15 - Net Resolve)
         run: |
-          # 1. Neutralizare Module BPF non-esențiale
+          # 1. BPF Modules Neutralization
           echo "/* Neutralized */" > kernel/bpf/devmap.c
           echo "/* Neutralized */" > kernel/bpf/cpumap.c
           echo "/* Neutralized */" > kernel/bpf/offload.c
           echo "/* Neutralized */" > kernel/bpf/bpf_lirc.c
           echo "/* Neutralized */" > kernel/bpf/reuseport_array.c
           
-          # 2. Fix Perf API & Atomics
+          # 2. API & Atomic Fixes
           sed -i 's/perf_event_read_local(event, \&value, NULL, NULL)/perf_event_read_local(event, \&value)/g' kernel/bpf/arraymap.c
           sed -i 's/atomic_cond_read_relaxed(l, !VAL);/while (atomic_read(l));/g' kernel/bpf/helpers.c
 
-          # 3. Dummy Headers & Global Structs
+          # 3. Dummy Headers & XDP Struct
           mkdir -p include/linux/ include/net/
           printf "#ifndef _BPF_LIRC_H\n#define _BPF_LIRC_H\n#endif\n" > include/linux/bpf_lirc.h
           printf "#ifndef _PERFLOG_H\n#define _PERFLOG_H\n#endif\n" > include/linux/perflog.h
-          
           sed -i '/struct xdp_buff;/d' include/linux/bpf.h
           sed -i '/#define _LINUX_BPF_H/a struct xdp_buff { void *data; void *data_end; void *data_meta; void *data_hard_start; void *rxq; };' include/linux/bpf.h
 
-          # 4. FIX SYSCALL.C (Bypass Perf Events)
+          # 4. Syscall.c Fixes
           sed -i '1i #define PERF_BPF_EVENT_PROG_LOAD 0\n#define PERF_BPF_EVENT_PROG_UNLOAD 0' kernel/bpf/syscall.c
           sed -i 's/perf_event_bpf_event(/ \/\/ /g' kernel/bpf/syscall.c
           sed -i 's/btp->tp->name/""/g' kernel/bpf/syscall.c
           sed -i 's/access_ok(\([^,]*\), \([^)]*\))/access_ok(VERIFY_READ, \1, \2)/g' kernel/bpf/syscall.c
           sed -i 's/access_ok(\([^,]*\), \([^)]*\))/access_ok(VERIFY_READ, \1, \2)/g' kernel/bpf/verifier.c
 
-          # 5. FIX CGROUP API
+          # 5. Cgroup Fixes
           sed -i 's/__cgroup_bpf_detach(cgrp, prog, type, flags)/__cgroup_bpf_detach(cgrp, prog, type)/g' kernel/cgroup/cgroup.c
           sed -i 's/cgroup_bpf_inherit(\([^,]*\), [^)]*)/cgroup_bpf_inherit(\1)/g' kernel/cgroup/cgroup.c
 
-          # 6. FIX NET CORE & FILTER (v14 Specific)
-          # Aliniem definitia bpf_sk_redirect_map_proto (extern vs static)
+          # 6. NET CORE / FILTER FIXES (v15)
           sed -i 's/static const struct bpf_func_proto bpf_sk_redirect_map_proto/const struct bpf_func_proto bpf_sk_redirect_map_proto/g' net/core/filter.c
-          
-          # Reparam definitia xdp_do_generic_redirect în filter.c (3 args -> 4 args)
-          perl -0777 -pi -e 's/int xdp_do_generic_redirect\s*\(\s*struct net_device\s*\*dev\s*,\s*struct sk_buff\s*\*skb\s*,\s*const struct bpf_func_proto\s*\*proto\s*\)/int xdp_do_generic_redirect(struct net_device *dev, struct sk_buff *skb, struct bpf_prog *prog, const struct bpf_func_proto *proto)/g' net/core/filter.c
-
-          # Dezactivam test_run care nu mai exista in verifier_ops 5.1
+          sed -i 's/int xdp_do_generic_redirect(struct net_device \*dev, struct sk_buff \*skb,/int xdp_do_generic_redirect(struct net_device *dev, struct sk_buff *skb, struct bpf_prog *prog,/g' net/core/filter.c
           sed -i 's/\.test_run/\/\/ .test_run/g' net/core/filter.c
+          sed -i 's/xdp_do_generic_redirect(skb->dev, skb, xdp_prog)/xdp_do_generic_redirect(skb->dev, skb, NULL, xdp_prog)/g' net/core/dev.c
 
-          # Reparam apelul functiei în dev.c (Injectam NULL ca al treilea argument)
-          perl -0777 -pi -e 's/xdp_do_generic_redirect\s*\(\s*([^,]+)\s*,\s*([^,]+)\s*,\s*([^)]+)\s*\)/xdp_do_generic_redirect($1, $2, NULL, $3)/g' net/core/dev.c
-
-          # 7. BYPASS KPERFMON & DUMMY ERRORS
+          # 7. Bypass Drivers & Samsung Bloat
           find drivers -name Makefile -exec sed -i 's/obj-$(CONFIG_KPERFMON)/obj-n/g' {} +
           find . -name "*.sh" -exec sed -i 's/cp -f/cp -f 2>\/dev\/null/g' {} + || true
 
-          # 8. Makefile Force TNUM
+          # 8. Makefile TNUM
           if ! grep -q "tnum.o" kernel/bpf/Makefile; then
             sed -i '/obj-y += core.o/a obj-y += tnum.o' kernel/bpf/Makefile
           fi
@@ -93,14 +85,11 @@ jobs:
           export KCFLAGS="-Wno-error -Wno-incompatible-pointer-types -Wno-int-conversion -Wno-implicit-function-declaration -Wno-return-type -Wno-unused-variable -Wno-unused-function"
 
           make $MAKE_ARGS r5q_eur_open_defconfig
-          
-          # Configurari necesare pentru Android 15
           ./scripts/config --file out/.config --enable CONFIG_BPF_SYSCALL
           ./scripts/config --file out/.config --enable CONFIG_BPF_JIT
           ./scripts/config --file out/.config --enable CONFIG_CGROUP_BPF
           ./scripts/config --file out/.config --disable CONFIG_KPERFMON
           ./scripts/config --file out/.config --disable CONFIG_MODVERSIONS
-          ./scripts/config --file out/.config --disable CONFIG_SAMSUNG_PRODUCT_SHIP
           ./scripts/config --file out/.config --disable CONFIG_DEFEX
           
           make $MAKE_ARGS olddefconfig
@@ -110,5 +99,5 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-A15-Hybrid-v14
+          name: S10Lite-A15-Hybrid-v15
           path: out/arch/arm64/boot/Image.gz-dtb
