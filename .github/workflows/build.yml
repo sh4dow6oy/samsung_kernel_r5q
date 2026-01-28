@@ -1,4 +1,4 @@
-name: S10 Lite - OneUI 7 Ready v28
+name: S10 Lite - OneUI 7 Ready v28.1
 
 on:
   push:
@@ -11,7 +11,7 @@ jobs:
 
     steps:
       - name: Checkout Source
-        uses: checkout@v4
+        uses: actions/checkout@v4
 
       - name: Setup Toolchain
         run: |
@@ -39,18 +39,21 @@ jobs:
 
       - name: Final Glue Cleanup
         run: |
-          # 1. FIX: XDP Redirect (Revenim la 3 argumente conform header-ului Lineage)
-          # Eliminăm încercarea de a injecta NULL
-          sed -i 's/xdp_do_generic_redirect(skb->dev, skb, NULL, xdp_prog)/xdp_do_generic_redirect(skb->dev, skb, xdp_prog)/g' net/core/dev.c || true
+          # 1. FIX: XDP Redirect - Revenim strict la 3 argumente (skb->dev, skb, xdp_prog)
+          # Această comandă curăță orice variație de 4 argumente introdusă anterior
+          sed -i 's/xdp_do_generic_redirect(skb->dev, skb, NULL, xdp_prog)/xdp_do_generic_redirect(skb->dev, skb, xdp_prog)/g' net/core/dev.c
+          sed -i 's/xdp_do_generic_redirect(dev, skb, NULL, proto)/xdp_do_generic_redirect(dev, skb, proto)/g' net/core/filter.c || true
 
-          # 2. FIX: bpf_trace.c (Sincronizare 3 argumente)
+          # 2. FIX: bpf_trace.c - Sincronizare 3 argumente (off, size, size_default)
           sed -i 's/bpf_ctx_narrow_access_ok(BPF_READ, off, size, size_sp)/bpf_ctx_narrow_access_ok(off, size, size_sp)/g' kernel/trace/bpf_trace.c
 
-          # 3. FIX: access_ok (Standard Samsung 3-args)
+          # 3. FIX: access_ok (Standard Samsung 3-args: type, addr, size)
+          # Aplicăm un patch curat pentru a evita dublarea argumentelor
+          find kernel/bpf/ -type f -name "*.c" -exec sed -i 's/access_ok(VERIFY_READ, VERIFY_READ, /access_ok(VERIFY_READ, /g' {} +
           grep -rl "access_ok(" kernel/bpf/ | xargs sed -i 's/access_ok(\([^,]*\), \([^)]*\))/access_ok(VERIFY_READ, \1, \2)/g'
-          grep -rl "access_ok(VERIFY_READ, VERIFY_READ," kernel/bpf/ | xargs sed -i 's/access_ok(VERIFY_READ, VERIFY_READ,/access_ok(VERIFY_READ,/g'
+          find kernel/bpf/ -type f -name "*.c" -exec sed -i 's/access_ok(VERIFY_READ, VERIFY_READ, /access_ok(VERIFY_READ, /g' {} +
 
-          # 4. Samsung Dummy Folders (Pentru a elimina erorile 'cannot stat')
+          # 4. Samsung Dummy Folders (Eliminăm erorile estetice 'cannot stat')
           mkdir -p system/core/liblog/include/log/
           mkdir -p system/logging/liblog/include/log/
           touch system/core/liblog/include/log/perflog.h
@@ -78,7 +81,7 @@ jobs:
           mkdir -p out/scripts
           cp scripts/secgetspf out/scripts/
 
-          # Config Android 15 / OneUI 7
+          # Config OneUI 7 / Android 15
           ./scripts/config --file out/.config --enable CONFIG_BPF_SYSCALL
           ./scripts/config --file out/.config --enable CONFIG_BPF_JIT
           ./scripts/config --file out/.config --enable CONFIG_CGROUP_BPF
@@ -92,7 +95,7 @@ jobs:
 
       - name: Upload Artifact
         if: success()
-        uses: upload-artifact@v4
+        uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-OneUI7-v28-Final
+          name: S10Lite-OneUI7-v28.1
           path: out/arch/arm64/boot/Image.gz-dtb
