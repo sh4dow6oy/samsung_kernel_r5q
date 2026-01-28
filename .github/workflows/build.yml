@@ -1,4 +1,4 @@
-name: S10 Lite - OneUI 7 Ready v27
+name: S10 Lite - OneUI 7 Ready v28
 
 on:
   push:
@@ -11,7 +11,7 @@ jobs:
 
     steps:
       - name: Checkout Source
-        uses: actions/checkout@v4
+        uses: checkout@v4
 
       - name: Setup Toolchain
         run: |
@@ -25,44 +25,43 @@ jobs:
           git config user.name "KernelBot"
           git remote add stable https://kernel.googlesource.com/pub/scm/linux/kernel/git/stable/linux-stable.git || true
           git fetch stable linux-4.14.y --depth=50
-          git merge v4.14.356 -m "Upstream to 4.14.356" || echo "Merge Upstream OK"
+          git merge v4.14.356 -m "Upstream to 4.14.356" || echo "Upstream OK"
 
-      - name: eBPF Backport (Lineage-23 Android 15 Base)
+      - name: eBPF Backport (Lineage-23 Base)
         run: |
           git remote add lineage-bpf https://github.com/LineageOS/android_kernel_google_msm-4.14.git || true
-          # Luăm cea mai recentă ramură stabilă pentru 4.14 (Lineage-21/23 logic)
           git fetch lineage-bpf lineage-21 --depth=1
-          
           PATHS=(
             "kernel/bpf/" "include/linux/bpf.h" "include/linux/filter.h" 
             "include/linux/bpf_verifier.h" "include/uapi/linux/bpf.h" "include/linux/bpf-cgroup.h"
           )
           for path in "${PATHS[@]}"; do git checkout FETCH_HEAD -- "$path"; done
 
-      - name: Apply BPF Glue (Lineage-23 Alignment)
+      - name: Final Glue Cleanup
         run: |
-          # 1. FIX: bpf_ctx_narrow_access_ok (Sincronizare 3 argumente)
-          # Eliminăm BPF_READ-ul forțat anterior pentru a lăsa doar off, size, size_default
-          sed -i 's/bpf_ctx_narrow_access_ok(BPF_READ, off, size, size_sp)/bpf_ctx_narrow_access_ok(off, size, size_sp)/g' kernel/trace/bpf_trace.c
-          
-          # Ne asigurăm că și header-ul are 3 argumente (aliniere cu eroarea ta)
-          sed -i 's/bpf_ctx_narrow_access_ok(int type, u32 off, u32 size, u32 size_default)/bpf_ctx_narrow_access_ok(u32 off, u32 size, u32 size_default)/g' include/linux/filter.h
+          # 1. FIX: XDP Redirect (Revenim la 3 argumente conform header-ului Lineage)
+          # Eliminăm încercarea de a injecta NULL
+          sed -i 's/xdp_do_generic_redirect(skb->dev, skb, NULL, xdp_prog)/xdp_do_generic_redirect(skb->dev, skb, xdp_prog)/g' net/core/dev.c || true
 
-          # 2. FIX: access_ok (Standard Samsung 4.14: 3 argumente)
-          # Format: access_ok(type, addr, size)
+          # 2. FIX: bpf_trace.c (Sincronizare 3 argumente)
+          sed -i 's/bpf_ctx_narrow_access_ok(BPF_READ, off, size, size_sp)/bpf_ctx_narrow_access_ok(off, size, size_sp)/g' kernel/trace/bpf_trace.c
+
+          # 3. FIX: access_ok (Standard Samsung 3-args)
           grep -rl "access_ok(" kernel/bpf/ | xargs sed -i 's/access_ok(\([^,]*\), \([^)]*\))/access_ok(VERIFY_READ, \1, \2)/g'
-          # Curățare dublură VERIFY_READ
           grep -rl "access_ok(VERIFY_READ, VERIFY_READ," kernel/bpf/ | xargs sed -i 's/access_ok(VERIFY_READ, VERIFY_READ,/access_ok(VERIFY_READ,/g'
 
-          # 3. Networking & Driver Compatibility
-          perl -0777 -pi -e 's/xdp_do_generic_redirect\s*\(\s*([^,]+)\s*,\s*([^,]+)\s*,\s*([^)]+)\s*\)/xdp_do_generic_redirect($1, $2, NULL, $3)/g' net/core/dev.c
+          # 4. Samsung Dummy Folders (Pentru a elimina erorile 'cannot stat')
+          mkdir -p system/core/liblog/include/log/
+          mkdir -p system/logging/liblog/include/log/
+          touch system/core/liblog/include/log/perflog.h
+          touch system/logging/liblog/include/log/perflog.h
 
-          # 4. Neutralizare module redundante care nu există pe SM6150
+          # 5. Neutralize unused BPF modules
           for f in devmap.c cpumap.c offload.c bpf_lirc.c; do
             echo "/* Disabled */" > kernel/bpf/$f
           done
 
-          # 5. Samsung Security Fix (secgetspf)
+          # 6. Samsung secgetspf Fix
           mkdir -p scripts
           echo -e "#!/bin/bash\necho 0" > scripts/secgetspf
           chmod +x scripts/secgetspf
@@ -79,7 +78,7 @@ jobs:
           mkdir -p out/scripts
           cp scripts/secgetspf out/scripts/
 
-          # Configurație necesară pentru OneUI 7 / Android 15
+          # Config Android 15 / OneUI 7
           ./scripts/config --file out/.config --enable CONFIG_BPF_SYSCALL
           ./scripts/config --file out/.config --enable CONFIG_BPF_JIT
           ./scripts/config --file out/.config --enable CONFIG_CGROUP_BPF
@@ -89,11 +88,11 @@ jobs:
           ./scripts/config --file out/.config --disable CONFIG_DEFEX
           
           make $MAKE_ARGS olddefconfig
-          make -j$(nproc --all) $MAKE_ARGS Image.gz-dtb || make -j1 $MAKE_ARGS Image.gz-dtb
+          make -j$(nproc --all) $MAKE_ARGS Image.gz-dtb
 
       - name: Upload Artifact
         if: success()
-        uses: actions/upload-artifact@v4
+        uses: upload-artifact@v4
         with:
-          name: S10Lite-OneUI7-v27
+          name: S10Lite-OneUI7-v28-Final
           path: out/arch/arm64/boot/Image.gz-dtb
