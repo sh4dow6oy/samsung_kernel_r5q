@@ -38,9 +38,9 @@ jobs:
           )
           for path in "${PATHS[@]}"; do git checkout FETCH_HEAD -- "$path"; done
 
-      - name: Apply Glue Patches (Aggressive Bypass)
+      - name: Apply Glue Patches (BPF, Cgroup, Net Core)
         run: |
-          # 1. Neutralizare Module BPF incompatibile
+          # 1. Neutralizare Module BPF
           echo "/* Neutralized */" > kernel/bpf/devmap.c
           echo "/* Neutralized */" > kernel/bpf/cpumap.c
           echo "/* Neutralized */" > kernel/bpf/offload.c
@@ -56,7 +56,7 @@ jobs:
           printf "#ifndef _BPF_LIRC_H\n#define _BPF_LIRC_H\n#endif\n" > include/linux/bpf_lirc.h
           printf "#ifndef _PERFLOG_H\n#define _PERFLOG_H\n#endif\n" > include/linux/perflog.h
 
-          # 4. Global XDP Struct Fix (Injectare în bpf.h pentru vizibilitate în drivers/net/tun.c)
+          # 4. Global XDP Struct Fix
           sed -i '/struct xdp_buff;/d' include/linux/bpf.h
           sed -i '/#define _LINUX_BPF_H/a struct xdp_buff { void *data; void *data_end; void *data_meta; void *data_hard_start; void *rxq; };' include/linux/bpf.h
 
@@ -74,10 +74,13 @@ jobs:
           sed -i 's/__cgroup_bpf_detach(cgrp, prog, type, flags)/__cgroup_bpf_detach(cgrp, prog, type)/g' kernel/cgroup/cgroup.c
           sed -i 's/cgroup_bpf_inherit(\([^,]*\), [^)]*)/cgroup_bpf_inherit(\1)/g' kernel/cgroup/cgroup.c
 
-          # 7. FORCE DISABLE KPERFMON (Bypass drivers/kperfmon)
+          # 7. NET CORE API FIX (v10)
+          sed -i 's/xdp_do_generic_redirect(\([^,]*\), \([^,]*\), \([^)]*\))/xdp_do_generic_redirect(\1, \2, NULL, \3)/g' net/core/dev.c
+
+          # 8. FORCE DISABLE KPERFMON
           find drivers -name Makefile -exec sed -i 's/obj-$(CONFIG_KPERFMON)/obj-n/g' {} +
           
-          # 8. Makefile Force TNUM
+          # 9. Makefile Force TNUM
           if ! grep -q "tnum.o" kernel/bpf/Makefile; then
             sed -i '/obj-y += core.o/a obj-y += tnum.o' kernel/bpf/Makefile
           fi
@@ -104,5 +107,5 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-A15-Hybrid-v9
+          name: S10Lite-A15-Hybrid-v10
           path: out/arch/arm64/boot/Image.gz-dtb
