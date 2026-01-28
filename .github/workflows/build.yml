@@ -1,4 +1,4 @@
-name: S10 Lite - Full Pascua Integration (Atomic Fix)
+name: S10 Lite - Full Pascua Integration
 
 on:
   push:
@@ -23,6 +23,8 @@ jobs:
         run: |
           git remote add linux-stable https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git || true
           git fetch linux-stable linux-5.1.y --depth=1
+          
+          # Importăm subsistemul eBPF modern din Linux 5.1
           PATHS=(
             "kernel/bpf/" 
             "include/linux/bpf.h" 
@@ -37,22 +39,24 @@ jobs:
           )
           for path in "${PATHS[@]}"; do git checkout FETCH_HEAD -- "$path"; done
 
-      - name: Apply Pascua "Glue" Patches
+      - name: Apply Glue Patches (The Pascua Method)
         run: |
-          # 1. Fix Atomic VAL error în helpers.c
-          # Înlocuim macro-ul problematic cu o buclă de așteptare compatibilă 4.14
+          # 1. Fix Perf API mismatch in arraymap.c (Downgrade 4 args -> 2 args pentru 4.14)
+          sed -i 's/perf_event_read_local(event, \&value, NULL, NULL)/perf_event_read_local(event, \&value)/g' kernel/bpf/arraymap.c
+
+          # 2. Fix Atomic VAL error în helpers.c (Compatibility loop)
           sed -i 's/atomic_cond_read_relaxed(l, !VAL);/while (atomic_read(l));/g' kernel/bpf/helpers.c
 
-          # 2. Shim pentru Headerele lipsă
+          # 3. Create Dummy/Missing Headers (LIRC & Perflog)
           mkdir -p include/linux/
           printf "#ifndef _BPF_LIRC_H\n#define _BPF_LIRC_H\n#endif\n" > include/linux/bpf_lirc.h
           printf "#ifndef _PERFLOG_H\n#define _PERFLOG_H\n#endif\n" > include/linux/perflog.h
 
-          # 3. Fix API Mismatch (access_ok)
+          # 4. Global Regex Fix for access_ok (Add VERIFY_READ for 4.14 signature)
           sed -i 's/access_ok(\([^,]*\), \([^)]*\))/access_ok(VERIFY_READ, \1, \2)/g' kernel/bpf/syscall.c
           sed -i 's/access_ok(\([^,]*\), \([^)]*\))/access_ok(VERIFY_READ, \1, \2)/g' kernel/bpf/verifier.c
 
-          # 4. Neutralizare PERF_BPF_EVENT & Bypass Tracepoints
+          # 5. Bypass Tracepoints & Perf Event Unresolved Symbols
           sed -i 's/PERF_BPF_EVENT_PROG_UNLOAD/0/g' kernel/bpf/syscall.c
           sed -i 's/PERF_BPF_EVENT_PROG_LOAD/0/g' kernel/bpf/syscall.c
           sed -i 's/perf_event_bpf_event((void \*)prog, 0, 0);/;/g' kernel/bpf/syscall.c
@@ -60,30 +64,43 @@ jobs:
           sed -i 's/event = perf_get_event(file);/event = (void *)ERR_PTR(-EINVAL);/g' kernel/bpf/syscall.c
           sed -i 's/btp = bpf_get_raw_tracepoint(tp_name);/btp = (void *)ERR_PTR(-EINVAL);/g' kernel/bpf/syscall.c
 
-          # 5. Makefile Fix (Asigurăm TNUM)
+          # 6. Ensure TNUM is compiled (Math engine for Verifier)
           if ! grep -q "tnum.o" kernel/bpf/Makefile; then
             sed -i '/obj-y += core.o/a obj-y += tnum.o' kernel/bpf/Makefile
+          fi
+
+          # 7. Cgroup Inherit Fix (Mismatch între Samsung și Generic 5.1)
+          if [ -f kernel/cgroup/cgroup.c ]; then
+             sed -i 's/cgroup_bpf_inherit(root_cgrp)/cgroup_bpf_inherit(root_cgrp, NULL)/g' kernel/cgroup/cgroup.c
+             sed -i 's/cgroup_bpf_inherit(cgrp)/cgroup_bpf_inherit(cgrp, NULL)/g' kernel/cgroup/cgroup.c
           fi
 
       - name: Build Kernel
         run: |
           export PATH=$(pwd)/toolchain/proton-clang/bin:$PATH
           MAKE_ARGS="O=out ARCH=arm64 CC=clang HOSTCC=gcc CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1"
+          
+          # Flags necesare pentru a tolera inconsistențele transplantului hibrid
           export KCFLAGS="-Wno-error -Wno-incompatible-pointer-types -Wno-int-conversion -Wno-implicit-function-declaration -Wno-return-type -Wno-unused-variable -Wno-unused-function"
 
           make $MAKE_ARGS r5q_eur_open_defconfig
+          
+          # Android 15 Requirements & Performance Tweaks
           ./scripts/config --file out/.config --enable CONFIG_BPF_SYSCALL
           ./scripts/config --file out/.config --enable CONFIG_BPF_JIT
           ./scripts/config --file out/.config --enable CONFIG_CGROUP_BPF
+          ./scripts/config --file out/.config --enable CONFIG_PERF_EVENTS
           ./scripts/config --file out/.config --disable CONFIG_MODVERSIONS
           ./scripts/config --file out/.config --disable CONFIG_SAMSUNG_PRODUCT_SHIP
+          ./scripts/config --file out/.config --disable CONFIG_DEFEX
           
           make $MAKE_ARGS olddefconfig
           make -j$(nproc --all) $MAKE_ARGS Image.gz-dtb || make -j1 $MAKE_ARGS Image.gz-dtb
 
-      - name: Upload
+      - name: Upload Artifact
+        if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-Pascua-Hybrid-A15-v2
+          name: S10Lite-A15-Hybrid-Kernel
           path: out/arch/arm64/boot/Image.gz-dtb
           
