@@ -1,4 +1,4 @@
-name: S10 Lite - Kernel sh4dow6oy v24
+name: S10 Lite - Kernel sh4dow6oy v25
 
 on:
   push:
@@ -26,19 +26,19 @@ jobs:
           PATHS=("kernel/bpf/" "include/linux/bpf.h" "include/linux/filter.h" "include/linux/bpf_verifier.h" "include/linux/tnum.h" "include/linux/btf.h" "include/uapi/linux/bpf.h" "include/uapi/linux/btf.h" "include/uapi/linux/bpf_common.h" "include/linux/bpf-cgroup.h")
           for path in "${PATHS[@]}"; do git checkout FETCH_HEAD -- "$path"; done
 
-      - name: Apply Glue Patches (v24 - Security & Cleanup)
+      - name: Apply Glue Patches (v25 - Optimization)
         run: |
-          # 1. Bypass Samsung Security Tools (secgetspf fix)
+          # Bypass Samsung Security Tools
           echo -e "#!/bin/bash\nexit 0" > scripts/secgetspf
           chmod +x scripts/secgetspf
           sudo cp scripts/secgetspf /usr/bin/secgetspf
 
-          # 2. Nuke LIRC & BPF conflicts (Consistent with v23 success)
+          # BPF & Syscall Fixes (Păstrăm ce a mers la v24)
           sed -i '/bpf_lirc\.h/d' kernel/bpf/syscall.c
           rm -f kernel/bpf/bpf_lirc.c kernel/bpf/devmap.c kernel/bpf/cpumap.c kernel/bpf/offload.c kernel/bpf/reuseport_array.c
           touch kernel/bpf/bpf_lirc.c kernel/bpf/devmap.c kernel/bpf/cpumap.c kernel/bpf/offload.c kernel/bpf/reuseport_array.c
 
-          # 3. Fix Header global (include/linux/filter.h)
+          # Fix Header global
           sed -i '/#include <linux\/skbuff.h>/a \
           #define PERF_BPF_EVENT_PROG_LOAD 0\
           #define PERF_BPF_EVENT_PROG_UNLOAD 0\
@@ -47,16 +47,14 @@ jobs:
           #ifndef cant_sleep\n#define cant_sleep() do { } while (0)\n#endif\n\
           static inline bool kallsyms_show_value(void) { return false; }' include/linux/filter.h
 
-          # 4. Global access_ok fix
+          # Global access_ok fix
           grep -rl "access_ok(" kernel/bpf/ | xargs sed -i 's/access_ok(\([^,]*\), \([^)]*\))/access_ok(VERIFY_READ, \1, \2)/g'
 
-          # 5. Syscall Stubs (v23 optimized)
+          # Syscall Stubs
           sed -i '1i #include <linux/err.h>\n#include <linux/bpf.h>\nstruct bpf_raw_event_map { int dummy; };\nstatic inline void bpf_probe_unregister(void *a, void *b) {}\nstatic inline void bpf_put_raw_tracepoint(void *a) {}\nstatic inline void *bpf_get_raw_tracepoint(void *a) { return NULL; }\nstatic inline int bpf_probe_register(void *a, void *b) { return -1; }\nstatic inline int lirc_prog_attach(const void *a, void *b) { return -1; }\nstatic inline int lirc_prog_detach(const void *a) { return -1; }\nstatic inline int lirc_prog_query(const void *a, void *b) { return -1; }\nstatic inline int skb_flow_dissector_bpf_prog_attach(const void *a, void *b) { return -1; }\nstatic inline int skb_flow_dissector_bpf_prog_detach(const void *a) { return -1; }\nstatic inline void *perf_get_event(void *a) { return ERR_PTR(-1); }\nstatic inline int bpf_get_perf_event_info(void *a, void *b, void *c, void *d, void *e, void *f) { return -1; }' kernel/bpf/syscall.c
 
-          # 6. Atomic & Network Sync
+          # Atomic & Network Sync
           sed -i 's/atomic_fetch_add_unless/atomic_add_unless/g' kernel/bpf/syscall.c
-          sed -i '/int xdp_do_generic_redirect(/i #define xdp_do_generic_redirect(dev, skb, prog) __xdp_do_generic_redirect(dev, skb, NULL, prog)' include/linux/filter.h
-          sed -i 's/int xdp_do_generic_redirect(/int __xdp_do_generic_redirect(/g' include/linux/filter.h
           sed -i 's/int xdp_do_generic_redirect(/int __xdp_do_generic_redirect(/g' net/core/filter.c
 
       - name: Build Kernel
@@ -71,12 +69,12 @@ jobs:
           ./scripts/config --file out/.config --disable CONFIG_DEFEX
           
           make $MAKE_ARGS olddefconfig
-          # Rulăm cu V=1 pentru a vedea exact unde crapă dacă se oprește
-          make -j$(nproc --all) $MAKE_ARGS V=1 Image.gz-dtb
+          # Rulăm fără V=1 pentru a evita log-ul imens și a termina mai repede
+          make -j$(nproc --all) $MAKE_ARGS Image.gz-dtb
 
       - name: Upload Artifact
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-sh4dow6oy-v24
+          name: S10Lite-sh4dow6oy-v25
           path: out/arch/arm64/boot/Image.gz-dtb
