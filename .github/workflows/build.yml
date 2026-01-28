@@ -1,4 +1,4 @@
-name: S10 Lite - Full Pascua Integration v15.3
+name: S10 Lite - Pascua Pure v14
 
 on:
   push:
@@ -19,100 +19,58 @@ jobs:
           sudo apt-get install -y bc bison flex libssl-dev libelf-dev dwarves make python3 lz4 perl
           git clone --depth=1 https://github.com/kdrag0n/proton-clang.git toolchain/proton-clang
 
-      - name: Core Pascua Backport (eBPF 5.1 Full)
+      - name: Core Pascua Backport
         run: |
           git remote add linux-stable https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git || true
           git fetch linux-stable linux-5.1.y --depth=1
-          
-          PATHS=(
-            "kernel/bpf/" "include/linux/bpf.h" "include/linux/filter.h" 
-            "include/linux/bpf_verifier.h" "include/linux/tnum.h" "include/linux/btf.h"
-            "include/uapi/linux/bpf.h" "include/uapi/linux/btf.h"
-            "include/uapi/linux/bpf_common.h" "include/linux/bpf-cgroup.h"
-          )
+          PATHS=("kernel/bpf/" "include/linux/bpf.h" "include/linux/filter.h" "include/uapi/linux/bpf.h" "include/linux/bpf_verifier.h")
           for path in "${PATHS[@]}"; do git checkout FETCH_HEAD -- "$path"; done
 
-      - name: Apply Glue Patches (Final Synchronization)
+      - name: Manual Pascua Shims (The Missing Links)
         run: |
-          # 1. Neutralizare Module BPF care dau erori de linkare
-          for f in devmap.c cpumap.c offload.c bpf_lirc.c reuseport_array.c; do
-            echo "/* Neutralized */" > kernel/bpf/$f
-          done
-          
-          # 2. Fix xdp_do_generic_redirect (CONFLICTING TYPES FIX)
-          # Aliniem Header-ul (4 args)
+          # 1. FIX: Dummy Header LIRC (Pascua bypass)
+          mkdir -p include/linux/ include/uapi/linux/
+          echo "#ifndef _BPF_LIRC_H" > include/linux/bpf_lirc.h
+          echo "#define _BPF_LIRC_H" >> include/linux/bpf_lirc.h
+          echo "#endif" >> include/linux/bpf_lirc.h
+          cp include/linux/bpf_lirc.h include/uapi/linux/bpf_lirc.h
+
+          # 2. FIX: Prototipuri Net/Core (Eroarea de tipuri din v14)
+          # Pascua forțează toate apelurile XDP să folosească noua structură bpf_prog
           sed -i 's/int xdp_do_generic_redirect(struct net_device \*dev, struct sk_buff \*skb, const struct bpf_func_proto \*proto);/int xdp_do_generic_redirect(struct net_device *dev, struct sk_buff *skb, struct bpf_prog *prog, const struct bpf_func_proto *proto);/g' include/linux/filter.h
           
-          # Aliniem Fișierul .C (4 args)
-          perl -0777 -pi -e 's/int xdp_do_generic_redirect\(struct net_device \*dev, struct sk_buff \*skb,\s+const struct bpf_func_proto \*proto\)/int xdp_do_generic_redirect(struct net_device *dev, struct sk_buff *skb, struct bpf_prog *prog, const struct bpf_func_proto *proto)/g' net/core/filter.c
-
-          # 3. Fix bpf_ctx_narrow_access_ok (Pascua 5.1 expects 4 args)
-          sed -i 's/bpf_ctx_narrow_access_ok(u32 off, u32 size, u32 size_default)/bpf_ctx_narrow_access_ok(int type, u32 off, u32 size, u32 size_default)/g' include/linux/filter.h
-
-          # 4. Dummy Headers & Samsung Perflog Fix
-          mkdir -p include/linux/ include/uapi/linux/ include/log/
-          printf "#ifndef _BPF_LIRC_H\n#define _BPF_LIRC_H\n#endif\n" > include/linux/bpf_lirc.h
-          printf "#ifndef _PERFLOG_H\n#define _PERFLOG_H\n#endif\n" > include/linux/perflog.h
-          
-          # Cream structura de foldere cerută de scriptul de securitate Samsung
-          mkdir -p system/core/liblog/include/log/
-          cp include/linux/perflog.h system/core/liblog/include/log/perflog.h
-          
-          # Structura XDP Buff pentru 4.14 hibrid
-          sed -i '/struct xdp_buff;/d' include/linux/bpf.h
-          sed -i '/#define _LINUX_BPF_H/a struct xdp_buff { void *data; void *data_end; void *data_meta; void *data_hard_start; void *rxq; };' include/linux/bpf.h
-
-          # 5. Syscall.c & Verifier Fixes (Samsung access_ok bypass)
-          sed -i '1i #define PERF_BPF_EVENT_PROG_LOAD 0\n#define PERF_BPF_EVENT_PROG_UNLOAD 0' kernel/bpf/syscall.c
-          sed -i 's/perf_event_bpf_event(/ \/\/ /g' kernel/bpf/syscall.c
-          sed -i 's/btp->tp->name/""/g' kernel/bpf/syscall.c
-          grep -rl "access_ok(" kernel/bpf/ | xargs sed -i 's/access_ok(\([^,]*\), \([^)]*\))/access_ok(VERIFY_READ, \1, \2)/g'
-          
-          # 6. Cgroup & Net Fixes
-          sed -i 's/__cgroup_bpf_detach(cgrp, prog, type, flags)/__cgroup_bpf_detach(cgrp, prog, type)/g' kernel/cgroup/cgroup.c
-          sed -i 's/cgroup_bpf_inherit(\([^,]*\), [^)]*)/cgroup_bpf_inherit(\1)/g' kernel/cgroup/cgroup.c
+          # 3. FIX: bpf_sk_redirect_map_proto (Conflict Extern/Static)
+          # În 5.1 este EXPORT_SYMBOL, în 4.14 era static. Forțăm EXTERN.
           sed -i 's/static const struct bpf_func_proto bpf_sk_redirect_map_proto/const struct bpf_func_proto bpf_sk_redirect_map_proto/g' net/core/filter.c
-          sed -i 's/\.test_run/\/\/ .test_run/g' net/core/filter.c
           
-          # Injectăm argumentul NULL în apelul din dev.c
-          perl -0777 -pi -e 's/xdp_do_generic_redirect\s*\(\s*([^,]+)\s*,\s*([^,]+)\s*,\s*([^)]+)\s*\)/xdp_do_generic_redirect($1, $2, NULL, $3)/g' net/core/dev.c
+          # 4. FIX: Verifier Test Run
+          # Structura bpf_verifier_ops din 5.1 nu mai are test_run în același loc
+          sed -i 's/\.test_run/\/\/ .test_run/g' net/core/filter.c
 
-          # 7. Samsung Security Bypass (secgetspf)
-          mkdir -p scripts
-          echo -e "#!/bin/bash\necho 0" > scripts/secgetspf
-          chmod +x scripts/secgetspf
-          sudo cp scripts/secgetspf /usr/bin/secgetspf
+          # 5. FIX: Samsung access_ok (Sincronizare cu 4.14)
+          # Samsung folosește 3 argumente: access_ok(type, addr, size)
+          grep -rl "access_ok(" kernel/bpf/ | xargs sed -i 's/access_ok(\([^,]*\), \([^)]*\))/access_ok(VERIFY_READ, \1, \2)/g'
 
-          # 8. Makefile Force TNUM
-          if ! grep -q "tnum.o" kernel/bpf/Makefile; then
-            sed -i '/obj-y += core.o/a obj-y += tnum.o' kernel/bpf/Makefile
-          fi
+          # 6. Neutralizare module incompatibile
+          for f in devmap.c cpumap.c offload.c bpf_lirc.c; do echo "/* Nulled by Pascua Shim */" > kernel/bpf/$f; done
 
       - name: Build Kernel
         run: |
           export PATH=$(pwd)/toolchain/proton-clang/bin:$PATH
           MAKE_ARGS="O=out ARCH=arm64 CC=clang HOSTCC=gcc CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1"
-          export KCFLAGS="-Wno-error -Wno-incompatible-pointer-types -Wno-int-conversion -Wno-implicit-function-declaration -Wno-return-type"
+          export KCFLAGS="-Wno-error -Wno-implicit-function-declaration -Wno-incompatible-pointer-types"
 
-          # Injectăm secgetspf în folderul out pentru siguranță
-          mkdir -p out/scripts
-          cp scripts/secgetspf out/scripts/
+          # Fix Samsung secgetspf
+          mkdir -p scripts
+          echo -e "#!/bin/bash\nexit 0" > scripts/secgetspf
+          chmod +x scripts/secgetspf
+          sudo cp scripts/secgetspf /usr/bin/secgetspf
 
           make $MAKE_ARGS r5q_eur_open_defconfig
-          
           ./scripts/config --file out/.config --enable CONFIG_BPF_SYSCALL
-          ./scripts/config --file out/.config --enable CONFIG_BPF_JIT
-          ./scripts/config --file out/.config --enable CONFIG_CGROUP_BPF
           ./scripts/config --file out/.config --disable CONFIG_KPERFMON
           ./scripts/config --file out/.config --disable CONFIG_DEFEX
-          ./scripts/config --file out/.config --disable CONFIG_SAMSUNG_PRODUCT_SHIP
           
           make $MAKE_ARGS olddefconfig
-          make -j$(nproc --all) $MAKE_ARGS Image.gz-dtb || make -j1 $MAKE_ARGS Image.gz-dtb
-
-      - name: Upload Artifact
-        if: success()
-        uses: actions/upload-artifact@v4
-        with:
-          name: S10Lite-A15-Hybrid-v15.3
-          path: out/arch/arm64/boot/Image.gz-dtb
+          make -j$(nproc --all) $MAKE_ARGS Image.gz-dtb
+          
