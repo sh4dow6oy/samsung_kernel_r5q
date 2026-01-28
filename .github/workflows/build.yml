@@ -32,7 +32,7 @@ jobs:
           )
           for path in "${PATHS[@]}"; do git checkout FETCH_HEAD -- "$path"; done
 
-      - name: Apply Glue Patches (v15 - Net Resolve)
+      - name: Apply Glue Patches (v16 - Precise Sync)
         run: |
           # 1. BPF Modules Neutralization
           echo "/* Neutralized */" > kernel/bpf/devmap.c
@@ -63,11 +63,12 @@ jobs:
           sed -i 's/__cgroup_bpf_detach(cgrp, prog, type, flags)/__cgroup_bpf_detach(cgrp, prog, type)/g' kernel/cgroup/cgroup.c
           sed -i 's/cgroup_bpf_inherit(\([^,]*\), [^)]*)/cgroup_bpf_inherit(\1)/g' kernel/cgroup/cgroup.c
 
-          # 6. NET CORE / FILTER FIXES (v15)
+          # 6. NET CORE / FILTER FIXES (v16 Precision)
           sed -i 's/static const struct bpf_func_proto bpf_sk_redirect_map_proto/const struct bpf_func_proto bpf_sk_redirect_map_proto/g' net/core/filter.c
           sed -i 's/int xdp_do_generic_redirect(struct net_device \*dev, struct sk_buff \*skb,/int xdp_do_generic_redirect(struct net_device *dev, struct sk_buff *skb, struct bpf_prog *prog,/g' net/core/filter.c
           sed -i 's/\.test_run/\/\/ .test_run/g' net/core/filter.c
-          sed -i 's/xdp_do_generic_redirect(skb->dev, skb, xdp_prog)/xdp_do_generic_redirect(skb->dev, skb, NULL, xdp_prog)/g' net/core/dev.c
+          # Fix for dev.c (Handling potential multi-line and argument mismatch)
+          sed -i 's/xdp_do_generic_redirect(\([^,]*\), \([^,]*\), /xdp_do_generic_redirect(\1, \2, NULL, /g' net/core/dev.c
 
           # 7. Bypass Drivers & Samsung Bloat
           find drivers -name Makefile -exec sed -i 's/obj-$(CONFIG_KPERFMON)/obj-n/g' {} +
@@ -99,5 +100,5 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-A15-Hybrid-v15
+          name: S10Lite-A15-Hybrid-v16
           path: out/arch/arm64/boot/Image.gz-dtb
