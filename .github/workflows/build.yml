@@ -1,4 +1,4 @@
-name: S10 Lite - OneUI 7 Ready v26
+name: S10 Lite - OneUI 7 Ready v27
 
 on:
   push:
@@ -30,8 +30,8 @@ jobs:
       - name: eBPF Backport (Lineage-23 Android 15 Base)
         run: |
           git remote add lineage-bpf https://github.com/LineageOS/android_kernel_google_msm-4.14.git || true
-          # Folosim ramura lineage-23 pentru compatibilitate maximă cu Android 15
-          git fetch lineage-bpf lineage-21 --depth=1 # lineage-23 e deseori alias sau direct în msm-4.14
+          # Luăm cea mai recentă ramură stabilă pentru 4.14 (Lineage-21/23 logic)
+          git fetch lineage-bpf lineage-21 --depth=1
           
           PATHS=(
             "kernel/bpf/" "include/linux/bpf.h" "include/linux/filter.h" 
@@ -39,28 +39,30 @@ jobs:
           )
           for path in "${PATHS[@]}"; do git checkout FETCH_HEAD -- "$path"; done
 
-      - name: Apply BPF Glue (Lineage-23 Sync)
+      - name: Apply BPF Glue (Lineage-23 Alignment)
         run: |
-          # 1. FIX: access_ok (Forțăm formatul Samsung 4.14: 3 argumente)
-          # lineage-23 folosește adesea formatul cu 2 argumente, Samsung vrea 3.
-          # Adăugăm VERIFY_READ unde lipsește
+          # 1. FIX: bpf_ctx_narrow_access_ok (Sincronizare 3 argumente)
+          # Eliminăm BPF_READ-ul forțat anterior pentru a lăsa doar off, size, size_default
+          sed -i 's/bpf_ctx_narrow_access_ok(BPF_READ, off, size, size_sp)/bpf_ctx_narrow_access_ok(off, size, size_sp)/g' kernel/trace/bpf_trace.c
+          
+          # Ne asigurăm că și header-ul are 3 argumente (aliniere cu eroarea ta)
+          sed -i 's/bpf_ctx_narrow_access_ok(int type, u32 off, u32 size, u32 size_default)/bpf_ctx_narrow_access_ok(u32 off, u32 size, u32 size_default)/g' include/linux/filter.h
+
+          # 2. FIX: access_ok (Standard Samsung 4.14: 3 argumente)
+          # Format: access_ok(type, addr, size)
           grep -rl "access_ok(" kernel/bpf/ | xargs sed -i 's/access_ok(\([^,]*\), \([^)]*\))/access_ok(VERIFY_READ, \1, \2)/g'
-          # Dacă sed-ul anterior a dublat VERIFY_READ, curățăm:
+          # Curățare dublură VERIFY_READ
           grep -rl "access_ok(VERIFY_READ, VERIFY_READ," kernel/bpf/ | xargs sed -i 's/access_ok(VERIFY_READ, VERIFY_READ,/access_ok(VERIFY_READ,/g'
 
-          # 2. FIX: bpf_trace.c (Sincronizare narrow_access_ok)
-          sed -i 's/bpf_ctx_narrow_access_ok(off, size, size_sp)/bpf_ctx_narrow_access_ok(BPF_READ, off, size, size_sp)/g' kernel/trace/bpf_trace.c
-
-          # 3. FIX: filter.h & xdp (Networking compatibility)
-          sed -i 's/bpf_ctx_narrow_access_ok(u32 off, u32 size, u32 size_default)/bpf_ctx_narrow_access_ok(int type, u32 off, u32 size, u32 size_default)/g' include/linux/filter.h
+          # 3. Networking & Driver Compatibility
           perl -0777 -pi -e 's/xdp_do_generic_redirect\s*\(\s*([^,]+)\s*,\s*([^,]+)\s*,\s*([^)]+)\s*\)/xdp_do_generic_redirect($1, $2, NULL, $3)/g' net/core/dev.c
 
-          # 4. Neutralizare module redundante
+          # 4. Neutralizare module redundante care nu există pe SM6150
           for f in devmap.c cpumap.c offload.c bpf_lirc.c; do
             echo "/* Disabled */" > kernel/bpf/$f
           done
 
-          # 5. Samsung Security Bypass
+          # 5. Samsung Security Fix (secgetspf)
           mkdir -p scripts
           echo -e "#!/bin/bash\necho 0" > scripts/secgetspf
           chmod +x scripts/secgetspf
@@ -77,7 +79,7 @@ jobs:
           mkdir -p out/scripts
           cp scripts/secgetspf out/scripts/
 
-          # Config Android 15 / OneUI 7
+          # Configurație necesară pentru OneUI 7 / Android 15
           ./scripts/config --file out/.config --enable CONFIG_BPF_SYSCALL
           ./scripts/config --file out/.config --enable CONFIG_BPF_JIT
           ./scripts/config --file out/.config --enable CONFIG_CGROUP_BPF
@@ -93,5 +95,5 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-OneUI7-v26-Final
+          name: S10Lite-OneUI7-v27
           path: out/arch/arm64/boot/Image.gz-dtb
