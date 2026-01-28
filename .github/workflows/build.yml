@@ -1,4 +1,4 @@
-name: S10 Lite - Pascua Hybrid v19
+name: S10 Lite - Pascua x Lineage v20
 
 on:
   push:
@@ -32,45 +32,45 @@ jobs:
           )
           for path in "${PATHS[@]}"; do git checkout FETCH_HEAD -- "$path"; done
 
-      - name: Apply Glue Patches (Final BPF Synchronization)
+      - name: Apply Lineage-Style Patches (v20)
         run: |
-          # 1. Neutralizare Module BPF non-esențiale (Evităm conflicte de dependențe)
+          # 1. Neutralizare Module Problematic (Devmap/Cpumap)
           for f in devmap.c cpumap.c offload.c bpf_lirc.c reuseport_array.c; do
             echo "/* Neutralized */" > kernel/bpf/$f
           done
           
-          # 2. FIX FILTER.H (Eroarea ta de la cgroup.o)
-          # Aliniem bpf_ctx_narrow_access_ok să accepte argumentul 'type' (4 args)
+          # 2. FIX FILTER.H (Logica LineageOS pentru narrow_access)
+          # Adăugăm definitia lipsă în header pentru a accepta 4 argumente
           sed -i 's/bpf_ctx_narrow_access_ok(u32 off, u32 size, u32 size_default)/bpf_ctx_narrow_access_ok(int type, u32 off, u32 size, u32 size_default)/g' include/linux/filter.h
 
-          # 3. FIX ARRAYMAP.C & HELPERS.C (Fix arguments & atomics)
-          sed -i 's/perf_event_read_local(event, \&value, NULL, NULL)/perf_event_read_local(event, \&value)/g' kernel/bpf/arraymap.c
-          sed -i 's/atomic_cond_read_relaxed(l, !VAL);/while (atomic_read(l));/g' kernel/bpf/helpers.c
+          # 3. FIX CGROUP.C (Sincronizare API 4.14)
+          # LineageOS simplifică apelurile de detach în kernel/cgroup/cgroup.c
+          # Dar în kernel/bpf/cgroup.c trebuie să ne asigurăm că funcțiile de moștenire sunt corecte
+          sed -i 's/__cgroup_bpf_detach(cgrp, prog, type, flags)/__cgroup_bpf_detach(cgrp, prog, type)/g' kernel/cgroup/cgroup.c || true
 
-          # 4. FIX SYSCALL.C (Perf Constants & Raw Events)
+          # 4. FIX SYSCALL & ARRAYMAP (Perf Sync)
           sed -i '1i #define PERF_BPF_EVENT_PROG_LOAD 0\n#define PERF_BPF_EVENT_PROG_UNLOAD 0' kernel/bpf/syscall.c
           sed -i 's/perf_event_bpf_event(/ \/\/ /g' kernel/bpf/syscall.c
           sed -i 's/btp->tp->name/""/g' kernel/bpf/syscall.c
+          sed -i 's/perf_event_read_local(event, \&value, NULL, NULL)/perf_event_read_local(event, \&value)/g' kernel/bpf/arraymap.c
 
-          # 5. FIX Networking & Prototipuri (xdp_do_generic_redirect)
+          # 5. FIX Helpers & Atomics
+          sed -i 's/atomic_cond_read_relaxed(l, !VAL);/while (atomic_read(l));/g' kernel/bpf/helpers.c
+          
+          # 6. FIX Networking (xdp_do_generic_redirect)
+          # Forțăm semnătura de 5.1 să fie compatibilă cu apelurile Samsung 4.14
           sed -i 's/int xdp_do_generic_redirect(struct net_device \*dev, struct sk_buff \*skb, const struct bpf_func_proto \*proto);/int xdp_do_generic_redirect(struct net_device *dev, struct sk_buff *skb, struct bpf_prog *prog, const struct bpf_func_proto *proto);/g' include/linux/filter.h
           perl -0777 -pi -e 's/int xdp_do_generic_redirect\(struct net_device \*dev, struct sk_buff \*skb,\s+const struct bpf_func_proto \*proto\)/int xdp_do_generic_redirect(struct net_device *dev, struct sk_buff *skb, struct bpf_prog *prog, const struct bpf_func_proto *proto)/g' net/core/filter.c
           perl -0777 -pi -e 's/xdp_do_generic_redirect\s*\(\s*([^,]+)\s*,\s*([^,]+)\s*,\s*([^)]+)\s*\)/xdp_do_generic_redirect($1, $2, NULL, $3)/g' net/core/dev.c
 
-          # 6. Samsung Security & access_ok Fix (3-args conversion)
+          # 7. Samsung Security & access_ok (3-args conversion)
           grep -rl "access_ok(" kernel/bpf/ | xargs sed -i 's/access_ok(\([^,]*\), \([^)]*\))/access_ok(VERIFY_READ, \1, \2)/g'
           
-          # Dummy headers pentru Samsung perflog
+          # Dummy headers
           mkdir -p include/linux/ include/uapi/linux/ include/log/ system/core/liblog/include/log/
           printf "#ifndef _BPF_LIRC_H\n#define _BPF_LIRC_H\n#endif\n" > include/linux/bpf_lirc.h
           printf "#ifndef _PERFLOG_H\n#define _PERFLOG_H\n#endif\n" > include/linux/perflog.h
           cp include/linux/perflog.h system/core/liblog/include/log/perflog.h
-
-          # 7. Secgetspf Bypass
-          mkdir -p scripts
-          echo -e "#!/bin/bash\necho 0" > scripts/secgetspf
-          chmod +x scripts/secgetspf
-          sudo cp scripts/secgetspf /usr/bin/secgetspf
 
       - name: Build Kernel
         run: |
@@ -80,15 +80,16 @@ jobs:
 
           make $MAKE_ARGS r5q_eur_open_defconfig
           
+          # Fix secgetspf (LineageOS îl dezactivează de obicei, noi îl facem dummy)
           mkdir -p out/scripts
-          cp scripts/secgetspf out/scripts/
+          echo -e "#!/bin/bash\necho 0" > out/scripts/secgetspf
+          chmod +x out/scripts/secgetspf
 
           ./scripts/config --file out/.config --enable CONFIG_BPF_SYSCALL
           ./scripts/config --file out/.config --enable CONFIG_BPF_JIT
           ./scripts/config --file out/.config --enable CONFIG_CGROUP_BPF
           ./scripts/config --file out/.config --disable CONFIG_KPERFMON
           ./scripts/config --file out/.config --disable CONFIG_DEFEX
-          ./scripts/config --file out/.config --disable CONFIG_SAMSUNG_PRODUCT_SHIP
           
           make $MAKE_ARGS olddefconfig
           make -j$(nproc --all) $MAKE_ARGS Image.gz-dtb || make -j1 $MAKE_ARGS Image.gz-dtb
@@ -97,5 +98,5 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-A15-Hybrid-v19
+          name: S10Lite-A15-Hybrid-v20
           path: out/arch/arm64/boot/Image.gz-dtb
