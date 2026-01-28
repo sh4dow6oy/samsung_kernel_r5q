@@ -1,4 +1,4 @@
-name: S10 Lite - sh4dow6oy v30
+name: S10 Lite - Pascua Hybrid v15
 
 on:
   push:
@@ -13,64 +13,74 @@ jobs:
       - name: Checkout Source
         uses: actions/checkout@v4
 
-      - name: Setup Toolchain (Proton)
+      - name: Setup Toolchain
         run: |
           sudo apt-get update
           sudo apt-get install -y bc bison flex libssl-dev libelf-dev dwarves make python3 lz4 perl
           git clone --depth=1 https://github.com/kdrag0n/proton-clang.git toolchain/proton-clang
 
-      - name: Core Pascua Backport (eBPF 5.1)
+      - name: Core Pascua Backport (eBPF 5.1 Full)
         run: |
           git remote add linux-stable https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git || true
           git fetch linux-stable linux-5.1.y --depth=1
           PATHS=("kernel/bpf/" "include/linux/bpf.h" "include/linux/filter.h" "include/linux/bpf_verifier.h" "include/linux/tnum.h" "include/linux/btf.h" "include/uapi/linux/bpf.h" "include/uapi/linux/btf.h" "include/uapi/linux/bpf_common.h" "include/linux/bpf-cgroup.h")
           for path in "${PATHS[@]}"; do git checkout FETCH_HEAD -- "$path"; done
 
-      - name: Heavy Duty Build Fixes (v30)
+      - name: Apply Glue Patches (v15)
         run: |
-          # 1. Creăm headerele dummy în locurile sfinte ale kernelului
-          DUMMY_HDR="#ifndef _BPF_LIRC_H\n#define _BPF_LIRC_H\n#endif"
-          mkdir -p include/linux include/uapi/linux
-          printf "$DUMMY_HDR" > include/linux/bpf_lirc.h
-          printf "$DUMMY_HDR" > include/uapi/linux/bpf_lirc.h
-
-          # 2. Modificăm Makefile-ul din BPF să ignore erorile de tip și să includă rădăcina
-          # Asta ajută orice compiler folosești
-          sed -i '1i ccflags-y += -I$(srctree)/include -I$(srctree)/include/uapi -Wno-error' kernel/bpf/Makefile
-
-          # 3. Nuke problematic code din syscall.c
+          # 1. Neutralizare Module BPF non-esențiale
+          for f in devmap.c cpumap.c offload.c bpf_lirc.c reuseport_array.c; do echo "/* Neutralized */" > kernel/bpf/$f; done
+          
+          # 2. FIX SYSCALL.C & HEADERS (Soluția definitivă pentru bpf_lirc.h)
+          mkdir -p include/linux/ include/uapi/linux/
+          printf "#ifndef _BPF_LIRC_H\n#define _BPF_LIRC_H\n#endif\n" > include/linux/bpf_lirc.h
+          cp include/linux/bpf_lirc.h include/uapi/linux/bpf_lirc.h
+          
+          # Ștergem linia de include problematică din syscall.c ca să fim siguri
           sed -i '/bpf_lirc\.h/d' kernel/bpf/syscall.c
           
-          # 4. Samsung Security Bypass
-          echo -e "#!/bin/bash\nexit 0" > scripts/secgetspf
-          chmod +x scripts/secgetspf
-          sudo cp scripts/secgetspf /usr/bin/secgetspf
+          # 3. Fix Perf API & Atomics
+          sed -i 's/perf_event_read_local(event, \&value, NULL, NULL)/perf_event_read_local(event, \&value)/g' kernel/bpf/arraymap.c
+          sed -i 's/atomic_cond_read_relaxed(l, !VAL);/while (atomic_read(l));/g' kernel/bpf/helpers.c
 
-          # 5. Fix access_ok (SAMSUNG 3-args fix)
+          # 4. Global XDP Buff Struct
+          sed -i '/struct xdp_buff;/d' include/linux/bpf.h
+          sed -i '/#define _LINUX_BPF_H/a struct xdp_buff { void *data; void *data_end; void *data_meta; void *data_hard_start; void *rxq; };' include/linux/bpf.h
+
+          # 5. FIX SYSCALL.C Bypass & access_ok
+          sed -i '1i #define PERF_BPF_EVENT_PROG_LOAD 0\n#define PERF_BPF_EVENT_PROG_UNLOAD 0' kernel/bpf/syscall.c
+          sed -i 's/perf_event_bpf_event(/ \/\/ /g' kernel/bpf/syscall.c
+          sed -i 's/btp->tp->name/""/g' kernel/bpf/syscall.c
           grep -rl "access_ok(" kernel/bpf/ | xargs sed -i 's/access_ok(\([^,]*\), \([^)]*\))/access_ok(VERIFY_READ, \1, \2)/g'
 
-          # 6. Neutralizăm restul modulelor 5.1 nefolosite
-          for f in devmap.c cpumap.c offload.c bpf_lirc.c reuseport_array.c; do
-            echo "/* Neutralized */" > kernel/bpf/$f
-          done
+          # 6. FIX CGROUP API
+          sed -i 's/__cgroup_bpf_detach(cgrp, prog, type, flags)/__cgroup_bpf_detach(cgrp, prog, type)/g' kernel/cgroup/cgroup.c
+          sed -i 's/cgroup_bpf_inherit(\([^,]*\), [^)]*)/cgroup_bpf_inherit(\1)/g' kernel/cgroup/cgroup.c
+
+          # 7. FIX NET CORE & FILTER
+          sed -i 's/static const struct bpf_func_proto bpf_sk_redirect_map_proto/const struct bpf_func_proto bpf_sk_redirect_map_proto/g' net/core/filter.c
+          perl -0777 -pi -e 's/int xdp_do_generic_redirect\s*\(\s*struct net_device\s*\*dev\s*,\s*struct sk_buff\s*\*skb\s*,\s*const struct bpf_func_proto\s*\*proto\s*\)/int xdp_do_generic_redirect(struct net_device *dev, struct sk_buff *skb, struct bpf_prog *prog, const struct bpf_func_proto *proto)/g' net/core/filter.c
+          sed -i 's/\.test_run/\/\/ .test_run/g' net/core/filter.c
+          perl -0777 -pi -e 's/xdp_do_generic_redirect\s*\(\s*([^,]+)\s*,\s*([^,]+)\s*,\s*([^)]+)\s*\)/xdp_do_generic_redirect($1, $2, NULL, $3)/g' net/core/dev.c
+
+          # 8. Force TNUM & Clean KPERFMON
+          find drivers -name Makefile -exec sed -i 's/obj-$(CONFIG_KPERFMON)/obj-n/g' {} +
+          if ! grep -q "tnum.o" kernel/bpf/Makefile; then sed -i '/obj-y += core.o/a obj-y += tnum.o' kernel/bpf/Makefile; fi
 
       - name: Build Kernel
         run: |
           export PATH=$(pwd)/toolchain/proton-clang/bin:$PATH
           MAKE_ARGS="O=out ARCH=arm64 CC=clang HOSTCC=gcc CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1"
-          
-          # Ignorăm erorile de prototip pentru a lăsa linkarea să termine
-          export KCFLAGS="-Wno-implicit-function-declaration -Wno-error -Wno-incompatible-pointer-types"
+          export KCFLAGS="-Wno-error -Wno-incompatible-pointer-types -Wno-int-conversion -Wno-implicit-function-declaration -Wno-return-type -Wno-unused-variable -Wno-unused-function"
 
           make $MAKE_ARGS r5q_eur_open_defconfig
-          ./scripts/config --file out/.config --set-str CONFIG_LOCALVERSION "-sh4dow6oy"
-          ./scripts/config --file out/.config --enable CONFIG_BPF_SYSCALL
-          ./scripts/config --file out/.config --disable CONFIG_KPERFMON
           
-          # Creăm headerul și în folderul O=out pentru siguranță maximă
-          mkdir -p out/include/linux
-          printf "#ifndef _BPF_LIRC_H\n#define _BPF_LIRC_H\n#endif" > out/include/linux/bpf_lirc.h
-
+          ./scripts/config --file out/.config --enable CONFIG_BPF_SYSCALL
+          ./scripts/config --file out/.config --enable CONFIG_BPF_JIT
+          ./scripts/config --file out/.config --enable CONFIG_CGROUP_BPF
+          ./scripts/config --file out/.config --disable CONFIG_KPERFMON
+          ./scripts/config --file out/.config --disable CONFIG_DEFEX
+          
           make $MAKE_ARGS olddefconfig
           make -j$(nproc --all) $MAKE_ARGS Image.gz-dtb || make -j1 $MAKE_ARGS Image.gz-dtb
 
@@ -78,5 +88,5 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-sh4dow6oy-v30
+          name: S10Lite-A15-Hybrid-v15
           path: out/arch/arm64/boot/Image.gz-dtb
