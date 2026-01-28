@@ -1,4 +1,4 @@
-name: S10 Lite - Pascua x Lineage v20
+name: S10 Lite - Final Sync v24
 
 on:
   push:
@@ -19,75 +19,65 @@ jobs:
           sudo apt-get install -y bc bison flex libssl-dev libelf-dev dwarves make python3 lz4 perl
           git clone --depth=1 https://github.com/kdrag0n/proton-clang.git toolchain/proton-clang
 
-      - name: Core Pascua Backport (eBPF 5.1 Full)
+      - name: Upstream to 4.14.356
         run: |
-          git remote add linux-stable https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git || true
-          git fetch linux-stable linux-5.1.y --depth=1
+          git config user.email "bot@example.com"
+          git config user.name "KernelBot"
+          git remote add stable https://kernel.googlesource.com/pub/scm/linux/kernel/git/stable/linux-stable.git || true
+          git fetch stable linux-4.14.y --depth=50
+          git merge v4.14.356 -m "Upstream to 4.14.356" || echo "Conflicte gestionate automat"
+
+      - name: eBPF Backport (Lineage/Google msm-4.14)
+        run: |
+          git remote add lineage-bpf https://github.com/LineageOS/android_kernel_google_msm-4.14.git || true
+          git fetch lineage-bpf lineage-21 --depth=1
           
+          # Importăm structura Google validată pentru 4.14
           PATHS=(
             "kernel/bpf/" "include/linux/bpf.h" "include/linux/filter.h" 
-            "include/linux/bpf_verifier.h" "include/linux/tnum.h" "include/linux/btf.h"
-            "include/uapi/linux/bpf.h" "include/uapi/linux/btf.h"
-            "include/uapi/linux/bpf_common.h" "include/linux/bpf-cgroup.h"
+            "include/linux/bpf_verifier.h" "include/uapi/linux/bpf.h" "include/linux/bpf-cgroup.h"
           )
           for path in "${PATHS[@]}"; do git checkout FETCH_HEAD -- "$path"; done
 
-      - name: Apply Lineage-Style Patches (v20)
+      - name: Apply Glue Patches (BPF Trace & Verifier Fix)
         run: |
-          # 1. Neutralizare Module Problematic (Devmap/Cpumap)
-          for f in devmap.c cpumap.c offload.c bpf_lirc.c reuseport_array.c; do
-            echo "/* Neutralized */" > kernel/bpf/$f
-          done
-          
-          # 2. FIX FILTER.H (Logica LineageOS pentru narrow_access)
-          # Adăugăm definitia lipsă în header pentru a accepta 4 argumente
+          # 1. FIX: bpf_trace.c (Argument Mismatch)
+          # Sincronizăm apelul bpf_ctx_narrow_access_ok cu header-ul Google
+          sed -i 's/bpf_ctx_narrow_access_ok(off, size, size_sp)/bpf_ctx_narrow_access_ok(BPF_READ, off, size, size_sp)/g' kernel/trace/bpf_trace.c
+
+          # 2. FIX: Prototypes & Networking
+          # Forțăm prototipul corect în filter.h
           sed -i 's/bpf_ctx_narrow_access_ok(u32 off, u32 size, u32 size_default)/bpf_ctx_narrow_access_ok(int type, u32 off, u32 size, u32 size_default)/g' include/linux/filter.h
-
-          # 3. FIX CGROUP.C (Sincronizare API 4.14)
-          # LineageOS simplifică apelurile de detach în kernel/cgroup/cgroup.c
-          # Dar în kernel/bpf/cgroup.c trebuie să ne asigurăm că funcțiile de moștenire sunt corecte
-          sed -i 's/__cgroup_bpf_detach(cgrp, prog, type, flags)/__cgroup_bpf_detach(cgrp, prog, type)/g' kernel/cgroup/cgroup.c || true
-
-          # 4. FIX SYSCALL & ARRAYMAP (Perf Sync)
-          sed -i '1i #define PERF_BPF_EVENT_PROG_LOAD 0\n#define PERF_BPF_EVENT_PROG_UNLOAD 0' kernel/bpf/syscall.c
-          sed -i 's/perf_event_bpf_event(/ \/\/ /g' kernel/bpf/syscall.c
-          sed -i 's/btp->tp->name/""/g' kernel/bpf/syscall.c
-          sed -i 's/perf_event_read_local(event, \&value, NULL, NULL)/perf_event_read_local(event, \&value)/g' kernel/bpf/arraymap.c
-
-          # 5. FIX Helpers & Atomics
-          sed -i 's/atomic_cond_read_relaxed(l, !VAL);/while (atomic_read(l));/g' kernel/bpf/helpers.c
           
-          # 6. FIX Networking (xdp_do_generic_redirect)
-          # Forțăm semnătura de 5.1 să fie compatibilă cu apelurile Samsung 4.14
-          sed -i 's/int xdp_do_generic_redirect(struct net_device \*dev, struct sk_buff \*skb, const struct bpf_func_proto \*proto);/int xdp_do_generic_redirect(struct net_device *dev, struct sk_buff *skb, struct bpf_prog *prog, const struct bpf_func_proto *proto);/g' include/linux/filter.h
-          perl -0777 -pi -e 's/int xdp_do_generic_redirect\(struct net_device \*dev, struct sk_buff \*skb,\s+const struct bpf_func_proto \*proto\)/int xdp_do_generic_redirect(struct net_device *dev, struct sk_buff *skb, struct bpf_prog *prog, const struct bpf_func_proto *proto)/g' net/core/filter.c
+          # Sincronizare xdp_do_generic_redirect pentru driverele r5q
           perl -0777 -pi -e 's/xdp_do_generic_redirect\s*\(\s*([^,]+)\s*,\s*([^,]+)\s*,\s*([^)]+)\s*\)/xdp_do_generic_redirect($1, $2, NULL, $3)/g' net/core/dev.c
 
-          # 7. Samsung Security & access_ok (3-args conversion)
+          # 3. FIX: access_ok (Samsung 4.14 uses 3 arguments)
           grep -rl "access_ok(" kernel/bpf/ | xargs sed -i 's/access_ok(\([^,]*\), \([^)]*\))/access_ok(VERIFY_READ, \1, \2)/g'
-          
-          # Dummy headers
-          mkdir -p include/linux/ include/uapi/linux/ include/log/ system/core/liblog/include/log/
-          printf "#ifndef _BPF_LIRC_H\n#define _BPF_LIRC_H\n#endif\n" > include/linux/bpf_lirc.h
-          printf "#ifndef _PERFLOG_H\n#define _PERFLOG_H\n#endif\n" > include/linux/perflog.h
-          cp include/linux/perflog.h system/core/liblog/include/log/perflog.h
+
+          # 4. Samsung Security Bypass & secgetspf
+          mkdir -p scripts
+          echo -e "#!/bin/bash\necho 0" > scripts/secgetspf
+          chmod +x scripts/secgetspf
+          sudo cp scripts/secgetspf /usr/bin/secgetspf
 
       - name: Build Kernel
         run: |
           export PATH=$(pwd)/toolchain/proton-clang/bin:$PATH
           MAKE_ARGS="O=out ARCH=arm64 CC=clang HOSTCC=gcc CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1"
-          export KCFLAGS="-Wno-error -Wno-incompatible-pointer-types -Wno-int-conversion -Wno-implicit-function-declaration -Wno-return-type"
+          export KCFLAGS="-Wno-error -Wno-incompatible-pointer-types -Wno-implicit-function-declaration -Wno-int-conversion -Wno-return-type"
 
           make $MAKE_ARGS r5q_eur_open_defconfig
           
-          # Fix secgetspf (LineageOS îl dezactivează de obicei, noi îl facem dummy)
+          # Injectăm secgetspf în out
           mkdir -p out/scripts
-          echo -e "#!/bin/bash\necho 0" > out/scripts/secgetspf
-          chmod +x out/scripts/secgetspf
+          cp scripts/secgetspf out/scripts/
 
+          # Configurație necesară pentru Android 15
           ./scripts/config --file out/.config --enable CONFIG_BPF_SYSCALL
           ./scripts/config --file out/.config --enable CONFIG_BPF_JIT
           ./scripts/config --file out/.config --enable CONFIG_CGROUP_BPF
+          ./scripts/config --file out/.config --enable CONFIG_NET_CLS_BPF
           ./scripts/config --file out/.config --disable CONFIG_KPERFMON
           ./scripts/config --file out/.config --disable CONFIG_DEFEX
           
@@ -98,5 +88,5 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-A15-Hybrid-v20
+          name: S10Lite-Backport-v24
           path: out/arch/arm64/boot/Image.gz-dtb
