@@ -32,7 +32,7 @@ jobs:
           )
           for path in "${PATHS[@]}"; do git checkout FETCH_HEAD -- "$path"; done
 
-      - name: Apply Glue Patches (BPF, Cgroup, Net Core)
+      - name: Apply Glue Patches (BPF, Cgroup, Net Core, Syscall)
         run: |
           # 1. Neutralizare Module BPF
           echo "/* Neutralized */" > kernel/bpf/devmap.c
@@ -50,21 +50,22 @@ jobs:
           printf "#ifndef _BPF_LIRC_H\n#define _BPF_LIRC_H\n#endif\n" > include/linux/bpf_lirc.h
           printf "#ifndef _PERFLOG_H\n#define _PERFLOG_H\n#endif\n" > include/linux/perflog.h
 
-          # 4. Global XDP Struct Fix
+          # 4. Global XDP Struct Fix (Global visibility)
           sed -i '/struct xdp_buff;/d' include/linux/bpf.h
           sed -i '/#define _LINUX_BPF_H/a struct xdp_buff { void *data; void *data_end; void *data_meta; void *data_hard_start; void *rxq; };' include/linux/bpf.h
 
-          # 5. Fix access_ok & BPF Symbols
+          # 5. Fix syscall.c (The "v12" specific fix)
+          sed -i '/#include <linux\/bpf.h>/a #define PERF_BPF_EVENT_PROG_LOAD 0\n#define PERF_BPF_EVENT_PROG_UNLOAD 0' kernel/bpf/syscall.c
+          sed -i 's/perf_event_bpf_event(/ \/\/ /g' kernel/bpf/syscall.c
+          sed -i 's/btp->tp->name/""/g' kernel/bpf/syscall.c
           sed -i 's/access_ok(\([^,]*\), \([^)]*\))/access_ok(VERIFY_READ, \1, \2)/g' kernel/bpf/syscall.c
           sed -i 's/access_ok(\([^,]*\), \([^)]*\))/access_ok(VERIFY_READ, \1, \2)/g' kernel/bpf/verifier.c
-          sed -i 's/perf_event_bpf_event((void \*)prog, 0, 0);/;/g' kernel/bpf/syscall.c
 
           # 6. FIX CGROUP API
           sed -i 's/__cgroup_bpf_detach(cgrp, prog, type, flags)/__cgroup_bpf_detach(cgrp, prog, type)/g' kernel/cgroup/cgroup.c
           sed -i 's/cgroup_bpf_inherit(\([^,]*\), [^)]*)/cgroup_bpf_inherit(\1)/g' kernel/cgroup/cgroup.c
 
-          # 7. NET CORE API FIX (v11 - Specific fix for dev.c)
-          # Injectăm NULL ca al treilea argument în apelul xdp_do_generic_redirect
+          # 7. NET CORE API FIX
           sed -i 's/xdp_do_generic_redirect(\([^,]*\), \([^,]*\), /xdp_do_generic_redirect(\1, \2, NULL, /g' net/core/dev.c
 
           # 8. FORCE DISABLE KPERFMON
@@ -97,5 +98,5 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-A15-Hybrid-v11
+          name: S10Lite-A15-Hybrid-v12
           path: out/arch/arm64/boot/Image.gz-dtb
