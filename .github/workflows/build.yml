@@ -1,4 +1,4 @@
-name: S10 Lite - Full Pascua Integration (Syntax Fix)
+name: S10 Lite - Full Pascua Integration (Atomic Fix)
 
 on:
   push:
@@ -39,23 +39,23 @@ jobs:
 
       - name: Apply Pascua "Glue" Patches
         run: |
-          # 1. Shim pentru Headerele lipsă (Fix Syntax Error)
+          # 1. Fix Atomic VAL error în helpers.c
+          # Înlocuim macro-ul problematic cu o buclă de așteptare compatibilă 4.14
+          sed -i 's/atomic_cond_read_relaxed(l, !VAL);/while (atomic_read(l));/g' kernel/bpf/helpers.c
+
+          # 2. Shim pentru Headerele lipsă
           mkdir -p include/linux/
           printf "#ifndef _BPF_LIRC_H\n#define _BPF_LIRC_H\n#endif\n" > include/linux/bpf_lirc.h
           printf "#ifndef _PERFLOG_H\n#define _PERFLOG_H\n#endif\n" > include/linux/perflog.h
 
-          # 2. Fix API Mismatch (Pascua Regex)
-          # Corectăm access_ok pentru 3 argumente (specific 4.14)
+          # 3. Fix API Mismatch (access_ok)
           sed -i 's/access_ok(\([^,]*\), \([^)]*\))/access_ok(VERIFY_READ, \1, \2)/g' kernel/bpf/syscall.c
           sed -i 's/access_ok(\([^,]*\), \([^)]*\))/access_ok(VERIFY_READ, \1, \2)/g' kernel/bpf/verifier.c
 
-          # 3. Neutralizare PERF_BPF_EVENT (Erorile tale de acum)
-          # Înlocuim constantele lipsă cu 0 și funcția cu un empty body
+          # 4. Neutralizare PERF_BPF_EVENT & Bypass Tracepoints
           sed -i 's/PERF_BPF_EVENT_PROG_UNLOAD/0/g' kernel/bpf/syscall.c
           sed -i 's/PERF_BPF_EVENT_PROG_LOAD/0/g' kernel/bpf/syscall.c
           sed -i 's/perf_event_bpf_event((void \*)prog, 0, 0);/;/g' kernel/bpf/syscall.c
-          
-          # 4. Fix Tracepoints (Struct Incomplete)
           sed -i 's/btp->tp->name/""/g' kernel/bpf/syscall.c
           sed -i 's/event = perf_get_event(file);/event = (void *)ERR_PTR(-EINVAL);/g' kernel/bpf/syscall.c
           sed -i 's/btp = bpf_get_raw_tracepoint(tp_name);/btp = (void *)ERR_PTR(-EINVAL);/g' kernel/bpf/syscall.c
@@ -69,12 +69,9 @@ jobs:
         run: |
           export PATH=$(pwd)/toolchain/proton-clang/bin:$PATH
           MAKE_ARGS="O=out ARCH=arm64 CC=clang HOSTCC=gcc CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1"
-          
-          # KCFLAGS ultra-permisive
           export KCFLAGS="-Wno-error -Wno-incompatible-pointer-types -Wno-int-conversion -Wno-implicit-function-declaration -Wno-return-type -Wno-unused-variable -Wno-unused-function"
 
           make $MAKE_ARGS r5q_eur_open_defconfig
-          
           ./scripts/config --file out/.config --enable CONFIG_BPF_SYSCALL
           ./scripts/config --file out/.config --enable CONFIG_BPF_JIT
           ./scripts/config --file out/.config --enable CONFIG_CGROUP_BPF
@@ -87,6 +84,6 @@ jobs:
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-Pascua-Hybrid-A15
+          name: S10Lite-Pascua-Hybrid-A15-v2
           path: out/arch/arm64/boot/Image.gz-dtb
           
