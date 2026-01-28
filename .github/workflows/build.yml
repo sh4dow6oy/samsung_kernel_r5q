@@ -1,4 +1,4 @@
-name: S10 Lite - sh4dow6oy v28 (Header Fix)
+name: S10 Lite - AOSP Clang v29
 
 on:
   push:
@@ -13,11 +13,19 @@ jobs:
       - name: Checkout Source
         uses: actions/checkout@v4
 
-      - name: Setup Toolchain
+      - name: Setup AOSP Toolchain
         run: |
           sudo apt-get update
           sudo apt-get install -y bc bison flex libssl-dev libelf-dev dwarves make python3 lz4 perl
-          git clone --depth=1 https://github.com/kdrag0n/proton-clang.git toolchain/proton-clang
+          # Descărcăm AOSP Clang (versiune stabilă pentru 4.14)
+          mkdir -p toolchain/aosp-clang
+          cd toolchain/aosp-clang
+          wget https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/master/clang-r450784d.tar.gz
+          tar -xf clang-r450784d.tar.gz
+          cd ../..
+          # Toolchain pentru cross-compilation (binutils)
+          git clone --depth=1 https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9 toolchain/gcc64
+          git clone --depth=1 https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9 toolchain/gcc32
 
       - name: Core Pascua Backport (eBPF 5.1)
         run: |
@@ -26,55 +34,34 @@ jobs:
           PATHS=("kernel/bpf/" "include/linux/bpf.h" "include/linux/filter.h" "include/linux/bpf_verifier.h" "include/linux/tnum.h" "include/linux/btf.h" "include/uapi/linux/bpf.h" "include/uapi/linux/btf.h" "include/uapi/linux/bpf_common.h" "include/linux/bpf-cgroup.h")
           for path in "${PATHS[@]}"; do git checkout FETCH_HEAD -- "$path"; done
 
-      - name: Ghost Header Injection (v28)
+      - name: Apply Glue Patches (v29)
         run: |
-          # 1. Creăm headerele dummy peste tot
-          DUMMY_CONTENT="#ifndef _BPF_LIRC_H\n#define _BPF_LIRC_H\n#endif"
-          mkdir -p include/linux include/uapi/linux kernel/bpf
-          printf "$DUMMY_CONTENT" > include/linux/bpf_lirc.h
-          printf "$DUMMY_CONTENT" > include/uapi/linux/bpf_lirc.h
-          printf "$DUMMY_CONTENT" > kernel/bpf/bpf_lirc.h
+          # Headere redundante pentru a evita eroarea "not found"
+          mkdir -p include/linux include/uapi/linux
+          printf "#ifndef _BPF_LIRC_H\n#define _BPF_LIRC_H\n#endif" > include/linux/bpf_lirc.h
+          printf "#ifndef _BPF_LIRC_H\n#define _BPF_LIRC_H\n#endif" > include/uapi/linux/bpf_lirc.h
           
-          # 2. Ștergem fizic orice include de lirc din syscall.c
+          # Nuke problematic includes
           sed -i '/bpf_lirc/d' kernel/bpf/syscall.c
           
-          # 3. Neutralizăm fișierele problematice
-          for f in devmap.c cpumap.c offload.c bpf_lirc.c reuseport_array.c; do
-            echo "/* Neutralized */" > kernel/bpf/$f
-          done
-
-          # 4. Fix access_ok (3 argumente pentru Samsung 4.14)
+          # Fix access_ok pentru Samsung (3 args)
           grep -rl "access_ok(" kernel/bpf/ | xargs sed -i 's/access_ok(\([^,]*\), \([^)]*\))/access_ok(VERIFY_READ, \1, \2)/g'
-          
-          # 5. Injectare Stubs în syscall.c (Fix link errors)
-          sed -i '1i #include <linux/err.h>\n#include <linux/bpf.h>\nstruct bpf_raw_event_map { int dummy; };\nstatic inline int lirc_prog_attach(const void *a, void *b) { return -1; }\nstatic inline int lirc_prog_detach(const void *a) { return -1; }\nstatic inline int lirc_prog_query(const void *a, void *b) { return -1; }\nstatic inline int skb_flow_dissector_bpf_prog_attach(const void *a, void *b) { return -1; }\nstatic inline int skb_flow_dissector_bpf_prog_detach(const void *a) { return -1; }\nstatic inline void *perf_get_event(void *a) { return ERR_PTR(-1); }\nstatic inline int bpf_get_perf_event_info(void *a, void *b, void *c, void *d, void *e, void *f) { return -1; }\nstatic inline void perf_event_bpf_event(void *p, int e, int f) {}' kernel/bpf/syscall.c
 
-          # 6. Atomic fix
-          sed -i 's/atomic_fetch_add_unless/atomic_add_unless/g' kernel/bpf/syscall.c
-
-      - name: Build Kernel
+      - name: Build Kernel (AOSP Clang)
         run: |
-          export PATH=$(pwd)/toolchain/proton-clang/bin:$PATH
-          MAKE_ARGS="O=out ARCH=arm64 CC=clang HOSTCC=gcc CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1"
+          # Setăm căile către noul toolchain
+          CLANG_PATH=$(pwd)/toolchain/aosp-clang/bin
+          GCC64_PATH=$(pwd)/toolchain/gcc64/bin
+          GCC32_PATH=$(pwd)/toolchain/gcc32/bin
+          export PATH=$CLANG_PATH:$GCC64_PATH:$GCC32_PATH:$PATH
+          
+          MAKE_ARGS="O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-android- CROSS_COMPILE_ARM32=arm-linux-androideabi- LD=ld.lld"
           
           make $MAKE_ARGS r5q_eur_open_defconfig
           
-          # Injectăm headerele și în folderul de build (out)
-          mkdir -p out/include/linux out/include/uapi/linux
-          printf "#ifndef _BPF_LIRC_H\n#define _BPF_LIRC_H\n#endif" > out/include/linux/bpf_lirc.h
-          printf "#ifndef _BPF_LIRC_H\n#define _BPF_LIRC_H\n#endif" > out/include/uapi/linux/bpf_lirc.h
-
-          ./scripts/config --file out/.config --set-str CONFIG_LOCALVERSION "-sh4dow6oy"
-          ./scripts/config --file out/.config --enable CONFIG_BPF_SYSCALL
+          # Dezactivăm protecțiile Samsung care pot bloca compilarea pe Clang extern
           ./scripts/config --file out/.config --disable CONFIG_KPERFMON
           ./scripts/config --file out/.config --disable CONFIG_DEFEX
           
           make $MAKE_ARGS olddefconfig
-          make -j$(nproc --all) $MAKE_ARGS Image.gz-dtb || make -j1 $MAKE_ARGS Image.gz-dtb
-
-      - name: Upload Artifact
-        if: success()
-        uses: actions/upload-artifact@v4
-        with:
-          name: S10Lite-sh4dow6oy-v28
-          path: out/arch/arm64/boot/Image.gz-dtb
+          make -j$(nproc --all) $MAKE_ARGS Image.gz-dtb
