@@ -1,4 +1,4 @@
-name: S10 Lite - Pascua Hybrid (Final Tracepoint Fix)
+name: S10 Lite - Pascua Hybrid (Verifier Fix)
 
 on:
   push:
@@ -19,36 +19,46 @@ jobs:
           sudo apt-get install -y bc bison flex libssl-dev libelf-dev dwarves make python3 lz4
           git clone --depth=1 https://github.com/kdrag0n/proton-clang.git toolchain/proton-clang
 
-      - name: Apply Pascua eBPF 5.1 & BTF
+      - name: Apply Pascua eBPF 5.1 (Complete Headers)
         run: |
           git remote add linux-stable https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git || true
           git fetch linux-stable linux-5.1.y --depth=1
-          PATHS=("kernel/bpf/" "include/linux/bpf.h" "include/linux/filter.h" "include/uapi/linux/bpf.h" "include/uapi/linux/btf.h" "include/linux/btf.h" "include/linux/bpf-cgroup.h")
+          # Am adăugat include/linux/bpf_verifier.h - esențial pentru struct bpf_verifier_env
+          PATHS=(
+            "kernel/bpf/" 
+            "include/linux/bpf.h" 
+            "include/linux/filter.h" 
+            "include/linux/bpf_verifier.h"
+            "include/uapi/linux/bpf.h" 
+            "include/uapi/linux/btf.h"
+            "include/linux/btf.h"
+            "include/linux/bpf-cgroup.h"
+          )
           for path in "${PATHS[@]}"; do git checkout FETCH_HEAD -- "$path" || echo "Skip: $path"; done
 
-      - name: Integration Patches (Hard Fixes)
+      - name: Integration Patches (Verifier & Syscall)
         run: |
-          # 1. Fix access_ok (redenumire și injectare după include-uri)
+          # 1. Fix access_ok mismatch
           sed -i 's/access_ok(uaddr, actual_size)/__access_ok_bpf(uaddr, actual_size)/g' kernel/bpf/syscall.c
           sed -i 's/access_ok(uattr, size)/__access_ok_bpf(uattr, size)/g' kernel/bpf/syscall.c
           sed -i '/#include <linux\/uaccess.h>/a #define __access_ok_bpf(addr, size) __range_ok((unsigned long)(addr), size)' kernel/bpf/syscall.c
 
-          # 2. Neutralizare brută a întregului bloc de Raw Tracepoint (Liniile 2640-2660 aprox)
-          # Aceasta elimină eroarea "incomplete definition of type 'struct bpf_raw_event_map'"
+          # 2. Bypass Tracepoints & Perf (Prevent incomplete struct errors)
           sed -i 's/btp->tp->name/""/g' kernel/bpf/syscall.c
-          sed -i '/perf_event_bpf_event/d' kernel/bpf/syscall.c
-          
-          # Fix pentru asignările perf care dau warning-uri/erori de tip int-to-pointer
           sed -i 's/event = perf_get_event(file);/event = (void *)ERR_PTR(-EINVAL);/g' kernel/bpf/syscall.c
           sed -i 's/btp = bpf_get_raw_tracepoint(tp_name);/btp = (void *)ERR_PTR(-EINVAL);/g' kernel/bpf/syscall.c
+          sed -i '/perf_event_bpf_event/d' kernel/bpf/syscall.c
 
-          # 3. Cgroup fix & Stubs
+          # 3. Forțăm includerea header-ului de verifier în verifier.c dacă nu există
+          grep -q "bpf_verifier.h" kernel/bpf/verifier.c || sed -i '1i #include <linux/bpf_verifier.h>' kernel/bpf/verifier.c
+
+          # 4. Cgroup fix & Stubs
           if [ -f kernel/cgroup/cgroup.c ]; then
             sed -i 's/cgroup_bpf_inherit(root_cgrp)/cgroup_bpf_inherit(root_cgrp, NULL)/g' kernel/cgroup/cgroup.c
             sed -i 's/cgroup_bpf_inherit(cgrp)/cgroup_bpf_inherit(cgrp, NULL)/g' kernel/cgroup/cgroup.c
           fi
 
-          # 4. Dummy headers
+          # 5. Dummy headers & Samsung Fixes
           mkdir -p include/linux/
           touch include/linux/bpf_lirc.h
           echo -e "#ifndef _LINUX_PERFLOG_H\n#define _LINUX_PERFLOG_H\n#endif" > include/linux/perflog.h
@@ -57,8 +67,8 @@ jobs:
         run: |
           export PATH=$(pwd)/toolchain/proton-clang/bin:$PATH
           MAKE_ARGS="O=out ARCH=arm64 CC=clang HOSTCC=gcc HOSTCFLAGS='-Wno-deprecated-declarations' CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1"
-          # Adăugăm flags pentru a ignora pointer conversions (necesar pentru shim-ul de perf)
-          export KCFLAGS="-Wno-error -Wno-incompatible-pointer-types -Wno-int-conversion -Wno-implicit-function-declaration -Wno-return-type"
+          # Adăugăm flag-uri pentru a ignora redefinirile și pointerii dubioși
+          export KCFLAGS="-Wno-error -Wno-incompatible-pointer-types -Wno-int-conversion -Wno-implicit-function-declaration -Wno-return-type -Wno-unused-variable"
 
           make $MAKE_ARGS r5q_eur_open_defconfig
           
@@ -75,6 +85,6 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-A15-Hybrid-v6
+          name: S10Lite-A15-Hybrid-v7
           path: out/arch/arm64/boot/Image.gz-dtb
           
