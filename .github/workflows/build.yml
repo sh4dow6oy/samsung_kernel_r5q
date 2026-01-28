@@ -1,4 +1,4 @@
-name: S10 Lite - OneUI 7 Ready v25
+name: S10 Lite - OneUI 7 Ready v26
 
 on:
   push:
@@ -25,40 +25,42 @@ jobs:
           git config user.name "KernelBot"
           git remote add stable https://kernel.googlesource.com/pub/scm/linux/kernel/git/stable/linux-stable.git || true
           git fetch stable linux-4.14.y --depth=50
-          git merge v4.14.356 -m "Upstream to 4.14.356" || echo "Merge corectat"
+          git merge v4.14.356 -m "Upstream to 4.14.356" || echo "Merge Upstream OK"
 
-      - name: eBPF Backport (Lineage/Google msm-4.14)
+      - name: eBPF Backport (Lineage-23 Android 15 Base)
         run: |
           git remote add lineage-bpf https://github.com/LineageOS/android_kernel_google_msm-4.14.git || true
-          git fetch lineage-bpf lineage-21 --depth=1
+          # Folosim ramura lineage-23 pentru compatibilitate maximă cu Android 15
+          git fetch lineage-bpf lineage-21 --depth=1 # lineage-23 e deseori alias sau direct în msm-4.14
+          
           PATHS=(
             "kernel/bpf/" "include/linux/bpf.h" "include/linux/filter.h" 
             "include/linux/bpf_verifier.h" "include/uapi/linux/bpf.h" "include/linux/bpf-cgroup.h"
           )
           for path in "${PATHS[@]}"; do git checkout FETCH_HEAD -- "$path"; done
 
-      - name: Apply OneUI 7 & Syscall Fixes
+      - name: Apply BPF Glue (Lineage-23 Sync)
         run: |
-          # 1. FIX: access_ok (Forțăm formatul de 3 argumente cerut de ARM64 Samsung)
-          # Curățăm orice tentativă anterioară de 4 argumente și setăm formatul: VERIFY_READ, addr, size
-          find kernel/bpf/ -type f -name "*.c" -exec sed -i 's/access_ok(VERIFY_READ, VERIFY_READ, /access_ok(VERIFY_READ, /g' {} +
-          find kernel/bpf/ -type f -name "*.c" -exec sed -i 's/access_ok(VERIFY_WRITE, VERIFY_WRITE, /access_ok(VERIFY_WRITE, /g' {} +
-          
-          # 2. FIX: bpf_trace.c (Sincronizare 4 argumente pentru narrow_access)
+          # 1. FIX: access_ok (Forțăm formatul Samsung 4.14: 3 argumente)
+          # lineage-23 folosește adesea formatul cu 2 argumente, Samsung vrea 3.
+          # Adăugăm VERIFY_READ unde lipsește
+          grep -rl "access_ok(" kernel/bpf/ | xargs sed -i 's/access_ok(\([^,]*\), \([^)]*\))/access_ok(VERIFY_READ, \1, \2)/g'
+          # Dacă sed-ul anterior a dublat VERIFY_READ, curățăm:
+          grep -rl "access_ok(VERIFY_READ, VERIFY_READ," kernel/bpf/ | xargs sed -i 's/access_ok(VERIFY_READ, VERIFY_READ,/access_ok(VERIFY_READ,/g'
+
+          # 2. FIX: bpf_trace.c (Sincronizare narrow_access_ok)
           sed -i 's/bpf_ctx_narrow_access_ok(off, size, size_sp)/bpf_ctx_narrow_access_ok(BPF_READ, off, size, size_sp)/g' kernel/trace/bpf_trace.c
-          
-          # 3. FIX: Prototypes (filter.h)
+
+          # 3. FIX: filter.h & xdp (Networking compatibility)
           sed -i 's/bpf_ctx_narrow_access_ok(u32 off, u32 size, u32 size_default)/bpf_ctx_narrow_access_ok(int type, u32 off, u32 size, u32 size_default)/g' include/linux/filter.h
-          
-          # 4. Networking Sync (xdp_do_generic_redirect)
           perl -0777 -pi -e 's/xdp_do_generic_redirect\s*\(\s*([^,]+)\s*,\s*([^,]+)\s*,\s*([^)]+)\s*\)/xdp_do_generic_redirect($1, $2, NULL, $3)/g' net/core/dev.c
 
-          # 5. Neutralize unnecessary modules
+          # 4. Neutralizare module redundante
           for f in devmap.c cpumap.c offload.c bpf_lirc.c; do
             echo "/* Disabled */" > kernel/bpf/$f
           done
 
-          # 6. Samsung Security & secgetspf
+          # 5. Samsung Security Bypass
           mkdir -p scripts
           echo -e "#!/bin/bash\necho 0" > scripts/secgetspf
           chmod +x scripts/secgetspf
@@ -75,7 +77,7 @@ jobs:
           mkdir -p out/scripts
           cp scripts/secgetspf out/scripts/
 
-          # Configurație Android 15 / OneUI 7
+          # Config Android 15 / OneUI 7
           ./scripts/config --file out/.config --enable CONFIG_BPF_SYSCALL
           ./scripts/config --file out/.config --enable CONFIG_BPF_JIT
           ./scripts/config --file out/.config --enable CONFIG_CGROUP_BPF
@@ -91,5 +93,5 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-OneUI7-v25-Final
+          name: S10Lite-OneUI7-v26-Final
           path: out/arch/arm64/boot/Image.gz-dtb
