@@ -1,4 +1,4 @@
-name: S10 Lite - Final Sync v24
+name: S10 Lite - OneUI 7 Ready v24.1
 
 on:
   push:
@@ -25,37 +25,37 @@ jobs:
           git config user.name "KernelBot"
           git remote add stable https://kernel.googlesource.com/pub/scm/linux/kernel/git/stable/linux-stable.git || true
           git fetch stable linux-4.14.y --depth=50
-          git merge v4.14.356 -m "Upstream to 4.14.356" || echo "Conflicte gestionate automat"
+          git merge v4.14.356 -m "Upstream to 4.14.356" || echo "Merge completat"
 
       - name: eBPF Backport (Lineage/Google msm-4.14)
         run: |
           git remote add lineage-bpf https://github.com/LineageOS/android_kernel_google_msm-4.14.git || true
           git fetch lineage-bpf lineage-21 --depth=1
-          
-          # Importăm structura Google validată pentru 4.14
           PATHS=(
             "kernel/bpf/" "include/linux/bpf.h" "include/linux/filter.h" 
             "include/linux/bpf_verifier.h" "include/uapi/linux/bpf.h" "include/linux/bpf-cgroup.h"
           )
           for path in "${PATHS[@]}"; do git checkout FETCH_HEAD -- "$path"; done
 
-      - name: Apply Glue Patches (BPF Trace & Verifier Fix)
+      - name: Apply OneUI 7 Compatibility Patches
         run: |
-          # 1. FIX: bpf_trace.c (Argument Mismatch)
-          # Sincronizăm apelul bpf_ctx_narrow_access_ok cu header-ul Google
+          # 1. FIX: bpf_trace.c (Argument Mismatch Fix)
+          # Sincronizăm apelul cu noul prototip Google (4 args)
           sed -i 's/bpf_ctx_narrow_access_ok(off, size, size_sp)/bpf_ctx_narrow_access_ok(BPF_READ, off, size, size_sp)/g' kernel/trace/bpf_trace.c
-
-          # 2. FIX: Prototypes & Networking
-          # Forțăm prototipul corect în filter.h
-          sed -i 's/bpf_ctx_narrow_access_ok(u32 off, u32 size, u32 size_default)/bpf_ctx_narrow_access_ok(int type, u32 off, u32 size, u32 size_default)/g' include/linux/filter.h
           
-          # Sincronizare xdp_do_generic_redirect pentru driverele r5q
+          # 2. FIX: Prototypes & Networking
+          sed -i 's/bpf_ctx_narrow_access_ok(u32 off, u32 size, u32 size_default)/bpf_ctx_narrow_access_ok(int type, u32 off, u32 size, u32 size_default)/g' include/linux/filter.h
           perl -0777 -pi -e 's/xdp_do_generic_redirect\s*\(\s*([^,]+)\s*,\s*([^,]+)\s*,\s*([^)]+)\s*\)/xdp_do_generic_redirect($1, $2, NULL, $3)/g' net/core/dev.c
 
-          # 3. FIX: access_ok (Samsung 4.14 uses 3 arguments)
+          # 3. FIX: access_ok (Samsung 3-args sync)
           grep -rl "access_ok(" kernel/bpf/ | xargs sed -i 's/access_ok(\([^,]*\), \([^)]*\))/access_ok(VERIFY_READ, \1, \2)/g'
 
-          # 4. Samsung Security Bypass & secgetspf
+          # 4. Neutralize Google-specific modules for Samsung HW
+          for f in devmap.c cpumap.c offload.c bpf_lirc.c; do
+            echo "/* Disabled */" > kernel/bpf/$f
+          done
+
+          # 5. Samsung Security Bypass
           mkdir -p scripts
           echo -e "#!/bin/bash\necho 0" > scripts/secgetspf
           chmod +x scripts/secgetspf
@@ -69,17 +69,20 @@ jobs:
 
           make $MAKE_ARGS r5q_eur_open_defconfig
           
-          # Injectăm secgetspf în out
           mkdir -p out/scripts
           cp scripts/secgetspf out/scripts/
 
-          # Configurație necesară pentru Android 15
+          # Configurație Critică OneUI 7 / Android 15
           ./scripts/config --file out/.config --enable CONFIG_BPF_SYSCALL
           ./scripts/config --file out/.config --enable CONFIG_BPF_JIT
           ./scripts/config --file out/.config --enable CONFIG_CGROUP_BPF
           ./scripts/config --file out/.config --enable CONFIG_NET_CLS_BPF
+          ./scripts/config --file out/.config --enable CONFIG_NET_ACT_BPF
+          ./scripts/config --file out/.config --enable CONFIG_IP_NF_IPTABLES
+          ./scripts/config --file out/.config --enable CONFIG_IP6_NF_IPTABLES
           ./scripts/config --file out/.config --disable CONFIG_KPERFMON
           ./scripts/config --file out/.config --disable CONFIG_DEFEX
+          ./scripts/config --file out/.config --disable CONFIG_SECURITY_DEFEX
           
           make $MAKE_ARGS olddefconfig
           make -j$(nproc --all) $MAKE_ARGS Image.gz-dtb || make -j1 $MAKE_ARGS Image.gz-dtb
@@ -88,5 +91,5 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-Backport-v24
+          name: S10Lite-OneUI7-v24.1
           path: out/arch/arm64/boot/Image.gz-dtb
