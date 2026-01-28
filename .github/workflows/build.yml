@@ -24,7 +24,7 @@ jobs:
           git remote add linux-stable https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git || true
           git fetch linux-stable linux-5.1.y --depth=1
           
-          # Importăm subsistemul eBPF 5.1
+          # Importăm subsistemul eBPF 5.1 complet
           PATHS=(
             "kernel/bpf/" 
             "include/linux/bpf.h" 
@@ -39,34 +39,33 @@ jobs:
           )
           for path in "${PATHS[@]}"; do git checkout FETCH_HEAD -- "$path"; done
 
-      - name: Apply Glue Patches (Aggressive Bypass)
+      - name: Apply Glue Patches (Aggressive Bypass & API Sync)
         run: |
-          # 1. Neutralizare Module incompatibile (XDP, Offload, LIRC, Reuseport)
-          # Golește fișierele care depind de structuri inexistente în kernel-ul 4.14 Samsung
+          # 1. Neutralizare Module incompatibile hardware (XDP, Offload, LIRC, Reuseport)
           echo "/* Neutralized for 4.14 Compatibility */" > kernel/bpf/devmap.c
           echo "/* Neutralized for 4.14 Compatibility */" > kernel/bpf/cpumap.c
           echo "/* Neutralized for 4.14 Compatibility */" > kernel/bpf/offload.c
           echo "/* Neutralized for 4.14 Compatibility */" > kernel/bpf/bpf_lirc.c
           echo "/* Neutralized for 4.14 Compatibility */" > kernel/bpf/reuseport_array.c
           
-          # 2. Fix Perf API mismatch (4 args -> 2 args)
+          # 2. Fix Perf API mismatch (Downgrade de la 4 la 2 argumente pentru 4.14)
           sed -i 's/perf_event_read_local(event, \&value, NULL, NULL)/perf_event_read_local(event, \&value)/g' kernel/bpf/arraymap.c
 
-          # 3. Fix Atomic VAL (Înlocuire cu loop compatibil)
+          # 3. Fix Atomic VAL (Înlocuire cu loop de așteptare compatibil)
           sed -i 's/atomic_cond_read_relaxed(l, !VAL);/while (atomic_read(l));/g' kernel/bpf/helpers.c
 
-          # 4. Create Dummy Headers
+          # 4. Creare Headere Dummy (Satisface preprocesorul pentru fișierele Samsung)
           mkdir -p include/linux/
           mkdir -p include/net/
           printf "#ifndef _BPF_LIRC_H\n#define _BPF_LIRC_H\n#endif\n" > include/linux/bpf_lirc.h
           printf "#ifndef _PERFLOG_H\n#define _PERFLOG_H\n#endif\n" > include/linux/perflog.h
           printf "#ifndef _NET_XDP_H\n#define _NET_XDP_H\nstruct xdp_buff { void *data; };\n#endif\n" > include/net/xdp.h
 
-          # 5. Fix access_ok (Sincronizare cu semnatura Samsung 4.14)
+          # 5. Global Regex Fix for access_ok (Sincronizare cu semnătura Samsung 4.14)
           sed -i 's/access_ok(\([^,]*\), \([^)]*\))/access_ok(VERIFY_READ, \1, \2)/g' kernel/bpf/syscall.c
           sed -i 's/access_ok(\([^,]*\), \([^)]*\))/access_ok(VERIFY_READ, \1, \2)/g' kernel/bpf/verifier.c
 
-          # 6. Bypass Tracepoints & Perf Event Symbols
+          # 6. Bypass Tracepoints & Perf Event Symbols (Prevenire erori linker)
           sed -i 's/PERF_BPF_EVENT_PROG_UNLOAD/0/g' kernel/bpf/syscall.c
           sed -i 's/PERF_BPF_EVENT_PROG_LOAD/0/g' kernel/bpf/syscall.c
           sed -i 's/perf_event_bpf_event((void \*)prog, 0, 0);/;/g' kernel/bpf/syscall.c
@@ -74,7 +73,14 @@ jobs:
           sed -i 's/event = perf_get_event(file);/event = (void *)ERR_PTR(-EINVAL);/g' kernel/bpf/syscall.c
           sed -i 's/btp = bpf_get_raw_tracepoint(tp_name);/btp = (void *)ERR_PTR(-EINVAL);/g' kernel/bpf/syscall.c
 
-          # 7. Makefile Force (Includere TNUM)
+          # 7. FIX CGROUP API MISMATCH (Samsung 4.14 calling 5.1 headers)
+          # Eliminăm argumentul "flags" care nu mai există în semnătura funcției __cgroup_bpf_detach din 5.1
+          sed -i 's/__cgroup_bpf_detach(cgrp, prog, type, flags)/__cgroup_bpf_detach(cgrp, prog, type)/g' kernel/cgroup/cgroup.c
+          # Sincronizare apeluri inherit (Pascua bypass)
+          sed -i 's/cgroup_bpf_inherit(root_cgrp)/cgroup_bpf_inherit(root_cgrp, NULL)/g' kernel/cgroup/cgroup.c
+          sed -i 's/cgroup_bpf_inherit(cgrp)/cgroup_bpf_inherit(cgrp, NULL)/g' kernel/cgroup/cgroup.c
+
+          # 8. Makefile Force (Asigură includerea motorului matematic TNUM necesar Verifier-ului)
           if ! grep -q "tnum.o" kernel/bpf/Makefile; then
             sed -i '/obj-y += core.o/a obj-y += tnum.o' kernel/bpf/Makefile
           fi
@@ -84,7 +90,7 @@ jobs:
           export PATH=$(pwd)/toolchain/proton-clang/bin:$PATH
           MAKE_ARGS="O=out ARCH=arm64 CC=clang HOSTCC=gcc CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1"
           
-          # Flags pentru toleranță maximă la transplantul de cod
+          # Flags pentru toleranță maximă la inconsistențele dintre 4.14 și 5.1
           export KCFLAGS="-Wno-error -Wno-incompatible-pointer-types -Wno-int-conversion -Wno-implicit-function-declaration -Wno-return-type -Wno-unused-variable -Wno-unused-function"
 
           make $MAKE_ARGS r5q_eur_open_defconfig
@@ -104,6 +110,5 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-A15-Hybrid-Final-v4
+          name: S10Lite-A15-Hybrid-Final-v5
           path: out/arch/arm64/boot/Image.gz-dtb
-          
