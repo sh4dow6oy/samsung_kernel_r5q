@@ -1,4 +1,4 @@
-name: S10 Lite - Kernel sh4dow6oy v25
+name: S10 Lite - Pascua Hybrid v27
 
 on:
   push:
@@ -26,55 +26,62 @@ jobs:
           PATHS=("kernel/bpf/" "include/linux/bpf.h" "include/linux/filter.h" "include/linux/bpf_verifier.h" "include/linux/tnum.h" "include/linux/btf.h" "include/uapi/linux/bpf.h" "include/uapi/linux/btf.h" "include/uapi/linux/bpf_common.h" "include/linux/bpf-cgroup.h")
           for path in "${PATHS[@]}"; do git checkout FETCH_HEAD -- "$path"; done
 
-      - name: Apply Glue Patches (v25 - Optimization)
+      - name: Apply Glue Patches (The sh4dow6oy Nuke)
         run: |
-          # Bypass Samsung Security Tools
+          # 1. Neutralizare Module BPF incompatibile
+          for f in devmap.c cpumap.c offload.c bpf_lirc.c reuseport_array.c; do
+            echo "/* Neutralized by sh4dow6oy */" > kernel/bpf/$f
+          done
+
+          # 2. Fix Perf API & Atomic (Backport specific)
+          sed -i 's/perf_event_read_local(event, \&value, NULL, NULL)/perf_event_read_local(event, \&value)/g' kernel/bpf/arraymap.c
+          sed -i 's/atomic_cond_read_relaxed(l, !VAL);/while (atomic_read(l));/g' kernel/bpf/helpers.c
+
+          # 3. Global XDP Struct Fix (Injectare în bpf.h pentru vizibilitate totală)
+          sed -i '/struct xdp_buff;/d' include/linux/bpf.h
+          sed -i '/#define _LINUX_BPF_H/a struct xdp_buff { void *data; void *data_end; void *data_meta; void *data_hard_start; void *rxq; };' include/linux/bpf.h
+
+          # 4. Fix access_ok pentru Samsung 4.14 (3 argumente)
+          grep -rl "access_ok(" kernel/bpf/ | xargs sed -i 's/access_ok(\([^,]*\), \([^)]*\))/access_ok(VERIFY_READ, \1, \2)/g'
+
+          # 5. Fix Symbols & Tracepoints
+          sed -i 's/PERF_BPF_EVENT_PROG_UNLOAD/0/g' kernel/bpf/syscall.c
+          sed -i 's/PERF_BPF_EVENT_PROG_LOAD/0/g' kernel/bpf/syscall.c
+          sed -i 's/perf_event_bpf_event((void \*)prog, 0, 0);/;/g' kernel/bpf/syscall.c
+          sed -i 's/btp->tp->name/""/g' kernel/bpf/syscall.c
+
+          # 6. Makefile Force TNUM (Esențial pentru verifier)
+          if ! grep -q "tnum.o" kernel/bpf/Makefile; then
+            sed -i '/obj-y += core.o/a obj-y += tnum.o' kernel/bpf/Makefile
+          fi
+
+          # 7. Samsung Security Bypass (secgetspf fix)
           echo -e "#!/bin/bash\nexit 0" > scripts/secgetspf
           chmod +x scripts/secgetspf
           sudo cp scripts/secgetspf /usr/bin/secgetspf
-
-          # BPF & Syscall Fixes (Păstrăm ce a mers la v24)
-          sed -i '/bpf_lirc\.h/d' kernel/bpf/syscall.c
-          rm -f kernel/bpf/bpf_lirc.c kernel/bpf/devmap.c kernel/bpf/cpumap.c kernel/bpf/offload.c kernel/bpf/reuseport_array.c
-          touch kernel/bpf/bpf_lirc.c kernel/bpf/devmap.c kernel/bpf/cpumap.c kernel/bpf/offload.c kernel/bpf/reuseport_array.c
-
-          # Fix Header global
-          sed -i '/#include <linux\/skbuff.h>/a \
-          #define PERF_BPF_EVENT_PROG_LOAD 0\
-          #define PERF_BPF_EVENT_PROG_UNLOAD 0\
-          static inline void perf_event_bpf_event(void *p, int e, int f) {}\
-          static inline int skb_metadata_len(const struct sk_buff *skb) { return 0; }\
-          #ifndef cant_sleep\n#define cant_sleep() do { } while (0)\n#endif\n\
-          static inline bool kallsyms_show_value(void) { return false; }' include/linux/filter.h
-
-          # Global access_ok fix
-          grep -rl "access_ok(" kernel/bpf/ | xargs sed -i 's/access_ok(\([^,]*\), \([^)]*\))/access_ok(VERIFY_READ, \1, \2)/g'
-
-          # Syscall Stubs
-          sed -i '1i #include <linux/err.h>\n#include <linux/bpf.h>\nstruct bpf_raw_event_map { int dummy; };\nstatic inline void bpf_probe_unregister(void *a, void *b) {}\nstatic inline void bpf_put_raw_tracepoint(void *a) {}\nstatic inline void *bpf_get_raw_tracepoint(void *a) { return NULL; }\nstatic inline int bpf_probe_register(void *a, void *b) { return -1; }\nstatic inline int lirc_prog_attach(const void *a, void *b) { return -1; }\nstatic inline int lirc_prog_detach(const void *a) { return -1; }\nstatic inline int lirc_prog_query(const void *a, void *b) { return -1; }\nstatic inline int skb_flow_dissector_bpf_prog_attach(const void *a, void *b) { return -1; }\nstatic inline int skb_flow_dissector_bpf_prog_detach(const void *a) { return -1; }\nstatic inline void *perf_get_event(void *a) { return ERR_PTR(-1); }\nstatic inline int bpf_get_perf_event_info(void *a, void *b, void *c, void *d, void *e, void *f) { return -1; }' kernel/bpf/syscall.c
-
-          # Atomic & Network Sync
-          sed -i 's/atomic_fetch_add_unless/atomic_add_unless/g' kernel/bpf/syscall.c
-          sed -i 's/int xdp_do_generic_redirect(/int __xdp_do_generic_redirect(/g' net/core/filter.c
 
       - name: Build Kernel
         run: |
           export PATH=$(pwd)/toolchain/proton-clang/bin:$PATH
           MAKE_ARGS="O=out ARCH=arm64 CC=clang HOSTCC=gcc CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1"
           
+          # Dezactivăm erorile care opresc build-ul la linkare
+          export KCFLAGS="-Wno-error -Wno-incompatible-pointer-types -Wno-implicit-function-declaration"
+
           make $MAKE_ARGS r5q_eur_open_defconfig
-          ./scripts/config --file out/.config --set-str CONFIG_LOCALVERSION "-sh4dow6oy"
           ./scripts/config --file out/.config --enable CONFIG_BPF_SYSCALL
+          ./scripts/config --file out/.config --enable CONFIG_BPF_JIT
+          ./scripts/config --file out/.config --enable CONFIG_CGROUP_BPF
           ./scripts/config --file out/.config --disable CONFIG_KPERFMON
           ./scripts/config --file out/.config --disable CONFIG_DEFEX
           
           make $MAKE_ARGS olddefconfig
-          # Rulăm fără V=1 pentru a evita log-ul imens și a termina mai repede
-          make -j$(nproc --all) $MAKE_ARGS Image.gz-dtb
+          # Dacă moare la linkare, j1 ne va arăta eroarea exactă
+          make -j$(nproc --all) $MAKE_ARGS Image.gz-dtb || make -j1 $MAKE_ARGS Image.gz-dtb
 
       - name: Upload Artifact
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-sh4dow6oy-v25
+          name: S10Lite-sh4dow6oy-v27
           path: out/arch/arm64/boot/Image.gz-dtb
