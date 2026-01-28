@@ -1,4 +1,4 @@
-name: S10 Lite - Full Pascua Integration
+name: S10 Lite - Kernel sh4dow6oy
 
 on:
   push:
@@ -16,7 +16,7 @@ jobs:
       - name: Setup Toolchain
         run: |
           sudo apt-get update
-          sudo apt-get install -y bc bison flex libssl-dev libelf-dev dwarves make python3 lz4
+          sudo apt-get install -y bc bison flex libssl-dev libelf-dev dwarves make python3 lz4 perl
           git clone --depth=1 https://github.com/kdrag0n/proton-clang.git toolchain/proton-clang
 
       - name: Core Pascua Backport (eBPF 5.1 Full)
@@ -32,49 +32,46 @@ jobs:
           )
           for path in "${PATHS[@]}"; do git checkout FETCH_HEAD -- "$path"; done
 
-      - name: Apply Glue Patches (v16 - Precise Sync)
+      - name: Apply Glue Patches (v17 - Header Mapping)
         run: |
-          # 1. BPF Modules Neutralization
+          # 1. Neutralizare Module BPF
           echo "/* Neutralized */" > kernel/bpf/devmap.c
           echo "/* Neutralized */" > kernel/bpf/cpumap.c
           echo "/* Neutralized */" > kernel/bpf/offload.c
           echo "/* Neutralized */" > kernel/bpf/bpf_lirc.c
           echo "/* Neutralized */" > kernel/bpf/reuseport_array.c
           
-          # 2. API & Atomic Fixes
+          # 2. Fix Perf API & Atomic
           sed -i 's/perf_event_read_local(event, \&value, NULL, NULL)/perf_event_read_local(event, \&value)/g' kernel/bpf/arraymap.c
           sed -i 's/atomic_cond_read_relaxed(l, !VAL);/while (atomic_read(l));/g' kernel/bpf/helpers.c
 
-          # 3. Dummy Headers & XDP Struct
-          mkdir -p include/linux/ include/net/
-          printf "#ifndef _BPF_LIRC_H\n#define _BPF_LIRC_H\n#endif\n" > include/linux/bpf_lirc.h
-          printf "#ifndef _PERFLOG_H\n#define _PERFLOG_H\n#endif\n" > include/linux/perflog.h
+          # 3. Fix Networking via Header Redefinition (The "sh4dow6oy" trick)
+          # Fortam header-ul sa accepte apelul cu 3 argumente din dev.c
+          echo "#define xdp_do_generic_redirect(a, b, c) __xdp_do_generic_redirect(a, b, NULL, c)" >> include/linux/filter.h
+          sed -i 's/int xdp_do_generic_redirect(/int __xdp_do_generic_redirect(/g' include/linux/filter.h
+          
+          # Sincronizam si definitia din filter.c
+          sed -i 's/int xdp_do_generic_redirect(/int __xdp_do_generic_redirect(/g' net/core/filter.c
+          sed -i 's/static const struct bpf_func_proto bpf_sk_redirect_map_proto/const struct bpf_func_proto bpf_sk_redirect_map_proto/g' net/core/filter.c
+          sed -i 's/\.test_run/\/\/ .test_run/g' net/core/filter.c
+
+          # 4. Global XDP Struct Fix
           sed -i '/struct xdp_buff;/d' include/linux/bpf.h
           sed -i '/#define _LINUX_BPF_H/a struct xdp_buff { void *data; void *data_end; void *data_meta; void *data_hard_start; void *rxq; };' include/linux/bpf.h
 
-          # 4. Syscall.c Fixes
+          # 5. Syscall & Verifier Fixes
           sed -i '1i #define PERF_BPF_EVENT_PROG_LOAD 0\n#define PERF_BPF_EVENT_PROG_UNLOAD 0' kernel/bpf/syscall.c
           sed -i 's/perf_event_bpf_event(/ \/\/ /g' kernel/bpf/syscall.c
           sed -i 's/btp->tp->name/""/g' kernel/bpf/syscall.c
           sed -i 's/access_ok(\([^,]*\), \([^)]*\))/access_ok(VERIFY_READ, \1, \2)/g' kernel/bpf/syscall.c
           sed -i 's/access_ok(\([^,]*\), \([^)]*\))/access_ok(VERIFY_READ, \1, \2)/g' kernel/bpf/verifier.c
 
-          # 5. Cgroup Fixes
+          # 6. Cgroup Fixes
           sed -i 's/__cgroup_bpf_detach(cgrp, prog, type, flags)/__cgroup_bpf_detach(cgrp, prog, type)/g' kernel/cgroup/cgroup.c
           sed -i 's/cgroup_bpf_inherit(\([^,]*\), [^)]*)/cgroup_bpf_inherit(\1)/g' kernel/cgroup/cgroup.c
 
-          # 6. NET CORE / FILTER FIXES (v16 Precision)
-          sed -i 's/static const struct bpf_func_proto bpf_sk_redirect_map_proto/const struct bpf_func_proto bpf_sk_redirect_map_proto/g' net/core/filter.c
-          sed -i 's/int xdp_do_generic_redirect(struct net_device \*dev, struct sk_buff \*skb,/int xdp_do_generic_redirect(struct net_device *dev, struct sk_buff *skb, struct bpf_prog *prog,/g' net/core/filter.c
-          sed -i 's/\.test_run/\/\/ .test_run/g' net/core/filter.c
-          # Fix for dev.c (Handling potential multi-line and argument mismatch)
-          sed -i 's/xdp_do_generic_redirect(\([^,]*\), \([^,]*\), /xdp_do_generic_redirect(\1, \2, NULL, /g' net/core/dev.c
-
-          # 7. Bypass Drivers & Samsung Bloat
+          # 7. Final Cleanups
           find drivers -name Makefile -exec sed -i 's/obj-$(CONFIG_KPERFMON)/obj-n/g' {} +
-          find . -name "*.sh" -exec sed -i 's/cp -f/cp -f 2>\/dev\/null/g' {} + || true
-
-          # 8. Makefile TNUM
           if ! grep -q "tnum.o" kernel/bpf/Makefile; then
             sed -i '/obj-y += core.o/a obj-y += tnum.o' kernel/bpf/Makefile
           fi
@@ -83,9 +80,10 @@ jobs:
         run: |
           export PATH=$(pwd)/toolchain/proton-clang/bin:$PATH
           MAKE_ARGS="O=out ARCH=arm64 CC=clang HOSTCC=gcc CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1"
-          export KCFLAGS="-Wno-error -Wno-incompatible-pointer-types -Wno-int-conversion -Wno-implicit-function-declaration -Wno-return-type -Wno-unused-variable -Wno-unused-function"
+          export KCFLAGS="-Dsh4dow6oy -Wno-error -Wno-incompatible-pointer-types -Wno-int-conversion -Wno-implicit-function-declaration -Wno-return-type -Wno-unused-variable -Wno-unused-function"
 
           make $MAKE_ARGS r5q_eur_open_defconfig
+          ./scripts/config --file out/.config --set-str CONFIG_LOCALVERSION "-sh4dow6oy"
           ./scripts/config --file out/.config --enable CONFIG_BPF_SYSCALL
           ./scripts/config --file out/.config --enable CONFIG_BPF_JIT
           ./scripts/config --file out/.config --enable CONFIG_CGROUP_BPF
@@ -100,5 +98,5 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-A15-Hybrid-v16
+          name: S10Lite-sh4dow6oy-v17
           path: out/arch/arm64/boot/Image.gz-dtb
