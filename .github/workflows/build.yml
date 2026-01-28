@@ -1,4 +1,4 @@
-name: S10 Lite - Full Pascua Integration v16.0
+name: S10 Lite - Full Pascua Integration v17.2
 
 on:
   push:
@@ -32,39 +32,47 @@ jobs:
           )
           for path in "${PATHS[@]}"; do git checkout FETCH_HEAD -- "$path"; done
 
-      - name: Apply Glue Patches (Final Linker Fix)
+      - name: Apply Glue Patches (BPF Syscall & Networking Fix)
         run: |
-          # 1. Neutralizare Module BPF problematice
+          # 1. Neutralizare Module BPF incompatibile cu 4.14
           for f in devmap.c cpumap.c offload.c bpf_lirc.c reuseport_array.c; do
             echo "/* Neutralized */" > kernel/bpf/$f
           done
           
-          # 2. Fix Prototip xdp_do_generic_redirect (Sincronizare 4.14 -> 5.1)
+          # 2. FIX SYSCALL.C (Rezolvă erorile tale: PERF_BPF_EVENT & bpf_raw_event_map)
+          # Injectăm constantele lipsă și dezactivăm apelurile perf_event incompatibile
+          sed -i '1i #define PERF_BPF_EVENT_PROG_LOAD 0\n#define PERF_BPF_EVENT_PROG_UNLOAD 0' kernel/bpf/syscall.c
+          sed -i 's/perf_event_bpf_event(/ \/\/ /g' kernel/bpf/syscall.c
+          
+          # Rezolvăm eroarea "incomplete definition of struct bpf_raw_event_map"
+          # Înlocuim accesul la tp->name cu un string gol (nu afectează funcționarea eBPF)
+          sed -i 's/btp->tp->name/""/g' kernel/bpf/syscall.c
+
+          # 3. FIX: xdp_do_generic_redirect (Sincronizare 4.14 -> 5.1)
           sed -i 's/int xdp_do_generic_redirect(struct net_device \*dev, struct sk_buff \*skb, const struct bpf_func_proto \*proto);/int xdp_do_generic_redirect(struct net_device *dev, struct sk_buff *skb, struct bpf_prog *prog, const struct bpf_func_proto *proto);/g' include/linux/filter.h
           perl -0777 -pi -e 's/int xdp_do_generic_redirect\(struct net_device \*dev, struct sk_buff \*skb,\s+const struct bpf_func_proto \*proto\)/int xdp_do_generic_redirect(struct net_device *dev, struct sk_buff *skb, struct bpf_prog *prog, const struct bpf_func_proto *proto)/g' net/core/filter.c
 
-          # 3. Dummy Headers & Samsung Security Path Fix
+          # 4. Dummy Headers & Samsung Security Paths
           mkdir -p include/linux/ include/uapi/linux/ include/log/
           printf "#ifndef _BPF_LIRC_H\n#define _BPF_LIRC_H\n#endif\n" > include/linux/bpf_lirc.h
           printf "#ifndef _PERFLOG_H\n#define _PERFLOG_H\n#endif\n" > include/linux/perflog.h
           mkdir -p system/core/liblog/include/log/
           cp include/linux/perflog.h system/core/liblog/include/log/perflog.h
 
-          # 4. FIX: access_ok & Atomic Ops
+          # 5. FIX: access_ok (Samsung 3-args) & Atomics
           grep -rl "access_ok(" kernel/bpf/ | xargs sed -i 's/access_ok(\([^,]*\), \([^)]*\))/access_ok(VERIFY_READ, \1, \2)/g'
           sed -i 's/atomic_cond_read_relaxed(l, !VAL);/while (atomic_read(l));/g' kernel/bpf/helpers.c
 
-          # 5. FIX: Net Core & Cgroup
+          # 6. FIX: Net Core & Cgroup Fixes
           sed -i 's/static const struct bpf_func_proto bpf_sk_redirect_map_proto/const struct bpf_func_proto bpf_sk_redirect_map_proto/g' net/core/filter.c
           sed -i 's/\.test_run/\/\/ .test_run/g' net/core/filter.c
           perl -0777 -pi -e 's/xdp_do_generic_redirect\s*\(\s*([^,]+)\s*,\s*([^,]+)\s*,\s*([^)]+)\s*\)/xdp_do_generic_redirect($1, $2, NULL, $3)/g' net/core/dev.c
 
-          # 6. FIX: secgetspf (The Linker Ghost)
+          # 7. FIX: secgetspf (Samsung Build Script)
           mkdir -p scripts
           echo -e "#!/bin/bash\necho 0" > scripts/secgetspf
           chmod +x scripts/secgetspf
           sudo cp scripts/secgetspf /usr/bin/secgetspf
-          cp scripts/secgetspf ./secgetspf
 
       - name: Build Kernel
         run: |
@@ -72,30 +80,25 @@ jobs:
           MAKE_ARGS="O=out ARCH=arm64 CC=clang HOSTCC=gcc CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1"
           export KCFLAGS="-Wno-error -Wno-incompatible-pointer-types -Wno-int-conversion -Wno-implicit-function-declaration -Wno-return-type"
 
-          # Pregătim folderul out înainte de config
           make $MAKE_ARGS r5q_eur_open_defconfig
           
+          # Asigurăm prezența secgetspf în folderul de build
           mkdir -p out/scripts
           cp scripts/secgetspf out/scripts/
-          cp scripts/secgetspf out/
 
-          # Optimizări Android 15 & Dezactivare Securitate Samsung (RKP/CFP)
           ./scripts/config --file out/.config --enable CONFIG_BPF_SYSCALL
           ./scripts/config --file out/.config --enable CONFIG_BPF_JIT
+          ./scripts/config --file out/.config --enable CONFIG_CGROUP_BPF
           ./scripts/config --file out/.config --disable CONFIG_KPERFMON
           ./scripts/config --file out/.config --disable CONFIG_DEFEX
-          ./scripts/config --file out/.config --disable CONFIG_RKP_KDP
-          ./scripts/config --file out/.config --disable CONFIG_RKP_CFP
           ./scripts/config --file out/.config --disable CONFIG_SAMSUNG_PRODUCT_SHIP
           
           make $MAKE_ARGS olddefconfig
-          # Dacă eșuează, forțăm j1 pentru a vedea eroarea de linkare exactă
           make -j$(nproc --all) $MAKE_ARGS Image.gz-dtb || make -j1 $MAKE_ARGS Image.gz-dtb
 
       - name: Upload Artifact
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-A15-Hybrid-Final
+          name: S10Lite-A15-Hybrid-v17.2
           path: out/arch/arm64/boot/Image.gz-dtb
-          
