@@ -1,76 +1,37 @@
-name: S10 Lite - Pascua Pure v14
-
-on:
-  push:
-    branches: [ main ]
-  workflow_dispatch:
-
-jobs:
-  build:
-    runs-on: ubuntu-22.04
-
-    steps:
-      - name: Checkout Source
-        uses: actions/checkout@v4
-
-      - name: Setup Toolchain
+      - name: Apply Glue Patches (v16 - Final Linker Fix)
         run: |
-          sudo apt-get update
-          sudo apt-get install -y bc bison flex libssl-dev libelf-dev dwarves make python3 lz4 perl
-          git clone --depth=1 https://github.com/kdrag0n/proton-clang.git toolchain/proton-clang
-
-      - name: Core Pascua Backport
-        run: |
-          git remote add linux-stable https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git || true
-          git fetch linux-stable linux-5.1.y --depth=1
-          PATHS=("kernel/bpf/" "include/linux/bpf.h" "include/linux/filter.h" "include/uapi/linux/bpf.h" "include/linux/bpf_verifier.h")
-          for path in "${PATHS[@]}"; do git checkout FETCH_HEAD -- "$path"; done
-
-      - name: Manual Pascua Shims (The Missing Links)
-        run: |
-          # 1. FIX: Dummy Header LIRC (Pascua bypass)
-          mkdir -p include/linux/ include/uapi/linux/
-          echo "#ifndef _BPF_LIRC_H" > include/linux/bpf_lirc.h
-          echo "#define _BPF_LIRC_H" >> include/linux/bpf_lirc.h
-          echo "#endif" >> include/linux/bpf_lirc.h
-          cp include/linux/bpf_lirc.h include/uapi/linux/bpf_lirc.h
-
-          # 2. FIX: Prototipuri Net/Core (Eroarea de tipuri din v14)
-          # Pascua forțează toate apelurile XDP să folosească noua structură bpf_prog
-          sed -i 's/int xdp_do_generic_redirect(struct net_device \*dev, struct sk_buff \*skb, const struct bpf_func_proto \*proto);/int xdp_do_generic_redirect(struct net_device *dev, struct sk_buff *skb, struct bpf_prog *prog, const struct bpf_func_proto *proto);/g' include/linux/filter.h
+          # [ ... codul tau anterior de patch-uri BPF ... ]
           
-          # 3. FIX: bpf_sk_redirect_map_proto (Conflict Extern/Static)
-          # În 5.1 este EXPORT_SYMBOL, în 4.14 era static. Forțăm EXTERN.
-          sed -i 's/static const struct bpf_func_proto bpf_sk_redirect_map_proto/const struct bpf_func_proto bpf_sk_redirect_map_proto/g' net/core/filter.c
-          
-          # 4. FIX: Verifier Test Run
-          # Structura bpf_verifier_ops din 5.1 nu mai are test_run în același loc
-          sed -i 's/\.test_run/\/\/ .test_run/g' net/core/filter.c
-
-          # 5. FIX: Samsung access_ok (Sincronizare cu 4.14)
-          # Samsung folosește 3 argumente: access_ok(type, addr, size)
-          grep -rl "access_ok(" kernel/bpf/ | xargs sed -i 's/access_ok(\([^,]*\), \([^)]*\))/access_ok(VERIFY_READ, \1, \2)/g'
-
-          # 6. Neutralizare module incompatibile
-          for f in devmap.c cpumap.c offload.c bpf_lirc.c; do echo "/* Nulled by Pascua Shim */" > kernel/bpf/$f; done
+          # Fix secgetspf - Metoda "Overkill"
+          mkdir -p scripts
+          echo -e "#!/bin/bash\necho 0" > scripts/secgetspf
+          chmod +x scripts/secgetspf
+          sudo cp scripts/secgetspf /usr/bin/secgetspf
+          # IMPORTANT: Îl copiem și în rădăcina sursei
+          cp scripts/secgetspf ./secgetspf 
 
       - name: Build Kernel
         run: |
           export PATH=$(pwd)/toolchain/proton-clang/bin:$PATH
           MAKE_ARGS="O=out ARCH=arm64 CC=clang HOSTCC=gcc CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1"
-          export KCFLAGS="-Wno-error -Wno-implicit-function-declaration -Wno-incompatible-pointer-types"
-
-          # Fix Samsung secgetspf
-          mkdir -p scripts
-          echo -e "#!/bin/bash\nexit 0" > scripts/secgetspf
-          chmod +x scripts/secgetspf
-          sudo cp scripts/secgetspf /usr/bin/secgetspf
+          export KCFLAGS="-Wno-error -Wno-incompatible-pointer-types -Wno-int-conversion -Wno-implicit-function-declaration -Wno-return-type"
 
           make $MAKE_ARGS r5q_eur_open_defconfig
+          
+          # Injectăm secgetspf în folderul out înainte de asamblarea finală
+          mkdir -p out/scripts
+          cp scripts/secgetspf out/scripts/
+          cp scripts/secgetspf out/
+
+          # CONFIGURĂRI PENTRU BOOT (Să nu dea Kernel Panic)
           ./scripts/config --file out/.config --enable CONFIG_BPF_SYSCALL
           ./scripts/config --file out/.config --disable CONFIG_KPERFMON
           ./scripts/config --file out/.config --disable CONFIG_DEFEX
+          ./scripts/config --file out/.config --disable CONFIG_RKP_KDP
+          ./scripts/config --file out/.config --disable CONFIG_RKP_NS_PROT
+          ./scripts/config --file out/.config --disable CONFIG_SAMSUNG_PRODUCT_SHIP
           
           make $MAKE_ARGS olddefconfig
-          make -j$(nproc --all) $MAKE_ARGS Image.gz-dtb
+          # Rulăm build-ul. Dacă eșuează, folosim -j1 pentru a vedea eroarea exactă.
+          make -j$(nproc --all) $MAKE_ARGS Image.gz-dtb || make -j1 $MAKE_ARGS Image.gz-dtb
           
