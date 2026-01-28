@@ -1,4 +1,4 @@
-name: S10 Lite - OneUI 7 Ready v30
+name: S10 Lite - OneUI 7 Ready v31.1
 
 on:
   push:
@@ -27,64 +27,44 @@ jobs:
           git fetch stable linux-4.14.y --depth=1
           git merge v4.14.356 -m "Upstream to 4.14.356" || echo "Merge OK"
 
-      - name: eBPF Backport (Lineage-23 Base)
+      - name: Precise eBPF Backport
         run: |
           git remote add lineage-bpf https://github.com/LineageOS/android_kernel_google_msm-4.14.git || true
           git fetch lineage-bpf lineage-21 --depth=1
-          PATHS=(
-            "kernel/bpf/" "include/linux/bpf.h" "include/linux/filter.h" 
-            "include/linux/bpf_verifier.h" "include/uapi/linux/bpf.h" "include/linux/bpf-cgroup.h"
-          )
-          for path in "${PATHS[@]}"; do git checkout FETCH_HEAD -- "$path"; done
+          git checkout FETCH_HEAD -- kernel/bpf/ include/linux/bpf.h include/uapi/linux/bpf.h include/linux/bpf_verifier.h
 
-      - name: Surgical Fixes for Linker Errors
+      - name: Global Fixes (No Conflict)
         run: |
-          # 1. FIX: _perflog (Eliminăm apelurile din cod pentru a nu mai depinde de funcție)
-          grep -rl "_perflog" . | xargs sed -i 's/_perflog(.*);/\/\/perflog_removed/g' || true
+          # 1. FIX: _perflog (Neutralizăm macro-ul Samsung direct în ologk.h)
+          # Asta transformă orice apel perflog(...) în nimic, eliminând eroarea din psi.c și fs
+          sed -i 's/#define perflog(...).*/#define perflog(...) do {} while (0)/g' include/linux/ologk.h
 
-          # 2. FIX: dev_map_ops & dev_map (Sincronizare net/core)
-          # Ne asigurăm că devmap.c este compilat
-          sed -i 's/obj-$(CONFIG_BPF_SYSCALL) += syscall.o/obj-$(CONFIG_BPF_SYSCALL) += syscall.o devmap.o/g' kernel/bpf/Makefile
-
-          # 3. FIX: GSI Qualcomm Relocation (Hard-fix pentru drivers/platform/msm/gsi)
-          # Dezactivăm versionarea simbolurilor care cauzează RELOCATION truncated
-          sed -i 's/CONFIG_MODVERSIONS=y/CONFIG_MODVERSIONS=n/g' arch/arm64/configs/r5q_eur_open_defconfig || true
-
-          # 4. FIX: SELinux & RTIC (Eroarea de relocation truncated)
-          sed -i 's/CONFIG_RTIC=y/CONFIG_RTIC=n/g' arch/arm64/configs/r5q_eur_open_defconfig || true
-          sed -i 's/CONFIG_SECURITY_RTIC=y/CONFIG_SECURITY_RTIC=n/g' arch/arm64/configs/r5q_eur_open_defconfig || true
-
-          # 5. FIX: access_ok (3-args enforce)
+          # 2. FIX: access_ok (Standard Samsung 3-args pentru kernel/bpf)
           find kernel/bpf/ -type f -name "*.c" -exec sed -i 's/access_ok(\([^,]*\), \([^)]*\))/access_ok(VERIFY_READ, \1, \2)/g' {} +
-          find kernel/bpf/ -type f -name "*.c" -exec sed -i 's/access_ok(VERIFY_READ, VERIFY_READ, /access_ok(VERIFY_READ, /g' {} +
 
-          # 6. Dummy files pentru Samsung build scripts
-          mkdir -p system/core/liblog/include/log/
-          touch system/core/liblog/include/log/perflog.h
+          # 3. FIX: Samsung Security & RTIC
+          sed -i 's/CONFIG_RTIC=y/CONFIG_RTIC=n/g' arch/arm64/configs/r5q_eur_open_defconfig || true
+          sed -i 's/CONFIG_SECURITY_DEFEX=y/CONFIG_SECURITY_DEFEX=n/g' arch/arm64/configs/r5q_eur_open_defconfig || true
 
       - name: Build Kernel
         run: |
           export PATH=$(pwd)/toolchain/proton-clang/bin:$PATH
           MAKE_ARGS="O=out ARCH=arm64 CC=clang HOSTCC=gcc CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1"
-          # -fno-pic este vital pentru a evita erorile de relocare pe Qualcomm 4.14
-          export KCFLAGS="-Wno-error -fno-pic -fno-strict-aliasing"
+          export KCFLAGS="-Wno-error -Wno-implicit-function-declaration -fno-pic"
 
           make $MAKE_ARGS r5q_eur_open_defconfig
           
-          # Force Disable problematic configs
-          ./scripts/config --file out/.config --disable CONFIG_RTIC
-          ./scripts/config --file out/.config --disable CONFIG_MODVERSIONS
-          ./scripts/config --file out/.config --disable CONFIG_KPERFMON
+          # Creăm dummy secgetspf pentru a preveni eroarea de scripts
+          mkdir -p out/scripts
+          echo -e "#!/bin/bash\necho 0" > out/scripts/secgetspf
+          chmod +x out/scripts/secgetspf
+          sudo cp out/scripts/secgetspf /usr/bin/secgetspf
+
+          # Config OneUI 7
           ./scripts/config --file out/.config --enable CONFIG_BPF_SYSCALL
           ./scripts/config --file out/.config --enable CONFIG_BPF_JIT
+          ./scripts/config --file out/.config --disable CONFIG_RTIC
+          ./scripts/config --file out/.config --disable CONFIG_MODVERSIONS
           
           make $MAKE_ARGS olddefconfig
-          # Rulăm cu -j1 la final dacă eșuează, pentru a vedea eroarea exactă
-          make -j$(nproc --all) $MAKE_ARGS Image.gz-dtb || make -j1 $MAKE_ARGS Image.gz-dtb
-
-      - name: Upload Artifact
-        if: success()
-        uses: actions/checkout@v4 # Folosim checkout pentru a urca, dar corect e upload-artifact
-        with:
-          name: S10Lite-OneUI7-v30
-          path: out/arch/arm64/boot/Image.gz-dtb
+          make -j$(nproc --all) $MAKE_ARGS Image.gz-dtb
