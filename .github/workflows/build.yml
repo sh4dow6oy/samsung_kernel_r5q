@@ -1,12 +1,14 @@
 name: S10 Lite - Kernel sh4dow6oy v20
 
 on:
-  push: branches: [ main ]
+  push:
+    branches: [ main ]
   workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-22.04
+
     steps:
       - name: Checkout Source
         uses: actions/checkout@v4
@@ -21,65 +23,57 @@ jobs:
         run: |
           git remote add linux-stable https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git || true
           git fetch linux-stable linux-5.1.y --depth=1
-          PATHS=("kernel/bpf/" "include/linux/bpf.h" "include/linux/filter.h" "include/linux/bpf_verifier.h" "include/linux/tnum.h" "include/linux/btf.h" "include/uapi/linux/bpf.h" "include/uapi/linux/btf.h" "include/uapi/linux/bpf_common.h" "include/linux/bpf-cgroup.h")
+          PATHS=(
+            "kernel/bpf/" "include/linux/bpf.h" "include/linux/filter.h" 
+            "include/linux/bpf_verifier.h" "include/linux/tnum.h" "include/linux/btf.h"
+            "include/uapi/linux/bpf.h" "include/uapi/linux/btf.h"
+            "include/uapi/linux/bpf_common.h" "include/linux/bpf-cgroup.h"
+          )
           for path in "${PATHS[@]}"; do git checkout FETCH_HEAD -- "$path"; done
 
-      - name: Apply Glue Patches (v20 - Atomic & Tracepoint Bypass)
+      - name: Apply Glue Patches (sh4dow6oy Nuclear Fix)
         run: |
-          # 1. Neutralizare fișiere care nu pot fi compilate pe 4.14
-          echo "/* Neutralized */" > kernel/bpf/devmap.c
-          echo "/* Neutralized */" > kernel/bpf/cpumap.c
-          echo "/* Neutralized */" > kernel/bpf/offload.c
-          echo "/* Neutralized */" > kernel/bpf/bpf_lirc.c
-          echo "/* Neutralized */" > kernel/bpf/reuseport_array.c
+          # 1. Curățare fișiere conflictuale
+          rm -f kernel/bpf/devmap.c kernel/bpf/cpumap.c kernel/bpf/offload.c kernel/bpf/bpf_lirc.c kernel/bpf/reuseport_array.c
+          touch kernel/bpf/devmap.c kernel/bpf/cpumap.c kernel/bpf/offload.c kernel/bpf/bpf_lirc.c kernel/bpf/reuseport_array.c
 
-          # 2. Fix Atomic Operations (The 4.14 vs 5.1 Bridge)
-          sed -i 's/atomic_fetch_add_unless(&\(.*\), 1, 0)/atomic_add_unless(&\1, 1, 0)/g' kernel/bpf/syscall.c
-          
-          # 3. Bypass Raw Tracepoints & LIRC (Injectăm stubs direct în syscall.c)
-          sed -i '/#include <linux\/bpf.h>/a \
-          static inline void bpf_probe_unregister(void *a, void *b) {} \
-          static inline void bpf_put_raw_tracepoint(void *a) {} \
-          static inline void *bpf_get_raw_tracepoint(void *a) { return NULL; } \
-          static inline int bpf_probe_register(void *a, void *b) { return -EOPNOTSUPP; } \
-          static inline int lirc_prog_attach(void *a, void *b) { return -EOPNOTSUPP; } \
-          static inline int lirc_prog_detach(void *a) { return -EOPNOTSUPP; } \
-          static inline int lirc_prog_query(void *a, void *b) { return -EOPNOTSUPP; } \
-          static inline int skb_flow_dissector_bpf_prog_attach(void *a, void *b) { return -EOPNOTSUPP; } \
-          static inline int skb_flow_dissector_bpf_prog_detach(void *a) { return -EOPNOTSUPP; } \
-          static inline void *perf_get_event(void *a) { return NULL; } \
-          static inline int bpf_get_perf_event_info(void *a, void *b, void *c, void *d, void *e) { return -EOPNOTSUPP; }' kernel/bpf/syscall.c
+          # 2. Injectare Stubs în syscall.c (Rezolvă cele 15 erori)
+          # Adăugăm definițiile chiar la începutul fișierului pentru a fi vizibile peste tot
+          sed -i '1i #include <linux/types.h>\n#include <linux/err.h>\n#define PERF_BPF_EVENT_PROG_LOAD 0\n#define PERF_BPF_EVENT_PROG_UNLOAD 0\nstatic inline void bpf_probe_unregister(void *a, void *b) {}\nstatic inline void bpf_put_raw_tracepoint(void *a) {}\nstatic inline void *bpf_get_raw_tracepoint(void *a) { return NULL; }\nstatic inline int bpf_probe_register(void *a, void *b) { return -1; }\nstatic inline int lirc_prog_attach(void *a, void *b) { return -1; }\nstatic inline int lirc_prog_detach(void *a) { return -1; }\nstatic inline int lirc_prog_query(void *a, void *b) { return -1; }\nstatic inline int skb_flow_dissector_bpf_prog_attach(void *a, void *b) { return -1; }\nstatic inline int skb_flow_dissector_bpf_prog_detach(void *a) { return -1; }\nstatic inline void *perf_get_event(void *a) { return ERR_PTR(-1); }\nstatic inline int bpf_get_perf_event_info(void *a, void *b, void *c, void *d, void *e) { return -1; }' kernel/bpf/syscall.c
 
-          # 4. FIX FILTER.H (v19 legacy + cant_sleep)
+          # 3. Fix Atomic: 5.1 (fetch_add_unless) -> 4.14 (add_unless)
+          sed -i 's/atomic_fetch_add_unless/atomic_add_unless/g' kernel/bpf/syscall.c
+
+          # 4. Fix Filter.h (Erorile din init/do_mounts.c)
           sed -i '/#include <linux\/skbuff.h>/a \
           static inline int skb_metadata_len(const struct sk_buff *skb) { return 0; }\
           #ifndef cant_sleep\n#define cant_sleep() do { } while (0)\n#endif\n\
           static inline bool kallsyms_show_value(void) { return false; }' include/linux/filter.h
 
-          # 5. Networking Mapping (sh4dow6oy trick)
+          # 5. Fix Networking Alias
           sed -i '/int xdp_do_generic_redirect(/i #define xdp_do_generic_redirect(dev, skb, prog) __xdp_do_generic_redirect(dev, skb, NULL, prog)' include/linux/filter.h
           sed -i 's/int xdp_do_generic_redirect(/int __xdp_do_generic_redirect(/g' include/linux/filter.h
           sed -i 's/int xdp_do_generic_redirect(/int __xdp_do_generic_redirect(/g' net/core/filter.c
-          sed -i 's/static const struct bpf_func_proto bpf_sk_redirect_map_proto/const struct bpf_func_proto bpf_sk_redirect_map_proto/g' net/core/filter.c
-          sed -i 's/\.test_run/\/\/ .test_run/g' net/core/filter.c
 
-          # 6. Syscall.c Cleanups
-          sed -i '1i #define PERF_BPF_EVENT_PROG_LOAD 0\n#define PERF_BPF_EVENT_PROG_UNLOAD 0' kernel/bpf/syscall.c
-          sed -i 's/perf_event_bpf_event(/ \/\/ /g' kernel/bpf/syscall.c
-          sed -i 's/btp->tp->name/""/g' kernel/bpf/syscall.c
+          # 6. Global Fixes (verifier & access_ok)
           sed -i 's/access_ok(\([^,]*\), \([^)]*\))/access_ok(VERIFY_READ, \1, \2)/g' kernel/bpf/syscall.c
+          sed -i 's/access_ok(\([^,]*\), \([^)]*\))/access_ok(VERIFY_READ, \1, \2)/g' kernel/bpf/verifier.c
+          sed -i 's/perf_event_bpf_event(/ \/\/ /g' kernel/bpf/syscall.c
 
       - name: Build Kernel
         run: |
           export PATH=$(pwd)/toolchain/proton-clang/bin:$PATH
           MAKE_ARGS="O=out ARCH=arm64 CC=clang HOSTCC=gcc CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1"
+          
           make $MAKE_ARGS r5q_eur_open_defconfig
+          
           ./scripts/config --file out/.config --set-str CONFIG_LOCALVERSION "-sh4dow6oy"
           ./scripts/config --file out/.config --enable CONFIG_BPF_SYSCALL
           ./scripts/config --file out/.config --enable CONFIG_BPF_JIT
           ./scripts/config --file out/.config --enable CONFIG_CGROUP_BPF
           ./scripts/config --file out/.config --disable CONFIG_KPERFMON
           ./scripts/config --file out/.config --disable CONFIG_DEFEX
+          
           make $MAKE_ARGS olddefconfig
           make -j$(nproc --all) $MAKE_ARGS Image.gz-dtb || make -j1 $MAKE_ARGS Image.gz-dtb
 
@@ -87,5 +81,5 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-sh4dow6oy-v20
+          name: S10Lite-sh4dow6oy-v20-Final
           path: out/arch/arm64/boot/Image.gz-dtb
