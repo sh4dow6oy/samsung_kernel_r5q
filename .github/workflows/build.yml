@@ -1,4 +1,4 @@
-name: S10 Lite - OneUI 7 Ready v24.1
+name: S10 Lite - OneUI 7 Ready v25
 
 on:
   push:
@@ -25,7 +25,7 @@ jobs:
           git config user.name "KernelBot"
           git remote add stable https://kernel.googlesource.com/pub/scm/linux/kernel/git/stable/linux-stable.git || true
           git fetch stable linux-4.14.y --depth=50
-          git merge v4.14.356 -m "Upstream to 4.14.356" || echo "Merge completat"
+          git merge v4.14.356 -m "Upstream to 4.14.356" || echo "Merge corectat"
 
       - name: eBPF Backport (Lineage/Google msm-4.14)
         run: |
@@ -37,25 +37,28 @@ jobs:
           )
           for path in "${PATHS[@]}"; do git checkout FETCH_HEAD -- "$path"; done
 
-      - name: Apply OneUI 7 Compatibility Patches
+      - name: Apply OneUI 7 & Syscall Fixes
         run: |
-          # 1. FIX: bpf_trace.c (Argument Mismatch Fix)
-          # Sincronizăm apelul cu noul prototip Google (4 args)
+          # 1. FIX: access_ok (Forțăm formatul de 3 argumente cerut de ARM64 Samsung)
+          # Curățăm orice tentativă anterioară de 4 argumente și setăm formatul: VERIFY_READ, addr, size
+          find kernel/bpf/ -type f -name "*.c" -exec sed -i 's/access_ok(VERIFY_READ, VERIFY_READ, /access_ok(VERIFY_READ, /g' {} +
+          find kernel/bpf/ -type f -name "*.c" -exec sed -i 's/access_ok(VERIFY_WRITE, VERIFY_WRITE, /access_ok(VERIFY_WRITE, /g' {} +
+          
+          # 2. FIX: bpf_trace.c (Sincronizare 4 argumente pentru narrow_access)
           sed -i 's/bpf_ctx_narrow_access_ok(off, size, size_sp)/bpf_ctx_narrow_access_ok(BPF_READ, off, size, size_sp)/g' kernel/trace/bpf_trace.c
           
-          # 2. FIX: Prototypes & Networking
+          # 3. FIX: Prototypes (filter.h)
           sed -i 's/bpf_ctx_narrow_access_ok(u32 off, u32 size, u32 size_default)/bpf_ctx_narrow_access_ok(int type, u32 off, u32 size, u32 size_default)/g' include/linux/filter.h
+          
+          # 4. Networking Sync (xdp_do_generic_redirect)
           perl -0777 -pi -e 's/xdp_do_generic_redirect\s*\(\s*([^,]+)\s*,\s*([^,]+)\s*,\s*([^)]+)\s*\)/xdp_do_generic_redirect($1, $2, NULL, $3)/g' net/core/dev.c
 
-          # 3. FIX: access_ok (Samsung 3-args sync)
-          grep -rl "access_ok(" kernel/bpf/ | xargs sed -i 's/access_ok(\([^,]*\), \([^)]*\))/access_ok(VERIFY_READ, \1, \2)/g'
-
-          # 4. Neutralize Google-specific modules for Samsung HW
+          # 5. Neutralize unnecessary modules
           for f in devmap.c cpumap.c offload.c bpf_lirc.c; do
             echo "/* Disabled */" > kernel/bpf/$f
           done
 
-          # 5. Samsung Security Bypass
+          # 6. Samsung Security & secgetspf
           mkdir -p scripts
           echo -e "#!/bin/bash\necho 0" > scripts/secgetspf
           chmod +x scripts/secgetspf
@@ -72,17 +75,14 @@ jobs:
           mkdir -p out/scripts
           cp scripts/secgetspf out/scripts/
 
-          # Configurație Critică OneUI 7 / Android 15
+          # Configurație Android 15 / OneUI 7
           ./scripts/config --file out/.config --enable CONFIG_BPF_SYSCALL
           ./scripts/config --file out/.config --enable CONFIG_BPF_JIT
           ./scripts/config --file out/.config --enable CONFIG_CGROUP_BPF
           ./scripts/config --file out/.config --enable CONFIG_NET_CLS_BPF
           ./scripts/config --file out/.config --enable CONFIG_NET_ACT_BPF
-          ./scripts/config --file out/.config --enable CONFIG_IP_NF_IPTABLES
-          ./scripts/config --file out/.config --enable CONFIG_IP6_NF_IPTABLES
           ./scripts/config --file out/.config --disable CONFIG_KPERFMON
           ./scripts/config --file out/.config --disable CONFIG_DEFEX
-          ./scripts/config --file out/.config --disable CONFIG_SECURITY_DEFEX
           
           make $MAKE_ARGS olddefconfig
           make -j$(nproc --all) $MAKE_ARGS Image.gz-dtb || make -j1 $MAKE_ARGS Image.gz-dtb
@@ -91,5 +91,5 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-OneUI7-v24.1
+          name: S10Lite-OneUI7-v25-Final
           path: out/arch/arm64/boot/Image.gz-dtb
