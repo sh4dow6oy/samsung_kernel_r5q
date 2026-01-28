@@ -38,45 +38,28 @@ jobs:
           )
           for path in "${PATHS[@]}"; do git checkout FETCH_HEAD -- "$path"; done
 
-      - name: Apply Glue Patches (BPF, Cgroup & KPerfMon)
+      - name: Apply Glue Patches (Aggressive Bypass)
         run: |
-          # 1. Neutralizare Module incompatibile hardware
+          # 1. Neutralizare Module BPF incompatibile
           echo "/* Neutralized */" > kernel/bpf/devmap.c
           echo "/* Neutralized */" > kernel/bpf/cpumap.c
           echo "/* Neutralized */" > kernel/bpf/offload.c
           echo "/* Neutralized */" > kernel/bpf/bpf_lirc.c
           echo "/* Neutralized */" > kernel/bpf/reuseport_array.c
           
-          # 2. Fix Perf API mismatch (4 args -> 2 args)
+          # 2. Fix Perf API & Atomic
           sed -i 's/perf_event_read_local(event, \&value, NULL, NULL)/perf_event_read_local(event, \&value)/g' kernel/bpf/arraymap.c
-
-          # 3. Fix Atomic VAL
           sed -i 's/atomic_cond_read_relaxed(l, !VAL);/while (atomic_read(l));/g' kernel/bpf/helpers.c
 
-          # 4. Creare Headere Dummy & KPerfMon Fix
+          # 3. Dummy Headers
           mkdir -p include/linux/ include/net/
           printf "#ifndef _BPF_LIRC_H\n#define _BPF_LIRC_H\n#endif\n" > include/linux/bpf_lirc.h
-          
-          # Injectăm definițiile lipsă pentru driverul Samsung kperfmon
-          cat <<EOF > include/linux/perflog.h
-          #ifndef _PERFLOG_H
-          #define _PERFLOG_H
-          #define PERFLOG_HEADER_SIZE 16
-          #define PERFLOG_BUFF_STR_MAX_SIZE 256
-          #define SH_IDX_PACKET 4
-          union _uPLogPacket {
-              char dummy[276];
-          };
-          #endif
-          EOF
-
+          printf "#ifndef _PERFLOG_H\n#define _PERFLOG_H\n#endif\n" > include/linux/perflog.h
           printf "#ifndef _NET_XDP_H\n#define _NET_XDP_H\nstruct xdp_buff { void *data; };\n#endif\n" > include/net/xdp.h
 
-          # 5. Fix access_ok (Sincronizare 4.14)
+          # 4. Fix access_ok & BPF Symbols
           sed -i 's/access_ok(\([^,]*\), \([^)]*\))/access_ok(VERIFY_READ, \1, \2)/g' kernel/bpf/syscall.c
           sed -i 's/access_ok(\([^,]*\), \([^)]*\))/access_ok(VERIFY_READ, \1, \2)/g' kernel/bpf/verifier.c
-
-          # 6. Bypass Tracepoints & Perf Symbols
           sed -i 's/PERF_BPF_EVENT_PROG_UNLOAD/0/g' kernel/bpf/syscall.c
           sed -i 's/PERF_BPF_EVENT_PROG_LOAD/0/g' kernel/bpf/syscall.c
           sed -i 's/perf_event_bpf_event((void \*)prog, 0, 0);/;/g' kernel/bpf/syscall.c
@@ -84,16 +67,18 @@ jobs:
           sed -i 's/event = perf_get_event(file);/event = (void *)ERR_PTR(-EINVAL);/g' kernel/bpf/syscall.c
           sed -i 's/btp = bpf_get_raw_tracepoint(tp_name);/btp = (void *)ERR_PTR(-EINVAL);/g' kernel/bpf/syscall.c
 
-          # 7. FIX CGROUP API (Precision Sync)
+          # 5. FIX CGROUP API
           sed -i 's/__cgroup_bpf_detach(cgrp, prog, type, flags)/__cgroup_bpf_detach(cgrp, prog, type)/g' kernel/cgroup/cgroup.c
           sed -i 's/cgroup_bpf_inherit(\([^,]*\), [^)]*)/cgroup_bpf_inherit(\1)/g' kernel/cgroup/cgroup.c
 
-          # 8. Makefile Fixes (TNUM & KPerfMon Bypass)
+          # 6. FORCE DISABLE KPERFMON (Plan B)
+          # Aceasta este piesa lipsa - scoatem driverul din procesul de build
+          find drivers -name Makefile -exec sed -i 's/obj-$(CONFIG_KPERFMON)/obj-n/g' {} +
+          
+          # 7. Makefile Force TNUM
           if ! grep -q "tnum.o" kernel/bpf/Makefile; then
             sed -i '/obj-y += core.o/a obj-y += tnum.o' kernel/bpf/Makefile
           fi
-          # Comentăm kperfmon dacă header-ul manual nu e suficient (plan B)
-          # sed -i 's/obj-$(CONFIG_KPERFMON)/# obj-$(CONFIG_KPERFMON)/g' drivers/kperfmon/Makefile
 
       - name: Build Kernel
         run: |
@@ -105,6 +90,7 @@ jobs:
           ./scripts/config --file out/.config --enable CONFIG_BPF_SYSCALL
           ./scripts/config --file out/.config --enable CONFIG_BPF_JIT
           ./scripts/config --file out/.config --enable CONFIG_CGROUP_BPF
+          ./scripts/config --file out/.config --disable CONFIG_KPERFMON
           ./scripts/config --file out/.config --disable CONFIG_MODVERSIONS
           ./scripts/config --file out/.config --disable CONFIG_SAMSUNG_PRODUCT_SHIP
           ./scripts/config --file out/.config --disable CONFIG_DEFEX
@@ -116,5 +102,5 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-A15-Hybrid-Final-v7
+          name: S10Lite-A15-Hybrid-v8
           path: out/arch/arm64/boot/Image.gz-dtb
