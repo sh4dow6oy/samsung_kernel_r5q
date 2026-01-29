@@ -1,4 +1,4 @@
-name: S10 Lite - OneUI 7 Ready v33
+name: S10 Lite - Upstream 4.14.356 + Lineage eBPF
 
 on:
   push:
@@ -10,12 +10,8 @@ jobs:
     runs-on: ubuntu-22.04
 
     steps:
-      - name: Checkout Source (Pascua28 v4.0)
+      - name: Checkout Source
         uses: actions/checkout@v4
-        with:
-          repository: pascua28/android_kernel_samsung_sm7150
-          ref: v4.0
-          fetch-depth: 1
 
       - name: Setup Toolchain
         run: |
@@ -23,41 +19,59 @@ jobs:
           sudo apt-get install -y bc bison flex libssl-dev libelf-dev dwarves make python3 lz4 perl
           git clone --depth=1 https://github.com/kdrag0n/proton-clang.git toolchain/proton-clang
 
-      - name: Kernel Customization & Fixes
+      - name: Upstream to 4.14.356
         run: |
-          # 1. Identitate Kernel (Va apărea în Setări -> Despre Telefon)
-          sed -i 's/CONFIG_LOCALVERSION=.*/CONFIG_LOCALVERSION="-OneUI7-v33"/g' arch/arm64/configs/r5q_eur_open_defconfig
+          git remote add linux-stable https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git || true
+          git fetch linux-stable linux-4.14.y --depth=1
+          # Aplicăm upstream-ul peste baza Samsung
+          git merge FETCH_HEAD --allow-unrelated-histories -X theirs --no-commit || true
+          # Rezolvăm conflictele de bază automat prioritizând upstream-ul
+          git checkout FETCH_HEAD -- .
 
-          # 2. Samsung Security Bypass (Esențial pentru boot pe OneUI custom/Android 15)
-          ./scripts/config --file arch/arm64/configs/r5q_eur_open_defconfig --disable CONFIG_RTIC
-          ./scripts/config --file arch/arm64/configs/r5q_eur_open_defconfig --disable CONFIG_SECURITY_DEFEX
-          ./scripts/config --file arch/arm64/configs/r5q_eur_open_defconfig --disable CONFIG_SECURITY_RTIC
+      - name: LineageOS eBPF Backport (Targeted)
+        run: |
+          git remote add lineage-kernel https://github.com/LineageOS/android_kernel_google_msm-4.14.git || true
+          git fetch lineage-kernel android-11.0.0_r0.32 --depth=1
           
-          # 3. Asigurare eBPF (Pascua v4.0 le are, dar forțăm pentru siguranță)
-          ./scripts/config --file arch/arm64/configs/r5q_eur_open_defconfig --enable CONFIG_BPF_SYSCALL
-          ./scripts/config --file arch/arm64/configs/r5q_eur_open_defconfig --enable CONFIG_BPF_JIT
+          # Extragem fișierele eBPF optimizate de Google/Lineage pentru 4.14
+          PATHS=(
+            "include/linux/bpf.h" "include/linux/bpf_types.h"
+            "include/uapi/linux/bpf.h" "include/uapi/linux/bpf_common.h"
+            "kernel/bpf/" "net/core/filter.c"
+          )
+          for path in "${PATHS[@]}"; do git checkout FETCH_HEAD -- "$path"; done
+
+      - name: Apply Stability Glue Patches
+        run: |
+          # 1. Neutralizare LIRC & Perf events incompatibile
+          mkdir -p include/linux/
+          printf "#ifndef _BPF_LIRC_H\n#define _BPF_LIRC_H\n#endif\n" > include/linux/bpf_lirc.h
+          sed -i '/linux\/bpf_lirc.h/d' kernel/bpf/syscall.c 2>/dev/null || true
+          
+          # 2. Fix Samsung access_ok (3-args legacy)
+          find kernel/bpf/ -name "*.c" -exec sed -i 's/access_ok(\([^,]*\), \([^)]*\))/access_ok(VERIFY_READ, \1, \2)/g' {} +
+
+          # 3. Bypass Samsung Security (secgetspf)
+          mkdir -p scripts
+          echo -e "#!/bin/bash\necho 0" > scripts/secgetspf
+          chmod +x scripts/secgetspf
+          sudo cp scripts/secgetspf /usr/bin/secgetspf
 
       - name: Build Kernel
         run: |
           export PATH=$(pwd)/toolchain/proton-clang/bin:$PATH
           MAKE_ARGS="O=out ARCH=arm64 CC=clang HOSTCC=gcc CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1"
-          
-          # KCFLAGS optimizate pentru Clang/Proton
-          export KCFLAGS="-Wno-error -fno-pic -fno-strict-aliasing"
+          export KCFLAGS="-Wno-error -Wno-implicit-function-declaration -Wno-incompatible-pointer-types -fno-stack-protector"
 
           make $MAKE_ARGS r5q_eur_open_defconfig
           
-          # Fix pentru scriptul de securitate Samsung în timpul compilării
-          mkdir -p out/scripts
-          echo -e "#!/bin/bash\necho 0" > out/scripts/secgetspf
-          chmod +x out/scripts/secgetspf
+          # Configurații finale Upstream + Android 15
+          ./scripts/config --file out/.config --enable CONFIG_BPF_SYSCALL
+          ./scripts/config --file out/.config --enable CONFIG_BPF_JIT
+          ./scripts/config --file out/.config --enable CONFIG_CGROUP_BPF
+          ./scripts/config --file out/.config --disable CONFIG_KPERFMON
+          ./scripts/config --file out/.config --disable CONFIG_DEFEX
+          ./scripts/config --file out/.config --set-str CONFIG_LOCALVERSION "-Upstream-4.14.356-Lineage"
           
           make $MAKE_ARGS olddefconfig
           make -j$(nproc --all) $MAKE_ARGS Image.gz-dtb
-
-      - name: Upload Artifact
-        if: success()
-        uses: actions/upload-artifact@v4
-        with:
-          name: S10Lite-OneUI7-v33-Final
-          path: out/arch/arm64/boot/Image.gz-dtb
