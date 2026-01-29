@@ -38,15 +38,15 @@ jobs:
         run: |
           cd kernel-res
           
-          # FIX: boosted_task_util static/non-static conflict
-          # Scoatem "static" din definiție pentru a permite apelul implicit anterior
+          # FIX: boosted_task_util static conflict
+          # Scoatem "static" din definiție pentru a se potrivi cu declarația implicită de la linia 3871
           sed -i 's/static unsigned long boosted_task_util/unsigned long boosted_task_util/g' kernel/sched/fair.c
           
-          # Curățăm Makefile-urile de optimizările LLVM specifice lui Pascua
+          # Curățăm Makefile-urile de optimizările LLVM specifice lui Pascua (Polly/Regalloc)
           find . -type f -name "Makefile*" -exec sed -i 's/-mllvm -polly.*//g' {} +
           find . -type f -name "Makefile*" -exec sed -i 's/-mllvm -regalloc.*//g' {} +
           
-          # Forțăm bypass la Stack Protector
+          # Bypass Stack Protector Check
           sed -i 's/$(error "Cannot use CONFIG_CC_STACKPROTECTOR_STRONG.*/$(warning "Bypassing Stack Protector")/g' Makefile
           
           # Fix SMB1390 Pointer Cast
@@ -62,9 +62,12 @@ jobs:
           
           MAKE_ARGS="ARCH=arm64 CC=clang HOSTCC=gcc LLVM=1 LLVM_IAS=1"
           
+          # Folosim -Wno-unknown-warning-option pentru a ignora restul de flag-uri de la Pascua
           export KCFLAGS="-Wno-error -Wno-implicit-function-declaration -Wno-void-pointer-to-int-cast -Wno-return-type -Wno-unused-variable -Wno-macro-redefined -Wno-frame-larger-than= -Wno-unknown-warning-option"
 
           make $MAKE_ARGS r5q_eur_open_defconfig
+          
+          # Dezactivăm securitatea Samsung care dă kernel panic pe ROM-uri custom
           ./scripts/config --disable CONFIG_CC_STACKPROTECTOR_STRONG
           ./scripts/config --enable CONFIG_CC_STACKPROTECTOR_NONE
           ./scripts/config --disable CONFIG_RKP_KDP
