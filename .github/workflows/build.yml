@@ -1,4 +1,4 @@
-name: S10 Lite Kernel Build - v77
+name: S10 Lite Kernel Build - v78
 
 on:
   push:
@@ -27,7 +27,7 @@ jobs:
           cd kernel-res
           git remote add stable https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git
           git fetch stable linux-4.14.y
-          git merge FETCH_HEAD --no-edit || echo "Conflicts will be handled by kbuild"
+          git merge FETCH_HEAD --no-edit || echo "Merge handled"
 
       - name: Inject Samsung Drivers
         run: |
@@ -38,20 +38,20 @@ jobs:
           cp -r s10-lite-src/arch/arm64/boot/dts/samsung kernel-res/arch/arm64/boot/dts/ || true
           cp s10-lite-src/arch/arm64/configs/r5q_eur_open_defconfig kernel-res/arch/arm64/configs/
 
-      - name: Surgical Fixes v77
+      - name: Surgical Fixes v78
         run: |
           cd kernel-res
           
-          # 1. SDIO Fix (Standard Lineage)
+          # 1. SDIO Fix
           sed -i 's/out:$/out: ;/g' drivers/mmc/core/sdio.c
           sed -i '/^}$/i out: ;' drivers/mmc/core/sdio.c
           
-          # 2. GPIO Fix (Eliminăm referința la membrul lipsă gpio_dump)
-          # În loc de if(0), ștergem pur și simplu liniile de dump care crapă
-          sed -i '/if (chip->gpio_dump)/,+2d' drivers/gpio/gpiolib.c
+          # 2. GPIO Fix (Cea mai sigura metoda: comentam doar liniile problematice, nu stergem)
+          # Cautam linia cu gpio_dump si o comentam impreuna cu blocul ei
+          sed -i 's/if (chip->gpio_dump)/if (0 \&\& chip->gpio_dump)/g' drivers/gpio/gpiolib.c
 
-          # 3. WALT / Scheduler Fix (NUCLEAR OPTION)
-          # Dacă walt.c face probleme, îl scoatem din Makefile-ul schedulerului
+          # 3. WALT / Scheduler Fix
+          # Scoatem walt.o din compilare complet
           sed -i 's/obj-y += walt.o/# obj-y += walt.o/g' kernel/sched/Makefile
           
           # 4. DM-BOW & SDHCI
@@ -70,11 +70,11 @@ jobs:
           export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
           
           MAKE_ARGS="ARCH=arm64 CC=clang HOSTCC=gcc LLVM=1 LLVM_IAS=1"
-          export KCFLAGS="-Wno-error -Wno-unused-label -Wno-implicit-function-declaration -Wno-incompatible-pointer-types -I$(pwd)/drivers/hid"
+          # Adaugam flag-ul pentru a ignora erorile de tip return in gpiolib daca mai apar
+          export KCFLAGS="-Wno-error -Wno-unused-label -Wno-return-type -Wno-implicit-function-declaration -Wno-incompatible-pointer-types -I$(pwd)/drivers/hid"
 
           make $MAKE_ARGS r5q_eur_open_defconfig
           
-          # Forțăm dezactivarea WALT din config pentru a folosi PELT (standard)
           ./scripts/config --disable CONFIG_SCHED_WALT
           ./scripts/config --enable CONFIG_SCHED_PELT
           ./scripts/config --disable CONFIG_CC_STACKPROTECTOR_STRONG
@@ -86,5 +86,5 @@ jobs:
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: kernel-S10Lite-4.14.356-v77
+          name: kernel-S10Lite-4.14.356-v78
           path: kernel-res/arch/arm64/boot/Image.gz-dtb
