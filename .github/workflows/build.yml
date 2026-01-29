@@ -1,4 +1,4 @@
-name: S10 Lite - AOSP Clang v47
+name: S10 Lite - Scheduler Fix v48
 
 on:
   push:
@@ -15,11 +15,10 @@ jobs:
         with:
           path: s10-lite-src
 
-      - name: Setup AOSP Clang (GitHub Mirror)
+      - name: Setup AOSP Clang
         run: |
           sudo apt-get update
           sudo apt-get install -y bc bison flex libssl-dev libelf-dev dwarves make python3 lz4 perl git
-          # Folosim un mirror GitHub pentru a evita eroarea de autentificare Gitlab
           git clone --depth=1 https://github.com/Panchajanya1999/azure-clang.git toolchain/clang
 
       - name: Prepare Pascua Sixteen Base
@@ -35,10 +34,15 @@ jobs:
           cp -r s10-lite-src/arch/arm64/boot/dts/samsung kernel-res/arch/arm64/boot/dts/ || true
           cp s10-lite-src/arch/arm64/configs/r5q_eur_open_defconfig kernel-res/arch/arm64/configs/
 
-      - name: Patching Compiler & Logic
+      - name: Patching Scheduler & Kernel Core
         run: |
           cd kernel-res
-          # Curățăm Makefile-urile de optimizările LLVM care ar putea lipsi din acest build de Clang
+          
+          # FIX: boosted_task_util static/non-static conflict
+          # Scoatem "static" din definiție pentru a permite apelul implicit anterior
+          sed -i 's/static unsigned long boosted_task_util/unsigned long boosted_task_util/g' kernel/sched/fair.c
+          
+          # Curățăm Makefile-urile de optimizările LLVM specifice lui Pascua
           find . -type f -name "Makefile*" -exec sed -i 's/-mllvm -polly.*//g' {} +
           find . -type f -name "Makefile*" -exec sed -i 's/-mllvm -regalloc.*//g' {} +
           
@@ -51,20 +55,16 @@ jobs:
       - name: Build Kernel
         run: |
           cd kernel-res
-          # Azure Clang are binarele în folderul /bin
           export PATH=$(pwd)/../toolchain/clang/bin:$PATH
-          
           export CLANG_TRIPLE=aarch64-linux-gnu-
           export CROSS_COMPILE=aarch64-linux-gnu-
           export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
           
-          # Azure Clang suportă LLVM=1 complet
           MAKE_ARGS="ARCH=arm64 CC=clang HOSTCC=gcc LLVM=1 LLVM_IAS=1"
           
           export KCFLAGS="-Wno-error -Wno-implicit-function-declaration -Wno-void-pointer-to-int-cast -Wno-return-type -Wno-unused-variable -Wno-macro-redefined -Wno-frame-larger-than= -Wno-unknown-warning-option"
 
           make $MAKE_ARGS r5q_eur_open_defconfig
-          
           ./scripts/config --disable CONFIG_CC_STACKPROTECTOR_STRONG
           ./scripts/config --enable CONFIG_CC_STACKPROTECTOR_NONE
           ./scripts/config --disable CONFIG_RKP_KDP
@@ -76,5 +76,5 @@ jobs:
       - name: Upload Kernel
         uses: actions/upload-artifact@v4
         with:
-          name: kernel-S10Lite-v47
+          name: kernel-S10Lite-v48
           path: kernel-res/arch/arm64/boot/Image.gz-dtb
