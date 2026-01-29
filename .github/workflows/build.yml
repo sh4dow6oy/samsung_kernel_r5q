@@ -1,4 +1,4 @@
-name: S10 Lite - Base Swap LOS23 v32
+name: S10 Lite - Base Swap LOS23 v33
 
 on:
   push:
@@ -34,18 +34,17 @@ jobs:
           cp -r samsung-src/arch/arm64/boot/dts/samsung kernel-res/arch/arm64/boot/dts/ || true
           cp samsung-src/arch/arm64/configs/r5q_eur_open_defconfig kernel-res/arch/arm64/configs/
 
-      - name: Advanced Patching (HID Trace & GPIO)
+      - name: Advanced Patching (HID, GPIO, Variadic)
         run: |
           cd kernel-res
           
-          # 1. FIX HID TRACE: Forțăm calea absolută pentru header-ul de tracing
-          # Această eroare apare pentru că TRACE_INCLUDE_PATH este "." dar ar trebui să fie directorul sursă
+          # 1. FIX HID TRACE (din v32)
           sed -i 's|#define TRACE_INCLUDE_PATH .|#define TRACE_INCLUDE_PATH ../../drivers/hid|' drivers/hid/hid-trace.h
 
-          # 2. FIX GPIO: Eliminăm referințele la gpio_dump (din v31)
+          # 2. FIX GPIO: Eliminăm referințele la gpio_dump
           sed -i '/if (chip->gpio_dump) {/,/}/ s/^/\/\//' drivers/gpio/gpiolib.c
           
-          # 3. FIX Variadic access_ok (Sfantul Graal al compatibilitatii)
+          # 3. FIX Variadic access_ok
           UACCESS_FILE="arch/arm64/include/asm/uaccess.h"
           sed -i '/#define access_ok/d' $UACCESS_FILE
           sed -i '/#define __range_ok/i \
@@ -54,7 +53,7 @@ jobs:
           #define _access_ok_X(x, y, z, FUNC, ...) FUNC \
           #define access_ok(...) _access_ok_X(__VA_ARGS__, _access_ok_3, _access_ok_2)(__VA_ARGS__)' $UACCESS_FILE
 
-          # 4. Samsung Security & Scripts Bypass
+          # 4. Samsung Security Bypass
           mkdir -p scripts
           echo -e "#!/bin/bash\necho 0" > scripts/secgetspf
           chmod +x scripts/secgetspf
@@ -65,12 +64,15 @@ jobs:
           cd kernel-res
           export PATH=$(pwd)/../toolchain/proton-clang/bin:$PATH
           MAKE_ARGS="ARCH=arm64 CC=clang HOSTCC=gcc CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1"
-          
           export KCFLAGS="-Wno-error -Wno-implicit-function-declaration -Wno-incompatible-pointer-types -Wno-return-type -Wno-macro-redefined -Wno-unused-variable"
 
           make $MAKE_ARGS r5q_eur_open_defconfig
           
-          # Config Android 15
+          # FIX SCHEDULER: Dezactivăm WALT-ul care face conflict
+          ./scripts/config --disable CONFIG_SCHED_WALT
+          ./scripts/config --disable CONFIG_SCHED_CORE_CTL
+          
+          # Re-activăm eBPF & Essentials
           ./scripts/config --enable CONFIG_BPF_SYSCALL
           ./scripts/config --enable CONFIG_BPF_JIT
           ./scripts/config --enable CONFIG_CGROUP_BPF
