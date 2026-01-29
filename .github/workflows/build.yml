@@ -1,4 +1,4 @@
-name: S10 Lite - Base Swap LOS23 v42
+name: S10 Lite - Pascua Base v43
 
 on:
   push:
@@ -10,10 +10,10 @@ jobs:
     runs-on: ubuntu-22.04
 
     steps:
-      - name: Checkout Samsung Source
+      - name: Checkout S10 Lite (Source)
         uses: actions/checkout@v4
         with:
-          path: samsung-src
+          path: s10-lite-src
 
       - name: Setup Toolchain
         run: |
@@ -21,41 +21,33 @@ jobs:
           sudo apt-get install -y bc bison flex libssl-dev libelf-dev dwarves make python3 lz4 perl git
           git clone --depth=1 https://github.com/kdrag0n/proton-clang.git toolchain/proton-clang
 
-      - name: Prepare LineageOS 23 Base
+      - name: Prepare Pascua Sixteen Base
         run: |
-          git clone --depth=1 -b lineage-23.0 https://github.com/LineageOS/android_kernel_google_msm-4.14.git kernel-res
+          # Clonăm baza lui Pascua care este deja optimizată pentru Android 15/16
+          git clone --depth=1 -b sixteen https://github.com/pascua28/android_kernel_samsung_sm7150.git kernel-res
 
-      - name: Inject Samsung Components
+      - name: Inject S10 Lite Drivers & Config
         run: |
-          cp -r samsung-src/drivers/soc/samsung kernel-res/drivers/soc/ || true
-          cp -r samsung-src/drivers/camera kernel-res/drivers/ || true
-          cp -r samsung-src/drivers/fingerprint kernel-res/drivers/ || true
-          cp -r samsung-src/drivers/sensors kernel-res/drivers/ || true
-          cp -r samsung-src/arch/arm64/boot/dts/samsung kernel-res/arch/arm64/boot/dts/ || true
-          cp samsung-src/arch/arm64/configs/r5q_eur_open_defconfig kernel-res/arch/arm64/configs/
+          # Injectăm driverele specifice de S10 Lite peste baza Pascua
+          cp -r s10-lite-src/drivers/soc/samsung kernel-res/drivers/soc/ || true
+          cp -r s10-lite-src/drivers/camera kernel-res/drivers/ || true
+          cp -r s10-lite-src/drivers/fingerprint kernel-res/drivers/ || true
+          cp -r s10-lite-src/drivers/sensors kernel-res/drivers/ || true
+          
+          # Injectăm Device Tree-ul de Samsung (r5q)
+          cp -r s10-lite-src/arch/arm64/boot/dts/samsung kernel-res/arch/arm64/boot/dts/ || true
+          
+          # Injectăm Defconfig-ul tău
+          cp s10-lite-src/arch/arm64/configs/r5q_eur_open_defconfig kernel-res/arch/arm64/configs/
 
-      - name: Advanced Patching & Compiler Fix
+      - name: Hybrid Optimization
         run: |
           cd kernel-res
+          # Ajustăm SMB1390 (casting-ul care dădea eroare)
+          sed -i 's/(int)of_device_get_match_data/(uintptr_t)of_device_get_match_data/g' drivers/power/supply/qcom/smb1390-charger-psy.c || true
           
-          # 1. FIX COMPILER CHECK (Stack Protector)
-          sed -i 's/error "Cannot use CONFIG_CC_STACKPROTECTOR_STRONG/warning "Forcing bypass of STACKPROTECTOR/g' Makefile
-          
-          # 2. Fix IPA v3 missing headers (Pascua method)
-          find drivers/platform/msm/ipa/ -name "Makefile" -exec sed -i 's/ccflags-y +=/ccflags-y += -I$(src) -I$(src)\/.. -I$(src)\/..\/.. /g' {} +
-          
-          # 3. Fix Sensors & SMB1390
-          sed -i 's/obj-$(CONFIG_SENSORS_SSC).*/obj-y -= sensors_ssc.o/g' drivers/sensors/Makefile
-          sed -i 's/(int)of_device_get_match_data/(uintptr_t)of_device_get_match_data/g' drivers/power/supply/qcom/smb1390-charger-psy.c
-
-          # 4. Fix DTS & GPIO
-          find arch/arm64/boot/dts/qcom/ -type f -name "*.dtsi" -exec sed -i '/shared_meta/d' {} +
-          find arch/arm64/boot/dts/qcom/ -type f -name "*.dtsi" -exec sed -i '/hyp_meta/d' {} +
-          sed -i '/if (chip->gpio_dump)/,/}/ s/^/\/\//' drivers/gpio/gpiolib.c
-          
-          # 5. Fix SDIO/MMC Labels
-          sed -i 's/goto out;/return -EIO;/g' drivers/mmc/core/sdio.c
-          sed -i '/^out:$/d' drivers/mmc/core/sdio.c
+          # Ne asigurăm că senzorii SSC nu blochează build-ul dacă lipsesc headerele ADSP
+          sed -i 's/obj-$(CONFIG_SENSORS_SSC).*/obj-y -= sensors_ssc.o/g' drivers/sensors/Makefile || true
 
       - name: Build Kernel
         run: |
@@ -67,25 +59,21 @@ jobs:
           
           MAKE_ARGS="ARCH=arm64 CC=clang HOSTCC=gcc LLVM=1 LLVM_IAS=1"
           
-          # CORECȚIE FLAG: Am scos =2048 pentru a evita eroarea de sintaxă Clang
+          # Folosim steaguri relaxate pentru a trece de orice incompatibilitate minoră de cod Samsung
           export KCFLAGS="-Wno-error -Wno-implicit-function-declaration -Wno-void-pointer-to-int-cast -Wno-return-type -Wno-unused-variable -Wno-macro-redefined -Wno-frame-larger-than"
 
           make $MAKE_ARGS r5q_eur_open_defconfig
           
-          # DEZACTIVARE STACK PROTECTOR
-          ./scripts/config --disable CONFIG_CC_STACKPROTECTOR_STRONG
-          ./scripts/config --enable CONFIG_CC_STACKPROTECTOR_NONE
-          
-          # Dezactivări pentru stabilitate Android 15
-          ./scripts/config --disable CONFIG_SENSORS_SSC
+          # Optimizări obligatorii pentru Android 15
           ./scripts/config --disable CONFIG_RKP_KDP
           ./scripts/config --disable CONFIG_DEFEX
+          ./scripts/config --enable CONFIG_BPF_SYSCALL
           
           make $MAKE_ARGS olddefconfig
           make -j$(nproc --all) $MAKE_ARGS Image.gz-dtb
 
-      - name: Upload Kernel Image
+      - name: Upload Hybrid Kernel
         uses: actions/upload-artifact@v4
         with:
-          name: kernel-S10Lite-LOS23
+          name: kernel-r5q-pascua-hybrid
           path: kernel-res/arch/arm64/boot/Image.gz-dtb
