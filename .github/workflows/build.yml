@@ -1,4 +1,4 @@
-name: S10 Lite - Base Swap LOS23 v37
+name: S10 Lite - Base Swap LOS23 v40
 
 on:
   push:
@@ -34,29 +34,29 @@ jobs:
           cp -r samsung-src/arch/arm64/boot/dts/samsung kernel-res/arch/arm64/boot/dts/ || true
           cp samsung-src/arch/arm64/configs/r5q_eur_open_defconfig kernel-res/arch/arm64/configs/
 
-      - name: Advanced Patching (Clean DTS & Fix SDIO)
+      - name: Apply Pascua "Sixteen" Fixes
         run: |
           cd kernel-res
           
-          # 1. FIX DTS: Eliminăm complet liniile problematice din sa8155 (nu doar comentate)
-          # Eroarea de sintaxă la linia 251 sugerează că a rămas un rest de cod după comentare
-          find arch/arm64/boot/dts/qcom/ -type f -name "sa8155-adp-common.dtsi" -exec sed -i '/shared_meta/d' {} +
+          # Fix IPA v3 missing headers (Metoda Pascua)
+          find drivers/platform/msm/ipa/ -name "Makefile" -exec sed -i 's/ccflags-y +=/ccflags-y += -I$(src) -I$(src)\/.. -I$(src)\/..\/.. /g' {} +
           
-          # 2. FIX SDIO: Resetăm sdhci/sdio și aplicăm un fix mai "chirurgical"
-          # În loc de etichetă manuală, transformăm "goto out" în "return" unde este posibil
-          sed -i 's/goto out;/return -EIO;/g' drivers/mmc/core/sdio.c
+          # Fix Sensors SSC (Dezactivare totală pentru a trece de eroare)
+          sed -i 's/obj-$(CONFIG_SENSORS_SSC).*/obj-y -= sensors_ssc.o/g' drivers/sensors/Makefile
           
-          # 3. FIX GPIO: Dezactivăm blocul gpio_dump (Samsung-specific)
-          sed -i '/if (chip->gpio_dump) {/,/}/ s/^/\/\//' drivers/gpio/gpiolib.c
+          # Fix SMB1390 Cast (uintptr_t)
+          sed -i 's/(int)of_device_get_match_data/(uintptr_t)of_device_get_match_data/g' drivers/power/supply/qcom/smb1390-charger-psy.c
 
-          # 4. MMC/SDHCI Header Alignment (v35 style)
-          sed -i 's/void sdhci_cmd_irq(struct sdhci_host \*host, u32 intmask, u32 \*intmask_p);/void sdhci_cmd_irq(struct sdhci_host \*host, u32 intmask);/g' drivers/mmc/host/sdhci.h
+          # Fix DTS (Eliminare noduri orfane)
+          find arch/arm64/boot/dts/qcom/ -type f -name "*.dtsi" -exec sed -i '/shared_meta/d' {} +
+          find arch/arm64/boot/dts/qcom/ -type f -name "*.dtsi" -exec sed -i '/hyp_meta/d' {} +
+          
+          # Fix GPIO (Comentare dump Samsung)
+          sed -i '/if (chip->gpio_dump)/,/}/ s/^/\/\//' drivers/gpio/gpiolib.c
+          
+          # Align MMC/SDHCI (Back to standard 4.14)
+          sed -i 's/void sdhci_cmd_irq(struct sdhci_host \*host, u32 intmask, u32 \*intmask_p)/void sdhci_cmd_irq(struct sdhci_host \*host, u32 intmask)/g' drivers/mmc/host/sdhci.c
           sed -i 's/sdhci_cmd_irq(host, intmask & SDHCI_INT_CMD_MASK, \&intmask);/sdhci_cmd_irq(host, intmask \& SDHCI_INT_CMD_MASK);/g' drivers/mmc/host/sdhci.c
-          sed -i '/\*intmask_p |= data_err_bit;/d' drivers/mmc/host/sdhci.c
-          sed -i '/(unsigned long long)dma/d' drivers/mmc/host/sdhci.c
-
-          # 5. Fix HID Trace
-          sed -i 's|#define TRACE_INCLUDE_PATH .|#define TRACE_INCLUDE_PATH ../../drivers/hid|' drivers/hid/hid-trace.h
 
       - name: Build Kernel
         run: |
@@ -64,15 +64,15 @@ jobs:
           export PATH=$(pwd)/../toolchain/proton-clang/bin:$PATH
           MAKE_ARGS="ARCH=arm64 CC=clang HOSTCC=gcc CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1"
           
-          # Adăugăm flag-uri pentru a ignora warning-urile de redefinire (cum e SECTOR_SIZE)
-          export KCFLAGS="-Wno-error -Wno-implicit-function-declaration -Wno-incompatible-pointer-types -Wno-return-type -Wno-unused-variable -Wno-shift-count-overflow -Wno-macro-redefined -Wno-frame-larger-than="
+          export KCFLAGS="-Wno-error -Wno-implicit-function-declaration -Wno-void-pointer-to-int-cast -Wno-return-type -Wno-unused-variable -Wno-macro-redefined -Wno-frame-larger-than=2048"
 
           make $MAKE_ARGS r5q_eur_open_defconfig
           
-          ./scripts/config --disable CONFIG_SCHED_WALT
-          ./scripts/config --disable CONFIG_SCHED_CORE_CTL
+          # Dezactivări critice pentru boot pe Android 15
+          ./scripts/config --disable CONFIG_SENSORS_SSC
           ./scripts/config --disable CONFIG_RKP_KDP
           ./scripts/config --disable CONFIG_DEFEX
+          ./scripts/config --disable CONFIG_SCHED_WALT
           
           make $MAKE_ARGS olddefconfig
           make -j$(nproc --all) $MAKE_ARGS Image.gz-dtb
