@@ -1,4 +1,4 @@
-name: S10 Lite - Core Fix v49
+name: S10 Lite - Scheduler Fix v50
 
 on:
   push:
@@ -34,21 +34,23 @@ jobs:
           cp -r s10-lite-src/arch/arm64/boot/dts/samsung kernel-res/arch/arm64/boot/dts/ || true
           cp s10-lite-src/arch/arm64/configs/r5q_eur_open_defconfig kernel-res/arch/arm64/configs/
 
-      - name: Patching Core Files (fs & sched)
+      - name: Advanced Patching
         run: |
           cd kernel-res
           
-          # FIX 1: fs/exec.c - Convert pointer access to member access
+          # FIX 1: fs/exec.c (Re-aplicat pentru siguranță)
           sed -i 's/bprm->file = file/bprm.file = file/g' fs/exec.c
           
-          # FIX 2: kernel/sched/fair.c - Static/Implicit conflict
-          # Ștergem 'static' din definiție ȘI adăugăm un prototip global
+          # FIX 2: kernel/sched/fair.c
+          # Ștergem orice încercare anterioară de prototip la linia 1
+          sed -i '/unsigned long boosted_task_util/d' kernel/sched/fair.c
+          # Adăugăm DECLARAȚIA DE STRUCTURĂ înainte de prototip pentru a evita eroarea de tip incompatibil
+          # Inserăm la linia 2 pentru a fi siguri
+          sed -i '2i struct task_struct; unsigned long boosted_task_util(struct task_struct *task);' kernel/sched/fair.c
+          # Scoatem static din definiția originală (care e mult mai jos în fișier)
           sed -i 's/static unsigned long boosted_task_util/unsigned long boosted_task_util/g' kernel/sched/fair.c
-          echo "unsigned long boosted_task_util(struct task_struct *task);" > sched_fix.h
-          cat kernel/sched/fair.c >> sched_fix.h
-          mv sched_fix.h kernel/sched/fair.c
           
-          # FIX 3: Curățare Makefile-uri (Polly/Regalloc)
+          # FIX 3: Curățare Makefile-uri
           find . -type f -name "Makefile*" -exec sed -i 's/-mllvm -polly.*//g' {} +
           find . -type f -name "Makefile*" -exec sed -i 's/-mllvm -regalloc.*//g' {} +
           
@@ -65,7 +67,7 @@ jobs:
           export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
           
           MAKE_ARGS="ARCH=arm64 CC=clang HOSTCC=gcc LLVM=1 LLVM_IAS=1"
-          export KCFLAGS="-Wno-error -Wno-implicit-function-declaration -Wno-void-pointer-to-int-cast -Wno-return-type -Wno-unused-variable -Wno-macro-redefined -Wno-frame-larger-than= -Wno-unknown-warning-option"
+          export KCFLAGS="-Wno-error -Wno-implicit-function-declaration -Wno-void-pointer-to-int-cast -Wno-return-type -Wno-unused-variable -Wno-macro-redefined -Wno-frame-larger-than= -Wno-unknown-warning-option -Wno-incompatible-pointer-types"
 
           make $MAKE_ARGS r5q_eur_open_defconfig
           ./scripts/config --disable CONFIG_CC_STACKPROTECTOR_STRONG
@@ -79,5 +81,5 @@ jobs:
       - name: Upload Kernel
         uses: actions/upload-artifact@v4
         with:
-          name: kernel-S10Lite-v49
+          name: kernel-S10Lite-v50
           path: kernel-res/arch/arm64/boot/Image.gz-dtb
