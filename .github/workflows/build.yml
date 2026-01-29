@@ -1,4 +1,4 @@
-name: S10 Lite - Base Swap LOS23 v33
+name: S10 Lite - Base Swap LOS23 v34
 
 on:
   push:
@@ -34,17 +34,27 @@ jobs:
           cp -r samsung-src/arch/arm64/boot/dts/samsung kernel-res/arch/arm64/boot/dts/ || true
           cp samsung-src/arch/arm64/configs/r5q_eur_open_defconfig kernel-res/arch/arm64/configs/
 
-      - name: Advanced Patching (HID, GPIO, Variadic)
+      - name: Advanced Patching (MMC, HID, GPIO)
         run: |
           cd kernel-res
           
-          # 1. FIX HID TRACE (din v32)
-          sed -i 's|#define TRACE_INCLUDE_PATH .|#define TRACE_INCLUDE_PATH ../../drivers/hid|' drivers/hid/hid-trace.h
+          # 1. FIX SDHCI (drivers/mmc/host/sdhci.c)
+          # Rezolvăm eroarea sdhci_cmd_irq (eliminăm al 3-lea argument nefolosit)
+          sed -i 's/sdhci_cmd_irq(host, intmask & SDHCI_INT_CMD_MASK, \&intmask);/sdhci_cmd_irq(host, intmask \& SDHCI_INT_CMD_MASK);/g' drivers/mmc/host/sdhci.c
+          
+          # Comentăm blocurile cu variabile inexistente (intmask_p, dma)
+          sed -i '/\*intmask_p |= data_err_bit;/s/^/\/\//' drivers/mmc/host/sdhci.c
+          sed -i '/(unsigned long long)dma/s/^/\/\//' drivers/mmc/host/sdhci.c
 
-          # 2. FIX GPIO: Eliminăm referințele la gpio_dump
+          # 2. FIX SDIO (drivers/mmc/core/sdio.c)
+          # Adăugăm label-ul 'out' care lipsește în implementarea Samsung adaptată
+          sed -i '/return 0;/i out:' drivers/mmc/core/sdio.c
+
+          # 3. FIX HID TRACE & GPIO (din versiunile anterioare)
+          sed -i 's|#define TRACE_INCLUDE_PATH .|#define TRACE_INCLUDE_PATH ../../drivers/hid|' drivers/hid/hid-trace.h
           sed -i '/if (chip->gpio_dump) {/,/}/ s/^/\/\//' drivers/gpio/gpiolib.c
           
-          # 3. FIX Variadic access_ok
+          # 4. FIX Variadic access_ok
           UACCESS_FILE="arch/arm64/include/asm/uaccess.h"
           sed -i '/#define access_ok/d' $UACCESS_FILE
           sed -i '/#define __range_ok/i \
@@ -53,31 +63,25 @@ jobs:
           #define _access_ok_X(x, y, z, FUNC, ...) FUNC \
           #define access_ok(...) _access_ok_X(__VA_ARGS__, _access_ok_3, _access_ok_2)(__VA_ARGS__)' $UACCESS_FILE
 
-          # 4. Samsung Security Bypass
-          mkdir -p scripts
-          echo -e "#!/bin/bash\necho 0" > scripts/secgetspf
-          chmod +x scripts/secgetspf
-          echo "obj-y += samsung/" >> drivers/soc/Makefile
-
       - name: Build Kernel
         run: |
           cd kernel-res
           export PATH=$(pwd)/../toolchain/proton-clang/bin:$PATH
           MAKE_ARGS="ARCH=arm64 CC=clang HOSTCC=gcc CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1"
-          export KCFLAGS="-Wno-error -Wno-implicit-function-declaration -Wno-incompatible-pointer-types -Wno-return-type -Wno-macro-redefined -Wno-unused-variable"
+          export KCFLAGS="-Wno-error -Wno-implicit-function-declaration -Wno-incompatible-pointer-types -Wno-return-type -Wno-macro-redefined -Wno-unused-variable -Wno-shift-count-overflow"
 
           make $MAKE_ARGS r5q_eur_open_defconfig
           
-          # FIX SCHEDULER: Dezactivăm WALT-ul care face conflict
+          # Dezactivăm conflictele de scheduler și securitate
           ./scripts/config --disable CONFIG_SCHED_WALT
           ./scripts/config --disable CONFIG_SCHED_CORE_CTL
+          ./scripts/config --disable CONFIG_RKP_KDP
+          ./scripts/config --disable CONFIG_DEFEX
           
-          # Re-activăm eBPF & Essentials
+          # Activăm eBPF pentru Android 15
           ./scripts/config --enable CONFIG_BPF_SYSCALL
           ./scripts/config --enable CONFIG_BPF_JIT
           ./scripts/config --enable CONFIG_CGROUP_BPF
-          ./scripts/config --disable CONFIG_RKP_KDP
-          ./scripts/config --disable CONFIG_DEFEX
           
           make $MAKE_ARGS olddefconfig
           make -j$(nproc --all) $MAKE_ARGS Image.gz-dtb
