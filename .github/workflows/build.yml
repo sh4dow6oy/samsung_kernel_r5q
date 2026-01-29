@@ -1,4 +1,4 @@
-name: S10 Lite - SDIO Smart Fix v70
+name: S10 Lite - SDIO Surgical Label v71
 
 on:
   push:
@@ -38,28 +38,32 @@ jobs:
           cp -r s10-lite-src/arch/arm64/boot/dts/samsung kernel-res/arch/arm64/boot/dts/ || true
           cp s10-lite-src/arch/arm64/configs/r5q_eur_open_defconfig kernel-res/arch/arm64/configs/
 
-      - name: Surgical Fixes v70
+      - name: Surgical Fixes v71
         run: |
           cd kernel-res
           
-          # 1. FIX SDIO - Înlocuire inteligentă pentru 'goto out'
-          # În funcțiile care returnează int (unde avem 'int ret'), folosim 'return ret'
-          # În funcțiile void, folosim doar 'return'
-          sed -i 's/goto out;/return ret;/g' drivers/mmc/core/sdio.c
+          # 1. REPARAȚIE SDIO (Label Restore)
+          # În loc să înlocuim goto, asigurăm label-ul 'out:' la sfârșitul funcțiilor problematice.
+          # Curățăm orice încercare anterioară eșuată de return ret/res
+          sed -i 's/return ret;/goto out;/g' drivers/mmc/core/sdio.c
+          sed -i 's/return res;/goto out;/g' drivers/mmc/core/sdio.c
           
-          # Corectăm funcția void sdio_enable_vendor_specific_settings unde 'return ret' e greșit
-          # Identificăm zona funcției și forțăm un simplu 'return'
-          sed -i '/void sdio_enable_vendor_specific_settings/,/}/ s/return ret;/return;/g' drivers/mmc/core/sdio.c
+          # Adăugăm label-ul 'out:' înainte de ultima acoladă a funcțiilor care îl folosesc.
+          # Aceasta este o metodă sigură care acoperă și funcțiile void și cele cu int.
+          sed -i '/^}$/i out:' drivers/mmc/core/sdio.c
+          # Eliminăm duplicatele de label-uri dacă apar unul sub altul
+          sed -i 'N;/^\(out:\)\n\1$/D;P;D' drivers/mmc/core/sdio.c
 
-          # 2. FIX DM-BOW & SDHCI (Păstrăm ce a funcționat)
+          # 2. FIX DM-BOW & SDHCI
           sed -i '15i #undef SECTOR_SIZE' drivers/md/dm-bow.c
           sed -i 's/sdhci_cmd_irq(host, intmask & SDHCI_INT_CMD_MASK, \&intmask)/sdhci_cmd_irq(host, intmask \& SDHCI_INT_CMD_MASK)/g' drivers/mmc/host/sdhci.c
           sed -i '/intmask_p/d' drivers/mmc/host/sdhci.c
           sed -i '/(unsigned long long)dma/d' drivers/mmc/host/sdhci.c
 
-          # 3. DTBS & Tracing & WALT
-          sed -i '/&shared_meta {/,/};/ s/^/\/\//' arch/arm64/boot/dts/qcom/sa8155-adp-common.dtsi
+          # 3. FIX TRACING (Esențial pentru a evita erori în drivers/hid)
           sed -i 's|#define TRACE_INCLUDE_PATH .|#define TRACE_INCLUDE_PATH ../../drivers/hid|g' drivers/hid/hid-trace.h
+
+          # 4. WALT & General Fixes
           sed -i '40i static long s10_dummy_val;\nstatic long s10_dummy_val_scaled;' kernel/sched/walt.c
           sed -i 's/rq->cum_window_demand/s10_dummy_val/g' kernel/sched/walt.c
           sed -i 's/rq->cumulative_runnable_avg/s10_dummy_val/g' kernel/sched/walt.c
@@ -91,5 +95,5 @@ jobs:
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: kernel-S10Lite-4.14.356-v70
+          name: kernel-S10Lite-4.14.356-v71
           path: kernel-res/arch/arm64/boot/Image.gz-dtb
