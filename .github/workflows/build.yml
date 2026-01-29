@@ -1,4 +1,4 @@
-name: S10 Lite - Full LOS23 v26
+name: S10 Lite - Full LOS23 v27
 
 on:
   push:
@@ -24,7 +24,6 @@ jobs:
           git remote add linux-stable https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git || true
           git fetch linux-stable linux-4.14.y --depth=1
           git checkout FETCH_HEAD -- .
-          # Restaurăm elementele vitale Samsung care permit boot-ul
           git checkout HEAD -- arch/arm64/boot/dts/ Makefile scripts/ 2>/dev/null || true
 
       - name: LineageOS 23.0 eBPF Injection
@@ -32,38 +31,41 @@ jobs:
           git remote add lineage-kernel https://github.com/LineageOS/android_kernel_google_msm-4.14.git || true
           git fetch lineage-kernel lineage-23.0 --depth=1
           
-          # Extragem setul complet de eBPF + XDP de Android 15
           PATHS=(
             "include/linux/bpf.h" "include/linux/bpf_types.h" "include/linux/bpf_verifier.h"
-            "include/uapi/linux/bpf.h" "include/uapi/linux/bpf_common.h"
+            "include/uapi/linux/bpf.h" "include/uapi/linux/bpf_common.h" "include/uapi/linux/btf.h"
             "kernel/bpf/" "net/core/filter.c" "include/linux/filter.h"
             "include/net/xdp.h" "net/core/xdp.c" "include/linux/btf.h"
           )
           for path in "${PATHS[@]}"; do git checkout FETCH_HEAD -- "$path"; done
 
-      - name: Glue Patches - Fixing "Incomplete Type" Errors
+      - name: Glue Patches - UAPI & Header Fixes
         run: |
-          # 1. Rezolvăm eroarea 'incomplete definition of struct bpf_prog_aux'
-          # Forțăm includerea bpf.h în filter.h pentru a vedea definițiile structurilor
+          # 1. FIX: 'uapi/linux/btf.h' not found
+          # Cream link-uri simbolice sau copiem fișierele astfel încât include-ul să funcționeze
+          mkdir -p include/uapi/linux/
+          cp include/uapi/linux/btf.h include/linux/btf.h 2>/dev/null || true
+          
+          # 2. Rezolvăm eroarea de includere în core.c (scoatem prefixul uapi/ dacă e cazul)
+          sed -i 's|<uapi/linux/btf.h>|<linux/btf.h>|g' kernel/bpf/core.c
+          sed -i 's|<uapi/linux/bpf.h>|<linux/bpf.h>|g' kernel/bpf/core.c
+
+          # 3. Forțăm bpf.h în filter.h (Fix incomplete type)
           sed -i '1i #include <linux/bpf.h>' include/linux/filter.h
           
-          # 2. Definim struct bpf_prog_stats dacă lipsește (pentru macro-ul BPF_PROG_RUN)
-          # Samsung are o versiune veche de u64_stats_sync, adaptăm structura
+          # 4. Definim struct bpf_prog_stats (Fix incomplete type)
           if ! grep -q "struct bpf_prog_stats" include/linux/bpf.h; then
             sed -i '/struct bpf_prog_aux;/a struct bpf_prog_stats { u64 cnt; u64 nsecs; struct u64_stats_sync syncp; };' include/linux/bpf.h
           fi
 
-          # 3. Fix access_ok pentru kernel Samsung (3 argumente vs 2 în LOS23)
+          # 5. Fix access_ok (Sincronizare 3-args pentru Samsung)
           find kernel/bpf/ -name "*.c" -exec sed -i 's/access_ok(\([^,]*\), \([^)]*\))/access_ok(VERIFY_READ, \1, \2)/g' {} +
           
-          # 4. Dummy LIRC (Lineage 23.0 referențiază acest header inexistent în Samsung)
+          # 6. Dummy LIRC Header
           mkdir -p include/linux/
           printf "#ifndef _BPF_LIRC_H\n#define _BPF_LIRC_H\n#endif\n" > include/linux/bpf_lirc.h
 
-          # 5. Patch net/core/filter.c pentru conflicte de vizibilitate
-          sed -i 's/static const struct bpf_func_proto bpf_sk_redirect_map_proto/const struct bpf_func_proto bpf_sk_redirect_map_proto/g' net/core/filter.c
-          
-          # 6. Bypass Samsung Security (secgetspf)
+          # 7. Samsung Security Bypass
           mkdir -p scripts
           echo -e "#!/bin/bash\necho 0" > scripts/secgetspf
           chmod +x scripts/secgetspf
@@ -72,27 +74,25 @@ jobs:
       - name: Build Kernel
         run: |
           export PATH=$(pwd)/toolchain/proton-clang/bin:$PATH
+          # Adăugăm directoarele de include la calea compilatorului explicit
+          export USERINCLUDE="-I$(pwd)/include/uapi -I$(pwd)/include"
           MAKE_ARGS="O=out ARCH=arm64 CC=clang HOSTCC=gcc CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1"
-          # KCFLAGS cruciale pentru a ignora warning-urile de re-definire cauzate de headerele LOS23
           export KCFLAGS="-Wno-error -Wno-implicit-function-declaration -Wno-incompatible-pointer-types -Wno-return-type -Wno-unused-variable -Wno-shadow"
 
           make $MAKE_ARGS r5q_eur_open_defconfig
           
-          # Configurații Android 15 Essentials
           ./scripts/config --file out/.config --enable CONFIG_BPF_SYSCALL
           ./scripts/config --file out/.config --enable CONFIG_BPF_JIT
           ./scripts/config --file out/.config --enable CONFIG_CGROUP_BPF
           ./scripts/config --file out/.config --disable CONFIG_KPERFMON
           ./scripts/config --file out/.config --disable CONFIG_DEFEX
-          ./scripts/config --file out/.config --set-str CONFIG_LOCALVERSION "-Upstream-356-LOS23"
           
           make $MAKE_ARGS olddefconfig
-          # Dacă eșuează, compilăm cu -j1 ca să vedem eroarea exactă fără zgomot
           make -j$(nproc --all) $MAKE_ARGS Image.gz-dtb || make -j1 $MAKE_ARGS Image.gz-dtb
 
       - name: Upload Kernel
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-Android15-v26
+          name: S10Lite-Android15-v27
           path: out/arch/arm64/boot/Image.gz-dtb
