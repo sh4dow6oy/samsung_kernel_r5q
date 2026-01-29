@@ -1,63 +1,20 @@
-name: S10 Lite Kernel Build - v84
-
-on:
-  push:
-    branches: [ main ]
-  workflow_dispatch:
-
-jobs:
-  build:
-    runs-on: ubuntu-22.04
-
-    steps:
-      - name: Checkout S10 Lite Source
-        uses: actions/checkout@v4
-        with:
-          path: s10-lite-src
-
-      - name: Setup Toolchain
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y bc bison flex libssl-dev libelf-dev dwarves make python3 lz4 perl git
-          git clone --depth=1 https://gitlab.com/clangsantoni/zyc_clang.git toolchain/zyc-clang
-
-      - name: Prepare Base (LineageOS 4.14.356)
-        run: |
-          git clone --depth=1 -b lineage-23.0 https://github.com/LineageOS/android_kernel_google_msm-4.14.git kernel-res
-          cd kernel-res
-          git remote add stable https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git
-          git fetch stable linux-4.14.y
-          git merge FETCH_HEAD --no-edit || echo "Merge handled"
-
-      - name: Inject Samsung Drivers
-        run: |
-          cp -r s10-lite-src/drivers/soc/samsung kernel-res/drivers/soc/ || true
-          cp -r s10-lite-src/drivers/camera kernel-res/drivers/ || true
-          cp -r s10-lite-src/drivers/fingerprint kernel-res/drivers/ || true
-          cp -r s10-lite-src/drivers/sensors kernel-res/drivers/ || true
-          cp -r s10-lite-src/arch/arm64/boot/dts/samsung kernel-res/arch/arm64/boot/dts/ || true
-          cp s10-lite-src/arch/arm64/configs/r5q_eur_open_defconfig kernel-res/arch/arm64/configs/
-
-      - name: Surgical Fixes v84 (DebugFS & GPIO Bypass)
+    - name: Surgical Fixes v85 (WALT & CoreCtl Bypass)
         run: |
           cd kernel-res
           
-          # 1. SDIO Fix
+          # 1. SDIO Label Fix
           sed -i 's/out:$/out: ;/g' drivers/mmc/core/sdio.c
           sed -i '/^}$/i out: ;' drivers/mmc/core/sdio.c
 
-          # 2. GPIO HARD FIX (v14 bypass strategy)
-          # Injectam membrul lipsa in header pentru a evita eroarea 'no member named gpio_dump'
+          # 2. GPIO FIX (v14 Strategy)
           sed -i '/struct gpio_chip {/a \	void *gpio_dump;' include/linux/gpio/driver.h
-          
-          # Neutralizam referintele la DebugFS care lipsesc din upstream
-          # Schimbam pointerul lipsa list_gpios_fops cu NULL ca sa nu crape compilarea
           sed -i 's/\&list_gpios_fops/NULL/g' drivers/gpio/gpiolib.c
-          # Comentam apelul catre functia de init care nu mai e definita corect
           sed -i 's/subsys_initcall(gpiolib_debugfs_init);/\/\/subsys_initcall(gpiolib_debugfs_init);/g' drivers/gpio/gpiolib.c
 
-          # 3. WALT Scheduler (Scoatem din Makefile pentru a evita conflictele cu PELT)
+          # 3. SCHEDULER BYPASS (WALT & CORE_CTL)
+          # Scoatem walt.o si core_ctl.o din Makefile
           sed -i 's/obj-y += walt.o/# obj-y += walt.o/g' kernel/sched/Makefile
+          sed -i 's/obj-y += core_ctl.o/# obj-y += core_ctl.o/g' kernel/sched/Makefile
           
           # 4. DM-BOW & SDHCI
           sed -i '15i #undef SECTOR_SIZE' drivers/md/dm-bow.c
@@ -66,7 +23,7 @@ jobs:
           # 5. Fix HID Trace Path
           sed -i 's|#define TRACE_INCLUDE_PATH .|#define TRACE_INCLUDE_PATH ../../drivers/hid|g' drivers/hid/hid-trace.h
 
-      - name: Build Kernel
+        - name: Build Kernel
         run: |
           cd kernel-res
           export PATH=$(pwd)/../toolchain/zyc-clang/bin:$PATH
