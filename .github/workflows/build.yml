@@ -1,4 +1,4 @@
-name: S10 Lite - Base Swap LOS23 v35
+name: S10 Lite - Base Swap LOS23 v36
 
 on:
   push:
@@ -34,35 +34,27 @@ jobs:
           cp -r samsung-src/arch/arm64/boot/dts/samsung kernel-res/arch/arm64/boot/dts/ || true
           cp samsung-src/arch/arm64/configs/r5q_eur_open_defconfig kernel-res/arch/arm64/configs/
 
-      - name: Advanced Patching (Final MMC & System Alignment)
+      - name: Advanced Patching (DTS, GPIO & MMC)
         run: |
           cd kernel-res
           
-          # 1. MMC/SDHCI Deep Alignment
-          # Sincronizăm prototipul funcției în header pentru a evita Type Mismatch
-          sed -i 's/void sdhci_cmd_irq(struct sdhci_host \*host, u32 intmask, u32 \*intmask_p);/void sdhci_cmd_irq(struct sdhci_host \*host, u32 intmask);/g' drivers/mmc/host/sdhci.h
+          # 1. FIX DTS: Eliminăm referința la shared_meta care dă eroare FATAL
+          # Căutăm în tot folderul qcom referințele la shared_meta și le comentăm
+          find arch/arm64/boot/dts/qcom/ -type f -name "*.dtsi" -exec sed -i '/shared_meta/s/^/\/\//' {} +
+
+          # 2. FIX GPIO: Curățăm structura gpio_chip de membrii Samsung personalizați
+          # Comentăm întregul bloc if care verifică gpio_dump
+          sed -i '/if (chip->gpio_dump) {/,/}/ s/^/\/\//' drivers/gpio/gpiolib.c
           
-          # Aplicăm fix-urile din v34 din nou (asigurare)
+          # 3. MMC/SDHCI Deep Alignment (din v35)
+          sed -i 's/void sdhci_cmd_irq(struct sdhci_host \*host, u32 intmask, u32 \*intmask_p);/void sdhci_cmd_irq(struct sdhci_host \*host, u32 intmask);/g' drivers/mmc/host/sdhci.h
           sed -i 's/sdhci_cmd_irq(host, intmask & SDHCI_INT_CMD_MASK, \&intmask);/sdhci_cmd_irq(host, intmask \& SDHCI_INT_CMD_MASK);/g' drivers/mmc/host/sdhci.c
           sed -i '/\*intmask_p |= data_err_bit;/s/^/\/\//' drivers/mmc/host/sdhci.c
           sed -i '/(unsigned long long)dma/s/^/\/\//' drivers/mmc/host/sdhci.c
           sed -i '/return 0;/i out:' drivers/mmc/core/sdio.c
 
-          # 2. HID & Trace Fix
+          # 4. HID & Trace Fix
           sed -i 's|#define TRACE_INCLUDE_PATH .|#define TRACE_INCLUDE_PATH ../../drivers/hid|' drivers/hid/hid-trace.h
-          
-          # 3. Variadic access_ok & Security Bypass
-          UACCESS_FILE="arch/arm64/include/asm/uaccess.h"
-          sed -i '/#define access_ok/d' $UACCESS_FILE
-          sed -i '/#define __range_ok/i \
-          #define _access_ok_2(addr, size)         __range_ok(addr, size) \
-          #define _access_ok_3(type, addr, size)   __range_ok(addr, size) \
-          #define _access_ok_X(x, y, z, FUNC, ...) FUNC \
-          #define access_ok(...) _access_ok_X(__VA_ARGS__, _access_ok_3, _access_ok_2)(__VA_ARGS__)' $UACCESS_FILE
-
-          mkdir -p scripts
-          echo -e "#!/bin/bash\necho 0" > scripts/secgetspf
-          chmod +x scripts/secgetspf
 
       - name: Build Kernel
         run: |
@@ -70,18 +62,21 @@ jobs:
           export PATH=$(pwd)/../toolchain/proton-clang/bin:$PATH
           MAKE_ARGS="ARCH=arm64 CC=clang HOSTCC=gcc CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1"
           
-          # KCFLAGS optimizate: ignorăm warning-urile care blochează build-ul pe Clang 17+
-          export KCFLAGS="-Wno-error -Wno-implicit-function-declaration -Wno-incompatible-pointer-types -Wno-return-type -Wno-macro-redefined -Wno-unused-variable -Wno-shift-count-overflow -Wno-frame-larger-than="
+          # Ignorăm erorile de tip "unused" și "frame-larger-than"
+          export KCFLAGS="-Wno-error -Wno-implicit-function-declaration -Wno-incompatible-pointer-types -Wno-return-type -Wno-unused-variable -Wno-shift-count-overflow -Wno-frame-larger-than="
 
           make $MAKE_ARGS r5q_eur_open_defconfig
           
+          # Dezactivăm modulele care fac conflict
           ./scripts/config --disable CONFIG_SCHED_WALT
           ./scripts/config --disable CONFIG_SCHED_CORE_CTL
           ./scripts/config --disable CONFIG_RKP_KDP
           ./scripts/config --disable CONFIG_DEFEX
           
-          # Force link drivers/soc/samsung
-          echo "obj-y += samsung/" >> drivers/soc/Makefile || true
+          # Activăm eBPF pentru compatibilitate Android 15
+          ./scripts/config --enable CONFIG_BPF_SYSCALL
+          ./scripts/config --enable CONFIG_BPF_JIT
+          ./scripts/config --enable CONFIG_CGROUP_BPF
           
           make $MAKE_ARGS olddefconfig
           make -j$(nproc --all) $MAKE_ARGS Image.gz-dtb
