@@ -88,7 +88,7 @@ jobs:
           make -j$(nproc --all) $MAKE_ARGS Image.gz-dtb
 
       - name: Upload
-        uses: upload-artifact@v4
+        uses: actions/upload-artifact@v4
         with:
           name: kernel-S10Lite-4.14.356-v74
           path: kernel-res/arch/arm64/boot/Image.gz-dtb
