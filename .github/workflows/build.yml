@@ -1,4 +1,4 @@
-name: S10 Lite - Base Swap LOS23 v40
+name: S10 Lite - Base Swap LOS23 v41
 
 on:
   push:
@@ -18,7 +18,7 @@ jobs:
       - name: Setup Toolchain
         run: |
           sudo apt-get update
-          sudo apt-get install -y bc bison flex libssl-dev libelf-dev dwarves make python3 lz4 perl
+          sudo apt-get install -y bc bison flex libssl-dev libelf-dev dwarves make python3 lz4 perl git
           git clone --depth=1 https://github.com/kdrag0n/proton-clang.git toolchain/proton-clang
 
       - name: Prepare LineageOS 23 Base
@@ -34,45 +34,52 @@ jobs:
           cp -r samsung-src/arch/arm64/boot/dts/samsung kernel-res/arch/arm64/boot/dts/ || true
           cp samsung-src/arch/arm64/configs/r5q_eur_open_defconfig kernel-res/arch/arm64/configs/
 
-      - name: Apply Pascua "Sixteen" Fixes
+      - name: Advanced Patching & Compiler Fix
         run: |
           cd kernel-res
           
-          # Fix IPA v3 missing headers (Metoda Pascua)
+          # 1. FIX COMPILER CHECK (Stack Protector)
+          # Eliminăm verificarea care oprește compilarea dacă flag-ul nu e suportat
+          sed -i 's/error "Cannot use CONFIG_CC_STACKPROTECTOR_STRONG/warning "Forcing bypass of STACKPROTECTOR/g' Makefile
+          
+          # 2. Fix IPA v3 missing headers (Pascua method)
           find drivers/platform/msm/ipa/ -name "Makefile" -exec sed -i 's/ccflags-y +=/ccflags-y += -I$(src) -I$(src)\/.. -I$(src)\/..\/.. /g' {} +
           
-          # Fix Sensors SSC (Dezactivare totală pentru a trece de eroare)
+          # 3. Fix Sensors & SMB1390
           sed -i 's/obj-$(CONFIG_SENSORS_SSC).*/obj-y -= sensors_ssc.o/g' drivers/sensors/Makefile
-          
-          # Fix SMB1390 Cast (uintptr_t)
           sed -i 's/(int)of_device_get_match_data/(uintptr_t)of_device_get_match_data/g' drivers/power/supply/qcom/smb1390-charger-psy.c
 
-          # Fix DTS (Eliminare noduri orfane)
+          # 4. Fix DTS & GPIO
           find arch/arm64/boot/dts/qcom/ -type f -name "*.dtsi" -exec sed -i '/shared_meta/d' {} +
           find arch/arm64/boot/dts/qcom/ -type f -name "*.dtsi" -exec sed -i '/hyp_meta/d' {} +
-          
-          # Fix GPIO (Comentare dump Samsung)
           sed -i '/if (chip->gpio_dump)/,/}/ s/^/\/\//' drivers/gpio/gpiolib.c
           
-          # Align MMC/SDHCI (Back to standard 4.14)
-          sed -i 's/void sdhci_cmd_irq(struct sdhci_host \*host, u32 intmask, u32 \*intmask_p)/void sdhci_cmd_irq(struct sdhci_host \*host, u32 intmask)/g' drivers/mmc/host/sdhci.c
-          sed -i 's/sdhci_cmd_irq(host, intmask & SDHCI_INT_CMD_MASK, \&intmask);/sdhci_cmd_irq(host, intmask \& SDHCI_INT_CMD_MASK);/g' drivers/mmc/host/sdhci.c
+          # 5. Fix SDIO/MMC Labels
+          sed -i 's/goto out;/return -EIO;/g' drivers/mmc/core/sdio.c
+          sed -i '/^out:$/d' drivers/mmc/core/sdio.c
 
       - name: Build Kernel
         run: |
           cd kernel-res
           export PATH=$(pwd)/../toolchain/proton-clang/bin:$PATH
-          MAKE_ARGS="ARCH=arm64 CC=clang HOSTCC=gcc CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1"
+          export CLANG_TRIPLE=aarch64-linux-gnu-
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
+          
+          MAKE_ARGS="ARCH=arm64 CC=clang HOSTCC=gcc LLVM=1 LLVM_IAS=1"
           
           export KCFLAGS="-Wno-error -Wno-implicit-function-declaration -Wno-void-pointer-to-int-cast -Wno-return-type -Wno-unused-variable -Wno-macro-redefined -Wno-frame-larger-than=2048"
 
           make $MAKE_ARGS r5q_eur_open_defconfig
           
-          # Dezactivări critice pentru boot pe Android 15
+          # DEZACTIVARE STACK PROTECTOR care cauzează eroarea
+          ./scripts/config --disable CONFIG_CC_STACKPROTECTOR_STRONG
+          ./scripts/config --enable CONFIG_CC_STACKPROTECTOR_NONE
+          
+          # Dezactivări pentru stabilitate Android 15
           ./scripts/config --disable CONFIG_SENSORS_SSC
           ./scripts/config --disable CONFIG_RKP_KDP
           ./scripts/config --disable CONFIG_DEFEX
-          ./scripts/config --disable CONFIG_SCHED_WALT
           
           make $MAKE_ARGS olddefconfig
           make -j$(nproc --all) $MAKE_ARGS Image.gz-dtb
