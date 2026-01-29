@@ -1,4 +1,4 @@
-name: S10 Lite - GPIO Patch v62
+name: S10 Lite - WALT Fix v63
 
 on:
   push:
@@ -34,23 +34,27 @@ jobs:
           cp -r s10-lite-src/arch/arm64/boot/dts/samsung kernel-res/arch/arm64/boot/dts/ || true
           cp s10-lite-src/arch/arm64/configs/r5q_eur_open_defconfig kernel-res/arch/arm64/configs/
 
-      - name: GPIO and WALT Surgery
+      - name: Surgical Fixes (v63)
         run: |
           cd kernel-res
           
-          # 1. FIX GPIO (No member gpio_dump)
-          # Comentăm întreg blocul care încearcă să folosească gpio_dump
-          sed -i '/if (chip->gpio_dump) {/,/}/ s/^/\/\//' drivers/gpio/gpiolib.c
-          
-          # 2. REVERT EXEC.C TO POINTER
-          sed -i 's/bprm.file = file/bprm->file = file/g' fs/exec.c || true
+          # 1. FIX GPIO (No member gpio_dump) - Folosim un sed mai precis care nu strică acoladele
+          sed -i 's/chip->gpio_dump/0/g' drivers/gpio/gpiolib.c
 
-          # 3. WALT REDUNDANCY FIX
-          sed -i 's/static unsigned int task_load(/static unsigned int __unused_task_load(/g' kernel/sched/walt.c
-          sed -i 's/walt_inc_cumulative_runnable_avg/samsung_inc_cumulative_runnable_avg/g' kernel/sched/walt.c
-          sed -i 's/walt_dec_cumulative_runnable_avg/samsung_dec_cumulative_runnable_avg/g' kernel/sched/walt.c
-          sed -i 's/rq->cum_window_demand/\/\/rq->cum_window_demand/g' kernel/sched/walt.c
-          sed -i 's/rq->cumulative_runnable_avg/\/\/rq->cumulative_runnable_avg/g' kernel/sched/walt.c
+          # 2. FIX WALT - În loc de comentarii care strică macro-urile, punem 0
+          # Asta previne eroarea "unterminated function-like macro"
+          sed -i 's/rq->cum_window_demand/0/g' kernel/sched/walt.c
+          sed -i 's/rq->cumulative_runnable_avg/0/g' kernel/sched/walt.c
+          
+          # 3. FIX task_load redefinition
+          sed -i 's/static unsigned int task_load(/static unsigned int __unused_samsung_task_load(/g' kernel/sched/walt.c
+
+          # 4. FIX WALT function redefinitions
+          sed -i 's/walt_inc_cumulative_runnable_avg/samsung_inc_walt/g' kernel/sched/walt.c
+          sed -i 's/walt_dec_cumulative_runnable_avg/samsung_dec_walt/g' kernel/sched/walt.c
+          
+          # 5. EXEC.C Pointer Fix
+          sed -i 's/bprm.file = file/bprm->file = file/g' fs/exec.c || true
 
       - name: Build Kernel
         run: |
@@ -61,7 +65,7 @@ jobs:
           export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
           
           MAKE_ARGS="ARCH=arm64 CC=clang HOSTCC=gcc LLVM=1 LLVM_IAS=1"
-          export KCFLAGS="-Wno-error -Wno-implicit-function-declaration -Wno-incompatible-pointer-types -Wno-unused-variable"
+          export KCFLAGS="-Wno-error -Wno-implicit-function-declaration -Wno-incompatible-pointer-types -Wno-unused-variable -Wno-implicit-int"
 
           make $MAKE_ARGS r5q_eur_open_defconfig
           ./scripts/config --disable CONFIG_CC_STACKPROTECTOR_STRONG
@@ -73,5 +77,5 @@ jobs:
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: kernel-S10Lite-Lineage-v62
+          name: kernel-S10Lite-v63-FixedWALT
           path: kernel-res/arch/arm64/boot/Image.gz-dtb
