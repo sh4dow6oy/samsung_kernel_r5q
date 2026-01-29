@@ -1,4 +1,4 @@
-name: S10 Lite - Aggressive Scrub v58
+name: S10 Lite - Radical Scrub v59
 
 on:
   push:
@@ -34,24 +34,27 @@ jobs:
           cp -r s10-lite-src/arch/arm64/boot/dts/samsung kernel-res/arch/arm64/boot/dts/ || true
           cp s10-lite-src/arch/arm64/configs/r5q_eur_open_defconfig kernel-res/arch/arm64/configs/
 
-      - name: Nuclear Scrub of LLVM/Polly Flags
+      - name: The "Final Solution" for Buggy Flags
         run: |
           cd kernel-res
-          # Ștergem orice flag care conține polly, regalloc sau cuvintele cheie raportate ca erori
-          find . -name "Makefile*" -exec sed -i 's/-mllvm//g' {} +
-          find . -name "Makefile*" -exec sed -i 's/-polly//g' {} +
-          find . -name "Makefile*" -exec sed -i 's/-parallel//g' {} +
-          find . -name "Makefile*" -exec sed -i 's/-invariant-load-hoisting//g' {} +
-          find . -name "Makefile*" -exec sed -i 's/-run-inliner//g' {} +
-          find . -name "Makefile*" -exec sed -i 's/-vectorizer=[^ ]*//g' {} +
-          find . -name "Makefile*" -exec sed -i 's/-reschedule=[^ ]*//g' {} +
-          find . -name "Makefile*" -exec sed -i 's/-postopts=[^ ]*//g' {} +
-          find . -name "Makefile*" -exec sed -i 's/-scheduling=[^ ]*//g' {} +
-          find . -name "Makefile*" -exec sed -i 's/-scheduling-chunksize=[^ ]*//g' {} +
-          find . -name "Makefile*" -exec sed -i 's/-regalloc-enable-advisor=[^ ]*//g' {} +
-          find . -name "Makefile*" -exec sed -i 's/-polly-[^ ]*//g' {} +
+          
+          # Ștergem orice flag care conține aceste cuvinte cheie experimentale
+          # Folosim o listă extinsă pentru a nu mai repeta procesul la următoarea eroare
+          BAD_FLAGS=(
+            "-mllvm" "-polly" "-parallel" "-invariant-load-hoisting" 
+            "-run-inliner" "-vectorizer" "-reschedule" "-postopts" 
+            "-scheduling" "-regalloc-enable-advisor" "-hot-cold-split"
+            "-enable-dfa-jump-thread" "-enable-linkonceoutlining"
+          )
+          
+          for flag in "${BAD_FLAGS[@]}"; do
+            find . -name "Makefile*" -exec sed -i "s/$flag[^ ]*//g" {} +
+          done
 
-          # Re-aplicăm fix-urile de cod necesare
+          # Curățăm și spațiile duble rezultate pentru a evita erori de sintaxă în Makefile
+          find . -name "Makefile*" -exec sed -i 's/  */ /g' {} +
+
+          # Fix-urile de cod obligatorii
           find fs/ -type f \( -name "*.c" -o -name "*.h" \) -exec sed -i 's/struct crypto_blkcipher/struct crypto_skcipher/g' {} +
           sed -i 's/bprm->file = file/bprm.file = file/g' fs/exec.c
           
@@ -70,7 +73,6 @@ jobs:
           
           MAKE_ARGS="ARCH=arm64 CC=clang HOSTCC=gcc LLVM=1 LLVM_IAS=1"
           
-          # Flag-uri de relaxare pentru a ignora eventualele spații goale lăsate de sed în Makefile-uri
           export KCFLAGS="-Wno-error -Wno-unknown-warning-option -Wno-implicit-function-declaration -Wno-incompatible-pointer-types"
 
           make $MAKE_ARGS r5q_eur_open_defconfig
@@ -86,5 +88,5 @@ jobs:
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: kernel-S10Lite-v58
+          name: kernel-S10Lite-v59
           path: kernel-res/arch/arm64/boot/Image.gz-dtb
