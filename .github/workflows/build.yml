@@ -1,4 +1,4 @@
-name: S10 Lite - Scheduler Fix v48
+name: S10 Lite - Core Fix v49
 
 on:
   push:
@@ -34,22 +34,26 @@ jobs:
           cp -r s10-lite-src/arch/arm64/boot/dts/samsung kernel-res/arch/arm64/boot/dts/ || true
           cp s10-lite-src/arch/arm64/configs/r5q_eur_open_defconfig kernel-res/arch/arm64/configs/
 
-      - name: Patching Scheduler & Kernel Core
+      - name: Patching Core Files (fs & sched)
         run: |
           cd kernel-res
           
-          # FIX: boosted_task_util static conflict
-          # Scoatem "static" din definiție pentru a se potrivi cu declarația implicită de la linia 3871
-          sed -i 's/static unsigned long boosted_task_util/unsigned long boosted_task_util/g' kernel/sched/fair.c
+          # FIX 1: fs/exec.c - Convert pointer access to member access
+          sed -i 's/bprm->file = file/bprm.file = file/g' fs/exec.c
           
-          # Curățăm Makefile-urile de optimizările LLVM specifice lui Pascua (Polly/Regalloc)
+          # FIX 2: kernel/sched/fair.c - Static/Implicit conflict
+          # Ștergem 'static' din definiție ȘI adăugăm un prototip global
+          sed -i 's/static unsigned long boosted_task_util/unsigned long boosted_task_util/g' kernel/sched/fair.c
+          echo "unsigned long boosted_task_util(struct task_struct *task);" > sched_fix.h
+          cat kernel/sched/fair.c >> sched_fix.h
+          mv sched_fix.h kernel/sched/fair.c
+          
+          # FIX 3: Curățare Makefile-uri (Polly/Regalloc)
           find . -type f -name "Makefile*" -exec sed -i 's/-mllvm -polly.*//g' {} +
           find . -type f -name "Makefile*" -exec sed -i 's/-mllvm -regalloc.*//g' {} +
           
-          # Bypass Stack Protector Check
+          # FIX 4: Bypass Stack Protector & SMB1390
           sed -i 's/$(error "Cannot use CONFIG_CC_STACKPROTECTOR_STRONG.*/$(warning "Bypassing Stack Protector")/g' Makefile
-          
-          # Fix SMB1390 Pointer Cast
           sed -i 's/(int)of_device_get_match_data/(uintptr_t)of_device_get_match_data/g' drivers/power/supply/qcom/smb1390-charger-psy.c || true
 
       - name: Build Kernel
@@ -61,13 +65,9 @@ jobs:
           export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
           
           MAKE_ARGS="ARCH=arm64 CC=clang HOSTCC=gcc LLVM=1 LLVM_IAS=1"
-          
-          # Folosim -Wno-unknown-warning-option pentru a ignora restul de flag-uri de la Pascua
           export KCFLAGS="-Wno-error -Wno-implicit-function-declaration -Wno-void-pointer-to-int-cast -Wno-return-type -Wno-unused-variable -Wno-macro-redefined -Wno-frame-larger-than= -Wno-unknown-warning-option"
 
           make $MAKE_ARGS r5q_eur_open_defconfig
-          
-          # Dezactivăm securitatea Samsung care dă kernel panic pe ROM-uri custom
           ./scripts/config --disable CONFIG_CC_STACKPROTECTOR_STRONG
           ./scripts/config --enable CONFIG_CC_STACKPROTECTOR_NONE
           ./scripts/config --disable CONFIG_RKP_KDP
@@ -79,5 +79,5 @@ jobs:
       - name: Upload Kernel
         uses: actions/upload-artifact@v4
         with:
-          name: kernel-S10Lite-v48
+          name: kernel-S10Lite-v49
           path: kernel-res/arch/arm64/boot/Image.gz-dtb
