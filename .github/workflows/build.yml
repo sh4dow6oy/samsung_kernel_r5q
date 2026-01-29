@@ -1,4 +1,4 @@
-name: S10 Lite - Base Swap LOS23 v41
+name: S10 Lite - Base Swap LOS23 v42
 
 on:
   push:
@@ -39,7 +39,6 @@ jobs:
           cd kernel-res
           
           # 1. FIX COMPILER CHECK (Stack Protector)
-          # Eliminăm verificarea care oprește compilarea dacă flag-ul nu e suportat
           sed -i 's/error "Cannot use CONFIG_CC_STACKPROTECTOR_STRONG/warning "Forcing bypass of STACKPROTECTOR/g' Makefile
           
           # 2. Fix IPA v3 missing headers (Pascua method)
@@ -68,11 +67,12 @@ jobs:
           
           MAKE_ARGS="ARCH=arm64 CC=clang HOSTCC=gcc LLVM=1 LLVM_IAS=1"
           
-          export KCFLAGS="-Wno-error -Wno-implicit-function-declaration -Wno-void-pointer-to-int-cast -Wno-return-type -Wno-unused-variable -Wno-macro-redefined -Wno-frame-larger-than=2048"
+          # CORECȚIE FLAG: Am scos =2048 pentru a evita eroarea de sintaxă Clang
+          export KCFLAGS="-Wno-error -Wno-implicit-function-declaration -Wno-void-pointer-to-int-cast -Wno-return-type -Wno-unused-variable -Wno-macro-redefined -Wno-frame-larger-than"
 
           make $MAKE_ARGS r5q_eur_open_defconfig
           
-          # DEZACTIVARE STACK PROTECTOR care cauzează eroarea
+          # DEZACTIVARE STACK PROTECTOR
           ./scripts/config --disable CONFIG_CC_STACKPROTECTOR_STRONG
           ./scripts/config --enable CONFIG_CC_STACKPROTECTOR_NONE
           
@@ -83,3 +83,9 @@ jobs:
           
           make $MAKE_ARGS olddefconfig
           make -j$(nproc --all) $MAKE_ARGS Image.gz-dtb
+
+      - name: Upload Kernel Image
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-S10Lite-LOS23
+          path: kernel-res/arch/arm64/boot/Image.gz-dtb
