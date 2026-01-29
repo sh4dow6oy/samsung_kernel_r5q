@@ -1,4 +1,4 @@
-name: S10 Lite - Upstream 4.14.356 + Lineage-23
+name: S10 Lite - Upstream 4.14.356 + Lineage-23.0
 
 on:
   push:
@@ -23,39 +23,39 @@ jobs:
         run: |
           git remote add linux-stable https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git || true
           git fetch linux-stable linux-4.14.y --depth=1
-          # Aplicăm stabilitatea 4.14.356 peste baza Samsung
+          # Aplicăm upstream-ul 356 peste baza Samsung
           git checkout FETCH_HEAD -- .
-          # Păstrăm identitatea Samsung pentru build
-          git checkout HEAD -- arch/arm64/boot/dts/scripts/ Makefile 2>/dev/null || true
+          # Păstrăm fișierele critice Samsung pentru boot
+          git checkout HEAD -- arch/arm64/boot/dts/ Makefile scripts/ 2>/dev/null || true
 
-      - name: LineageOS 23 eBPF Backport
+      - name: LineageOS 23.0 eBPF Backport
         run: |
           git remote add lineage-kernel https://github.com/LineageOS/android_kernel_google_msm-4.14.git || true
-          git fetch lineage-kernel lineage-23 --depth=1
+          # Fetch explicit pe ramura lineage-23.0
+          git fetch lineage-kernel lineage-23.0 --depth=1
           
-          # Extragem fișierele eBPF de ultimă generație pentru Android 15
+          # Extragem fișierele eBPF optimizate pentru Android 15
           PATHS=(
             "include/linux/bpf.h" "include/linux/bpf_types.h"
             "include/uapi/linux/bpf.h" "include/uapi/linux/bpf_common.h"
             "kernel/bpf/" "net/core/filter.c" "include/linux/filter.h"
+            "include/net/xdp.h" "net/core/xdp.c"
           )
           for path in "${PATHS[@]}"; do git checkout FETCH_HEAD -- "$path"; done
 
-      - name: Lineage-23 Compatibility Patches
+      - name: Compatibility Glue Patches
         run: |
-          # 1. Fix access_ok pentru kernelul Samsung 4.14
-          # Lineage-23 s-ar putea să folosească semnătura modernă (2 args), Samsung vrea 3.
+          # 1. Fix access_ok (Sincronizare 3-args pentru Samsung Legacy)
           find kernel/bpf/ -name "*.c" -exec sed -i 's/access_ok(\([^,]*\), \([^)]*\))/access_ok(VERIFY_READ, \1, \2)/g' {} +
           
-          # 2. Dummy LIRC (Păcălim syscall-urile BPF)
+          # 2. Dummy LIRC Header (Lineage-23.0 se așteaptă la el)
           mkdir -p include/linux/
           printf "#ifndef _BPF_LIRC_H\n#define _BPF_LIRC_H\n#endif\n" > include/linux/bpf_lirc.h
 
-          # 3. Rezolvare conflicte Networking (Lineage-23 Style)
-          # Ne asigurăm că filter.c nu are conflicte de tip static/extern aduse de merge
+          # 3. Rezolvare conflict static/extern în filter.c
           sed -i 's/static const struct bpf_func_proto bpf_sk_redirect_map_proto/const struct bpf_func_proto bpf_sk_redirect_map_proto/g' net/core/filter.c
           
-          # 4. Samsung Security Bypass
+          # 4. Samsung Security Bypass (secgetspf)
           mkdir -p scripts
           echo -e "#!/bin/bash\necho 0" > scripts/secgetspf
           chmod +x scripts/secgetspf
@@ -65,19 +65,18 @@ jobs:
         run: |
           export PATH=$(pwd)/toolchain/proton-clang/bin:$PATH
           MAKE_ARGS="O=out ARCH=arm64 CC=clang HOSTCC=gcc CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1"
-          
-          # KCFLAGS pentru a tolera micile discrepanțe între Lineage-23 și Samsung
+          # Flag-uri de compatibilitate pentru a ignora warning-urile din Lineage-23
           export KCFLAGS="-Wno-error -Wno-implicit-function-declaration -Wno-incompatible-pointer-types -Wno-return-type"
 
           make $MAKE_ARGS r5q_eur_open_defconfig
           
-          # Activăm ce vrea Android 15 (eBPF + CGROUP)
+          # Configurații vitale pentru Android 15
           ./scripts/config --file out/.config --enable CONFIG_BPF_SYSCALL
           ./scripts/config --file out/.config --enable CONFIG_BPF_JIT
           ./scripts/config --file out/.config --enable CONFIG_CGROUP_BPF
           ./scripts/config --file out/.config --disable CONFIG_KPERFMON
           ./scripts/config --file out/.config --disable CONFIG_DEFEX
-          ./scripts/config --file out/.config --set-str CONFIG_LOCALVERSION "-Upstream-356-LOS23"
+          ./scripts/config --file out/.config --set-str CONFIG_LOCALVERSION "-Upstream-356-Lineage23"
           
           make $MAKE_ARGS olddefconfig
           make -j$(nproc --all) $MAKE_ARGS Image.gz-dtb
