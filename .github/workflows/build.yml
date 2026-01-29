@@ -1,4 +1,4 @@
-name: S10 Lite - Full LOS23 v27
+name: S10 Lite - Base Swap LOS23 v28
 
 on:
   push:
@@ -10,8 +10,10 @@ jobs:
     runs-on: ubuntu-22.04
 
     steps:
-      - name: Checkout Source
+      - name: Checkout Samsung Source (Legacy)
         uses: actions/checkout@v4
+        with:
+          path: samsung-src
 
       - name: Setup Toolchain
         run: |
@@ -19,80 +21,58 @@ jobs:
           sudo apt-get install -y bc bison flex libssl-dev libelf-dev dwarves make python3 lz4 perl
           git clone --depth=1 https://github.com/kdrag0n/proton-clang.git toolchain/proton-clang
 
-      - name: Upstream Base (4.14.356)
+      - name: Prepare LineageOS 23 Base
         run: |
-          git remote add linux-stable https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git || true
-          git fetch linux-stable linux-4.14.y --depth=1
-          git checkout FETCH_HEAD -- .
-          git checkout HEAD -- arch/arm64/boot/dts/ Makefile scripts/ 2>/dev/null || true
-
-      - name: LineageOS 23.0 eBPF Injection
+          # Clonăm direct baza LineageOS 23 ca director principal de lucru
+          git clone --depth=1 -b lineage-23.0 https://github.com/LineageOS/android_kernel_google_msm-4.14.git kernel-res
+          
+      - name: Inject Samsung Drivers & DTS
         run: |
-          git remote add lineage-kernel https://github.com/LineageOS/android_kernel_google_msm-4.14.git || true
-          git fetch lineage-kernel lineage-23.0 --depth=1
+          # Transferăm driverele Samsung peste baza curată Lineage
+          # Nota: 'drivers/soc/samsung', 'drivers/video/fbdev/exynos' etc.
+          cp -r samsung-src/drivers/soc/samsung kernel-res/drivers/soc/ || true
+          cp -r samsung-src/drivers/camera kernel-res/drivers/ || true
+          cp -r samsung-src/drivers/fingerprint kernel-res/drivers/ || true
+          cp -r samsung-src/drivers/sensors kernel-res/drivers/ || true
           
-          PATHS=(
-            "include/linux/bpf.h" "include/linux/bpf_types.h" "include/linux/bpf_verifier.h"
-            "include/uapi/linux/bpf.h" "include/uapi/linux/bpf_common.h" "include/uapi/linux/btf.h"
-            "kernel/bpf/" "net/core/filter.c" "include/linux/filter.h"
-            "include/net/xdp.h" "net/core/xdp.c" "include/linux/btf.h"
-          )
-          for path in "${PATHS[@]}"; do git checkout FETCH_HEAD -- "$path"; done
+          # Transferăm configurația și Device Tree (Vital pentru boot)
+          cp -r samsung-src/arch/arm64/boot/dts/samsung kernel-res/arch/arm64/boot/dts/ || true
+          cp samsung-src/arch/arm64/configs/r5q_eur_open_defconfig kernel-res/arch/arm64/configs/
+          
+          # Transferăm scripturile Samsung de semnare/post-procesare
+          cp -r samsung-src/scripts/samsung kernel-res/scripts/ || true
+          cp samsung-src/scripts/secgetspf kernel-res/scripts/ 2>/dev/null || true
 
-      - name: Glue Patches - UAPI & Header Fixes
+      - name: Patch Lineage for Samsung Compatibility
         run: |
-          # 1. FIX: 'uapi/linux/btf.h' not found
-          # Cream link-uri simbolice sau copiem fișierele astfel încât include-ul să funcționeze
-          mkdir -p include/uapi/linux/
-          cp include/uapi/linux/btf.h include/linux/btf.h 2>/dev/null || true
-          
-          # 2. Rezolvăm eroarea de includere în core.c (scoatem prefixul uapi/ dacă e cazul)
-          sed -i 's|<uapi/linux/btf.h>|<linux/btf.h>|g' kernel/bpf/core.c
-          sed -i 's|<uapi/linux/bpf.h>|<linux/bpf.h>|g' kernel/bpf/core.c
-
-          # 3. Forțăm bpf.h în filter.h (Fix incomplete type)
-          sed -i '1i #include <linux/bpf.h>' include/linux/filter.h
-          
-          # 4. Definim struct bpf_prog_stats (Fix incomplete type)
-          if ! grep -q "struct bpf_prog_stats" include/linux/bpf.h; then
-            sed -i '/struct bpf_prog_aux;/a struct bpf_prog_stats { u64 cnt; u64 nsecs; struct u64_stats_sync syncp; };' include/linux/bpf.h
-          fi
-
-          # 5. Fix access_ok (Sincronizare 3-args pentru Samsung)
-          find kernel/bpf/ -name "*.c" -exec sed -i 's/access_ok(\([^,]*\), \([^)]*\))/access_ok(VERIFY_READ, \1, \2)/g' {} +
-          
-          # 6. Dummy LIRC Header
-          mkdir -p include/linux/
-          printf "#ifndef _BPF_LIRC_H\n#define _BPF_LIRC_H\n#endif\n" > include/linux/bpf_lirc.h
-
-          # 7. Samsung Security Bypass
+          cd kernel-res
+          # Rezolvăm conflictele de securitate Samsung care nu există în Lineage
           mkdir -p scripts
           echo -e "#!/bin/bash\necho 0" > scripts/secgetspf
           chmod +x scripts/secgetspf
-          sudo cp scripts/secgetspf /usr/bin/secgetspf
+          
+          # Adaptăm Makefile-ul Lineage pentru a vedea driverele noi
+          echo "obj-y += drivers/soc/samsung/" >> drivers/soc/Makefile
+          
+          # Fix access_ok pentru compatibilitate cu driverele vechi Samsung
+          find drivers/ -name "*.c" -exec sed -i 's/access_ok(\([^,]*\), \([^)]*\))/access_ok(VERIFY_READ, \1, \2)/g' {} +
 
       - name: Build Kernel
         run: |
-          export PATH=$(pwd)/toolchain/proton-clang/bin:$PATH
-          # Adăugăm directoarele de include la calea compilatorului explicit
-          export USERINCLUDE="-I$(pwd)/include/uapi -I$(pwd)/include"
-          MAKE_ARGS="O=out ARCH=arm64 CC=clang HOSTCC=gcc CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1"
-          export KCFLAGS="-Wno-error -Wno-implicit-function-declaration -Wno-incompatible-pointer-types -Wno-return-type -Wno-unused-variable -Wno-shadow"
-
+          cd kernel-res
+          export PATH=$(pwd)/../toolchain/proton-clang/bin:$PATH
+          MAKE_ARGS="ARCH=arm64 CC=clang HOSTCC=gcc CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1"
+          
+          # Folosim defconfig-ul Samsung pe baza Lineage
           make $MAKE_ARGS r5q_eur_open_defconfig
           
-          ./scripts/config --file out/.config --enable CONFIG_BPF_SYSCALL
-          ./scripts/config --file out/.config --enable CONFIG_BPF_JIT
-          ./scripts/config --file out/.config --enable CONFIG_CGROUP_BPF
-          ./scripts/config --file out/.config --disable CONFIG_KPERFMON
-          ./scripts/config --file out/.config --disable CONFIG_DEFEX
+          # Forțăm activarea eBPF care în LOS23 este deja suportat nativ
+          ./scripts/config --enable CONFIG_BPF_SYSCALL
+          ./scripts/config --enable CONFIG_BPF_JIT
+          ./scripts/config --enable CONFIG_CGROUP_BPF
+          # Dezactivăm protecțiile Samsung care ar da conflict cu baza Lineage
+          ./scripts/config --disable CONFIG_RKP_KDP
+          ./scripts/config --disable CONFIG_DEFEX
           
           make $MAKE_ARGS olddefconfig
-          make -j$(nproc --all) $MAKE_ARGS Image.gz-dtb || make -j1 $MAKE_ARGS Image.gz-dtb
-
-      - name: Upload Kernel
-        if: success()
-        uses: actions/upload-artifact@v4
-        with:
-          name: S10Lite-Android15-v27
-          path: out/arch/arm64/boot/Image.gz-dtb
+          make -j$(nproc --all) $MAKE_ARGS Image.gz-dtb
