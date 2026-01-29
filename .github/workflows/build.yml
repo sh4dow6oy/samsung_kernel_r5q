@@ -1,4 +1,4 @@
-name: S10 Lite - Base Swap LOS23 v29
+name: S10 Lite - Base Swap LOS23 v30
 
 on:
   push:
@@ -27,32 +27,37 @@ jobs:
 
       - name: Inject Samsung Components
         run: |
-          # Injectăm doar ce este strict hardware
           cp -r samsung-src/drivers/soc/samsung kernel-res/drivers/soc/ || true
           cp -r samsung-src/drivers/camera kernel-res/drivers/ || true
           cp -r samsung-src/drivers/fingerprint kernel-res/drivers/ || true
           cp -r samsung-src/drivers/sensors kernel-res/drivers/ || true
-          
-          # Device Tree & Config (Sufletul S10 Lite)
           cp -r samsung-src/arch/arm64/boot/dts/samsung kernel-res/arch/arm64/boot/dts/ || true
           cp samsung-src/arch/arm64/configs/r5q_eur_open_defconfig kernel-res/arch/arm64/configs/
 
-      - name: Smart Compatibility Layer (Fix access_ok)
+      - name: Advanced Variadic Patching
         run: |
           cd kernel-res
-          # Nu mai folosim sed pe toate fisierele!
-          # In schimb, definim un macro inteligent in uaccess.h care ignora VERIFY_READ/WRITE daca sunt trimise 3 args
-          # Dar ramane compatibil cu apelurile de 2 args din Lineage
           
-          # Fix local pentru msm-4.14 Lineage:
-          sed -i '/#define access_ok(type, addr, size)/c\#define access_ok(addr, size) __range_ok(addr, size)' arch/arm64/include/asm/uaccess.h
+          # Creăm un macro variadic inteligent care suportă și 2 și 3 argumente
+          # Acesta este "Sfantul Graal" al compatibilității între kernel-uri vechi și noi
+          UACCESS_FILE="arch/arm64/include/asm/uaccess.h"
           
-          # Rezolvăm scripturile Samsung
+          # Ștergem definiția veche
+          sed -i '/#define access_ok/d' $UACCESS_FILE
+          
+          # Inserăm noua logică variadică înainte de __range_ok
+          sed -i '/#define __range_ok/i \
+          #define _access_ok_2(addr, size)         __range_ok(addr, size) \
+          #define _access_ok_3(type, addr, size)   __range_ok(addr, size) \
+          #define _access_ok_X(x, y, z, FUNC, ...) FUNC \
+          #define access_ok(...) _access_ok_X(__VA_ARGS__, _access_ok_3, _access_ok_2)(__VA_ARGS__)' $UACCESS_FILE
+
+          # Fix Samsung scripts
           mkdir -p scripts
           echo -e "#!/bin/bash\necho 0" > scripts/secgetspf
           chmod +x scripts/secgetspf
           
-          # Adăugăm driverele Samsung în ierarhia de build
+          # Adăugăm driverele în Makefile
           echo "obj-y += samsung/" >> drivers/soc/Makefile
 
       - name: Build Kernel
@@ -61,13 +66,11 @@ jobs:
           export PATH=$(pwd)/../toolchain/proton-clang/bin:$PATH
           MAKE_ARGS="ARCH=arm64 CC=clang HOSTCC=gcc CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1"
           
-          # Dezactivăm erorile de tip "too many arguments" pentru driverele Samsung vechi
-          # Folosim -Wno-error pentru a lăsa compilatorul să treacă peste mismatch-ul de access_ok
-          export KCFLAGS="-Wno-error -Wno-implicit-function-declaration -Wno-incompatible-pointer-types -Wno-return-type"
+          # Adăugăm flag-uri pentru a ignora re-definirile de macro-uri
+          export KCFLAGS="-Wno-error -Wno-implicit-function-declaration -Wno-incompatible-pointer-types -Wno-return-type -Wno-macro-redefined"
 
           make $MAKE_ARGS r5q_eur_open_defconfig
           
-          # Configurații Android 15 & Safety
           ./scripts/config --enable CONFIG_BPF_SYSCALL
           ./scripts/config --enable CONFIG_BPF_JIT
           ./scripts/config --enable CONFIG_CGROUP_BPF
