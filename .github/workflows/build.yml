@@ -1,4 +1,4 @@
-name: S10 Lite Kernel Build - v78
+name: S10 Lite Kernel Build - v79
 
 on:
   push:
@@ -38,20 +38,19 @@ jobs:
           cp -r s10-lite-src/arch/arm64/boot/dts/samsung kernel-res/arch/arm64/boot/dts/ || true
           cp s10-lite-src/arch/arm64/configs/r5q_eur_open_defconfig kernel-res/arch/arm64/configs/
 
-      - name: Surgical Fixes v78
+      - name: Surgical Fixes v79 (Lineage GPIO Reset)
         run: |
           cd kernel-res
           
-          # 1. SDIO Fix
+          # 1. GPIO RESET: Forțăm gpiolib.c să fie cel original din LineageOS
+          # Aceasta elimină orice modificare problematică adusă de Samsung sau de merge-uri eșuate
+          git checkout drivers/gpio/gpiolib.c
+          
+          # 2. SDIO Fix
           sed -i 's/out:$/out: ;/g' drivers/mmc/core/sdio.c
           sed -i '/^}$/i out: ;' drivers/mmc/core/sdio.c
           
-          # 2. GPIO Fix (Cea mai sigura metoda: comentam doar liniile problematice, nu stergem)
-          # Cautam linia cu gpio_dump si o comentam impreuna cu blocul ei
-          sed -i 's/if (chip->gpio_dump)/if (0 \&\& chip->gpio_dump)/g' drivers/gpio/gpiolib.c
-
-          # 3. WALT / Scheduler Fix
-          # Scoatem walt.o din compilare complet
+          # 3. WALT / Scheduler Fix (Nuclear Option)
           sed -i 's/obj-y += walt.o/# obj-y += walt.o/g' kernel/sched/Makefile
           
           # 4. DM-BOW & SDHCI
@@ -70,7 +69,8 @@ jobs:
           export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
           
           MAKE_ARGS="ARCH=arm64 CC=clang HOSTCC=gcc LLVM=1 LLVM_IAS=1"
-          # Adaugam flag-ul pentru a ignora erorile de tip return in gpiolib daca mai apar
+          # Adăugăm flag-uri care permit compilarea chiar dacă driverele Samsung 
+          # se plâng de funcții lipsă în gpiolib-ul original Lineage
           export KCFLAGS="-Wno-error -Wno-unused-label -Wno-return-type -Wno-implicit-function-declaration -Wno-incompatible-pointer-types -I$(pwd)/drivers/hid"
 
           make $MAKE_ARGS r5q_eur_open_defconfig
@@ -83,8 +83,8 @@ jobs:
           make $MAKE_ARGS olddefconfig
           make -j$(nproc --all) $MAKE_ARGS Image.gz-dtb
 
-      - name: Upload
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: kernel-S10Lite-4.14.356-v78
+          name: kernel-S10Lite-4.14.356-v79
           path: kernel-res/arch/arm64/boot/Image.gz-dtb
