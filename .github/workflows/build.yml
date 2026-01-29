@@ -1,4 +1,4 @@
-name: S10 Lite - MMC & SDHCI Repair v68
+name: S10 Lite - Final MMC & DM-BOW Polish v69
 
 on:
   push:
@@ -38,27 +38,28 @@ jobs:
           cp -r s10-lite-src/arch/arm64/boot/dts/samsung kernel-res/arch/arm64/boot/dts/ || true
           cp s10-lite-src/arch/arm64/configs/r5q_eur_open_defconfig kernel-res/arch/arm64/configs/
 
-      - name: MMC & SDHCI Surgery (v68)
+      - name: Surgical Fixes v69
         run: |
           cd kernel-res
           
-          # 1. FIX SDHCI - Eliminăm argumentele Samsung care nu mai există în Upstream
-          # Reparăm apelul sdhci_cmd_irq care are prea multe argumente
+          # 1. FIX SDIO (Label 'out' undeclared)
+          # Inserăm label-ul 'out:' chiar înainte de ultima acoladă a fișierului, 
+          # dar ne asigurăm că acoperim funcția sdhci_cmd_irq / mmc_sdio_resend_irq
+          sed -i '/return res;/i out:' drivers/mmc/core/sdio.c
+          # Dacă prima metodă eșuează, forțăm label-ul la finalul funcției problematice
+          sed -i 's/goto out;/return res;/g' drivers/mmc/core/sdio.c # Metoda 2: Bypass direct la return
+
+          # 2. FIX DM-BOW (SECTOR_SIZE macro redefined)
+          sed -i '15i #undef SECTOR_SIZE' drivers/md/dm-bow.c
+
+          # 3. SDHCI Surgery (v68 legacy)
           sed -i 's/sdhci_cmd_irq(host, intmask & SDHCI_INT_CMD_MASK, \&intmask)/sdhci_cmd_irq(host, intmask \& SDHCI_INT_CMD_MASK)/g' drivers/mmc/host/sdhci.c
-          
-          # Eliminăm liniile care folosesc intmask_p și dma (variabile orfane în 4.14.356)
           sed -i '/intmask_p/d' drivers/mmc/host/sdhci.c
           sed -i '/(unsigned long long)dma/d' drivers/mmc/host/sdhci.c
 
-          # 2. FIX SDIO - Adăugăm label-ul 'out' lipsă
-          # Îl inserăm înainte de ultima acoladă a funcției unde apare eroarea
-          sed -i '/return res;/i out:' drivers/mmc/core/sdio.c
-
-          # 3. DTBS & Tracing Fixes
+          # 4. DTBS & Tracing & WALT (Păstrăm fix-urile anterioare)
           sed -i '/&shared_meta {/,/};/ s/^/\/\//' arch/arm64/boot/dts/qcom/sa8155-adp-common.dtsi
           sed -i 's|#define TRACE_INCLUDE_PATH .|#define TRACE_INCLUDE_PATH ../../drivers/hid|g' drivers/hid/hid-trace.h
-
-          # 4. WALT & General Fixes
           sed -i '40i static long s10_dummy_val;\nstatic long s10_dummy_val_scaled;' kernel/sched/walt.c
           sed -i 's/rq->cum_window_demand/s10_dummy_val/g' kernel/sched/walt.c
           sed -i 's/rq->cumulative_runnable_avg/s10_dummy_val/g' kernel/sched/walt.c
@@ -90,5 +91,5 @@ jobs:
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: kernel-S10Lite-4.14.356-v68
+          name: kernel-S10Lite-4.14.356-v69
           path: kernel-res/arch/arm64/boot/Image.gz-dtb
