@@ -1,4 +1,4 @@
-name: S10 Lite - WALT Fix v74
+name: S10 Lite - WALT Nuker v75
 
 on:
   push:
@@ -38,35 +38,32 @@ jobs:
           cp -r s10-lite-src/arch/arm64/boot/dts/samsung kernel-res/arch/arm64/boot/dts/ || true
           cp s10-lite-src/arch/arm64/configs/r5q_eur_open_defconfig kernel-res/arch/arm64/configs/
 
-      - name: Surgical Fixes v74
+      - name: Surgical Fixes v75
         run: |
           cd kernel-res
           
-          # 1. FIX SDIO (Lineage Style - Păstrăm ce am învățat)
+          # 1. SDIO LINEAGE FIX (Rămâne neschimbat, e corect)
           git checkout drivers/mmc/core/sdio.c
           sed -i 's/out:$/out: ;/g' drivers/mmc/core/sdio.c
           sed -i '/^}$/i out: ;' drivers/mmc/core/sdio.c
           sed -i 'N;/^\(out: ;\)\n\1$/D;P;D' drivers/mmc/core/sdio.c
 
-          # 2. FIX WALT (Erorile noi de Redefinition)
-          # Comentăm funcțiile care cauzează redefinirea în kernel/sched/walt.c
-          sed -i 's/^static unsigned int task_load(/#if 0\nstatic unsigned int task_load(/g' kernel/sched/walt.c
-          # Închidem #if 0 după acolada de final a funcției task_load (linia ~70)
-          sed -i '71i #endif' kernel/sched/walt.c
+          # 2. WALT TOTAL DISABLE (Metoda sigură)
+          # În loc de #if 0 pe linii, redenumim funcțiile problematice în tot fișierul
+          # pentru a nu mai intra în conflict cu headerele globale.
+          sed -i 's/task_load/samsung_task_load/g' kernel/sched/walt.c
+          sed -i 's/walt_inc_cumulative_runnable_avg/samsung_inc_walt/g' kernel/sched/walt.c
+          sed -i 's/walt_dec_cumulative_runnable_avg/samsung_dec_walt/g' kernel/sched/walt.c
           
-          # Facem același lucru pentru walt_inc_cumulative_runnable_avg (linia ~72)
-          sed -i 's/^void walt_inc_cumulative_runnable_avg(/#if 0\nvoid walt_inc_cumulative_runnable_avg(/g' kernel/sched/walt.c
-          sed -i '88i #endif' kernel/sched/walt.c
-          
-          # Și pentru walt_dec_cumulative_runnable_avg (linia ~89)
-          sed -i 's/^void walt_dec_cumulative_runnable_avg(/#if 0\nvoid walt_dec_cumulative_runnable_avg(/g' kernel/sched/walt.c
-          sed -i '105i #endif' kernel/sched/walt.c
+          # 3. FIX STRUCT RQ (Membrii lipsă)
+          # Dacă structura rq nu are cumulative_runnable_avg, comentăm liniile care o folosesc
+          sed -i 's/rq->cumulative_runnable_avg/\/\/rq->cumulative_runnable_avg/g' kernel/sched/walt.c
 
-          # 3. FIX DM-BOW & SDHCI
+          # 4. FIX DM-BOW & SDHCI
           sed -i '15i #undef SECTOR_SIZE' drivers/md/dm-bow.c
           sed -i 's/sdhci_cmd_irq(host, intmask & SDHCI_INT_CMD_MASK, \&intmask)/sdhci_cmd_irq(host, intmask \& SDHCI_INT_CMD_MASK)/g' drivers/mmc/host/sdhci.c
 
-          # 4. FIX TRACING PATH
+          # 5. FIX TRACING PATH
           sed -i 's|#define TRACE_INCLUDE_PATH .|#define TRACE_INCLUDE_PATH ../../drivers/hid|g' drivers/hid/hid-trace.h
 
       - name: Build Kernel
@@ -81,6 +78,9 @@ jobs:
           export KCFLAGS="-Wno-error -Wno-unused-label -Wno-implicit-function-declaration -Wno-incompatible-pointer-types -I$(pwd)/drivers/hid"
 
           make $MAKE_ARGS r5q_eur_open_defconfig
+          
+          # Dezactivăm WALT din config pentru a evita conflictele la linkare
+          ./scripts/config --disable CONFIG_SCHED_WALT
           ./scripts/config --disable CONFIG_CC_STACKPROTECTOR_STRONG
           ./scripts/config --enable CONFIG_CC_STACKPROTECTOR_NONE
           
@@ -90,5 +90,5 @@ jobs:
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: kernel-S10Lite-4.14.356-v74
+          name: kernel-S10Lite-4.14.356-v75
           path: kernel-res/arch/arm64/boot/Image.gz-dtb
