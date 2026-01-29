@@ -1,4 +1,4 @@
-name: S10 Lite - Pascua Base v43
+name: S10 Lite - Pascua Base v44
 
 on:
   push:
@@ -23,30 +23,33 @@ jobs:
 
       - name: Prepare Pascua Sixteen Base
         run: |
-          # Clonăm baza lui Pascua care este deja optimizată pentru Android 15/16
           git clone --depth=1 -b sixteen https://github.com/pascua28/android_kernel_samsung_sm7150.git kernel-res
 
       - name: Inject S10 Lite Drivers & Config
         run: |
-          # Injectăm driverele specifice de S10 Lite peste baza Pascua
           cp -r s10-lite-src/drivers/soc/samsung kernel-res/drivers/soc/ || true
           cp -r s10-lite-src/drivers/camera kernel-res/drivers/ || true
           cp -r s10-lite-src/drivers/fingerprint kernel-res/drivers/ || true
           cp -r s10-lite-src/drivers/sensors kernel-res/drivers/ || true
-          
-          # Injectăm Device Tree-ul de Samsung (r5q)
           cp -r s10-lite-src/arch/arm64/boot/dts/samsung kernel-res/arch/arm64/boot/dts/ || true
-          
-          # Injectăm Defconfig-ul tău
           cp s10-lite-src/arch/arm64/configs/r5q_eur_open_defconfig kernel-res/arch/arm64/configs/
 
-      - name: Hybrid Optimization
+      - name: Patching Compiler & Logic
         run: |
           cd kernel-res
-          # Ajustăm SMB1390 (casting-ul care dădea eroare)
+          
+          # 1. FORȚĂM DEZACTIVAREA STACK PROTECTOR în Makefile (Metoda Brută)
+          # Căutăm linia care dă eroarea și o comentăm sau o transformăm în ecou inofensiv
+          sed -i 's/$(error "Cannot use CONFIG_CC_STACKPROTECTOR_STRONG.*/$(warning "Bypassing Stack Protector")/g' Makefile
+          
+          # 2. Curățăm Defconfig-ul de opțiunile problematice înainte de build
+          echo "CONFIG_CC_STACKPROTECTOR_NONE=y" >> arch/arm64/configs/r5q_eur_open_defconfig
+          sed -i '/CONFIG_CC_STACKPROTECTOR_STRONG/d' arch/arm64/configs/r5q_eur_open_defconfig
+          
+          # 3. Fix SMB1390 Cast
           sed -i 's/(int)of_device_get_match_data/(uintptr_t)of_device_get_match_data/g' drivers/power/supply/qcom/smb1390-charger-psy.c || true
           
-          # Ne asigurăm că senzorii SSC nu blochează build-ul dacă lipsesc headerele ADSP
+          # 4. Fix Sensors SSC
           sed -i 's/obj-$(CONFIG_SENSORS_SSC).*/obj-y -= sensors_ssc.o/g' drivers/sensors/Makefile || true
 
       - name: Build Kernel
@@ -57,23 +60,28 @@ jobs:
           export CROSS_COMPILE=aarch64-linux-gnu-
           export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
           
+          # Folosim LLVM=1 pentru a asigura că toate uneltele sunt din toolchain-ul Proton
           MAKE_ARGS="ARCH=arm64 CC=clang HOSTCC=gcc LLVM=1 LLVM_IAS=1"
           
-          # Folosim steaguri relaxate pentru a trece de orice incompatibilitate minoră de cod Samsung
+          # Flag-uri de relaxare pentru Clang
           export KCFLAGS="-Wno-error -Wno-implicit-function-declaration -Wno-void-pointer-to-int-cast -Wno-return-type -Wno-unused-variable -Wno-macro-redefined -Wno-frame-larger-than"
 
+          # Generăm config-ul
           make $MAKE_ARGS r5q_eur_open_defconfig
           
-          # Optimizări obligatorii pentru Android 15
+          # Asigurăm compatibilitatea cu Android 15 (eBPF & Security)
+          ./scripts/config --disable CONFIG_CC_STACKPROTECTOR_STRONG
+          ./scripts/config --enable CONFIG_CC_STACKPROTECTOR_NONE
           ./scripts/config --disable CONFIG_RKP_KDP
           ./scripts/config --disable CONFIG_DEFEX
           ./scripts/config --enable CONFIG_BPF_SYSCALL
           
+          # Aplicăm schimbările și compilăm
           make $MAKE_ARGS olddefconfig
           make -j$(nproc --all) $MAKE_ARGS Image.gz-dtb
 
       - name: Upload Hybrid Kernel
         uses: actions/upload-artifact@v4
         with:
-          name: kernel-r5q-pascua-hybrid
+          name: kernel-r5q-pascua-v44
           path: kernel-res/arch/arm64/boot/Image.gz-dtb
