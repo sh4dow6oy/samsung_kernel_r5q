@@ -1,4 +1,4 @@
-name: S10 Lite - Upstream Fixer v66
+name: S10 Lite - DTBS Nuclear Fix v67
 
 on:
   push:
@@ -27,7 +27,7 @@ jobs:
           cd kernel-res
           git remote add stable https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git
           git fetch stable linux-4.14.y
-          git merge FETCH_HEAD --no-edit || echo "Merge conflicts handled manually"
+          git merge FETCH_HEAD --no-edit || echo "Merge partial"
 
       - name: Inject Drivers
         run: |
@@ -38,25 +38,24 @@ jobs:
           cp -r s10-lite-src/arch/arm64/boot/dts/samsung kernel-res/arch/arm64/boot/dts/ || true
           cp s10-lite-src/arch/arm64/configs/r5q_eur_open_defconfig kernel-res/arch/arm64/configs/
 
-      - name: Upstream Patching (v66)
+      - name: Surgical Fixes (v67)
         run: |
           cd kernel-res
           
-          # 1. FIX Device Tree (shared_meta not found)
-          # Ștergem referințele la nodul problematic din DTS-ul de Qualcomm
-          sed -i '/shared_meta/d' arch/arm64/boot/dts/qcom/sa8155-adp-common.dtsi
+          # 1. FIX Device Tree - Comentăm nodul problematic în loc să îl ștergem
+          # Căutăm linia cu shared_meta și comentăm tot blocul până la prima acoladă de închidere
+          sed -i '/&shared_meta {/,/};/ s/^/\/\//' arch/arm64/boot/dts/qcom/sa8155-adp-common.dtsi
 
-          # 2. FIX HID Trace (fatal error: './hid-trace.h' file not found)
-          # Corectăm path-ul pentru sistemul de tracing
+          # 2. FIX HID Trace - Path corect pentru include
           sed -i 's|#define TRACE_INCLUDE_PATH .|#define TRACE_INCLUDE_PATH ../../drivers/hid|g' drivers/hid/hid-trace.h
 
-          # 3. WALT Dummy Fix (Re-aplicat pe noua bază)
+          # 3. WALT Dummy Fix (Double check)
           sed -i '40i static long s10_dummy_val;\nstatic long s10_dummy_val_scaled;' kernel/sched/walt.c
           sed -i 's/rq->cum_window_demand/s10_dummy_val/g' kernel/sched/walt.c
           sed -i 's/rq->cumulative_runnable_avg/s10_dummy_val/g' kernel/sched/walt.c
           sed -i 's/0_scaled/s10_dummy_val_scaled/g' kernel/sched/walt.c
 
-          # 4. Namespace and Pointer Fixes
+          # 4. Standard Fixes
           sed -i 's/static unsigned int task_load(/static unsigned int __samsung_old_task_load(/g' kernel/sched/walt.c
           sed -i 's/walt_inc_cumulative_runnable_avg/samsung_inc_walt/g' kernel/sched/walt.c
           sed -i 's/walt_dec_cumulative_runnable_avg/samsung_dec_walt/g' kernel/sched/walt.c
@@ -79,12 +78,11 @@ jobs:
           ./scripts/config --enable CONFIG_CC_STACKPROTECTOR_NONE
           
           make $MAKE_ARGS olddefconfig
-          # Compilăm separat DTB-urile pentru a izola eventualele erori rămase
-          make -j$(nproc --all) $MAKE_ARGS dtbs
+          # Forțăm compilarea Image.gz-dtb direct
           make -j$(nproc --all) $MAKE_ARGS Image.gz-dtb
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: kernel-S10Lite-4.14.356-v66
+          name: kernel-S10Lite-4.14.356-v67
           path: kernel-res/arch/arm64/boot/Image.gz-dtb
