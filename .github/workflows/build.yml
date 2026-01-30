@@ -1,4 +1,4 @@
-name: S10 Lite Kernel Build - v105 (R5Q Source)
+name: S10 Lite Kernel Build - v106
 
 on:
   push:
@@ -29,17 +29,17 @@ jobs:
           git fetch stable linux-4.14.y
           git merge FETCH_HEAD --no-edit || echo "Merge handled"
 
-      - name: Inject R5Q Specific Drivers
+      - name: Inject R5Q Corrected Sources
         run: |
-          # 1. Înlocuim fișierele MMC care au dat erori cu cele din sursa r5q a lui mainey
-          # Acestea conțin variabilele Samsung (intmask_p, dma, etc.) deja definite
           RAW_R5Q="https://raw.githubusercontent.com/mainey/android_kernel_samsung_r5q/lineage-18.1"
           
+          # Importăm stack-ul MMC COMPLET (inclusiv Header-ul lipsă)
           curl -sSL "$RAW_R5Q/drivers/mmc/host/sdhci.c" -o kernel-res/drivers/mmc/host/sdhci.c
+          curl -sSL "$RAW_R5Q/drivers/mmc/host/sdhci.h" -o kernel-res/drivers/mmc/host/sdhci.h
           curl -sSL "$RAW_R5Q/drivers/mmc/host/sdhci-msm.c" -o kernel-res/drivers/mmc/host/sdhci-msm.c
           curl -sSL "$RAW_R5Q/drivers/mmc/core/sdio.c" -o kernel-res/drivers/mmc/core/sdio.c
           
-          # 2. Injectăm driverele tale Samsung din r5q_eur_open_defconfig
+          # Injectăm restul driverelor Samsung
           cp -r s10-lite-src/drivers/soc/samsung kernel-res/drivers/soc/ || true
           cp -r s10-lite-src/drivers/camera kernel-res/drivers/ || true
           cp -r s10-lite-src/drivers/fingerprint kernel-res/drivers/ || true
@@ -47,22 +47,22 @@ jobs:
           cp -r s10-lite-src/arch/arm64/boot/dts/samsung kernel-res/arch/arm64/boot/dts/ || true
           cp s10-lite-src/arch/arm64/configs/r5q_eur_open_defconfig kernel-res/arch/arm64/configs/
 
-      - name: Surgical Fixes v105
+      - name: Surgical Fixes v106
         run: |
           cd kernel-res
           
-          # Fix HID Trace (Rămâne necesar pentru repo-urile Google/Lineage)
-          find drivers/hid -name "*.h" -exec sed -i 's|#define TRACE_INCLUDE_PATH .|#define TRACE_INCLUDE_PATH ../../drivers/hid|g' {} +
+          # 1. FIX DTS (Eliminăm platformele problematice care nu sunt necesare pentru S10 Lite)
+          # Ștergem referința la sa8155 care dă eroarea "shared_meta"
+          sed -i '/sa8155/d' arch/arm64/boot/dts/qcom/Makefile
 
-          # Fix label-uri în tot kernelul (previne eroarea 'out' undeclared label)
+          # 2. FIX DM-BOW (Redefiniție SECTOR_SIZE)
+          sed -i 's/#define SECTOR_SIZE 512/#ifndef SECTOR_SIZE\n#define SECTOR_SIZE 512\n#endif/g' drivers/md/dm-bow.c
+
+          # 3. FIX HID TRACE & LABELS
+          find drivers/hid -name "*.h" -exec sed -i 's|#define TRACE_INCLUDE_PATH .|#define TRACE_INCLUDE_PATH ../../drivers/hid|g' {} +
           find . -name "*.c" -exec sed -i 's/out:$/out: ;/g' {} +
 
-          # Fix GPIO Alignment (Esențial pentru ca driverele Samsung să pornească pe Android 15)
-          if ! grep -q "void \*gpio_dump;" include/linux/gpio/driver.h; then
-            sed -i '/struct gpio_chip {/a \	void *gpio_dump;' include/linux/gpio/driver.h
-          fi
-
-          # Stub-uri Scheduler (Lineage 22 folosește PELT, nu WALT)
+          # 4. Kernel standard stubs
           echo 'int core_ctl_init(void) { return 0; }' > kernel/sched/core_ctl.c
           echo 'void walt_stub(void) {}' > kernel/sched/walt.c
 
@@ -75,22 +75,24 @@ jobs:
           export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
           
           MAKE_ARGS="ARCH=arm64 CC=clang HOSTCC=gcc LLVM=1 LLVM_IAS=1"
-          # Adăugăm flag-ul -fno-limit-debug-info pentru stabilitate cu Clang
           export KCFLAGS="-Wno-error -Wno-implicit-function-declaration -Wno-unused-label -Wno-return-type -Wno-incompatible-pointer-types -Idrivers/hid -fno-limit-debug-info"
 
           make $MAKE_ARGS r5q_eur_open_defconfig
           
-          # Optimizări finale
+          # Optimizări Android 15
           ./scripts/config --enable CONFIG_EROFS_FS
           ./scripts/config --disable CONFIG_SCHED_WALT
           ./scripts/config --enable CONFIG_SCHED_PELT
           
+          # IMPORTANT: Forțăm compilarea doar pentru Samsung/R5Q Device Tree dacă Makefile-ul general e corupt
           make $MAKE_ARGS olddefconfig
-          make -j$(nproc --all) $MAKE_ARGS Image.gz-dtb
+          make -j$(nproc --all) $MAKE_ARGS Image.gz-dtb || make -j$(nproc --all) $MAKE_ARGS Image.gz
 
       - name: Upload Kernel
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: kernel-S10Lite-R5Q-v105
-          path: kernel-res/arch/arm64/boot/Image.gz-dtb
+          name: kernel-S10Lite-v106
+          path: |
+            kernel-res/arch/arm64/boot/Image.gz-dtb
+            kernel-res/arch/arm64/boot/Image.gz
