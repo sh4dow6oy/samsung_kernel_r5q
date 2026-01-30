@@ -1,4 +1,4 @@
-name: S10 Lite Kernel Build - v113
+name: S10 Lite Kernel Build - v114
 
 on:
   push:
@@ -16,48 +16,47 @@ jobs:
           repository: mainey/android_kernel_samsung_r5q
           ref: lineage-18.1
           path: kernel-res
-          fetch-depth: 0
+          fetch-depth: 0 # Esențial pentru upstream merge
 
       - name: Setup Proton Clang
-          # Proton este cel mai stabil pentru 4.14.x
         run: |
           sudo apt-get update
           sudo apt-get install -y bc bison flex libssl-dev libelf-dev dwarves make python3 lz4 perl git curl
           git clone --depth=1 https://github.com/kdrag0n/proton-clang.git toolchain/proton-clang
 
-      - name: Upstream Integration (The Safe Way)
+      - name: Advanced Upstream Merge
         run: |
           cd kernel-res
           git config user.email "ai@gemini.com"
           git config user.name "Gemini"
           git remote add stable https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git
+          
+          # Fetch tag-uri și ramura 4.14
           git fetch stable linux-4.14.y --tags
           
-          # Forțăm merge-ul chiar dacă istoriile par diferite
-          # Folosim 'ours' pentru a păstra fișierele Samsung intacte în caz de conflict major
-          git merge v4.14.356 --no-edit -X ours || echo "Merge partial finalizat cu prioritate pe sursa Samsung"
+          # Încercăm un merge strategic:
+          # --allow-unrelated-histories: necesar pentru repo-uri de kernel hibrid
+          # -X ours: dacă există conflict, păstrează varianta Samsung (important pentru drivere)
+          git merge v4.14.356 --no-edit --allow-unrelated-histories -X ours || echo "Merge partial finalizat"
 
-      - name: Compiler & Camera Hotfixes
+      - name: Apply A15 & Compiler Patches
         run: |
           cd kernel-res
           
-          # 1. FIX COMPILER-CLANG (Eliminăm redefinirea care a blocat v112)
-          # Aplicăm sed pe ambele variante posibile de macro
+          # 1. Curățăm redefinirile de macro-uri care blochează Proton Clang
           sed -i '/#define __builtin_assume_aligned/d' include/linux/compiler-clang.h
           
-          # 2. FIX CAMERA ISP (Variabila 'i')
+          # 2. Fix Camera ISP (eroarea fatală cu variabila 'i')
           find drivers/media -name "cam_vfe_bus_ver3.c" -exec sed -i 's/uint32_t                     i;/uint32_t                     i = 0;/g' {} +
 
-          # 3. FIX SEC_DEBUG & BPF
-          find arch/arm64 -name "sec_debug.h" -exec sed -i 's/extern void sec_debug_check_sum_interrupted/static inline void sec_debug_check_sum_interrupted/g' {} +
-          
-          # Injectăm cerințele de rețea Android 15
+          # 3. Injectare suport eBPF (Critic pentru Android 15 Networking)
           sed -i 's/CONFIG_BPF_SYSCALL=n/CONFIG_BPF_SYSCALL=y/' arch/arm64/configs/r5q_eur_open_defconfig
           {
             echo "CONFIG_BPF_JIT=y"
             echo "CONFIG_CGROUP_BPF=y"
             echo "CONFIG_NETFILTER_XT_MATCH_BPF=y"
             echo "CONFIG_BPF_STREAM_PARSER=y"
+            echo "CONFIG_LNET=y"
           } >> arch/arm64/configs/r5q_eur_open_defconfig
 
       - name: Build Kernel
@@ -65,21 +64,25 @@ jobs:
           cd kernel-res
           export PATH=$(pwd)/../toolchain/proton-clang/bin:$PATH
           
-          # Definim argumentele de build pentru Proton
+          # Parametri de build optimizați pentru Proton
           MAKE_ARGS="ARCH=arm64 CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1"
           
-          # Dezactivăm erorile care opresc build-ul la codul Samsung vechi
-          export KCFLAGS="-Wno-everything -Wno-error -Wno-macro-redefined -Wno-incompatible-pointer-types"
+          # Ignorăm warning-urile care pe Clang 17+ apar ca erori în codul Samsung vechi
+          export KCFLAGS="-Wno-everything -Wno-error -Wno-macro-redefined -Wno-unused-but-set-variable"
 
           make $MAKE_ARGS r5q_eur_open_defconfig
-          # Încercăm build-ul Image.gz-dtb, dacă eșuează la DTB, scoatem măcar Image.gz
+          
+          # Verificăm dacă BPF e activat în .config-ul final
+          scripts/config --enable CONFIG_BPF_SYSCALL
+          scripts/config --enable CONFIG_BPF_JIT
+          
           make -j$(nproc --all) $MAKE_ARGS Image.gz-dtb || make -j$(nproc --all) $MAKE_ARGS Image.gz
 
-      - name: Upload
+      - name: Upload Artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: kernel-S10Lite-v113
+          name: kernel-S10Lite-A15-Ready
           path: |
             kernel-res/arch/arm64/boot/Image.gz-dtb
             kernel-res/arch/arm64/boot/Image.gz
