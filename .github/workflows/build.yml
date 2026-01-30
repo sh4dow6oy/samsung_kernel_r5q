@@ -30,13 +30,13 @@ jobs:
           mkdir -p kernel-res/kernel/bpf
 
           # Fișierele core eBPF și patch-urile minime
-          cp -v ../pascua28/android_kernel_samsung_sm8250/kernel/bpf/core.c kernel-res/kernel/bpf/
-          cp -v ../pascua28/android_kernel_samsung_sm8250/kernel/bpf/syscall.c kernel-res/kernel/bpf/
-          cp -v ../pascua28/android_kernel_samsung_sm8250/include/linux/bpf.h kernel-res/include/linux/
-          cp -v ../pascua28/android_kernel_samsung_sm8250/include/linux/btf.h kernel-res/include/linux/
-          cp -v ../pascua28/android_kernel_samsung_sm8250/include/linux/tnum.h kernel-res/include/linux/
-          cp -v ../pascua28/android_kernel_samsung_sm8250/include/uapi/linux/bpf.h kernel-res/include/uapi/linux/
-          cp -v ../pascua28/android_kernel_samsung_sm8250/include/uapi/linux/btf.h kernel-res/include/uapi/linux/
+          cp -v ../pascua28/android_kernel_samsung_sm8250/tree/sixteen/kernel/bpf/core.c kernel-res/kernel/bpf/
+          cp -v ../pascua28/android_kernel_samsung_sm8250/tree/sixteen/kernel/bpf/syscall.c kernel-res/kernel/bpf/
+          cp -v ../pascua28/android_kernel_samsung_sm8250/tree/sixteen/include/linux/bpf.h kernel-res/include/linux/
+          cp -v ../pascua28/android_kernel_samsung_sm8250/tree/sixteen/include/linux/btf.h kernel-res/include/linux/
+          cp -v ../pascua28/android_kernel_samsung_sm8250/tree/sixteen/include/linux/tnum.h kernel-res/include/linux/
+          cp -v ../pascua28/android_kernel_samsung_sm8250/tree/sixteen/include/uapi/linux/bpf.h kernel-res/include/uapi/linux/
+          cp -v ../pascua28/android_kernel_samsung_sm8250/tree/sixteen/include/uapi/linux/btf.h kernel-res/include/uapi/linux/
 
           # Patch minime syscall.c (Pascua style)
           sed -i 's/access_ok(\([^,]*\), \([^)]*\))/access_ok(VERIFY_READ, \1, \2)/g' kernel-res/kernel/bpf/syscall.c
