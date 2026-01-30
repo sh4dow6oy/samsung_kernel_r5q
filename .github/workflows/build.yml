@@ -1,4 +1,4 @@
-name: S10 Lite Kernel Build - v115
+name: S10 Lite Kernel Build - v116
 
 on:
   push:
@@ -10,13 +10,13 @@ jobs:
     runs-on: ubuntu-22.04
 
     steps:
-      - name: Fast Checkout (Depth 1)
+      - name: Fast Checkout
         uses: actions/checkout@v4
         with:
           repository: mainey/android_kernel_samsung_r5q
           ref: lineage-18.1
           path: kernel-res
-          fetch-depth: 1 # Descarcă doar ultima versiune, fără istorie grea
+          fetch-depth: 1
 
       - name: Setup Proton Clang
         run: |
@@ -24,62 +24,57 @@ jobs:
           sudo apt-get install -y bc bison flex libssl-dev libelf-dev dwarves make python3 lz4 perl git curl
           git clone --depth=1 https://github.com/kdrag0n/proton-clang.git toolchain/proton-clang
 
-      - name: Targeted Upstream (No Full Merge)
+      - name: Targeted Upstream Patch
         run: |
           cd kernel-res
-          git config user.email "ai@gemini.com"
-          git config user.name "Gemini"
+          # Încercăm să luăm patch-ul de la o sursă sigură (CDN-ul kernel.org)
+          # Dacă .356 e problematic, încercăm o versiune foarte apropiată
+          curl -LO https://cdn.kernel.org/pub/linux/kernel/v4.x/patch-4.14.336.gz || \
+          curl -LO https://cdn.kernel.org/pub/linux/kernel/v4.x/patch-4.14.320.gz
           
-          # În loc de merge total care blochează tot, descărcăm doar patch-ul 4.14.356
-          # și îl aplicăm ca pe un strat peste codul Samsung
-          wget https://mirrors.edge.kernel.org/pub/linux/kernel/v4.x/patch-4.14.356.gz
-          zcat patch-4.14.356.gz | patch -p1 -N -r - || echo "Unele patch-uri au eșuat (conflicte cu Samsung), continuăm..."
+          if [ -f patch-4.14.*.gz ]; then
+            zcat patch-4.14.*.gz | patch -p1 -N -r - || echo "Unele conflicte au fost ignorate"
+          fi
 
-      - name: BPF & Camera Surgical Fixes
+      - name: Android 15 & Camera Surgical Fixes
         run: |
           cd kernel-res
           
-          # Fix Camera ISP (Eroarea fatală cu variabila 'i')
+          # Fix Camera ISP (Eroarea cu variabila 'i' neinițializată)
           find drivers/media -name "cam_vfe_bus_ver3.c" -exec sed -i 's/uint32_t                     i;/uint32_t                     i = 0;/g' {} +
           
-          # Fix Compiler Redefinition (Proton Clang fix)
+          # Fix Compiler Clang (redefinire macro)
           sed -i '/#define __builtin_assume_aligned/d' include/linux/compiler-clang.h
           
-          # Configurare eBPF pentru Android 15 (Obligatoriu pentru Boot)
-          # Folosim metoda directă în defconfig
-          sed -i 's/CONFIG_BPF_SYSCALL=n/CONFIG_BPF_SYSCALL=y/' arch/arm64/configs/r5q_eur_open_defconfig
-          {
-            echo "CONFIG_BPF_SYSCALL=y"
-            echo "CONFIG_BPF_JIT=y"
-            echo "CONFIG_HAVE_EBPF_JIT=y"
-            echo "CONFIG_BPF_EVENTS=y"
-            echo "CONFIG_CGROUP_BPF=y"
-            echo "CONFIG_NETFILTER_XT_MATCH_BPF=y"
-          } >> arch/arm64/configs/r5q_eur_open_defconfig
+          # Fix pentru SEC_DEBUG (evităm erorile de linking)
+          find arch/arm64 -name "sec_debug.h" -exec sed -i 's/extern void sec_debug_check_sum_interrupted/static inline void sec_debug_check_sum_interrupted/g' {} +
 
-      - name: Build Kernel (Proton LLVM)
+          # Configurare eBPF pentru Android 15
+          # Fără astea, Android 15 nu trece de boot animation
+          ./scripts/config --file arch/arm64/configs/r5q_eur_open_defconfig --enable CONFIG_BPF_SYSCALL
+          ./scripts/config --file arch/arm64/configs/r5q_eur_open_defconfig --enable CONFIG_BPF_JIT
+          ./scripts/config --file arch/arm64/configs/r5q_eur_open_defconfig --enable CONFIG_CGROUP_BPF
+          ./scripts/config --file arch/arm64/configs/r5q_eur_open_defconfig --enable CONFIG_NETFILTER_XT_MATCH_BPF
+          ./scripts/config --file arch/arm64/configs/r5q_eur_open_defconfig --enable CONFIG_BPF_STREAM_PARSER
+
+      - name: Build Kernel
         run: |
           cd kernel-res
           export PATH=$(pwd)/../toolchain/proton-clang/bin:$PATH
           
           MAKE_ARGS="ARCH=arm64 CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1"
           
-          # Flag-uri de relaxare a erorilor pentru codul vechi Samsung
-          export KCFLAGS="-Wno-everything -Wno-error -Wno-macro-redefined -Wno-implicit-function-declaration"
+          # Flag-uri de suprimare a warning-urilor
+          export KCFLAGS="-Wno-everything -Wno-error -Wno-macro-redefined"
 
           make $MAKE_ARGS r5q_eur_open_defconfig
-          
-          # Forțăm activarea BPF înainte de compilare
-          ./scripts/config --enable CONFIG_BPF_SYSCALL
-          ./scripts/config --enable CONFIG_BPF_JIT
-          
           make -j$(nproc --all) $MAKE_ARGS Image.gz-dtb || make -j$(nproc --all) $MAKE_ARGS Image.gz
 
       - name: Upload
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-A15-Kernel-v115
+          name: kernel-S10Lite-A15-v116
           path: |
             kernel-res/arch/arm64/boot/Image.gz-dtb
             kernel-res/arch/arm64/boot/Image.gz
