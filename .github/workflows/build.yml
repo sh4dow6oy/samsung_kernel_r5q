@@ -1,4 +1,4 @@
-name: S10 Lite Kernel Build - v104 (sm8150-common)
+name: S10 Lite Kernel Build - v105 (R5Q Source)
 
 on:
   push:
@@ -29,38 +29,42 @@ jobs:
           git fetch stable linux-4.14.y
           git merge FETCH_HEAD --no-edit || echo "Merge handled"
 
-      - name: Driver Injection & sm8150 Fixes
+      - name: Inject R5Q Specific Drivers
         run: |
-          # Injectăm driverele Samsung S10 Lite
+          # 1. Înlocuim fișierele MMC care au dat erori cu cele din sursa r5q a lui mainey
+          # Acestea conțin variabilele Samsung (intmask_p, dma, etc.) deja definite
+          RAW_R5Q="https://raw.githubusercontent.com/mainey/android_kernel_samsung_r5q/lineage-18.1"
+          
+          curl -sSL "$RAW_R5Q/drivers/mmc/host/sdhci.c" -o kernel-res/drivers/mmc/host/sdhci.c
+          curl -sSL "$RAW_R5Q/drivers/mmc/host/sdhci-msm.c" -o kernel-res/drivers/mmc/host/sdhci-msm.c
+          curl -sSL "$RAW_R5Q/drivers/mmc/core/sdio.c" -o kernel-res/drivers/mmc/core/sdio.c
+          
+          # 2. Injectăm driverele tale Samsung din r5q_eur_open_defconfig
           cp -r s10-lite-src/drivers/soc/samsung kernel-res/drivers/soc/ || true
           cp -r s10-lite-src/drivers/camera kernel-res/drivers/ || true
           cp -r s10-lite-src/drivers/fingerprint kernel-res/drivers/ || true
           cp -r s10-lite-src/drivers/sensors kernel-res/drivers/ || true
           cp -r s10-lite-src/arch/arm64/boot/dts/samsung kernel-res/arch/arm64/boot/dts/ || true
           cp s10-lite-src/arch/arm64/configs/r5q_eur_open_defconfig kernel-res/arch/arm64/configs/
-          
-          # FIX SDIO: Folosim varianta brută (raw) corectă
-          curl -sSL "https://raw.githubusercontent.com/LineageOS/android_kernel_samsung_sm6150/lineage-21.0/drivers/mmc/core/sdio.c" -o kernel-res/drivers/mmc/core/sdio.c
 
-      - name: Surgical Fixes v104 (sm8150 alignment)
+      - name: Surgical Fixes v105
         run: |
           cd kernel-res
           
-          # 1. FIX SDHCI (Erorile anterioare de intmask_p și dma)
-          # Folosim o abordare mai sigură: definim variabilele dacă lipsesc
-          sed -i '/sdhci_cmd_irq(struct sdhci_host \*host, u32 intmask)/{N;s/intmask)/intmask, u32 *unused)/}' drivers/mmc/host/sdhci.c
-          sed -i 's/sdhci_cmd_irq(host, intmask & SDHCI_INT_CMD_MASK, &intmask);/sdhci_cmd_irq(host, intmask \& SDHCI_INT_CMD_MASK, \&intmask);/g' drivers/mmc/host/sdhci.c
-          
-          # Fix dma undeclared: adăugăm un pointer dummy pentru a satisface log-urile
-          sed -i '/sdhci_adma_show_error(struct sdhci_host \*host)/a \	dma_addr_t dma = 0;' drivers/mmc/host/sdhci.c
-
-          # 2. HID TRACE & LABELS (Inspirat din sm8150-common patches)
+          # Fix HID Trace (Rămâne necesar pentru repo-urile Google/Lineage)
           find drivers/hid -name "*.h" -exec sed -i 's|#define TRACE_INCLUDE_PATH .|#define TRACE_INCLUDE_PATH ../../drivers/hid|g' {} +
-          find drivers/mmc/core/ -name "*.c" -exec sed -i 's/out:$/out: ;/g' {} +
 
-          # 3. Audio/Haptics sm8150 specific
-          # Samsung folosește un sistem de feedback haptic care deseori dă conflicte în kernel-ul Google
-          sed -i 's/EXPORT_SYMBOL_GPL(input_event);/EXPORT_SYMBOL(input_event);/g' drivers/input/input.c
+          # Fix label-uri în tot kernelul (previne eroarea 'out' undeclared label)
+          find . -name "*.c" -exec sed -i 's/out:$/out: ;/g' {} +
+
+          # Fix GPIO Alignment (Esențial pentru ca driverele Samsung să pornească pe Android 15)
+          if ! grep -q "void \*gpio_dump;" include/linux/gpio/driver.h; then
+            sed -i '/struct gpio_chip {/a \	void *gpio_dump;' include/linux/gpio/driver.h
+          fi
+
+          # Stub-uri Scheduler (Lineage 22 folosește PELT, nu WALT)
+          echo 'int core_ctl_init(void) { return 0; }' > kernel/sched/core_ctl.c
+          echo 'void walt_stub(void) {}' > kernel/sched/walt.c
 
       - name: Build Kernel
         run: |
@@ -71,13 +75,12 @@ jobs:
           export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
           
           MAKE_ARGS="ARCH=arm64 CC=clang HOSTCC=gcc LLVM=1 LLVM_IAS=1"
-          export KCFLAGS="-Wno-error -Wno-implicit-function-declaration -Wno-unused-label -Wno-return-type -Wno-incompatible-pointer-types -Idrivers/hid"
+          # Adăugăm flag-ul -fno-limit-debug-info pentru stabilitate cu Clang
+          export KCFLAGS="-Wno-error -Wno-implicit-function-declaration -Wno-unused-label -Wno-return-type -Wno-incompatible-pointer-types -Idrivers/hid -fno-limit-debug-info"
 
           make $MAKE_ARGS r5q_eur_open_defconfig
           
-          # Forțăm configurația corectă pentru SM8150 common
-          ./scripts/config --enable CONFIG_MMC_SDHCI_MSM
-          ./scripts/config --disable CONFIG_MMC_SDHCI_S3C
+          # Optimizări finale
           ./scripts/config --enable CONFIG_EROFS_FS
           ./scripts/config --disable CONFIG_SCHED_WALT
           ./scripts/config --enable CONFIG_SCHED_PELT
@@ -89,5 +92,5 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: kernel-S10Lite-v104-Common8150
+          name: kernel-S10Lite-R5Q-v105
           path: kernel-res/arch/arm64/boot/Image.gz-dtb
