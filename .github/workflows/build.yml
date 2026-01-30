@@ -1,4 +1,4 @@
-name: S10 Lite Kernel Build - v134 (Google Base Rebase)
+name: S10 Lite Kernel Build - v137 (L-23.0)
 
 on:
   push:
@@ -10,15 +10,15 @@ jobs:
     runs-on: ubuntu-22.04
 
     steps:
-      - name: Checkout Google MSM 4.14 (Base)
+      - name: Checkout Google MSM 4.14 (lineage-23.0)
         uses: actions/checkout@v4
         with:
           repository: LineageOS/android_kernel_google_msm-4.14
-          ref: lineage-18.1
+          ref: lineage-23.0
           path: kernel-res
           fetch-depth: 1
 
-      - name: Checkout Samsung S10 Lite (Source for Drivers)
+      - name: Checkout Samsung S10 Lite (Drivers)
         uses: actions/checkout@v4
         with:
           repository: mainey/android_kernel_samsung_r5q
@@ -32,64 +32,72 @@ jobs:
           sudo apt-get install -y bc bison flex libssl-dev libelf-dev dwarves make python3 lz4 perl git curl
           git clone --depth=1 https://github.com/kdrag0n/proton-clang.git toolchain/proton-clang
 
-      - name: The Great Driver Transplant
+      - name: The Great Rebase (Driver Integration)
         run: |
           cd kernel-res
-          # 1. Copiem driverele specifice Samsung pentru SM8150 (r5q)
-          cp -rv ../samsung-src/drivers/soc/samsung drivers/soc/
-          cp -rv ../samsung-src/drivers/gpu/drm/msm/samsung drivers/gpu/drm/msm/
-          cp -rv ../samsung-src/drivers/input/touchscreen/samsung drivers/input/touchscreen/
+          # 1. Transplant Drivers
+          cp -rv ../samsung-src/drivers/soc/samsung drivers/soc/ || true
+          cp -rv ../samsung-src/drivers/gpu/drm/msm/samsung drivers/gpu/drm/msm/ || true
+          cp -rv ../samsung-src/drivers/input/touchscreen/samsung drivers/input/touchscreen/ || true
           
-          # 2. Copiem definitiile hardware (Device Tree) - Esential pentru boot!
-          cp -rv ../samsung-src/arch/arm64/boot/dts/samsung arch/arm64/boot/dts/
+          # 2. Transplant Device Tree (The Hardware Map)
+          mkdir -p arch/arm64/boot/dts/samsung
+          cp -rv ../samsung-src/arch/arm64/boot/dts/samsung/* arch/arm64/boot/dts/samsung/ || true
           
-          # 3. Copiem Defconfig-ul original S10 Lite
+          # 3. Transplant Config
           cp ../samsung-src/arch/arm64/configs/r5q_eur_open_defconfig arch/arm64/configs/
           
-          # 4. Inregistram noile foldere in Makefile-ul bazei Google
-          echo "obj-y += samsung/" >> drivers/soc/Makefile
-          echo "obj-y += samsung/" >> drivers/gpu/drm/msm/Makefile
+          # 4. Bind Drivers to Build System (Crucial Step)
+          # Verificam daca Makefile-urile au deja referinte, daca nu, le adaugam
+          grep -q "samsung/" drivers/soc/Makefile || echo "obj-y += samsung/" >> drivers/soc/Makefile
+          grep -q "samsung/" drivers/gpu/drm/msm/Makefile || echo "obj-$(CONFIG_DRM_MSM) += samsung/" >> drivers/gpu/drm/msm/Makefile
 
       - name: Architect's Surgical Prep
         run: |
           cd kernel-res
-          # Rezolvam vesnica problema cu ss_dsi_panel_debug si firmware
+          # Dezactivam tool-ul de debug care crapa pe Android 15/16
           find drivers/gpu/drm/msm/samsung -name Makefile -exec sed -i 's/obj-y += ss_dsi_panel_debug.o/#/g' {} +
+          
+          # Firmware Stubs
           mkdir -p firmware/tsp_sec
           touch firmware/tsp_sec/y771_r5.bin
           touch firmware/tsp_sec/y771_r5_1l.bin
           
-          # Injectam definitiile de compatibilitate Clang
+          # Clang 17 workaround
           echo "#define __builtin_assume_aligned(x, ...) (x)" >> include/linux/compiler-clang.h
 
-      - name: Build Kernel (Transplanted Mode)
+      - name: Build Kernel (Lineage-23.0 Base)
         run: |
           cd kernel-res
           export PATH=$(pwd)/../toolchain/proton-clang/bin:$PATH
           
-          # Generam config-ul bazat pe S10 Lite
+          # Incarcam config-ul original
           make ARCH=arm64 CC=clang r5q_eur_open_defconfig
           
-          # Fortam activarea eBPF (care acum exista nativ in baza Google!)
+          # Fortam activarea BPF nativ din baza Lineage-23.0
           ./scripts/config --enable CONFIG_BPF_SYSCALL
           ./scripts/config --enable CONFIG_BPF_JIT
+          ./scripts/config --enable CONFIG_CGROUP_BPF
+          ./scripts/config --enable CONFIG_NETFILTER_XT_MATCH_BPF
           
-          # Dezactivam Knox/SEC_DEBUG care nu exista in baza Google
+          # Curatam setarile Samsung care ar putea intra in conflict
           ./scripts/config --disable CONFIG_SEC_DEBUG
           ./scripts/config --disable CONFIG_SECURITY_SAMSUNG_RKP
+          ./scripts/config --disable CONFIG_TIMA
           
           make ARCH=arm64 CC=clang olddefconfig
           
           MAKE_ARGS="ARCH=arm64 CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1"
-          export KCFLAGS="-Wno-everything -Wno-error -Wno-implicit-function-declaration -Wno-int-conversion"
+          # KCFLAGS permisive pentru faza de rebase
+          export KCFLAGS="-O3 -Wno-everything -Wno-error -Wno-implicit-function-declaration -Wno-int-conversion"
 
           make -j$(nproc --all) $MAKE_ARGS Image.gz-dtb || make -j$(nproc --all) $MAKE_ARGS Image.gz
 
-      - name: Upload
+      - name: Upload Finished Kernel
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-GoogleBase-v134
+          name: S10Lite-Lineage23-Base-v137
           path: |
             kernel-res/arch/arm64/boot/Image.gz-dtb
             kernel-res/arch/arm64/boot/Image.gz
