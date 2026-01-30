@@ -1,4 +1,4 @@
-name: S10 Lite Kernel Build - v132 (Fixing BPF Headers)
+name: S10 Lite Kernel Build - v133 (Precise Patching)
 
 on:
   push:
@@ -24,69 +24,53 @@ jobs:
           sudo apt-get install -y bc bison flex libssl-dev libelf-dev dwarves make python3 lz4 perl git curl
           git clone --depth=1 https://github.com/kdrag0n/proton-clang.git toolchain/proton-clang
 
-      - name: Surgical Upstream & Header Fix
+      - name: Manual eBPF Definitions (Fixing the 20 Errors)
         run: |
           cd kernel-res
-          # Luam sursa de referinta de la Pascua
-          git clone --depth=1 -b upstream-ref https://github.com/pascua28/android_kernel_samsung_sm8250 upstream_src
+          # In loc sa copiem fisiere, injectam DOAR ce a lipsit in log-ul tau:
           
-          # 1. SINCRONIZARE COMPLETA BPF (Inclusiv UAPI)
-          rm -rf kernel/bpf/*
-          cp -rv upstream_src/kernel/bpf/* kernel/bpf/
-          cp -v upstream_src/include/linux/bpf* include/linux/
-          # ACESTA ESTE PASUL CRITIC: Sincronizam definitiile de interfata
-          cp -v upstream_src/include/uapi/linux/bpf* include/uapi/linux/
+          # 1. Definitii de baza in bpf.h
+          sed -i '/#define _LINUX_BPF_H/a #include <linux/types.h>\ntypedef unsigned int __poll_t;' include/linux/bpf.h
           
-          # 2. FIX __poll_t (Lipseste in 4.14, exista in 4.19+)
-          # Injectam definitia in types.h daca nu exista
-          grep -q "__poll_t" include/uapi/linux/types.h || echo "typedef unsigned int __poll_t;" >> include/uapi/linux/types.h
+          # 2. Adaugam constantele care au dat "undeclared identifier"
+          echo "#define BPF_OBJ_NAME_LEN 16U" >> include/uapi/linux/bpf.h
+          echo "#define BPF_F_RDONLY_PROG (1U << 7)" >> include/uapi/linux/bpf.h
+          echo "#define BPF_F_WRONLY_PROG (1U << 8)" >> include/uapi/linux/bpf.h
           
-          # 3. FIX BPF_OBJ_NAME_LEN si restul constantelor
-          # Ne asiguram ca header-ul principal de BPF are definitiile de baza
-          sed -i 's/#define BPF_OBJ_NAME_LEN 16U/#define BPF_OBJ_NAME_LEN 16/g' include/uapi/linux/bpf.h 2>/dev/null || true
+          # 3. Fix structural pentru spin_lock (forward declaration)
+          sed -i '/struct bpf_map {/i struct bpf_spin_lock { u32 val; };' include/linux/bpf.h
 
       - name: Architect's Surgical Prep
         run: |
           cd kernel-res
-          # Eliminam modulele de debug Samsung care crapa la compilare
-          sed -i 's/obj-y += ss_dsi_panel_debug.o/#/g' drivers/gpu/drm/msm/samsung/Makefile
+          # Dezactivam modulele de debug care au dat erori
+          find drivers/gpu/drm/msm/samsung -name Makefile -exec sed -i 's/obj-y += ss_dsi_panel_debug.o/#/g' {} +
           sed -i 's/obj-$(CONFIG_HID_TRACE)/#/g' drivers/hid/Makefile
           
-          # Firmware Stubs
+          # Firmware Stubs (y771)
           mkdir -p firmware/tsp_sec
           touch firmware/tsp_sec/y771_r5.bin
           touch firmware/tsp_sec/y771_r5_1l.bin
           
-          # Clang Alignments
+          # Clang Compiler Fix
           echo "#define __builtin_assume_aligned(x, ...) (x)" >> include/linux/compiler-clang.h
-          find . -type f -name "cam_vfe_bus_ver3.c" -exec sed -i 's/uint32_t                     i;/uint32_t                     i = 0;/g' {} +
 
-      - name: Hardcode Android 15/16 Compliance
+      - name: Build Kernel (Safe Mode)
         run: |
           cd kernel-res
           export PATH=$(pwd)/../toolchain/proton-clang/bin:$PATH
           make ARCH=arm64 CC=clang r5q_eur_open_defconfig
           
-          # Activam suportul BPF complet
+          # Activam doar strictul necesar pentru boot
           ./scripts/config --enable CONFIG_BPF_SYSCALL
           ./scripts/config --enable CONFIG_BPF_JIT
-          ./scripts/config --enable CONFIG_CGROUP_BPF
-          ./scripts/config --enable CONFIG_NETFILTER_XT_MATCH_BPF
-          
-          # Dezactivam balastul Samsung care intra in conflict cu headerele noi
           ./scripts/config --disable CONFIG_SECURITY_SAMSUNG_RKP
-          ./scripts/config --disable CONFIG_TIMA
           
           make ARCH=arm64 CC=clang olddefconfig
-
-      - name: Build Kernel
-        run: |
-          cd kernel-res
-          export PATH=$(pwd)/../toolchain/proton-clang/bin:$PATH
-          MAKE_ARGS="ARCH=arm64 CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1"
           
-          # Ignoram erorile de tip mismatch ramase intre nuclee
-          export KCFLAGS="-O3 -Wno-everything -Wno-error -Wno-implicit-function-declaration -Wno-incompatible-pointer-types -Wno-int-conversion -Wno-implicit-int"
+          MAKE_ARGS="ARCH=arm64 CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1"
+          # Ignoram erorile OpenSSL si warning-urile de tip
+          export KCFLAGS="-Wno-everything -Wno-error -Wno-implicit-function-declaration"
 
           make -j$(nproc --all) $MAKE_ARGS Image.gz-dtb || make -j$(nproc --all) $MAKE_ARGS Image.gz
 
@@ -94,7 +78,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-A15-A16-Fix-v132
+          name: S10Lite-A15-Minimalist-v133
           path: |
             kernel-res/arch/arm64/boot/Image.gz-dtb
             kernel-res/arch/arm64/boot/Image.gz
