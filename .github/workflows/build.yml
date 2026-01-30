@@ -1,4 +1,4 @@
-name: S10 Lite Kernel Build - v125
+name: S10 Lite Kernel Build - v126
 
 on:
   push:
@@ -10,7 +10,7 @@ jobs:
     runs-on: ubuntu-22.04
 
     steps:
-      - name: Checkout Source (Fast)
+      - name: Checkout Source
         uses: actions/checkout@v4
         with:
           repository: mainey/android_kernel_samsung_r5q
@@ -24,25 +24,26 @@ jobs:
           sudo apt-get install -y bc bison flex libssl-dev libelf-dev dwarves make python3 lz4 perl git curl
           git clone --depth=1 https://github.com/kdrag0n/proton-clang.git toolchain/proton-clang
 
-      - name: Architect's Surgical Prep
+      - name: Architect's Surgical Prep (v2)
         run: |
           cd kernel-res
           
-          # 1. ELIMINARE TRACING & DEBUG (Sursele erorilor anterioare)
-          find . -name Makefile -exec sed -i 's/obj-$(CONFIG_HID_TRACE)/# obj-$(CONFIG_HID_TRACE)/g' {} +
-          find . -name Makefile -exec sed -i 's/obj-$(CONFIG_SEC_DEBUG)/# obj-$(CONFIG_SEC_DEBUG)/g' {} +
+          # 1. DEZACTIVARE AGRESIVĂ MODULE PROBLEMATICE
+          # Eliminăm complet ss_dsi_panel_debug de la compilare (cauza erorii tale)
+          sed -i 's/obj-y += ss_dsi_panel_debug.o/# obj-y += ss_dsi_panel_debug.o/g' drivers/gpu/drm/msm/samsung/Makefile
           
-          # 2. FIX FIRMWARE STUBBING
+          # Eliminăm hid-trace (eroarea persistentă)
+          sed -i 's/obj-$(CONFIG_HID_TRACE)/# obj-$(CONFIG_HID_TRACE)/g' drivers/hid/Makefile
+          
+          # 2. STUBBING FIRMWARE (y771_r5 si y771_r5_1l)
           mkdir -p firmware/tsp_sec
           touch firmware/tsp_sec/y771_r5.bin
+          touch firmware/tsp_sec/y771_r5_1l.bin
           
-          # 3. COMPILER ALIGNMENT
-          # Folosim sed pentru a injecta header-ul intr-un loc sigur daca fisierul exista
-          [ -f include/linux/compiler-clang.h ] && echo "#define __builtin_assume_aligned(x, ...) (x)" >> include/linux/compiler-clang.h
-          
-          # 4. CAMERA & MODEM SYNTAX FIX
+          # 3. COMPILER & SYNTAX FIXES
+          echo "#define __builtin_assume_aligned(x, ...) (x)" >> include/linux/compiler-clang.h
           find . -type f -name "cam_vfe_bus_ver3.c" -exec sed -i 's/uint32_t                     i;/uint32_t                     i = 0;/g' {} +
-          # Fix mai precis pentru macro-urile Samsung (evita "expected expression")
+          # Fix pentru macro-urile Samsung (terminator de expresie)
           find drivers/soc/samsung -name "*.c" -exec sed -i 's/):$/);/g' {} +
 
       - name: Hardcode Android 15 Compliance
@@ -50,41 +51,40 @@ jobs:
           cd kernel-res
           export PATH=$(pwd)/../toolchain/proton-clang/bin:$PATH
           
-          # Generam config-ul initial
           make ARCH=arm64 CC=clang r5q_eur_open_defconfig
           
-          # Injectam setarile eBPF
+          # Activare BPF
           ./scripts/config --enable CONFIG_BPF_SYSCALL
           ./scripts/config --enable CONFIG_BPF_JIT
           ./scripts/config --enable CONFIG_CGROUP_BPF
           ./scripts/config --enable CONFIG_NETFILTER_XT_MATCH_BPF
-          ./scripts/config --enable CONFIG_BPF_STREAM_PARSER
           
-          # Dezactivam balastul
+          # Dezactivare totală balast Samsung care dă erori de debug
           ./scripts/config --disable CONFIG_SEC_DEBUG
           ./scripts/config --disable CONFIG_HID_TRACE
           ./scripts/config --disable CONFIG_SECURITY_SAMSUNG_RKP
+          ./scripts/config --disable CONFIG_TIMA
+          ./scripts/config --disable CONFIG_SAMSUNG_DEBUG_BOARD
           
-          # Validam modificarile (Foarte important!)
           make ARCH=arm64 CC=clang olddefconfig
 
-      - name: Build Kernel (Aggressive Optimization)
+      - name: Build Kernel
         run: |
           cd kernel-res
           export PATH=$(pwd)/../toolchain/proton-clang/bin:$PATH
           
           MAKE_ARGS="ARCH=arm64 CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1"
           
-          # Ignoram warning-urile si erorile de tip "unused" care apar la Clang
-          export KCFLAGS="-Wno-everything -Wno-error -Wno-implicit-function-declaration -Wno-macro-redefined -Wno-unused-variable"
+          # KCFLAGS pentru a ignora tot ce nu e critic
+          export KCFLAGS="-Wno-everything -Wno-error -Wno-implicit-function-declaration -Wno-macro-redefined -Wno-unused-variable -Wno-address-of-packed-member"
 
           make -j$(nproc --all) $MAKE_ARGS Image.gz-dtb || make -j$(nproc --all) $MAKE_ARGS Image.gz
 
-      - name: Upload Finished Kernel
+      - name: Upload
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-A15-Architect-v125
+          name: S10Lite-A15-Architect-v126
           path: |
             kernel-res/arch/arm64/boot/Image.gz-dtb
             kernel-res/arch/arm64/boot/Image.gz
