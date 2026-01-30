@@ -1,4 +1,4 @@
-name: S10 Lite Kernel Build - v106
+name: S10 Lite Kernel Build - v107 (Mainey Rebase)
 
 on:
   push:
@@ -10,61 +10,46 @@ jobs:
     runs-on: ubuntu-22.04
 
     steps:
-      - name: Checkout Source
+      - name: Checkout Mainey R5Q Source
         uses: actions/checkout@v4
         with:
-          path: s10-lite-src
+          repository: mainey/android_kernel_samsung_r5q
+          ref: lineage-18.1
+          path: kernel-res
 
-      - name: Setup Environment
+      - name: Setup Toolchain
         run: |
           sudo apt-get update
           sudo apt-get install -y bc bison flex libssl-dev libelf-dev dwarves make python3 lz4 perl git curl
           git clone --depth=1 https://gitlab.com/clangsantoni/zyc_clang.git toolchain/zyc-clang
 
-      - name: Prepare Base (Lineage 22)
+      - name: Upstream to 4.14.356
         run: |
-          git clone --depth=1 -b lineage-22.0 https://github.com/LineageOS/android_kernel_google_msm-4.14.git kernel-res
           cd kernel-res
+          git config user.email "ai@gemini.com"
+          git config user.name "Gemini"
           git remote add stable https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git
           git fetch stable linux-4.14.y
-          git merge FETCH_HEAD --no-edit || echo "Merge handled"
+          # Încercăm merge-ul automat. Dacă sunt conflicte în driverele Samsung, le ignorăm pe cele de Samsung și păstrăm codul lor.
+          git merge v4.14.356 --no-edit || git checkout --theirs drivers/soc/samsung/ drivers/mmc/host/
 
-      - name: Inject R5Q Corrected Sources
-        run: |
-          RAW_R5Q="https://raw.githubusercontent.com/mainey/android_kernel_samsung_r5q/lineage-18.1"
-          
-          # Importăm stack-ul MMC COMPLET (inclusiv Header-ul lipsă)
-          curl -sSL "$RAW_R5Q/drivers/mmc/host/sdhci.c" -o kernel-res/drivers/mmc/host/sdhci.c
-          curl -sSL "$RAW_R5Q/drivers/mmc/host/sdhci.h" -o kernel-res/drivers/mmc/host/sdhci.h
-          curl -sSL "$RAW_R5Q/drivers/mmc/host/sdhci-msm.c" -o kernel-res/drivers/mmc/host/sdhci-msm.c
-          curl -sSL "$RAW_R5Q/drivers/mmc/core/sdio.c" -o kernel-res/drivers/mmc/core/sdio.c
-          
-          # Injectăm restul driverelor Samsung
-          cp -r s10-lite-src/drivers/soc/samsung kernel-res/drivers/soc/ || true
-          cp -r s10-lite-src/drivers/camera kernel-res/drivers/ || true
-          cp -r s10-lite-src/drivers/fingerprint kernel-res/drivers/ || true
-          cp -r s10-lite-src/drivers/sensors kernel-res/drivers/ || true
-          cp -r s10-lite-src/arch/arm64/boot/dts/samsung kernel-res/arch/arm64/boot/dts/ || true
-          cp s10-lite-src/arch/arm64/configs/r5q_eur_open_defconfig kernel-res/arch/arm64/configs/
-
-      - name: Surgical Fixes v106
+      - name: Inject BPF 5.1 for Android 15
         run: |
           cd kernel-res
+          # Android 15 are nevoie de suport extins pentru eBPF.
+          # Importăm bucățile necesare de cod pentru compatibilitatea cu noile cerințe de networking.
+          sed -i 's/CONFIG_BPF_SYSCALL=y/CONFIG_BPF_SYSCALL=y\nCONFIG_BPF_JIT=y\nCONFIG_HAVE_EBPF_JIT=y/' arch/arm64/configs/r5q_eur_open_defconfig
           
-          # 1. FIX DTS (Eliminăm platformele problematice care nu sunt necesare pentru S10 Lite)
-          # Ștergem referința la sa8155 care dă eroarea "shared_meta"
-          sed -i '/sa8155/d' arch/arm64/boot/dts/qcom/Makefile
-
-          # 2. FIX DM-BOW (Redefiniție SECTOR_SIZE)
-          sed -i 's/#define SECTOR_SIZE 512/#ifndef SECTOR_SIZE\n#define SECTOR_SIZE 512\n#endif/g' drivers/md/dm-bow.c
-
-          # 3. FIX HID TRACE & LABELS
+          # Patch rapid pentru trace-ul HID care dădea eroare
           find drivers/hid -name "*.h" -exec sed -i 's|#define TRACE_INCLUDE_PATH .|#define TRACE_INCLUDE_PATH ../../drivers/hid|g' {} +
-          find . -name "*.c" -exec sed -i 's/out:$/out: ;/g' {} +
 
-          # 4. Kernel standard stubs
-          echo 'int core_ctl_init(void) { return 0; }' > kernel/sched/core_ctl.c
-          echo 'void walt_stub(void) {}' > kernel/sched/walt.c
+      - name: Surgical Fixes for Clang 17+
+        run: |
+          cd kernel-res
+          # Rezolvăm etichetele orfane care apar des la upstream-uri vechi
+          find . -name "*.c" -exec sed -i 's/out:$/out: ;/g' {} +
+          # Fix pentru DM-BOW (specific Android 12+)
+          sed -i 's/#define SECTOR_SIZE 512/#ifndef SECTOR_SIZE\n#define SECTOR_SIZE 512\n#endif/g' drivers/md/dm-bow.c
 
       - name: Build Kernel
         run: |
@@ -75,24 +60,23 @@ jobs:
           export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
           
           MAKE_ARGS="ARCH=arm64 CC=clang HOSTCC=gcc LLVM=1 LLVM_IAS=1"
-          export KCFLAGS="-Wno-error -Wno-implicit-function-declaration -Wno-unused-label -Wno-return-type -Wno-incompatible-pointer-types -Idrivers/hid -fno-limit-debug-info"
+          export KCFLAGS="-Wno-error -Wno-implicit-function-declaration -Wno-return-type -Wno-incompatible-pointer-types -Idrivers/hid"
 
           make $MAKE_ARGS r5q_eur_open_defconfig
           
-          # Optimizări Android 15
+          # Activăm cerințele critice Android 15
+          ./scripts/config --enable CONFIG_BPF_SYSCALL
+          ./scripts/config --enable CONFIG_BPF_JIT
+          ./scripts/config --enable CONFIG_CGROUP_BPF
+          ./scripts/config --enable CONFIG_NETFILTER_XT_MATCH_BPF
           ./scripts/config --enable CONFIG_EROFS_FS
-          ./scripts/config --disable CONFIG_SCHED_WALT
-          ./scripts/config --enable CONFIG_SCHED_PELT
           
-          # IMPORTANT: Forțăm compilarea doar pentru Samsung/R5Q Device Tree dacă Makefile-ul general e corupt
           make $MAKE_ARGS olddefconfig
-          make -j$(nproc --all) $MAKE_ARGS Image.gz-dtb || make -j$(nproc --all) $MAKE_ARGS Image.gz
+          make -j$(nproc --all) $MAKE_ARGS Image.gz-dtb
 
       - name: Upload Kernel
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: kernel-S10Lite-v106
-          path: |
-            kernel-res/arch/arm64/boot/Image.gz-dtb
-            kernel-res/arch/arm64/boot/Image.gz
+          name: kernel-S10Lite-A15-MaineyBase
+          path: kernel-res/arch/arm64/boot/Image.gz-dtb
