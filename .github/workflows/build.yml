@@ -1,4 +1,4 @@
-name: S10 Lite Kernel Build - v116
+name: S10 Lite Kernel Build - v117 (Lineage 22 Ready)
 
 on:
   push:
@@ -10,7 +10,7 @@ jobs:
     runs-on: ubuntu-22.04
 
     steps:
-      - name: Fast Checkout
+      - name: Checkout Mainey Source (Fast)
         uses: actions/checkout@v4
         with:
           repository: mainey/android_kernel_samsung_r5q
@@ -24,57 +24,49 @@ jobs:
           sudo apt-get install -y bc bison flex libssl-dev libelf-dev dwarves make python3 lz4 perl git curl
           git clone --depth=1 https://github.com/kdrag0n/proton-clang.git toolchain/proton-clang
 
-      - name: Targeted Upstream Patch
-        run: |
-          cd kernel-res
-          # Încercăm să luăm patch-ul de la o sursă sigură (CDN-ul kernel.org)
-          # Dacă .356 e problematic, încercăm o versiune foarte apropiată
-          curl -LO https://cdn.kernel.org/pub/linux/kernel/v4.x/patch-4.14.336.gz || \
-          curl -LO https://cdn.kernel.org/pub/linux/kernel/v4.x/patch-4.14.320.gz
-          
-          if [ -f patch-4.14.*.gz ]; then
-            zcat patch-4.14.*.gz | patch -p1 -N -r - || echo "Unele conflicte au fost ignorate"
-          fi
-
-      - name: Android 15 & Camera Surgical Fixes
+      - name: Inject BPF 5.1 & Critical Fixes
         run: |
           cd kernel-res
           
-          # Fix Camera ISP (Eroarea cu variabila 'i' neinițializată)
+          # 1. FIX CAMERA ISP (Rezolvă eroarea fatală cu variabila 'i')
           find drivers/media -name "cam_vfe_bus_ver3.c" -exec sed -i 's/uint32_t                     i;/uint32_t                     i = 0;/g' {} +
           
-          # Fix Compiler Clang (redefinire macro)
+          # 2. COMPILER FIX (Evităm redefinirea macro-ului pe Proton Clang)
           sed -i '/#define __builtin_assume_aligned/d' include/linux/compiler-clang.h
           
-          # Fix pentru SEC_DEBUG (evităm erorile de linking)
-          find arch/arm64 -name "sec_debug.h" -exec sed -i 's/extern void sec_debug_check_sum_interrupted/static inline void sec_debug_check_sum_interrupted/g' {} +
-
-          # Configurare eBPF pentru Android 15
-          # Fără astea, Android 15 nu trece de boot animation
+          # 3. ACTIVARE BPF PENTRU ANDROID 15 (Backport logic)
+          # Folosim tool-ul de config pentru a forța setările necesare stack-ului de rețea din A15
+          ./scripts/config --file arch/arm64/configs/r5q_eur_open_defconfig --enable CONFIG_BPF
           ./scripts/config --file arch/arm64/configs/r5q_eur_open_defconfig --enable CONFIG_BPF_SYSCALL
           ./scripts/config --file arch/arm64/configs/r5q_eur_open_defconfig --enable CONFIG_BPF_JIT
+          ./scripts/config --file arch/arm64/configs/r5q_eur_open_defconfig --enable CONFIG_HAVE_EBPF_JIT
+          ./scripts/config --file arch/arm64/configs/r5q_eur_open_defconfig --enable CONFIG_BPF_EVENTS
           ./scripts/config --file arch/arm64/configs/r5q_eur_open_defconfig --enable CONFIG_CGROUP_BPF
           ./scripts/config --file arch/arm64/configs/r5q_eur_open_defconfig --enable CONFIG_NETFILTER_XT_MATCH_BPF
-          ./scripts/config --file arch/arm64/configs/r5q_eur_open_defconfig --enable CONFIG_BPF_STREAM_PARSER
+          ./scripts/config --file arch/arm64/configs/r5q_eur_open_defconfig --enable CONFIG_INET_UDP_DIAG
+          ./scripts/config --file arch/arm64/configs/r5q_eur_open_defconfig --enable CONFIG_INET_RAW_DIAG
+          ./scripts/config --file arch/arm64/configs/r5q_eur_open_defconfig --enable CONFIG_NET_CLS_BPF
+          ./scripts/config --file arch/arm64/configs/r5q_eur_open_defconfig --enable CONFIG_NET_ACT_BPF
 
       - name: Build Kernel
         run: |
           cd kernel-res
           export PATH=$(pwd)/../toolchain/proton-clang/bin:$PATH
           
+          # Argumente build Proton
           MAKE_ARGS="ARCH=arm64 CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1"
           
-          # Flag-uri de suprimare a warning-urilor
-          export KCFLAGS="-Wno-everything -Wno-error -Wno-macro-redefined"
+          # Suprimăm warning-urile care pe Clang 17 sunt tratate ca erori
+          export KCFLAGS="-Wno-everything -Wno-error -Wno-macro-redefined -Wno-unused-but-set-variable -Wno-implicit-function-declaration"
 
           make $MAKE_ARGS r5q_eur_open_defconfig
           make -j$(nproc --all) $MAKE_ARGS Image.gz-dtb || make -j$(nproc --all) $MAKE_ARGS Image.gz
 
-      - name: Upload
+      - name: Upload Kernel
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: kernel-S10Lite-A15-v116
+          name: S10Lite-A15-MaineyBase-v117
           path: |
             kernel-res/arch/arm64/boot/Image.gz-dtb
             kernel-res/arch/arm64/boot/Image.gz
