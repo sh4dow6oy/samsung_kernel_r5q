@@ -27,7 +27,7 @@ jobs:
         run: |
           cd kernel-res
 
-          # Dummy headers to satisfy BPF includes
+          # Dummy headers pentru a evita erori de include
           mkdir -p include/linux/
           printf "#ifndef _BPF_LIRC_H\n#define _BPF_LIRC_H\n#endif\n" > include/linux/bpf_lirc.h
           printf "#ifndef _PERFLOG_H\n#define _PERFLOG_H\n#endif\n" > include/linux/perflog.h
@@ -40,10 +40,6 @@ jobs:
           # Fix access_ok și BPF syscall/verifier
           sed -i 's/access_ok(\([^,]*\), \([^)]*\))/access_ok(VERIFY_READ, \1, \2)/g' kernel/bpf/syscall.c
           sed -i 's/access_ok(\([^,]*\), \([^)]*\))/access_ok(VERIFY_READ, \1, \2)/g' kernel/bpf/verifier.c
-
-          # Fix struct XDP pentru tun driver
-          sed -i '/struct xdp_buff;/d' include/linux/bpf.h
-          sed -i '/#define _LINUX_BPF_H/a struct xdp_buff { void *data; void *data_end; void *data_meta; void *data_hard_start; void *rxq; };' include/linux/bpf.h
 
           # Makefile: forțăm tnum.o
           if ! grep -q "tnum.o" kernel/bpf/Makefile; then
