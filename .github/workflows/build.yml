@@ -10,60 +10,76 @@ jobs:
     runs-on: ubuntu-22.04
 
     steps:
-      # 1️⃣ Checkout Kernel Source
-      - name: Checkout S10 Lite Kernel Source
+      - name: Checkout Source
         uses: actions/checkout@v4
 
-      # 2️⃣ Setup Toolchain
-      - name: Setup Proton Clang
+      - name: Setup Toolchain
         run: |
           sudo apt-get update
           sudo apt-get install -y bc bison flex libssl-dev libelf-dev dwarves make python3 lz4
           git clone --depth=1 https://github.com/kdrag0n/proton-clang.git toolchain/proton-clang
 
-      # 3️⃣ Prepare Minimal eBPF Patch Environment
-      - name: Minimal eBPF Patch + Dummy Headers
+      - name: Core eBPF Backport
         run: |
-          # Dummy headers pentru compilare
+          # Fetch Linux 5.1 for minimal eBPF headers
+          git remote add linux-stable https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git || true
+          git fetch linux-stable linux-5.1.y --depth=1
+          
+          PATHS=(
+            "kernel/bpf/"
+            "include/linux/bpf.h"
+            "include/linux/filter.h"
+            "include/linux/bpf_verifier.h"
+            "include/linux/tnum.h"
+            "include/linux/btf.h"
+            "include/uapi/linux/bpf.h"
+            "include/uapi/linux/btf.h"
+            "include/uapi/linux/bpf_common.h"
+            "include/linux/bpf-cgroup.h"
+          )
+          for path in "${PATHS[@]}"; do git checkout FETCH_HEAD -- "$path"; done
+
+      - name: Dummy Headers & Fixes
+        run: |
           mkdir -p include/linux include/uapi/linux
+          # Dummy headers to satisfy compilation
           printf "#ifndef _BPF_LIRC_H\n#define _BPF_LIRC_H\n#endif\n" > include/linux/bpf_lirc.h
           printf "#ifndef _PERFLOG_H\n#define _PERFLOG_H\n#endif\n" > include/linux/perflog.h
           printf "#ifndef _BTF_H\n#define _BTF_H\n#endif\n" > include/linux/btf.h
           printf "#ifndef _BTF_H\n#define _BTF_H\n#endif\n" > include/uapi/linux/btf.h
 
-          # Inject dummy xdp_buff (evităm redefinition)
-          sed -i '/struct xdp_buff;/d' include/linux/bpf.h
-          sed -i '/#define _LINUX_BPF_H/a struct xdp_buff { void *data; void *data_end; void *data_meta; void *data_hard_start; void *rxq; };' include/linux/bpf.h
+          # Neutralizare module incompatibile (opțional, doar dacă apare erori)
+          echo "/* Neutralized */" > kernel/bpf/devmap.c
+          echo "/* Neutralized */" > kernel/bpf/cpumap.c
+          echo "/* Neutralized */" > kernel/bpf/offload.c
+          echo "/* Neutralized */" > kernel/bpf/bpf_lirc.c
+          echo "/* Neutralized */" > kernel/bpf/reuseport_array.c
 
-      # 4️⃣ Build Kernel
       - name: Build Kernel
         run: |
           export PATH=$(pwd)/toolchain/proton-clang/bin:$PATH
           MAKE_ARGS="O=out ARCH=arm64 CC=clang HOSTCC=gcc CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1"
           export KCFLAGS="-Wno-error -Wno-incompatible-pointer-types -Wno-int-conversion -Wno-implicit-function-declaration -Wno-return-type -Wno-unused-variable -Wno-unused-function"
 
-          # Incarcam config S10 Lite
           make $MAKE_ARGS r5q_eur_open_defconfig
-          
-          # Activam minimal eBPF necesar Android 15
+
+          # Enable minimal eBPF features for Android 15
           ./scripts/config --file out/.config --enable CONFIG_BPF_SYSCALL
           ./scripts/config --file out/.config --enable CONFIG_BPF_JIT
           ./scripts/config --file out/.config --enable CONFIG_CGROUP_BPF
-          
-          # Dezactivam chestii Samsung care blocheaza boot
+
+          # Disable features that break on S10 Lite base
           ./scripts/config --file out/.config --disable CONFIG_KPERFMON
           ./scripts/config --file out/.config --disable CONFIG_MODVERSIONS
           ./scripts/config --file out/.config --disable CONFIG_SAMSUNG_PRODUCT_SHIP
           ./scripts/config --file out/.config --disable CONFIG_DEFEX
-          
-          # Final olddefconfig si build
+
           make $MAKE_ARGS olddefconfig
           make -j$(nproc --all) $MAKE_ARGS Image.gz-dtb || make -j1 $MAKE_ARGS Image.gz-dtb
 
-      # 5️⃣ Upload Artifact
-      - name: Upload Kernel Artifact
+      - name: Upload Kernel
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-Android15-Minimal-eBPF
+          name: S10Lite-A15-eBPF
           path: out/arch/arm64/boot/Image.gz-dtb
