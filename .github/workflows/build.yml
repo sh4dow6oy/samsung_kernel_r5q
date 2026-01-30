@@ -1,4 +1,4 @@
-name: S10 Lite Kernel - Android 15 (LineageOS 23)
+name: S10 Lite Kernel - Android 15 FULL FIX
 
 on:
   push:
@@ -65,15 +65,53 @@ jobs:
           grep -q "samsung/" drivers/soc/Makefile || echo "obj-y += samsung/" >> drivers/soc/Makefile
           grep -q "samsung/" drivers/gpu/drm/msm/Makefile || echo "obj-y += samsung/" >> drivers/gpu/drm/msm/Makefile
 
-      - name: Pre-build fixes (A15 safe)
+      - name: Android wakelock compatibility shim
+        run: |
+          cd kernel
+          mkdir -p include/linux
+          cat << 'EOF' > include/linux/wakelock.h
+          #ifndef _LINUX_WAKELOCK_H
+          #define _LINUX_WAKELOCK_H
+
+          #include <linux/pm_wakeup.h>
+
+          struct wake_lock {
+                  struct wakeup_source ws;
+          };
+
+          static inline void wake_lock_init(struct wake_lock *lock,
+                                            int type, const char *name)
+          {
+                  wakeup_source_init(&lock->ws, name);
+          }
+
+          static inline void wake_lock_destroy(struct wake_lock *lock)
+          {
+                  wakeup_source_trash(&lock->ws);
+          }
+
+          static inline void wake_lock(struct wake_lock *lock)
+          {
+                  __pm_stay_awake(&lock->ws);
+          }
+
+          static inline void wake_unlock(struct wake_lock *lock)
+          {
+                  __pm_relax(&lock->ws);
+          }
+
+          #endif
+          EOF
+
+      - name: Pre-build Samsung fixes
         run: |
           cd kernel
 
-          # Dezactivam debug-ul Samsung care crapa
+          # Dezactivam debug Samsung problematic
           find drivers/gpu/drm/msm/samsung -name Makefile \
             -exec sed -i 's/obj-y += ss_dsi_panel_debug.o/# disabled/g' {} +
 
-          # Firmware stubs (touch)
+          # Firmware stubs
           mkdir -p firmware/tsp_sec
           touch firmware/tsp_sec/y771_r5.bin
           touch firmware/tsp_sec/y771_r5_1l.bin
@@ -93,21 +131,28 @@ jobs:
 
           export KCFLAGS="-O3 -Wno-error -Wno-unused-function -Wno-implicit-function-declaration"
 
-          # Config initial
           make $MAKE_ARGS r5q_eur_open_defconfig
 
-          # ==== ANDROID 15 BPF (OBLIGATORIU) ====
+          # ===== ANDROID 15 BPF =====
           ./scripts/config --enable CONFIG_BPF
           ./scripts/config --enable CONFIG_BPF_SYSCALL
           ./scripts/config --enable CONFIG_BPF_JIT
           ./scripts/config --enable CONFIG_CGROUP_BPF
           ./scripts/config --enable CONFIG_NETFILTER_XT_MATCH_BPF
 
-          # ==== EVITAM CAPCANELE 4.14 ====
+          # ===== FIXURI CRITICE =====
           ./scripts/config --disable CONFIG_DEBUG_INFO_BTF
           ./scripts/config --disable CONFIG_BPF_LSM
 
-          # ==== CURATAM SAMSUNG LEGACY ====
+          # WALT (FOARTE IMPORTANT)
+          ./scripts/config --disable CONFIG_SCHED_WALT
+          ./scripts/config --disable CONFIG_SCHED_TUNE
+          ./scripts/config --disable CONFIG_UCLAMP_TASK
+
+          # HID trace
+          ./scripts/config --disable CONFIG_HID_TRACE
+
+          # Samsung legacy
           ./scripts/config --disable CONFIG_SEC_DEBUG
           ./scripts/config --disable CONFIG_SECURITY_SAMSUNG_RKP
           ./scripts/config --disable CONFIG_TIMA
@@ -123,7 +168,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-A15-Lineage23
+          name: S10Lite-A15-FULLFIX
           path: |
             kernel/arch/arm64/boot/Image.gz
             kernel/arch/arm64/boot/Image.gz-dtb
