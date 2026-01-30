@@ -1,4 +1,4 @@
-name: S10 Lite Kernel Build - v89
+name: S10 Lite Kernel Build - v90
 
 on:
   push:
@@ -38,32 +38,34 @@ jobs:
           cp -r s10-lite-src/arch/arm64/boot/dts/samsung kernel-res/arch/arm64/boot/dts/ || true
           cp s10-lite-src/arch/arm64/configs/r5q_eur_open_defconfig kernel-res/arch/arm64/configs/
 
-      - name: Surgical Fixes v89
+      - name: Surgical Fixes v90
         run: |
           cd kernel-res
           
-          # 1. SDIO Label Fix (Samsung common error)
+          # 1. SDIO Fix (Smart Fix - prevenim duplicarea etichetei 'out')
+          # Stergem orice modificare anterioara care a cauzat 'out: ;' duplicat
+          sed -i '/out: ;/d' drivers/mmc/core/sdio.c
+          # Adaugam ';' doar la finalul liniilor care termina o functie cu 'out:' pentru a satisface compilatorul
           sed -i 's/out:$/out: ;/g' drivers/mmc/core/sdio.c
-          sed -i '/^}$/i out: ;' drivers/mmc/core/sdio.c
 
           # 2. GPIO Alignment (v14 Strategy)
-          # Injectam membrul lipsa in structura gpio_chip pentru driverele Samsung
-          sed -i '/struct gpio_chip {/a \	void *gpio_dump;' include/linux/gpio/driver.h
+          # Injectam membrul lipsa in structura gpio_chip
+          if ! grep -q "void \*gpio_dump;" include/linux/gpio/driver.h; then
+            sed -i '/struct gpio_chip {/a \	void *gpio_dump;' include/linux/gpio/driver.h
+          fi
           # Rezolvam eroarea 'list_gpios_fops' undeclared
           sed -i 's/\&list_gpios_fops/NULL/g' drivers/gpio/gpiolib.c
-          # Comentam subsys_initcall pentru debugfs_init care lipseste
           sed -i 's/subsys_initcall(gpiolib_debugfs_init);/\/\/subsys_initcall(gpiolib_debugfs_init);/g' drivers/gpio/gpiolib.c
 
-          # 3. SCHEDULER STUB (Fix core_ctl.c error)
-          # Makefile-ul ramane intact, dar golim continutul fisierelor care cer structuri WALT
+          # 3. SCHEDULER STUB (Neutralizam core_ctl.c si walt.c)
           echo 'int core_ctl_init(void) { return 0; }' > kernel/sched/core_ctl.c
           echo '/* WALT STUBBED */' > kernel/sched/walt.c
 
-          # 4. DM-BOW & SDHCI
+          # 4. DM-BOW & SDHCI Fixes
           sed -i '15i #undef SECTOR_SIZE' drivers/md/dm-bow.c
           sed -i 's/sdhci_cmd_irq(host, intmask & SDHCI_INT_CMD_MASK, \&intmask)/sdhci_cmd_irq(host, intmask \& SDHCI_INT_CMD_MASK)/g' drivers/mmc/host/sdhci.c
 
-          # 5. Fix HID Trace Path (Clang fix)
+          # 5. Fix HID Trace Path
           sed -i 's|#define TRACE_INCLUDE_PATH .|#define TRACE_INCLUDE_PATH ../../drivers/hid|g' drivers/hid/hid-trace.h
 
       - name: Build Kernel
@@ -75,28 +77,22 @@ jobs:
           export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
           
           MAKE_ARGS="ARCH=arm64 CC=clang HOSTCC=gcc LLVM=1 LLVM_IAS=1"
-          # KCFLAGS permisive pentru a ignora warning-urile care devin erori
           export KCFLAGS="-Wno-error -Wno-unused-label -Wno-implicit-function-declaration -Wno-incompatible-pointer-types -Wno-return-type -I$(pwd)/drivers/hid"
 
-          # Generare config
           make $MAKE_ARGS r5q_eur_open_defconfig
           
-          # Optimizari pentru stabilitate (PELT in loc de WALT)
           ./scripts/config --disable CONFIG_SCHED_WALT
           ./scripts/config --disable CONFIG_SCHED_CORE_CTL
           ./scripts/config --enable CONFIG_SCHED_PELT
           ./scripts/config --disable CONFIG_CC_STACKPROTECTOR_STRONG
           ./scripts/config --enable CONFIG_CC_STACKPROTECTOR_NONE
           
-          # Aplicare config
           make $MAKE_ARGS olddefconfig
-          
-          # Build final
           make -j$(nproc --all) $MAKE_ARGS Image.gz-dtb
 
       - name: Upload Kernel
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: kernel-S10Lite-v89
+          name: kernel-S10Lite-v90
           path: kernel-res/arch/arm64/boot/Image.gz-dtb
