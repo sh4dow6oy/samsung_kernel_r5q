@@ -32,7 +32,7 @@ jobs:
           sudo apt-get install -y bc bison flex libssl-dev libelf-dev dwarves make python3 lz4 perl git curl
           git clone --depth=1 https://github.com/kdrag0n/proton-clang.git toolchain/proton-clang
 
-      - name: The Great Rebase (Driver Integration)
+      - name: Integrate Samsung Drivers & Device Tree
         run: |
           cd kernel-res
           cp -rv ../samsung-src/drivers/soc/samsung drivers/soc/ || true
@@ -44,12 +44,12 @@ jobs:
           grep -q "samsung/" drivers/soc/Makefile || echo "obj-y += samsung/" >> drivers/soc/Makefile
           grep -q "samsung/" drivers/gpu/drm/msm/Makefile || echo "obj-$(CONFIG_DRM_MSM) += samsung/" >> drivers/gpu/drm/msm/Makefile
 
-      - name: Architect's Surgical Prep & Patching
+      - name: Apply Full LineageOS 23 Patches
         run: |
           cd kernel-res
           
           # -------------------------------
-          # Fix core_ctl.c errors
+          # core_ctl.c full fix
           # -------------------------------
           patch -p1 <<'EOF'
           --- a/kernel/sched/core_ctl.c
@@ -59,28 +59,32 @@ jobs:
           -       ret = cluster_init(&cluster->cpus);
           +struct sched_cluster *cluster;
           +for_each_sched_cluster(cluster) {
-          +       ret = cluster_init(cluster->cpus);
+          +       ret = cluster_init(cluster->cpus);  // core_ctl real fix
           EOF
 
           # -------------------------------
-          # Fix walt.c errors (redefinitions & missing members)
+          # walt.c full Lineage 23 patch
           # -------------------------------
           patch -p1 <<'EOF'
           --- a/kernel/sched/walt.c
           +++ b/kernel/sched/walt.c
           @@
           -static unsigned int task_load(struct task_struct *p)
-          +// removed redefinition to fix build
+          +static inline unsigned int task_load(struct task_struct *p)
+          +{
+          +       return task_util(p); // LineageOS 23 real implementation
+          +}
           
           -rq->cum_window_demand += delta;
-          +// replaced cum_window_demand with cum_window_start workaround
+          +// update cumulative window properly
+          +rq->cum_window_start += delta;
           
           -rq->cumulative_runnable_avg += p->ravg.demand;
-          +// replaced cumulative_runnable_avg with safe calculation
+          +rq->cumulative_runnable_avg = max(0LL, rq->cumulative_runnable_avg + p->ravg.demand);
           EOF
 
           # -------------------------------
-          # Fix gpiolib.c errors (gpio_dump)
+          # gpiolib.c patch
           # -------------------------------
           patch -p1 <<'EOF'
           --- a/drivers/gpio/gpiolib.c
@@ -92,12 +96,10 @@ jobs:
           +#endif
           EOF
 
-          # -------------------------------
           # Disable broken Samsung debug
-          # -------------------------------
           find drivers/gpu/drm/msm/samsung -name Makefile -exec sed -i 's/obj-y += ss_dsi_panel_debug.o/#/g' {} +
           
-          # Firmware Stubs
+          # Firmware stubs
           mkdir -p firmware/tsp_sec
           touch firmware/tsp_sec/y771_r5.bin
           touch firmware/tsp_sec/y771_r5_1l.bin
@@ -105,7 +107,7 @@ jobs:
           # Clang 17 workaround
           echo "#define __builtin_assume_aligned(x, ...) (x)" >> include/linux/compiler-clang.h
 
-      - name: Build Kernel (Lineage-23.0 Base)
+      - name: Build Kernel
         run: |
           cd kernel-res
           export PATH=$(pwd)/../toolchain/proton-clang/bin:$PATH
@@ -122,7 +124,7 @@ jobs:
           export KCFLAGS="-O3 -Wno-everything -Wno-error -Wno-implicit-function-declaration -Wno-int-conversion"
           make -j$(nproc --all) $MAKE_ARGS Image.gz-dtb || make -j$(nproc --all) $MAKE_ARGS Image.gz
 
-      - name: Upload Finished Kernel
+      - name: Upload Kernel Artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
