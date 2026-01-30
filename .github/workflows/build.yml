@@ -1,4 +1,4 @@
-name: S10 Lite Kernel Build - v137 (L-23.0)
+name: S10 Lite Kernel - Android 15 (LineageOS 23)
 
 on:
   push:
@@ -10,94 +10,120 @@ jobs:
     runs-on: ubuntu-22.04
 
     steps:
-      - name: Checkout Google MSM 4.14 (lineage-23.0)
+      - name: Checkout LineageOS MSM 4.14 (Android 15 base)
         uses: actions/checkout@v4
         with:
           repository: LineageOS/android_kernel_google_msm-4.14
           ref: lineage-23.0
-          path: kernel-res
+          path: kernel
           fetch-depth: 1
 
-      - name: Checkout Samsung S10 Lite (Drivers)
+      - name: Checkout Samsung S10 Lite Kernel (drivers)
         uses: actions/checkout@v4
         with:
           repository: mainey/android_kernel_samsung_r5q
           ref: lineage-18.1
-          path: samsung-src
+          path: samsung
           fetch-depth: 1
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            bc bison flex libssl-dev libelf-dev dwarves \
+            make python3 lz4 perl git curl
+
+      - name: Cache Proton Clang
+        uses: actions/cache@v4
+        with:
+          path: toolchain/proton-clang
+          key: proton-clang-${{ runner.os }}
 
       - name: Setup Proton Clang
         run: |
-          sudo apt-get update
-          sudo apt-get install -y bc bison flex libssl-dev libelf-dev dwarves make python3 lz4 perl git curl
-          git clone --depth=1 https://github.com/kdrag0n/proton-clang.git toolchain/proton-clang
+          if [ ! -d toolchain/proton-clang ]; then
+            git clone --depth=1 https://github.com/kdrag0n/proton-clang.git toolchain/proton-clang
+          fi
 
-      - name: The Great Rebase (Driver Integration)
+      - name: Rebase Samsung drivers
         run: |
-          cd kernel-res
-          # 1. Transplant Drivers
-          cp -rv ../samsung-src/drivers/soc/samsung drivers/soc/ || true
-          cp -rv ../samsung-src/drivers/gpu/drm/msm/samsung drivers/gpu/drm/msm/ || true
-          cp -rv ../samsung-src/drivers/input/touchscreen/samsung drivers/input/touchscreen/ || true
-          
-          # 2. Transplant Device Tree (The Hardware Map)
+          cd kernel
+
+          # Drivers
+          cp -rv ../samsung/drivers/soc/samsung drivers/soc/ || true
+          cp -rv ../samsung/drivers/gpu/drm/msm/samsung drivers/gpu/drm/msm/ || true
+          cp -rv ../samsung/drivers/input/touchscreen/samsung drivers/input/touchscreen/ || true
+
+          # Device Tree
           mkdir -p arch/arm64/boot/dts/samsung
-          cp -rv ../samsung-src/arch/arm64/boot/dts/samsung/* arch/arm64/boot/dts/samsung/ || true
-          
-          # 3. Transplant Config
-          cp ../samsung-src/arch/arm64/configs/r5q_eur_open_defconfig arch/arm64/configs/
-          
-          # 4. Bind Drivers to Build System (Crucial Step)
-          # Verificam daca Makefile-urile au deja referinte, daca nu, le adaugam
-          grep -q "samsung/" drivers/soc/Makefile || echo "obj-y += samsung/" >> drivers/soc/Makefile
-          grep -q "samsung/" drivers/gpu/drm/msm/Makefile || echo "obj-$(CONFIG_DRM_MSM) += samsung/" >> drivers/gpu/drm/msm/Makefile
+          cp -rv ../samsung/arch/arm64/boot/dts/samsung/* arch/arm64/boot/dts/samsung/ || true
 
-      - name: Architect's Surgical Prep
+          # Defconfig
+          cp ../samsung/arch/arm64/configs/r5q_eur_open_defconfig arch/arm64/configs/
+
+          # Bind Samsung code
+          grep -q "samsung/" drivers/soc/Makefile || echo "obj-y += samsung/" >> drivers/soc/Makefile
+          grep -q "samsung/" drivers/gpu/drm/msm/Makefile || echo "obj-y += samsung/" >> drivers/gpu/drm/msm/Makefile
+
+      - name: Pre-build fixes (A15 safe)
         run: |
-          cd kernel-res
-          # Dezactivam tool-ul de debug care crapa pe Android 15/16
-          find drivers/gpu/drm/msm/samsung -name Makefile -exec sed -i 's/obj-y += ss_dsi_panel_debug.o/#/g' {} +
-          
-          # Firmware Stubs
+          cd kernel
+
+          # Dezactivam debug-ul Samsung care crapa
+          find drivers/gpu/drm/msm/samsung -name Makefile \
+            -exec sed -i 's/obj-y += ss_dsi_panel_debug.o/# disabled/g' {} +
+
+          # Firmware stubs (touch)
           mkdir -p firmware/tsp_sec
           touch firmware/tsp_sec/y771_r5.bin
           touch firmware/tsp_sec/y771_r5_1l.bin
-          
-          # Clang 17 workaround
-          echo "#define __builtin_assume_aligned(x, ...) (x)" >> include/linux/compiler-clang.h
 
-      - name: Build Kernel (Lineage-23.0 Base)
+          # Clang workaround (o singura data)
+          grep -q "__builtin_assume_aligned" include/linux/compiler-clang.h || \
+            echo "#define __builtin_assume_aligned(x, ...) (x)" >> include/linux/compiler-clang.h
+
+      - name: Build kernel (Android 15)
         run: |
-          cd kernel-res
+          cd kernel
           export PATH=$(pwd)/../toolchain/proton-clang/bin:$PATH
-          
-          # Incarcam config-ul original
-          make ARCH=arm64 CC=clang r5q_eur_open_defconfig
-          
-          # Fortam activarea BPF nativ din baza Lineage-23.0
+
+          export MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi-"
+
+          export KCFLAGS="-O3 -Wno-error -Wno-unused-function -Wno-implicit-function-declaration"
+
+          # Config initial
+          make $MAKE_ARGS r5q_eur_open_defconfig
+
+          # ==== ANDROID 15 BPF (OBLIGATORIU) ====
+          ./scripts/config --enable CONFIG_BPF
           ./scripts/config --enable CONFIG_BPF_SYSCALL
           ./scripts/config --enable CONFIG_BPF_JIT
           ./scripts/config --enable CONFIG_CGROUP_BPF
           ./scripts/config --enable CONFIG_NETFILTER_XT_MATCH_BPF
-          
-          # Curatam setarile Samsung care ar putea intra in conflict
+
+          # ==== EVITAM CAPCANELE 4.14 ====
+          ./scripts/config --disable CONFIG_DEBUG_INFO_BTF
+          ./scripts/config --disable CONFIG_BPF_LSM
+
+          # ==== CURATAM SAMSUNG LEGACY ====
           ./scripts/config --disable CONFIG_SEC_DEBUG
           ./scripts/config --disable CONFIG_SECURITY_SAMSUNG_RKP
           ./scripts/config --disable CONFIG_TIMA
-          
-          make ARCH=arm64 CC=clang olddefconfig
-          
-          MAKE_ARGS="ARCH=arm64 CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1"
-          # KCFLAGS permisive pentru faza de rebase
-          export KCFLAGS="-O3 -Wno-everything -Wno-error -Wno-implicit-function-declaration -Wno-int-conversion"
 
-          make -j$(nproc --all) $MAKE_ARGS Image.gz-dtb || make -j$(nproc --all) $MAKE_ARGS Image.gz
+          make $MAKE_ARGS olddefconfig
 
-      - name: Upload Finished Kernel
+          make -j$(nproc --all) $MAKE_ARGS Image.gz-dtb || \
+          make -j$(nproc --all) $MAKE_ARGS Image.gz
+
+          test -f arch/arm64/boot/Image.gz || exit 1
+
+      - name: Upload kernel
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-Lineage23-Base-v137
+          name: S10Lite-A15-Lineage23
           path: |
-            kernel-res/arch/arm64/boot/Image.gz-dtb
-            kernel-res/arch/arm64/boot/Image.gz
+            kernel/arch/arm64/boot/Image.gz
+            kernel/arch/arm64/boot/Image.gz-dtb
