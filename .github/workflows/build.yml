@@ -1,4 +1,4 @@
-name: S10 Lite Kernel Build - v139 (The Pascua Hybrid)
+name: S10 Lite - eBPF Core for A15
 
 on:
   push:
@@ -10,95 +10,62 @@ jobs:
     runs-on: ubuntu-22.04
 
     steps:
-      - name: Checkout Pascua28 Kernel (Base)
+      - name: Checkout S10 Lite Kernel Source
         uses: actions/checkout@v4
         with:
-          repository: pascua28/android_kernel_samsung_sm8250
-          ref: sixteen
+          repository: sh4dow6oy/samsung_kernel_r5q
           path: kernel-res
           fetch-depth: 1
 
-      - name: Checkout S10 Lite (Drivers)
-        uses: actions/checkout@v4
-        with:
-          repository: mainey/android_kernel_samsung_r5q
-          ref: lineage-18.1
-          path: samsung-src
-          fetch-depth: 1
-
-      - name: Setup Proton Clang
+      - name: Setup Toolchain
         run: |
           sudo apt-get update
-          sudo apt-get install -y bc bison flex libssl-dev libelf-dev dwarves make python3 lz4 perl git curl
+          sudo apt-get install -y bc bison flex libssl-dev libelf-dev dwarves make python3 lz4
           git clone --depth=1 https://github.com/kdrag0n/proton-clang.git toolchain/proton-clang
 
-      - name: Surgical Driver Transplant
+      - name: Apply Core eBPF Patches
         run: |
           cd kernel-res
-          # Copiem driverele Samsung
-          cp -rv ../samsung-src/drivers/soc/samsung drivers/soc/ || true
-          cp -rv ../samsung-src/drivers/gpu/drm/msm/samsung drivers/gpu/drm/msm/ || true
-          cp -rv ../samsung-src/drivers/input/touchscreen/samsung drivers/input/touchscreen/ || true
+          git remote add linux-stable https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git || true
+          git fetch linux-stable linux-5.1.y --depth=1
           
-          # IMPORTANT: Copiem si header-ele SOC Samsung (fara ele, driverele nu se pot compila)
-          mkdir -p include/soc/samsung
-          cp -rv ../samsung-src/include/soc/samsung/* include/soc/samsung/ || true
-          
-          # Device Tree
-          mkdir -p arch/arm64/boot/dts/samsung
-          cp -rv ../samsung-src/arch/arm64/boot/dts/samsung/* arch/arm64/boot/dts/samsung/ || true
-          
-          # Config
-          cp ../samsung-src/arch/arm64/configs/r5q_eur_open_defconfig arch/arm64/configs/
-
-          # Makefile integration
-          grep -q "samsung/" drivers/soc/Makefile || echo "obj-y += samsung/" >> drivers/soc/Makefile
-          grep -q "samsung/" drivers/gpu/drm/msm/Makefile || echo "obj-\$(CONFIG_DRM_MSM) += samsung/" >> drivers/gpu/drm/msm/Makefile
-
-      - name: Fix Hybrid Mismatches
-        run: |
-          cd kernel-res
-          # Fix Clang 17
-          echo "#define __builtin_assume_aligned(x, ...) (x)" >> include/linux/compiler-clang.h
-          
-          # Fix WALT/Scheduler (Pascua are un scheduler mult mai avansat)
-          # Daca r5q_defconfig cere chestii vechi, le dezactivam sa lasam logica Pascua sa ruleze
-          sed -i 's/obj-y += ss_dsi_panel_debug.o/#/g' drivers/gpu/drm/msm/samsung/Makefile || true
-          
-          # Rezolvam eroarea de 'gpio_dump' daca apare
-          find drivers/gpio -name "*.c" -exec sed -i 's/chip->gpio_dump/NULL/g' {} +
+          # Select only core eBPF files
+          PATHS=(
+            "kernel/bpf/"
+            "include/linux/bpf.h"
+            "include/linux/filter.h"
+            "include/linux/bpf_verifier.h"
+            "include/linux/tnum.h"
+            "include/linux/btf.h"
+            "include/uapi/linux/bpf.h"
+            "include/uapi/linux/btf.h"
+            "include/uapi/linux/bpf_common.h"
+            "include/linux/bpf-cgroup.h"
+          )
+          for path in "${PATHS[@]}"; do
+            git checkout FETCH_HEAD -- "$path"
+          done
 
       - name: Build Kernel
         run: |
           cd kernel-res
           export PATH=$(pwd)/../toolchain/proton-clang/bin:$PATH
+          MAKE_ARGS="O=out ARCH=arm64 CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1"
+          export KCFLAGS="-Wno-error -Wno-incompatible-pointer-types -Wno-int-conversion -Wno-implicit-function-declaration"
 
-          make ARCH=arm64 CC=clang r5q_eur_open_defconfig
+          make $MAKE_ARGS r5q_eur_open_defconfig
           
-          # eBPF/Android 15 Essentials (Nativ in Pascua)
-          ./scripts/config --enable CONFIG_BPF_SYSCALL
-          ./scripts/config --enable CONFIG_BPF_JIT
-          ./scripts/config --enable CONFIG_CGROUP_BPF
+          # Enable BPF support for Android 15
+          ./scripts/config --file out/.config --enable CONFIG_BPF_SYSCALL
+          ./scripts/config --file out/.config --enable CONFIG_BPF_JIT
+          ./scripts/config --file out/.config --enable CONFIG_CGROUP_BPF
           
-          # Dezactivam balastul care ar bloca boot-ul pe o baza non-Samsung
-          ./scripts/config --disable CONFIG_SECURITY_SAMSUNG_RKP
-          ./scripts/config --disable CONFIG_SEC_DEBUG
-          ./scripts/config --disable CONFIG_TIMA
-          ./scripts/config --disable CONFIG_SAMSUNG_PRODUCT_SHIP
-          
-          make ARCH=arm64 CC=clang olddefconfig
-          
-          MAKE_ARGS="ARCH=arm64 CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1"
-          # KCFLAGS permisive: avem nevoie sa ignoram nepotrivirile de tip intre driverele Samsung si baza Pascua
-          export KCFLAGS="-O3 -Wno-everything -Wno-error -Wno-implicit-function-declaration -Wno-int-conversion -Wno-incompatible-pointer-types"
+          make $MAKE_ARGS olddefconfig
+          make -j$(nproc --all) $MAKE_ARGS Image.gz-dtb || make -j1 $MAKE_ARGS Image.gz-dtb
 
-          make -j$(nproc --all) $MAKE_ARGS Image.gz-dtb || make -j$(nproc --all) $MAKE_ARGS Image.gz
-
-      - name: Upload
-        if: always()
+      - name: Upload Artifact
+        if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-Pascua-Hybrid-v139
-          path: |
-            kernel-res/arch/arm64/boot/Image.gz-dtb
-            kernel-res/arch/arm64/boot/Image.gz
+          name: S10Lite-eBPF-A15
+          path: out/arch/arm64/boot/Image.gz-dtb
