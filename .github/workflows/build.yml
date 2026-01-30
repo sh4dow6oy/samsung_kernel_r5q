@@ -1,4 +1,4 @@
-name: S10 Lite Kernel Build - v95 (Lineage 22)
+name: S10 Lite Kernel Build - v96 (Lineage 22)
 
 on:
   push:
@@ -23,7 +23,6 @@ jobs:
 
       - name: Prepare Base (Lineage 22)
         run: |
-          # Clonăm baza nouă (lineage-22.0)
           git clone --depth=1 -b lineage-22.0 https://github.com/LineageOS/android_kernel_google_msm-4.14.git kernel-res
           cd kernel-res
           git remote add stable https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git
@@ -39,15 +38,15 @@ jobs:
           cp -r s10-lite-src/arch/arm64/boot/dts/samsung kernel-res/arch/arm64/boot/dts/ || true
           cp s10-lite-src/arch/arm64/configs/r5q_eur_open_defconfig kernel-res/arch/arm64/configs/
 
-      - name: Surgical Fixes v95
+      - name: Surgical Fixes v96
         run: |
           cd kernel-res
           
-          # 1. SDIO Fix (Smart & Non-destructive)
-          # Folosim o logică care adaugă ';' după eticheta 'out' DOAR dacă aceasta este goală
-          # Nu ștergem eticheta, deci 'goto out' va funcționa în continuare.
-          sed -i 's/out:$/out: ;/g' drivers/mmc/core/sdio.c
-          sed -i 's/out:[[:space:]]*}/out: ; }/g' drivers/mmc/core/sdio.c
+          # 1. SDIO Fix - Folosim 'printf' pentru a fi siguri de formatare
+          # Căutăm 'out:' urmat de '}' și inserăm ';' între ele.
+          # Aceasta este metoda cea mai sigură de a repara eticheta fără a o șterge.
+          perl -i -pe 's/out:\s*}/out: ; }/g' drivers/mmc/core/sdio.c
+          perl -i -pe 's/out:$/out: ;/g' drivers/mmc/core/sdio.c
 
           # 2. GPIO Fix (v14 Alignment)
           if ! grep -q "void \*gpio_dump;" include/linux/gpio/driver.h; then
@@ -56,16 +55,12 @@ jobs:
           sed -i 's/\&list_gpios_fops/NULL/g' drivers/gpio/gpiolib.c
           sed -i 's/subsys_initcall(gpiolib_debugfs_init);/\/\/subsys_initcall(gpiolib_debugfs_init);/g' drivers/gpio/gpiolib.c
 
-          # 3. SCHEDULER STUB (Neutralizare CoreCtl)
-          # Lineage 22 folosește PELT, deci WALT/CoreCtl sunt inutile și problematice
+          # 3. SCHEDULER STUB
           echo 'int core_ctl_init(void) { return 0; }' > kernel/sched/core_ctl.c
           echo '/* WALT STUBBED */' > kernel/sched/walt.c
 
           # 4. DM-BOW Fix
           sed -i '15i #undef SECTOR_SIZE' drivers/md/dm-bow.c
-
-          # 5. Fix HID Trace Path
-          sed -i 's|#define TRACE_INCLUDE_PATH .|#define TRACE_INCLUDE_PATH ../../drivers/hid|g' drivers/hid/hid-trace.h
 
       - name: Build Kernel
         run: |
@@ -76,11 +71,13 @@ jobs:
           export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
           
           MAKE_ARGS="ARCH=arm64 CC=clang HOSTCC=gcc LLVM=1 LLVM_IAS=1"
-          # KCFLAGS permisive pentru compatibilitate cu driverele vechi Samsung pe baza nouă
-          export KCFLAGS="-Wno-error -Wno-unused-label -Wno-implicit-function-declaration -Wno-incompatible-pointer-types -Wno-return-type -Wno-unused-function -I$(pwd)/drivers/hid"
+          
+          # Adăugăm -Wno-error pentru a preveni oprirea build-ului la avertismente minore
+          export KCFLAGS="-Wno-error -Wno-implicit-function-declaration -Wno-unused-label -Wno-return-type -Wno-incompatible-pointer-types"
 
           make $MAKE_ARGS r5q_eur_open_defconfig
           
+          # Forțăm configurația corectă pentru Android 15 / Lineage 22
           ./scripts/config --disable CONFIG_SCHED_WALT
           ./scripts/config --disable CONFIG_SCHED_CORE_CTL
           ./scripts/config --enable CONFIG_SCHED_PELT
@@ -94,5 +91,5 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: kernel-S10Lite-Lineage22-v95
+          name: kernel-S10Lite-L22-v96
           path: kernel-res/arch/arm64/boot/Image.gz-dtb
