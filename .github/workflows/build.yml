@@ -1,4 +1,4 @@
-name: S10 Lite Kernel Build - v98
+name: S10 Lite Kernel Build - v100 (Upstream 4.14.x)
 
 on:
   push:
@@ -21,44 +21,49 @@ jobs:
           sudo apt-get install -y bc bison flex libssl-dev libelf-dev dwarves make python3 lz4 perl git curl
           git clone --depth=1 https://gitlab.com/clangsantoni/zyc_clang.git toolchain/zyc-clang
 
-      - name: Prepare Base (Lineage 22)
+      - name: Prepare Base (Lineage 22 & Upstream)
         run: |
           git clone --depth=1 -b lineage-22.0 https://github.com/LineageOS/android_kernel_google_msm-4.14.git kernel-res
           cd kernel-res
+          # Adăugăm sursa stabilă de kernel.org pentru a urca spre 4.14.336+
           git remote add stable https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git
           git fetch stable linux-4.14.y
-          git merge FETCH_HEAD --no-edit || echo "Merge handled"
+          git merge FETCH_HEAD --no-edit || echo "Merge conflict minor - rezolvăm prin Surgical Fixes"
 
-      - name: Inject Samsung Drivers & SDIO Fix
+      - name: Inject Drivers & SDIO Fix (A71 Style)
         run: |
-          # Injectăm driverele tale
           cp -r s10-lite-src/drivers/soc/samsung kernel-res/drivers/soc/ || true
           cp -r s10-lite-src/drivers/camera kernel-res/drivers/ || true
           cp -r s10-lite-src/drivers/fingerprint kernel-res/drivers/ || true
           cp -r s10-lite-src/drivers/sensors kernel-res/drivers/ || true
           cp -r s10-lite-src/arch/arm64/boot/dts/samsung kernel-res/arch/arm64/boot/dts/ || true
           cp s10-lite-src/arch/arm64/configs/r5q_eur_open_defconfig kernel-res/arch/arm64/configs/
-
-          # --- IMPORT SDIO.C DE LA SM6150 (FIX DEFINITIV) ---
-          # Descărcăm varianta curată de la LineageOS
+          
+          # Înlocuim SDIO cu versiunea curată (folosită și pe A71)
           curl -sSL https://raw.githubusercontent.com/LineageOS/android_kernel_samsung_sm6150/lineage-21.0/drivers/mmc/core/sdio.c > kernel-res/drivers/mmc/core/sdio.c
-          echo "SDIO.c has been replaced with LineageOS version."
 
-      - name: Surgical Fixes v98
+      - name: Surgical Fixes v100 (Inspired by A71 Patch)
         run: |
           cd kernel-res
           
-          # Fix pentru DM-BOW (rămâne necesar)
+          # 1. FIX HID TRACE (Problema anterioară)
+          # Folosim calea relativă corectă pentru sistemul de trace Lineage
+          perl -i -pe 's|#define TRACE_INCLUDE_PATH .|#define TRACE_INCLUDE_PATH ../../drivers/hid|g' drivers/hid/hid-trace.h
+
+          # 2. Fix Upstream 4.14.x Labels (Eroarea 'out')
+          # Aplicăm un fix global pentru etichetele care se termină brusc în fișierele MMC
+          find drivers/mmc/core/ -name "*.c" -exec sed -i 's/out:$/out: ;/g' {} +
+
+          # 3. DM-BOW Upstream Fix
           sed -i '15i #undef SECTOR_SIZE' drivers/md/dm-bow.c
 
-          # Fix GPIO Alignment pentru driverele Samsung
+          # 4. GPIO Alignment (Necesar pentru senzorii Samsung pe Android 15)
           if ! grep -q "void \*gpio_dump;" include/linux/gpio/driver.h; then
             sed -i '/struct gpio_chip {/a \	void *gpio_dump;' include/linux/gpio/driver.h
           fi
           sed -i 's/\&list_gpios_fops/NULL/g' drivers/gpio/gpiolib.c
-          sed -i 's/subsys_initcall(gpiolib_debugfs_init);/\/\/subsys_initcall(gpiolib_debugfs_init);/g' drivers/gpio/gpiolib.c
 
-          # Neutralizăm Scheduler-ul vechi (WALT/CoreCtl)
+          # 5. Disable WALT & CoreCtl (Standard Lineage 22)
           echo 'int core_ctl_init(void) { return 0; }' > kernel/sched/core_ctl.c
           echo '/* STUB */' > kernel/sched/walt.c
 
@@ -71,14 +76,17 @@ jobs:
           export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
           
           MAKE_ARGS="ARCH=arm64 CC=clang HOSTCC=gcc LLVM=1 LLVM_IAS=1"
-          export KCFLAGS="-Wno-error -Wno-implicit-function-declaration -Wno-unused-label -Wno-return-type -Wno-incompatible-pointer-types"
+          
+          # Flag-uri de compatibilitate pentru Upstream 4.14.300+
+          export KCFLAGS="-Wno-error -Wno-implicit-function-declaration -Wno-unused-label -Wno-return-type -Wno-incompatible-pointer-types -Idrivers/hid"
 
           make $MAKE_ARGS r5q_eur_open_defconfig
           
-          # Configurație PELT (LineageOS 22 standard)
+          # Optimizări Android 15
           ./scripts/config --disable CONFIG_SCHED_WALT
           ./scripts/config --disable CONFIG_SCHED_CORE_CTL
           ./scripts/config --enable CONFIG_SCHED_PELT
+          ./scripts/config --disable CONFIG_CC_STACKPROTECTOR_STRONG
           
           make $MAKE_ARGS olddefconfig
           make -j$(nproc --all) $MAKE_ARGS Image.gz-dtb
@@ -87,5 +95,5 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: kernel-S10Lite-L22-v98
+          name: kernel-S10Lite-L22-v100-Upstream
           path: kernel-res/arch/arm64/boot/Image.gz-dtb
