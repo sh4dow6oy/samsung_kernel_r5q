@@ -1,4 +1,4 @@
-name: S10 Lite Kernel - Android 15 FULL FIX
+name: S10 Lite Kernel Build - Android 15 (Lineage-23.0)
 
 on:
   push:
@@ -10,7 +10,7 @@ jobs:
     runs-on: ubuntu-22.04
 
     steps:
-      - name: Checkout LineageOS MSM 4.14 (Android 15 base)
+      - name: Checkout LineageOS msm-4.14 (Android 15 base)
         uses: actions/checkout@v4
         with:
           repository: LineageOS/android_kernel_google_msm-4.14
@@ -18,7 +18,7 @@ jobs:
           path: kernel
           fetch-depth: 1
 
-      - name: Checkout Samsung S10 Lite Kernel (drivers)
+      - name: Checkout Samsung S10 Lite sources
         uses: actions/checkout@v4
         with:
           repository: mainey/android_kernel_samsung_r5q
@@ -33,19 +33,11 @@ jobs:
             bc bison flex libssl-dev libelf-dev dwarves \
             make python3 lz4 perl git curl
 
-      - name: Cache Proton Clang
-        uses: actions/cache@v4
-        with:
-          path: toolchain/proton-clang
-          key: proton-clang-${{ runner.os }}
-
       - name: Setup Proton Clang
         run: |
-          if [ ! -d toolchain/proton-clang ]; then
-            git clone --depth=1 https://github.com/kdrag0n/proton-clang.git toolchain/proton-clang
-          fi
+          git clone --depth=1 https://github.com/kdrag0n/proton-clang.git toolchain/proton-clang
 
-      - name: Rebase Samsung drivers
+      - name: Integrate Samsung drivers and DTS
         run: |
           cd kernel
 
@@ -54,121 +46,83 @@ jobs:
           cp -rv ../samsung/drivers/gpu/drm/msm/samsung drivers/gpu/drm/msm/ || true
           cp -rv ../samsung/drivers/input/touchscreen/samsung drivers/input/touchscreen/ || true
 
-          # Device Tree
+          # DTS
           mkdir -p arch/arm64/boot/dts/samsung
           cp -rv ../samsung/arch/arm64/boot/dts/samsung/* arch/arm64/boot/dts/samsung/ || true
 
           # Defconfig
           cp ../samsung/arch/arm64/configs/r5q_eur_open_defconfig arch/arm64/configs/
 
-          # Bind Samsung code
+          # Bind Makefiles
           grep -q "samsung/" drivers/soc/Makefile || echo "obj-y += samsung/" >> drivers/soc/Makefile
-          grep -q "samsung/" drivers/gpu/drm/msm/Makefile || echo "obj-y += samsung/" >> drivers/gpu/drm/msm/Makefile
+          grep -q "samsung/" drivers/gpu/drm/msm/Makefile || echo "obj-$(CONFIG_DRM_MSM) += samsung/" >> drivers/gpu/drm/msm/Makefile
 
-      - name: Android wakelock compatibility shim
-        run: |
-          cd kernel
-          mkdir -p include/linux
-          cat << 'EOF' > include/linux/wakelock.h
-          #ifndef _LINUX_WAKELOCK_H
-          #define _LINUX_WAKELOCK_H
-
-          #include <linux/pm_wakeup.h>
-
-          struct wake_lock {
-                  struct wakeup_source ws;
-          };
-
-          static inline void wake_lock_init(struct wake_lock *lock,
-                                            int type, const char *name)
-          {
-                  wakeup_source_init(&lock->ws, name);
-          }
-
-          static inline void wake_lock_destroy(struct wake_lock *lock)
-          {
-                  wakeup_source_trash(&lock->ws);
-          }
-
-          static inline void wake_lock(struct wake_lock *lock)
-          {
-                  __pm_stay_awake(&lock->ws);
-          }
-
-          static inline void wake_unlock(struct wake_lock *lock)
-          {
-                  __pm_relax(&lock->ws);
-          }
-
-          #endif
-          EOF
-
-      - name: Pre-build Samsung fixes
+      - name: Neutralize Samsung debug junk
         run: |
           cd kernel
 
-          # Dezactivam debug Samsung problematic
+          # Disable broken panel debug
           find drivers/gpu/drm/msm/samsung -name Makefile \
-            -exec sed -i 's/obj-y += ss_dsi_panel_debug.o/# disabled/g' {} +
+            -exec sed -i 's/obj-y += ss_dsi_panel_debug.o/# disabled/' {} +
 
           # Firmware stubs
           mkdir -p firmware/tsp_sec
           touch firmware/tsp_sec/y771_r5.bin
           touch firmware/tsp_sec/y771_r5_1l.bin
 
-          # Clang workaround (o singura data)
-          grep -q "__builtin_assume_aligned" include/linux/compiler-clang.h || \
-            echo "#define __builtin_assume_aligned(x, ...) (x)" >> include/linux/compiler-clang.h
+          # Clang 17 workaround
+          echo "#define __builtin_assume_aligned(x, ...) (x)" >> include/linux/compiler-clang.h
 
-      - name: Build kernel (Android 15)
+      - name: Kill Samsung WALT / core_ctl (Android 15 fix)
         run: |
           cd kernel
-          export PATH=$(pwd)/../toolchain/proton-clang/bin:$PATH
 
-          export MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 \
-            CROSS_COMPILE=aarch64-linux-gnu- \
-            CROSS_COMPILE_ARM32=arm-linux-gnueabi-"
+          ./scripts/config --disable CONFIG_SCHED_WALT
+          ./scripts/config --disable CONFIG_SCHED_TUNE
+          ./scripts/config --disable CONFIG_UCLAMP_TASK
 
-          export KCFLAGS="-O3 -Wno-error -Wno-unused-function -Wno-implicit-function-declaration"
+          ./scripts/config --disable CONFIG_SCHED_CORE_CTL
+          ./scripts/config --disable CONFIG_SCHED_CORE_CTL_V2
 
-          make $MAKE_ARGS r5q_eur_open_defconfig
+          # Samsung ignores Kconfig → hard kill
+          sed -i 's/obj-$(CONFIG_SCHED_CORE_CTL).*/# core_ctl disabled for A15/' kernel/sched/Makefile
+          rm -f kernel/sched/core_ctl.c
 
-          # ===== ANDROID 15 BPF =====
+      - name: Enable mandatory BPF for Android 15
+        run: |
+          cd kernel
+
           ./scripts/config --enable CONFIG_BPF
           ./scripts/config --enable CONFIG_BPF_SYSCALL
           ./scripts/config --enable CONFIG_BPF_JIT
           ./scripts/config --enable CONFIG_CGROUP_BPF
           ./scripts/config --enable CONFIG_NETFILTER_XT_MATCH_BPF
 
-          # ===== FIXURI CRITICE =====
+          # MUST be OFF on 4.14
           ./scripts/config --disable CONFIG_DEBUG_INFO_BTF
           ./scripts/config --disable CONFIG_BPF_LSM
 
-          # WALT (FOARTE IMPORTANT)
-          ./scripts/config --disable CONFIG_SCHED_WALT
-          ./scripts/config --disable CONFIG_SCHED_TUNE
-          ./scripts/config --disable CONFIG_UCLAMP_TASK
+      - name: Final kernel build
+        run: |
+          cd kernel
+          export PATH=$(pwd)/../toolchain/proton-clang/bin:$PATH
 
-          # HID trace
-          ./scripts/config --disable CONFIG_HID_TRACE
+          make ARCH=arm64 CC=clang r5q_eur_open_defconfig
+          make ARCH=arm64 CC=clang olddefconfig
 
-          # Samsung legacy
-          ./scripts/config --disable CONFIG_SEC_DEBUG
-          ./scripts/config --disable CONFIG_SECURITY_SAMSUNG_RKP
-          ./scripts/config --disable CONFIG_TIMA
-
-          make $MAKE_ARGS olddefconfig
+          export KCFLAGS="-O3 -Wno-everything -Wno-error"
+          MAKE_ARGS="ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1 \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi-"
 
           make -j$(nproc --all) $MAKE_ARGS Image.gz-dtb || \
           make -j$(nproc --all) $MAKE_ARGS Image.gz
 
-          test -f arch/arm64/boot/Image.gz || exit 1
-
-      - name: Upload kernel
+      - name: Upload kernel artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-A15-FULLFIX
+          name: S10Lite-Android15-Lineage23-Kernel
           path: |
             kernel/arch/arm64/boot/Image.gz
             kernel/arch/arm64/boot/Image.gz-dtb
