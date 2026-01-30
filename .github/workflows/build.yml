@@ -1,4 +1,4 @@
-name: S10 Lite - Minimal eBPF for Android 15
+name: S10 Lite - Core eBPF for Android 15
 
 on:
   push:
@@ -10,51 +10,51 @@ jobs:
     runs-on: ubuntu-22.04
 
     steps:
-      - name: Checkout Source
+      # 1️⃣ Checkout kernel source
+      - name: Checkout S10 Lite Kernel
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
 
-      - name: Setup Toolchain
+      # 2️⃣ Setup Clang toolchain
+      - name: Setup Proton Clang
         run: |
           sudo apt-get update
           sudo apt-get install -y bc bison flex libssl-dev libelf-dev dwarves make python3 lz4
           git clone --depth=1 https://github.com/kdrag0n/proton-clang.git toolchain/proton-clang
 
-      - name: Core eBPF Backport
+      # 3️⃣ Backport core eBPF + real BTF headers
+      - name: Core eBPF & BTF Backport
         run: |
-          # Fetch Linux 5.1 for minimal eBPF headers
           git remote add linux-stable https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git || true
           git fetch linux-stable linux-5.1.y --depth=1
-          
+
           PATHS=(
             "kernel/bpf/"
             "include/linux/bpf.h"
             "include/linux/filter.h"
             "include/linux/bpf_verifier.h"
             "include/linux/tnum.h"
-            "include/linux/btf.h"
+            "include/linux/btf.h"        # real header
             "include/uapi/linux/bpf.h"
-            "include/uapi/linux/btf.h"
+            "include/uapi/linux/btf.h"   # real header
             "include/uapi/linux/bpf_common.h"
             "include/linux/bpf-cgroup.h"
           )
-          for path in "${PATHS[@]}"; do git checkout FETCH_HEAD -- "$path"; done
+          for path in "${PATHS[@]}"; do
+            git checkout FETCH_HEAD -- "$path"
+          done
 
-      - name: Dummy Headers & Fixes
+      # 4️⃣ Neutralize incompatible modules (optional)
+      - name: Disable incompatible BPF modules
         run: |
-          mkdir -p include/linux include/uapi/linux
-          # Dummy headers to satisfy compilation
-          printf "#ifndef _BPF_LIRC_H\n#define _BPF_LIRC_H\n#endif\n" > include/linux/bpf_lirc.h
-          printf "#ifndef _PERFLOG_H\n#define _PERFLOG_H\n#endif\n" > include/linux/perflog.h
-          printf "#ifndef _BTF_H\n#define _BTF_H\n#endif\n" > include/linux/btf.h
-          printf "#ifndef _BTF_H\n#define _BTF_H\n#endif\n" > include/uapi/linux/btf.h
-
-          # Neutralizare module incompatibile (opțional, doar dacă apare erori)
           echo "/* Neutralized */" > kernel/bpf/devmap.c
           echo "/* Neutralized */" > kernel/bpf/cpumap.c
           echo "/* Neutralized */" > kernel/bpf/offload.c
           echo "/* Neutralized */" > kernel/bpf/bpf_lirc.c
           echo "/* Neutralized */" > kernel/bpf/reuseport_array.c
 
+      # 5️⃣ Build kernel
       - name: Build Kernel
         run: |
           export PATH=$(pwd)/toolchain/proton-clang/bin:$PATH
@@ -63,23 +63,24 @@ jobs:
 
           make $MAKE_ARGS r5q_eur_open_defconfig
 
-          # Enable minimal eBPF features for Android 15
+          # Enable core Android 15 eBPF options
           ./scripts/config --file out/.config --enable CONFIG_BPF_SYSCALL
           ./scripts/config --file out/.config --enable CONFIG_BPF_JIT
           ./scripts/config --file out/.config --enable CONFIG_CGROUP_BPF
-
-          # Disable features that break on S10 Lite base
+          
+          # Disable modules that break boot on non-Pascua base
           ./scripts/config --file out/.config --disable CONFIG_KPERFMON
           ./scripts/config --file out/.config --disable CONFIG_MODVERSIONS
           ./scripts/config --file out/.config --disable CONFIG_SAMSUNG_PRODUCT_SHIP
           ./scripts/config --file out/.config --disable CONFIG_DEFEX
-
+          
           make $MAKE_ARGS olddefconfig
           make -j$(nproc --all) $MAKE_ARGS Image.gz-dtb || make -j1 $MAKE_ARGS Image.gz-dtb
 
-      - name: Upload Kernel
+      # 6️⃣ Upload built kernel
+      - name: Upload Artifact
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-A15-eBPF
+          name: S10Lite-Core-eBPF-A15
           path: out/arch/arm64/boot/Image.gz-dtb
