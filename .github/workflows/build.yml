@@ -1,4 +1,4 @@
-name: S10 Lite Kernel Build - v121
+name: S10 Lite Kernel Build - v123
 
 on:
   push:
@@ -10,7 +10,7 @@ jobs:
     runs-on: ubuntu-22.04
 
     steps:
-      - name: Fast Checkout (Depth 1)
+      - name: Fast Checkout
         uses: actions/checkout@v4
         with:
           repository: mainey/android_kernel_samsung_r5q
@@ -24,54 +24,57 @@ jobs:
           sudo apt-get install -y bc bison flex libssl-dev libelf-dev dwarves make python3 lz4 perl git curl
           git clone --depth=1 https://github.com/kdrag0n/proton-clang.git toolchain/proton-clang
 
-      - name: Surgical Fixes & A15 Prep
+      - name: Surgical Fixes (HID, Firmware & Camera)
         run: |
           cd kernel-res
           
-          # 1. FIX CAMERA ISP (Variabila 'i' neinițializată)
-          # Folosim find pentru a localiza fișierul exact în ierarhia Samsung
-          CAM_FILE=$(find drivers/media -name "cam_vfe_bus_ver3.c" | head -n 1)
-          if [ -f "$CAM_FILE" ]; then
-            sed -i 's/uint32_t                     i;/uint32_t                     i = 0;/g' "$CAM_FILE"
-          fi
+          # 1. FIX HID-TRACE (Eroarea principala din log)
+          # Dezactivam complet tracing-ul HID din Makefile pentru a evita eroarea de header missing
+          sed -i 's/obj-$(CONFIG_HID_TRACE)		+= hid-trace.o//g' drivers/hid/Makefile
           
-          # 2. COMPILER FIX (Evităm eroarea de redefinire macro pe Proton Clang)
+          # 2. FIX MISSING FIRMWARE (y771_r5.bin)
+          # Cream folderul si un fisier binar gol ca sa nu mai crape build-ul
+          mkdir -p firmware/tsp_sec
+          touch firmware/tsp_sec/y771_r5.bin
+          
+          # 3. FIX CAMERA ISP (Variabila 'i')
+          find . -type f -name "cam_vfe_bus_ver3.c" -exec sed -i 's/uint32_t                     i;/uint32_t                     i = 0;/g' {} +
+          
+          # 4. COMPILER FIX
           sed -i '/#define __builtin_assume_aligned/d' include/linux/compiler-clang.h
           
-          # 3. FIX KCONFIG (Dacă au rămas resturi din transplantul anterior)
-          # Restaurăm fișierele critice dacă au fost corupte
-          git checkout include/linux/bpf.h include/uapi/linux/bpf.h || echo "Files already clean"
+          # 5. SAMSUNG MODEM LOGGING SYNTAX FIX
+          find drivers/soc/samsung -name "*.c" -exec sed -i 's/pr_err(".*"):$/& ;/g' {} +
 
-          # 4. CONFIGURARE BPF PENTRU ANDROID 15
-          # Activăm flag-urile necesare direct în defconfig-ul Samsung
+      - name: Configure for Android 15
+        run: |
+          cd kernel-res
+          # Activam suportul BPF
           ./scripts/config --file arch/arm64/configs/r5q_eur_open_defconfig --enable CONFIG_BPF_SYSCALL
           ./scripts/config --file arch/arm64/configs/r5q_eur_open_defconfig --enable CONFIG_BPF_JIT
           ./scripts/config --file arch/arm64/configs/r5q_eur_open_defconfig --enable CONFIG_CGROUP_BPF
           ./scripts/config --file arch/arm64/configs/r5q_eur_open_defconfig --enable CONFIG_NETFILTER_XT_MATCH_BPF
-          ./scripts/config --file arch/arm64/configs/r5q_eur_open_defconfig --enable CONFIG_BPF_STREAM_PARSER
+          
+          # Dezactivam manual HID_TRACE in defconfig
+          ./scripts/config --file arch/arm64/configs/r5q_eur_open_defconfig --disable CONFIG_HID_TRACE
 
       - name: Build Kernel
         run: |
           cd kernel-res
           export PATH=$(pwd)/../toolchain/proton-clang/bin:$PATH
-          
-          # Parametrii pentru Proton Clang
           MAKE_ARGS="ARCH=arm64 CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1"
           
-          # Ignorăm warning-urile care pe Clang 17 sunt fatale
-          export KCFLAGS="-Wno-everything -Wno-error -Wno-macro-redefined -Wno-unused-but-set-variable"
+          # Adaugam flag-ul pentru a ignora cautarea in include/trace
+          export KCFLAGS="-Wno-everything -Wno-error -Wno-macro-redefined -I$(pwd)/drivers/hid"
 
-          # Generăm .config-ul
           make $MAKE_ARGS r5q_eur_open_defconfig
-          
-          # Compilăm imaginea
           make -j$(nproc --all) $MAKE_ARGS Image.gz-dtb || make -j$(nproc --all) $MAKE_ARGS Image.gz
 
       - name: Upload
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-A15-Ready-v121
+          name: S10Lite-A15-v123
           path: |
             kernel-res/arch/arm64/boot/Image.gz-dtb
             kernel-res/arch/arm64/boot/Image.gz
