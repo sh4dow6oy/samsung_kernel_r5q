@@ -1,4 +1,4 @@
-name: S10 Lite Kernel Build - v92 (Lineage 22)
+name: S10 Lite Kernel Build - v95 (Lineage 22)
 
 on:
   push:
@@ -21,19 +21,17 @@ jobs:
           sudo apt-get install -y bc bison flex libssl-dev libelf-dev dwarves make python3 lz4 perl git
           git clone --depth=1 https://gitlab.com/clangsantoni/zyc_clang.git toolchain/zyc-clang
 
-      - name: Prepare Base (Lineage 22 / Android 15)
+      - name: Prepare Base (Lineage 22)
         run: |
-          # Folosim branch-ul de Lineage 22 (Android 15)
+          # Clonăm baza nouă (lineage-22.0)
           git clone --depth=1 -b lineage-22.0 https://github.com/LineageOS/android_kernel_google_msm-4.14.git kernel-res
           cd kernel-res
-          # Adăugăm upstream stable pentru a fi la zi cu patch-urile 4.14.x
           git remote add stable https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git
           git fetch stable linux-4.14.y
-          git merge FETCH_HEAD --no-edit || echo "Merge conflict handled"
+          git merge FETCH_HEAD --no-edit || echo "Merge handled"
 
       - name: Inject Samsung Drivers
         run: |
-          # Injectăm driverele specifice r5q
           cp -r s10-lite-src/drivers/soc/samsung kernel-res/drivers/soc/ || true
           cp -r s10-lite-src/drivers/camera kernel-res/drivers/ || true
           cp -r s10-lite-src/drivers/fingerprint kernel-res/drivers/ || true
@@ -41,30 +39,32 @@ jobs:
           cp -r s10-lite-src/arch/arm64/boot/dts/samsung kernel-res/arch/arm64/boot/dts/ || true
           cp s10-lite-src/arch/arm64/configs/r5q_eur_open_defconfig kernel-res/arch/arm64/configs/
 
-      - name: Surgical Fixes v92
+      - name: Surgical Fixes v95
         run: |
           cd kernel-res
           
-          # 1. SDIO Fix - Metoda Safe (Label fixing)
-          # Ne asigurăm că eticheta 'out' are întotdeauna un corp valid
+          # 1. SDIO Fix (Smart & Non-destructive)
+          # Folosim o logică care adaugă ';' după eticheta 'out' DOAR dacă aceasta este goală
+          # Nu ștergem eticheta, deci 'goto out' va funcționa în continuare.
           sed -i 's/out:$/out: ;/g' drivers/mmc/core/sdio.c
           sed -i 's/out:[[:space:]]*}/out: ; }/g' drivers/mmc/core/sdio.c
 
-          # 2. GPIO Alignment (Esențial pentru driverele Samsung pe baza nouă)
+          # 2. GPIO Fix (v14 Alignment)
           if ! grep -q "void \*gpio_dump;" include/linux/gpio/driver.h; then
             sed -i '/struct gpio_chip {/a \	void *gpio_dump;' include/linux/gpio/driver.h
           fi
-          # Neutralizăm referințele DebugFS care lipsesc în 4.14 modern
           sed -i 's/\&list_gpios_fops/NULL/g' drivers/gpio/gpiolib.c
           sed -i 's/subsys_initcall(gpiolib_debugfs_init);/\/\/subsys_initcall(gpiolib_debugfs_init);/g' drivers/gpio/gpiolib.c
 
-          # 3. SCHEDULER STUB (Neutralizăm CoreCtl și WALT)
-          # Pe Lineage 22, PELT este standard, deci dezactivăm forțat restul
+          # 3. SCHEDULER STUB (Neutralizare CoreCtl)
+          # Lineage 22 folosește PELT, deci WALT/CoreCtl sunt inutile și problematice
           echo 'int core_ctl_init(void) { return 0; }' > kernel/sched/core_ctl.c
           echo '/* WALT STUBBED */' > kernel/sched/walt.c
 
-          # 4. DM-BOW & HID Fixes
+          # 4. DM-BOW Fix
           sed -i '15i #undef SECTOR_SIZE' drivers/md/dm-bow.c
+
+          # 5. Fix HID Trace Path
           sed -i 's|#define TRACE_INCLUDE_PATH .|#define TRACE_INCLUDE_PATH ../../drivers/hid|g' drivers/hid/hid-trace.h
 
       - name: Build Kernel
@@ -76,18 +76,16 @@ jobs:
           export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
           
           MAKE_ARGS="ARCH=arm64 CC=clang HOSTCC=gcc LLVM=1 LLVM_IAS=1"
-          # KCFLAGS agresive pentru a ignora erorile de compatibilitate Samsung-Lineage
+          # KCFLAGS permisive pentru compatibilitate cu driverele vechi Samsung pe baza nouă
           export KCFLAGS="-Wno-error -Wno-unused-label -Wno-implicit-function-declaration -Wno-incompatible-pointer-types -Wno-return-type -Wno-unused-function -I$(pwd)/drivers/hid"
 
           make $MAKE_ARGS r5q_eur_open_defconfig
           
-          # Configurație Lineage 22 optimizată
           ./scripts/config --disable CONFIG_SCHED_WALT
           ./scripts/config --disable CONFIG_SCHED_CORE_CTL
           ./scripts/config --enable CONFIG_SCHED_PELT
           ./scripts/config --disable CONFIG_CC_STACKPROTECTOR_STRONG
           ./scripts/config --enable CONFIG_CC_STACKPROTECTOR_NONE
-          ./scripts/config --disable CONFIG_ANDROID_BINDER_IPC_SELFTEST
           
           make $MAKE_ARGS olddefconfig
           make -j$(nproc --all) $MAKE_ARGS Image.gz-dtb
@@ -96,5 +94,5 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: kernel-S10Lite-Lineage22-v92
+          name: kernel-S10Lite-Lineage22-v95
           path: kernel-res/arch/arm64/boot/Image.gz-dtb
