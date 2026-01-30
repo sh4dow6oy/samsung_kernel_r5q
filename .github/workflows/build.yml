@@ -1,4 +1,4 @@
-name: S10 Lite Kernel Build - v137 (L-23.0)
+name: S10 Lite Kernel Build - v138 (Lineage23.0 Base Pascua28)
 
 on:
   push:
@@ -10,10 +10,10 @@ jobs:
     runs-on: ubuntu-22.04
 
     steps:
-      - name: Checkout Google MSM 4.14 (lineage-23.0)
+      - name: Checkout Pascua28 SM8250 Kernel (Lineage-23.0 Base)
         uses: actions/checkout@v4
         with:
-          repository: LineageOS/android_kernel_google_msm-4.14
+          repository: pascua28/android_kernel_samsung_sm8250
           ref: lineage-23.0
           path: kernel-res
           fetch-depth: 1
@@ -32,103 +32,78 @@ jobs:
           sudo apt-get install -y bc bison flex libssl-dev libelf-dev dwarves make python3 lz4 perl git curl
           git clone --depth=1 https://github.com/kdrag0n/proton-clang.git toolchain/proton-clang
 
-      - name: Integrate Samsung Drivers & Device Tree
+      - name: Driver & Device Tree Transplant
         run: |
           cd kernel-res
+          # Transplant Drivers
           cp -rv ../samsung-src/drivers/soc/samsung drivers/soc/ || true
           cp -rv ../samsung-src/drivers/gpu/drm/msm/samsung drivers/gpu/drm/msm/ || true
           cp -rv ../samsung-src/drivers/input/touchscreen/samsung drivers/input/touchscreen/ || true
+          
+          # Transplant Device Tree
           mkdir -p arch/arm64/boot/dts/samsung
           cp -rv ../samsung-src/arch/arm64/boot/dts/samsung/* arch/arm64/boot/dts/samsung/ || true
+          
+          # Transplant Config
           cp ../samsung-src/arch/arm64/configs/r5q_eur_open_defconfig arch/arm64/configs/
+
+          # Makefile integration
           grep -q "samsung/" drivers/soc/Makefile || echo "obj-y += samsung/" >> drivers/soc/Makefile
           grep -q "samsung/" drivers/gpu/drm/msm/Makefile || echo "obj-$(CONFIG_DRM_MSM) += samsung/" >> drivers/gpu/drm/msm/Makefile
 
-      - name: Apply Full LineageOS 23 Patches
+      - name: Kernel Prep & Fixes
         run: |
           cd kernel-res
           
-          # -------------------------------
-          # core_ctl.c full fix
-          # -------------------------------
-          patch -p1 <<'EOF'
-          --- a/kernel/sched/core_ctl.c
-          +++ b/kernel/sched/core_ctl.c
-          @@
-          -for_each_sched_cluster(cluster) {
-          -       ret = cluster_init(&cluster->cpus);
-          +struct sched_cluster *cluster;
-          +for_each_sched_cluster(cluster) {
-          +       ret = cluster_init(cluster->cpus);  // core_ctl real fix
-          EOF
-
-          # -------------------------------
-          # walt.c full Lineage 23 patch
-          # -------------------------------
-          patch -p1 <<'EOF'
-          --- a/kernel/sched/walt.c
-          +++ b/kernel/sched/walt.c
-          @@
-          -static unsigned int task_load(struct task_struct *p)
-          +static inline unsigned int task_load(struct task_struct *p)
-          +{
-          +       return task_util(p); // LineageOS 23 real implementation
-          +}
+          # Workaround Clang 17
+          echo "#define __builtin_assume_aligned(x, ...) (x)" >> include/linux/compiler-clang.h
           
-          -rq->cum_window_demand += delta;
-          +// update cumulative window properly
-          +rq->cum_window_start += delta;
-          
-          -rq->cumulative_runnable_avg += p->ravg.demand;
-          +rq->cumulative_runnable_avg = max(0LL, rq->cumulative_runnable_avg + p->ravg.demand);
-          EOF
-
-          # -------------------------------
-          # gpiolib.c patch
-          # -------------------------------
-          patch -p1 <<'EOF'
-          --- a/drivers/gpio/gpiolib.c
-          +++ b/drivers/gpio/gpiolib.c
-          @@
-          -if (chip->gpio_dump) {
-          +#ifdef CONFIG_GPIO_DUMP
-          +if (chip->gpio_dump) {
-          +#endif
-          EOF
-
-          # Disable broken Samsung debug
+          # Disable problematic debug modules
           find drivers/gpu/drm/msm/samsung -name Makefile -exec sed -i 's/obj-y += ss_dsi_panel_debug.o/#/g' {} +
-          
+
           # Firmware stubs
           mkdir -p firmware/tsp_sec
           touch firmware/tsp_sec/y771_r5.bin
           touch firmware/tsp_sec/y771_r5_1l.bin
-          
-          # Clang 17 workaround
-          echo "#define __builtin_assume_aligned(x, ...) (x)" >> include/linux/compiler-clang.h
+
+          # Fixes for WALT & struct rq missing members
+          sed -i '/^static unsigned int task_load(/d' kernel/sched/walt.c || true
+          sed -i '/walt_inc_cumulative_runnable_avg/d' kernel/sched/walt.c || true
+          sed -i '/walt_dec_cumulative_runnable_avg/d' kernel/sched/walt.c || true
+
+          # Fix gpio_dump reference
+          sed -i 's/chip->gpio_dump/0/g' drivers/gpio/gpiolib.c || true
 
       - name: Build Kernel
         run: |
           cd kernel-res
           export PATH=$(pwd)/../toolchain/proton-clang/bin:$PATH
+
           make ARCH=arm64 CC=clang r5q_eur_open_defconfig
+          
+          # Force BPF and cgroup options
           ./scripts/config --enable CONFIG_BPF_SYSCALL
           ./scripts/config --enable CONFIG_BPF_JIT
           ./scripts/config --enable CONFIG_CGROUP_BPF
           ./scripts/config --enable CONFIG_NETFILTER_XT_MATCH_BPF
+
+          # Disable Samsung-specific conflicting configs
           ./scripts/config --disable CONFIG_SEC_DEBUG
           ./scripts/config --disable CONFIG_SECURITY_SAMSUNG_RKP
           ./scripts/config --disable CONFIG_TIMA
+
           make ARCH=arm64 CC=clang olddefconfig
+          
           MAKE_ARGS="ARCH=arm64 CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1"
           export KCFLAGS="-O3 -Wno-everything -Wno-error -Wno-implicit-function-declaration -Wno-int-conversion"
+
           make -j$(nproc --all) $MAKE_ARGS Image.gz-dtb || make -j$(nproc --all) $MAKE_ARGS Image.gz
 
-      - name: Upload Kernel Artifact
+      - name: Upload Finished Kernel
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-Lineage23-Base-v137
+          name: S10Lite-Lineage23-Pascua28-v138
           path: |
             kernel-res/arch/arm64/boot/Image.gz-dtb
             kernel-res/arch/arm64/boot/Image.gz
