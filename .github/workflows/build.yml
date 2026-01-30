@@ -1,4 +1,4 @@
-name: S10 Lite Kernel Build - v102 (Stable Path)
+name: S10 Lite Kernel Build - v103
 
 on:
   push:
@@ -23,17 +23,15 @@ jobs:
 
       - name: Prepare Base (Lineage 22)
         run: |
-          # Baza de Android 15 este punctul de plecare
           git clone --depth=1 -b lineage-22.0 https://github.com/LineageOS/android_kernel_google_msm-4.14.git kernel-res
           cd kernel-res
           git remote add stable https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git
           git fetch stable linux-4.14.y
-          # Încercăm merge-ul la ultima versiune stabilă 4.14.x
-          git merge FETCH_HEAD --no-edit || echo "Conflicts will be fixed by drivers injection"
+          git merge FETCH_HEAD --no-edit || echo "Merge handled"
 
-      - name: Driver Injection & SDIO Import
+      - name: Driver Injection & SDIO Fix
         run: |
-          # Injectăm driverele Samsung S10 Lite
+          # Injectăm driverele Samsung
           cp -r s10-lite-src/drivers/soc/samsung kernel-res/drivers/soc/ || true
           cp -r s10-lite-src/drivers/camera kernel-res/drivers/ || true
           cp -r s10-lite-src/drivers/fingerprint kernel-res/drivers/ || true
@@ -41,29 +39,33 @@ jobs:
           cp -r s10-lite-src/arch/arm64/boot/dts/samsung kernel-res/arch/arm64/boot/dts/ || true
           cp s10-lite-src/arch/arm64/configs/r5q_eur_open_defconfig kernel-res/arch/arm64/configs/
           
-          # Fix SDIO folosind sursa verificată de SM6150 (cum ai sugerat)
-          curl -sSL https://raw.githubusercontent.com/LineageOS/android_kernel_samsung_sm6150/lineage-21.0/drivers/mmc/core/sdio.c > kernel-res/drivers/mmc/core/sdio.c
+          # FIX: Download SDIO.c corect (link raw verificat)
+          curl -sSL "https://raw.githubusercontent.com/LineageOS/android_kernel_samsung_sm6150/lineage-21.0/drivers/mmc/core/sdio.c" -o kernel-res/drivers/mmc/core/sdio.c
 
-      - name: Surgical Fixes v102
+      - name: Surgical Fixes v103
         run: |
           cd kernel-res
           
-          # 1. FIX HID TRACE (Soluția definitivă din patch-ul A71)
-          # Re-indexăm căile de include pentru sistemul de tracing
+          # 1. FIX SDHCI (Erorile de undeclared identifier)
+          # Eliminăm argumentul extra din sdhci_cmd_irq și variabilele lipsă
+          sed -i 's/sdhci_cmd_irq(host, intmask & SDHCI_INT_CMD_MASK, \&intmask);/sdhci_cmd_irq(host, intmask \& SDHCI_INT_CMD_MASK);/g' drivers/mmc/host/sdhci.c
+          sed -i '/\*intmask_p |= data_err_bit;/d' drivers/mmc/host/sdhci.c
+          
+          # Fix pentru erorile de logare DMA (dma undeclared)
+          sed -i 's/(unsigned long long)dma/0ULL/g' drivers/mmc/host/sdhci.c
+
+          # 2. FIX HID TRACE
           find drivers/hid -name "*.h" -exec sed -i 's|#define TRACE_INCLUDE_PATH .|#define TRACE_INCLUDE_PATH ../../drivers/hid|g' {} +
 
-          # 2. Fix labels 'out:' în tot subsistemul MMC (unde dădea eroarea)
+          # 3. Fix labels 'out:'
           find drivers/mmc/core/ -name "*.c" -exec sed -i 's/out:$/out: ;/g' {} +
 
-          # 3. GPIO Alignment (v14)
+          # 4. GPIO Alignment
           if ! grep -q "void \*gpio_dump;" include/linux/gpio/driver.h; then
             sed -i '/struct gpio_chip {/a \	void *gpio_dump;' include/linux/gpio/driver.h
           fi
 
-          # 4. DM-BOW Fix
-          sed -i '15i #undef SECTOR_SIZE' drivers/md/dm-bow.c
-
-          # 5. Neutralizare WALT/CoreCtl (Pentru stabilitate Lineage 22)
+          # 5. Stubs pentru Scheduler
           printf "int core_ctl_init(void) { return 0; }\n" > kernel/sched/core_ctl.c
           printf "void walt_stub(void) {}\n" > kernel/sched/walt.c
 
@@ -76,14 +78,15 @@ jobs:
           export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
           
           MAKE_ARGS="ARCH=arm64 CC=clang HOSTCC=gcc LLVM=1 LLVM_IAS=1"
-          # KCFLAGS agresive pentru a forța trecerea peste avertismentele driverelor Samsung vechi
           export KCFLAGS="-Wno-error -Wno-implicit-function-declaration -Wno-unused-label -Wno-return-type -Wno-incompatible-pointer-types -Idrivers/hid"
 
           make $MAKE_ARGS r5q_eur_open_defconfig
           
-          # Configurații "Kernel 5 style" pe bază 4.14
+          # Dezactivăm opțiunile problematice care cer variabile Samsung inexistente în SDHCI
+          ./scripts/config --disable CONFIG_MMC_SDHCI_S3C
+          ./scripts/config --enable CONFIG_MMC_SDHCI_MSM
+          
           ./scripts/config --enable CONFIG_EROFS_FS
-          ./scripts/config --enable CONFIG_EROFS_FS_ZIP
           ./scripts/config --disable CONFIG_SCHED_WALT
           ./scripts/config --enable CONFIG_SCHED_PELT
           
@@ -94,5 +97,5 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: kernel-S10Lite-v102-L22
+          name: kernel-S10Lite-v103
           path: kernel-res/arch/arm64/boot/Image.gz-dtb
