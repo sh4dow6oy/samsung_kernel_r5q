@@ -1,4 +1,4 @@
-name: S10 Lite - Stock Build (Clang 9 GitHub Final)
+name: S10 Lite - Proton Clang Build
 
 on:
   push:
@@ -18,94 +18,69 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y bc bison flex libssl-dev libelf-dev dwarves libncurses-dev git wget make python2 python3 pahole tar xz-utils lib32z1
 
-      - name: Setup LLVM 9.0.1 (Official GitHub)
+      - name: Setup Proton Clang
         run: |
-          mkdir -p toolchain/clang toolchain/gcc
-          # Descarcăm binarul oficial LLVM 9 de pe GitHub
-          wget https://github.com/llvm/llvm-project/releases/download/llvmorg-9.0.1/clang+llvm-9.0.1-x86_64-linux-gnu-ubuntu-16.04.tar.xz -O clang.tar.xz
-          tar -xf clang.tar.xz -C toolchain/clang --strip-components=1
-          
-          # Descarcăm GCC-ul tău pentru binutils (LD, OBJCOPY, AS)
-          wget -L "https://github.com/sh4dow6oy/samsung_kernel_r5q/releases/download/GCC/prebuilts.tar" -O gcc.tar
-          tar -xf gcc.tar -C toolchain/gcc
-          
-          echo "CLANG_PATH=$(pwd)/toolchain/clang/bin" >> $GITHUB_ENV
-          GCC_BIN=$(find $(pwd)/toolchain/gcc -name "aarch64-linux-android-gcc" -type f -printf '%h\n' | head -n 1)
-          echo "GCC_PATH=$GCC_BIN" >> $GITHUB_ENV
-
-      - name: Essential Samsung Fixes
-        run: |
-          # Samsung environment fixes
-          sudo ln -sf /usr/bin/python2 /usr/bin/python
-          mkdir -p system/core/liblog/include/log
-          echo -e "#ifndef _PERFLOG_H\n#define _PERFLOG_H\n#endif" > system/core/liblog/include/log/perflog.h
-          
-          # Eliminăm flag-urile care blochează Clang 9 (unknown argument errors)
-          find . -name "Makefile" -o -name "Kbuild" | xargs sed -i 's/-Werror//g' || true
-          find . -name "Makefile" -o -name "Kbuild" | xargs sed -i 's/-implicit-function-declaration//g' || true
-          find . -name "Makefile" -o -name "Kbuild" | xargs sed -i 's/-Wno-unused-but-set-variable//g' || true
-          find . -name "Makefile" -o -name "Kbuild" | xargs sed -i 's/-Wno-maybe-uninitialized//g' || true
-          
-          # Fix pentru poll_t (compatibilitate 4.14)
-          sed -i '/#define _UAPI_LINUX_TYPES_H/a #ifndef __poll_t\n#ifndef __ASSEMBLY__\ntypedef unsigned int __poll_t;\n#endif\n#define __poll_t __poll_t\n#endif' include/uapi/linux/types.h
+          # Clonăm Proton Clang - este un toolchain "all-in-one"
+          git clone --depth=1 https://github.com/kdrag0n/proton-clang.git toolchain/proton-clang
+          echo "PROTON_PATH=$(pwd)/toolchain/proton-clang/bin" >> $GITHUB_ENV
 
       - name: Build Kernel
         run: |
-          export PATH="${{ env.CLANG_PATH }}:${{ env.GCC_PATH }}:$PATH"
+          export PATH="${{ env.PROTON_PATH }}:$PATH"
+          sudo ln -sf /usr/bin/python2 /usr/bin/python
           
-          # Forțăm ignorarea warning-urilor rămase prin KCFLAGS
-          export KCFLAGS="-Wno-error -Wno-unknown-warning-option -Wno-implicit-function-declaration -Wno-int-conversion"
-
+          # Argumente de build "Pure LLVM"
+          # Proton Clang permite folosirea LLVM=1 complet (mult mai rapid și curat)
           MAKE_ARGS="
             O=out \
             ARCH=arm64 \
             CC=clang \
-            CLANG_TRIPLE=aarch64-linux-gnu- \
-            CROSS_COMPILE=aarch64-linux-android- \
-            HOSTCC=gcc \
-            HOSTCXX=g++ \
             LD=ld.lld \
             AR=llvm-ar \
             NM=llvm-nm \
             OBJCOPY=llvm-objcopy \
             OBJDUMP=llvm-objdump \
             STRIP=llvm-strip \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            LLVM=1 \
+            LLVM_IAS=1
           "
+          
+          # KCFLAGS pentru a ignora warning-urile specifice Samsung fără a atinge codul
+          export KCFLAGS="-Wno-error -Wno-implicit-function-declaration -Wno-strict-prototypes -Wno-unknown-warning-option -Wno-implicit-int -Wno-int-conversion"
 
           rm -rf out && mkdir -p out
           
-          # Configurare și bypass Stack Protector (critic pentru bounds.s)
+          # 1. Configurare
           make $MAKE_ARGS r5q_eur_open_defconfig
+          
+          # 2. Fix stack protector în .config (nu în sursă)
           sed -i 's/CONFIG_CC_STACKPROTECTOR_STRONG=y/CONFIG_CC_STACKPROTECTOR_NONE=y/g' out/.config
           make $MAKE_ARGS olddefconfig
           
-          # Generare headere
-          make $MAKE_ARGS prepare scripts -j$(nproc --all)
-          
-          # Compilare principală
+          # 3. Build (J$(nproc) pentru viteză maximă)
           make -j$(nproc --all) $MAKE_ARGS || make -j1 $MAKE_ARGS
 
           if [ -f out/arch/arm64/boot/Image ]; then
+            cp out/arch/arm64/boot/Image .
+            [ -f out/arch/arm64/boot/dtbo.img ] && cp out/arch/arm64/boot/dtbo.img .
             echo "SUCCESS=true" >> $GITHUB_ENV
           fi
 
-      - name: Package with AnyKernel3
+      - name: Package AnyKernel3
         if: env.SUCCESS == 'true'
         run: |
-          git clone https://github.com/osm0sis/AnyKernel3.git
-          cp out/arch/arm64/boot/Image AnyKernel3/
-          # Dacă sursa generează și dtbo.img, îl punem și pe acela
-          [ -f out/arch/arm64/boot/dtbo.img ] && cp out/arch/arm64/boot/dtbo.img AnyKernel3/
-          
+          git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git
+          cp Image AnyKernel3/
+          [ -f dtbo.img ] && cp dtbo.img AnyKernel3/
           cd AnyKernel3
-          # Ajustări rapide pentru S10 Lite (r5q)
           sed -i 's/device.name1=maguro/device.name1=r5q/g' anykernel.sh
-          sed -i 's/device.name2=toroplus/device.name2=s10lite/g' anykernel.sh
-          zip -r ../S10Lite-Kernel-Clang9.zip *
+          zip -r ../S10Lite-Kernel-Proton.zip *
 
-      - name: Upload Build
+      - name: Upload
         if: env.SUCCESS == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-Kernel-Final
-          path: S10Lite-Kernel-Clang9.zip
+          name: S10Lite-Proton-Kernel
+          path: S10Lite-Kernel-Proton.zip
