@@ -1,4 +1,4 @@
-name: S10 Lite - LineageOS Upstream Build
+name: S10 Lite - Upstream Stability Build
 
 on:
   push:
@@ -23,24 +23,16 @@ jobs:
           git clone --depth=1 https://github.com/kdrag0n/proton-clang.git toolchain/proton-clang
           echo "PROTON_PATH=$(pwd)/toolchain/proton-clang/bin" >> $GITHUB_ENV
 
-      - name: Fetch LineageOS Kernel Source
+      - name: Fetch LineageOS Source
         run: |
-          # Clonăm doar ultimul commit pentru viteză (--depth=1)
           git clone --depth=1 https://github.com/LineageOS/android_kernel_qcom_sm8150.git kernel_source
-          
-      - name: Sync Samsung Config
-        run: |
-          # Copiem defconfig-ul tău din sursa actuală în sursa LineageOS
-          # Presupunem că defconfig-ul tău este în arch/arm64/configs/r5q_eur_open_defconfig
-          mkdir -p kernel_source/arch/arm64/configs/
-          cp arch/arm64/configs/r5q_eur_open_defconfig kernel_source/arch/arm64/configs/r5q_lineage_defconfig || true
 
       - name: Build Kernel
         run: |
           export PATH="${{ env.PROTON_PATH }}:$PATH"
           cd kernel_source
           
-          # Fix pentru utilitarele Samsung care s-ar putea să fie apelate în defconfig
+          # Fix-uri de mediu
           echo -e '#!/bin/bash\necho "0"' > /tmp/secgetspf
           chmod +x /tmp/secgetspf
           sudo mv /tmp/secgetspf /usr/bin/secgetspf
@@ -56,33 +48,37 @@ jobs:
             LLVM_IAS=1
           "
           
-          # Pe LineageOS sursa e mai stabilă, deci nu avem nevoie de atâtea ignorări de erori
-          export KCFLAGS="-Wno-error -Wno-implicit-function-declaration"
+          export KCFLAGS="-Wno-error -Wno-implicit-function-declaration -Wno-int-conversion"
 
           mkdir -p out
           
-          # Folosim defconfig-ul de SM8150 de la Lineage (mai sigur pentru upstream)
-          # sau defconfig-ul tău dacă l-ai copiat corect
+          # 1. Folosim defconfig-ul de SM8150 LineageOS
           make $MAKE_ARGS vendor/sm8150-perf_defconfig
           
-          # Dezactivăm BTF care dădea erori anterior
+          # 2. Optimizări Anti-Crash (IMPORTANT)
+          sed -i 's/CONFIG_LTO_CLANG=y/CONFIG_LTO_CLANG=n/g' out/.config
+          sed -i 's/CONFIG_LTO=y/CONFIG_LTO=n/g' out/.config
           sed -i 's/CONFIG_DEBUG_INFO_BTF=y/CONFIG_DEBUG_INFO_BTF=n/g' out/.config
+          sed -i 's/CONFIG_KASAN=y/CONFIG_KASAN=n/g' out/.config
+          
           make $MAKE_ARGS olddefconfig
           
-          # Compilăm
-          make -j$(nproc --all) $MAKE_ARGS
+          # 3. Build cu j2 pentru a evita Error 2 la final (Linker RAM)
+          make -j2 $MAKE_ARGS
 
+          # 4. Verificare binar
           if [ -f out/arch/arm64/boot/Image ]; then
             cp out/arch/arm64/boot/Image ../
-            [ -f out/arch/arm64/boot/dtbo.img ] && cp out/arch/arm64/boot/dtbo.img ../
+            # Încercăm să găsim și dtbo-ul generat
+            find out/arch/arm64/boot/dts/ -name "*.dtbo" -exec cp {} ../ \; || true
             echo "SUCCESS=true" >> $GITHUB_ENV
           fi
 
-      - name: Upload Kernel
+      - name: Upload Artifacts
         if: env.SUCCESS == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-Upstream-Kernel
+          name: S10Lite-Lineage-Kernel
           path: |
             Image
-            dtbo.img
+            *.dtbo
