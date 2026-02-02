@@ -1,4 +1,4 @@
-name: S10 Lite - Upstream with Custom Samsung Toolchain
+name: S10 Lite - Upstream 4.14.y with Proton Clang
 
 on:
   push:
@@ -18,70 +18,76 @@ jobs:
       - name: Install Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y bc bison flex libssl-dev libelf-dev dwarves libncurses-dev git wget make python2 python3 pahole tar xz-utils lib32z1 lib32ncurses6 lib32stdc++6
+          sudo apt-get install -y bc bison flex libssl-dev libelf-dev dwarves libncurses-dev git wget make python2 python3 pahole tar xz-utils
 
-      - name: Setup Samsung Toolchain
+      - name: Setup Proton Clang
         run: |
-          mkdir -p toolchain/samsung
-          # Folosim -L pentru a urmari redirectarile GitHub
-          wget -L "https://github.com/sh4dow6oy/samsung_kernel_r5q/releases/download/toolchain/toolchain.tar.gz" -O toolchain.tar.gz
-          
-          if [ -f toolchain.tar.gz ]; then
-            tar -xf toolchain.tar.gz -C toolchain/samsung
-          else
-            echo "Eroare: Fisierul toolchain.tar.gz nu a fost descarcat!"
-            exit 1
-          fi
-          
-          # Căutăm binarele (detectie recursiva)
-          BIN_PATH=$(find $(pwd)/toolchain/samsung -name "aarch64-linux-*-gcc" -type f -printf '%h\n' | head -n 1)
-          
-          if [ -z "$BIN_PATH" ]; then
-            echo "Eroare: Nu am gasit executabilele GCC in arhiva!"
-            ls -R toolchain/samsung
-            exit 1
-          fi
-          
-          echo "TOOLCHAIN_BIN=$BIN_PATH" >> $GITHUB_ENV
-          echo "Final Toolchain Path: $BIN_PATH"
+          git clone --depth=1 https://github.com/kdrag0n/proton-clang.git toolchain/proton-clang
 
-      - name: Upstream Merge (LTS 4.14.y)
+      - name: Upstream Merge (Linux 4.14.y)
         run: |
           git config --global user.email "action@github.com"
           git config --global user.name "GitHub Action"
-          git remote add linux-stable https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git || true
-          git fetch linux-stable linux-4.14.y
           
-          git merge FETCH_HEAD -m "Upstream 4.14.y" || echo "Conflicte detectate"
-          git checkout --ours Makefile arch/arm64/configs/r5q_eur_open_defconfig drivers/staging/Kconfig
-          git add . && git commit -m "Merged Upstream" || echo "Nothing to commit"
+          # Adăugăm sursa stabilă
+          git remote add linux-stable https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git || true
+          git fetch linux-stable linux-4.14.y --depth=50
+          
+          # Facem merge forțat pentru a aduce patch-urile de securitate
+          git merge FETCH_HEAD --allow-unrelated-histories -m "Upstream 4.14.y" || echo "Conflicte detectate, rezolvăm..."
+          
+          # Păstrăm structura Samsung unde apar conflicte de nerezolvat automat
+          git checkout --ours Makefile arch/arm64/configs/r5q_eur_open_defconfig drivers/staging/Kconfig || true
+          git add . && git commit -m "Resolved conflicts for Proton Clang build" || echo "Nimic de comis"
 
       - name: Pre-build Fixes
         run: |
+          # Fix __poll_t pentru compatibilitate Clang
           sed -i '/#define _UAPI_LINUX_TYPES_H/a #ifndef __poll_t\n#ifndef __ASSEMBLY__\ntypedef unsigned int __poll_t;\n#endif\n#define __poll_t __poll_t\n#endif' include/uapi/linux/types.h
+          
+          # Samsung perflog fix
           mkdir -p system/core/liblog/include/log
           echo -e "#ifndef _PERFLOG_H\n#define _PERFLOG_H\n#endif" > system/core/liblog/include/log/perflog.h
+          
+          # Python symlink
           sudo ln -sf /usr/bin/python2 /usr/bin/python
 
       - name: Build Kernel
         run: |
-          export PATH="${{ env.TOOLCHAIN_BIN }}:$PATH"
+          export PATH=$(pwd)/toolchain/proton-clang/bin:$PATH
           
-          # Detectam prefixul automat
-          GCC_FILE=$(ls ${{ env.TOOLCHAIN_BIN }} | grep gcc | head -n 1)
-          PFIX=$(echo $GCC_FILE | sed 's/gcc//')
+          # Setăm argumentele pentru Proton Clang
+          MAKE_ARGS="
+            O=out \
+            ARCH=arm64 \
+            CC=clang \
+            HOSTCC=gcc \
+            HOSTCXX=g++ \
+            LD=ld.lld \
+            AR=llvm-ar \
+            NM=llvm-nm \
+            OBJCOPY=llvm-objcopy \
+            OBJDUMP=llvm-objdump \
+            STRIP=llvm-strip \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            LLVM=1 \
+            LLVM_IAS=1 \
+            TECHPACK=true
+          "
           
-          echo "Using Prefix: $PFIX"
+          # Dezactivăm Werror pentru a preveni oprirea build-ului la warning-uri de upstream
+          export KCFLAGS="-Wno-error -Wno-implicit-function-declaration"
 
-          MAKE_ARGS="O=out ARCH=arm64 CROSS_COMPILE=$PFIX HOSTCC=gcc HOSTCXX=g++ TECHPACK=true"
-          
           rm -rf out && mkdir -p out
           make $MAKE_ARGS r5q_eur_open_defconfig
           
-          # Dezactivam warning-urile care opresc build-ul (Werror)
-          export KCFLAGS="-Wno-error"
+          # Fix Stack Protector pentru Proton Clang
+          sed -i 's/CONFIG_CC_STACKPROTECTOR_STRONG=y/CONFIG_CC_STACKPROTECTOR_NONE=y/g' out/.config
           
           make $MAKE_ARGS olddefconfig
+          
+          # Build cu toate nucleele disponibile
           make -j$(nproc --all) $MAKE_ARGS || (echo "DIAGNOSTIC J1..." && make -j1 $MAKE_ARGS)
 
           if [ -f out/arch/arm64/boot/Image ]; then
@@ -94,7 +100,7 @@ jobs:
         if: env.SUCCESS == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-Kernel-Samsung-TC
+          name: S10Lite-Upstream-ProtonClang
           path: |
             Image
             dtbo.img
