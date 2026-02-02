@@ -1,4 +1,4 @@
-name: S10 Lite Kernel - Upstream 4.14.y (Clean)
+name: S10 Lite - Upstream with Custom Samsung Toolchain
 
 on:
   push:
@@ -18,80 +18,84 @@ jobs:
       - name: Install Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y bc bison flex libssl-dev libelf-dev dwarves libncurses-dev git wget make python2 python3 pahole
+          sudo apt-get install -y bc bison flex libssl-dev libelf-dev dwarves libncurses-dev git wget make python2 python3 pahole tar
 
-      - name: Download Proton Clang
+      - name: Setup Samsung Toolchain
         run: |
-          git clone --depth=1 https://github.com/kdrag0n/proton-clang.git toolchain/proton-clang
+          mkdir -p toolchain/samsung
+          # Descarcă toolchain-ul tău din Release
+          wget https://github.com/sh4dow6oy/samsung_kernel_r5q/releases/download/toolchain/toolchain.tar.gz -O toolchain.tar.gz
+          tar -xf toolchain.tar.gz -C toolchain/samsung
+          
+          # Căutăm automat folderul bin (pentru a fi siguri de structura arhivei)
+          BIN_PATH=$(find $(pwd)/toolchain/samsung -name aarch64-linux-android-gcc -type f -printf '%h\n' | head -n 1)
+          if [ -z "$BIN_PATH" ]; then
+            # Fallback în caz că prefixul e diferit (gnu în loc de android)
+            BIN_PATH=$(find $(pwd)/toolchain/samsung -name aarch64-linux-gnu-gcc -type f -printf '%h\n' | head -n 1)
+          fi
+          
+          echo "TOOLCHAIN_BIN=$BIN_PATH" >> $GITHUB_ENV
+          echo "Final Toolchain Path: $BIN_PATH"
 
-      - name: Upstream Merge & Conflict Fix
+      - name: Upstream Merge (LTS 4.14.y)
         run: |
           git config --global user.email "action@github.com"
           git config --global user.name "GitHub Action"
-          
-          # Adăugăm sursa stabilă de la kernel.org
           git remote add linux-stable https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git || true
           git fetch linux-stable linux-4.14.y
           
-          # Încercăm un merge folosind strategia 'ours' pentru a nu lăsa upstream-ul să strice Makefile-ul Samsung
-          # Acest pas aduce doar patch-urile de securitate și bugfix-urile
-          git merge FETCH_HEAD -m "Merge latest Linux 4.14.y upstream" || echo "Conflicte detectate, rezolvăm..."
-
-          # Păstrăm fișierele critice Samsung unde upstream-ul dă erori de obicei
-          git checkout --ours Makefile
-          git checkout --ours arch/arm64/configs/r5q_eur_open_defconfig
-          git checkout --ours drivers/staging/Kconfig
-          
-          git add .
-          git commit -m "Resolved conflicts favoring Samsung base" || echo "Nimic de salvat"
+          # Merge echilibrat: luăm patch-urile, dar păstrăm configurația Samsung
+          git merge FETCH_HEAD -m "Upstream 4.14.y" || echo "Conflicte detectate la merge"
+          git checkout --ours Makefile arch/arm64/configs/r5q_eur_open_defconfig drivers/staging/Kconfig
+          git add . && git commit -m "Merged Upstream & Resolved Conflicts" || echo "Nimic de comis"
 
       - name: Pre-build Fixes
         run: |
-          # Fix pentru tipul __poll_t (esențial pentru Clang pe 4.14)
+          # Fix necesar pentru compatibilitatea cu toolchain-urile mai vechi pe surse noi
           sed -i '/#define _UAPI_LINUX_TYPES_H/a #ifndef __poll_t\n#ifndef __ASSEMBLY__\ntypedef unsigned int __poll_t;\n#endif\n#define __poll_t __poll_t\n#endif' include/uapi/linux/types.h
           
-          # Samsung log fix
+          # Fix pentru headerele de log Samsung
           mkdir -p system/core/liblog/include/log
           echo -e "#ifndef _PERFLOG_H\n#define _PERFLOG_H\n#endif" > system/core/liblog/include/log/perflog.h
           
-          # Symlink Python
+          # Symlink obligatoriu pentru scripturile de kernel
           sudo ln -sf /usr/bin/python2 /usr/bin/python
 
       - name: Build Kernel
         run: |
-          export PATH=$(pwd)/toolchain/proton-clang/bin:$PATH
+          # Adăugăm toolchain-ul tău în PATH
+          export PATH="${{ env.TOOLCHAIN_BIN }}:$PATH"
           
-          # Folosim o listă simplă de argumente
-          MAKE_ARGS="O=out ARCH=arm64 CC=clang HOSTCC=gcc HOSTCXX=g++ LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1 TECHPACK=true"
-          
-          # Dezactivăm erorile stricte pentru a trece de warning-urile de upstream
-          export KCFLAGS="-Wno-error -Wno-implicit-function-declaration"
+          # Verificăm prefixul corect pentru CROSS_COMPILE
+          if [ -f "${{ env.TOOLCHAIN_BIN }}/aarch64-linux-android-gcc" ]; then
+             PFIX="aarch64-linux-android-"
+          else
+             PFIX="aarch64-linux-gnu-"
+          fi
 
+          MAKE_ARGS="O=out ARCH=arm64 CROSS_COMPILE=$PFIX HOSTCC=gcc HOSTCXX=g++ TECHPACK=true"
+          
+          # Curățăm și configurăm
           rm -rf out && mkdir -p out
           make $MAKE_ARGS r5q_eur_open_defconfig
           
-          # Bypass Stack Protector (Proton Clang gestionat manual)
-          sed -i 's/CONFIG_CC_STACKPROTECTOR_STRONG=y/CONFIG_CC_STACKPROTECTOR_NONE=y/g' out/.config
-          
+          # Sincronizăm config-ul cu noul toolchain (previne erori de compilator)
           make $MAKE_ARGS olddefconfig
           
-          # Start Build
+          # Build principal
           make -j$(nproc --all) $MAKE_ARGS || (echo "DIAGNOSTIC J1..." && make -j1 $MAKE_ARGS)
 
           if [ -f out/arch/arm64/boot/Image ]; then
-            echo "SUCCESS=true" >> $GITHUB_ENV
             cp out/arch/arm64/boot/Image .
             [ -f out/arch/arm64/boot/dtbo.img ] && cp out/arch/arm64/boot/dtbo.img .
-          else
-            echo "Build failed!"
-            exit 1
+            echo "SUCCESS=true" >> $GITHUB_ENV
           fi
 
-      - name: Upload Kernel
+      - name: Upload Artifacts
         if: env.SUCCESS == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-Kernel-Upstream-4.14
+          name: S10Lite-Kernel-Upstream-StockTC
           path: |
             Image
             dtbo.img
