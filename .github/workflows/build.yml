@@ -1,4 +1,4 @@
-name: S10 Lite - Hybrid Upstream (Smart Fix)
+name: S10 Lite - Hybrid Upstream (RAM & DTS Optimized)
 
 on:
   push:
@@ -12,6 +12,16 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Maximize Build Space & RAM
+        run: |
+          # Ștergem chestiile inutile de pe VM pentru a face loc
+          sudo rm -rf /usr/share/dotnet /opt/ghc "/usr/local/share/boost"
+          # Creăm un fișier Swap de 4GB pentru a preveni blocarea la linking (AR drivers/built-in.o)
+          sudo fallocate -l 4G /swapfile
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
 
       - name: Install Dependencies
         run: |
@@ -28,27 +38,28 @@ jobs:
           git clone --depth=1 https://github.com/LineageOS/android_kernel_qcom_sm8150.git kernel_source
           git clone --depth=1 https://github.com/LineageOS/android_kernel_samsung_r5q.git samsung_source
           
-          # Injectăm driverele și config-ul
+          # 1. Injectăm Techpack (Audio/Display Samsung)
           cp -r samsung_source/techpack kernel_source/ || true
+          
+          # 2. Configurația Samsung R5Q
           cp samsung_source/arch/arm64/configs/r5q_eur_open_defconfig kernel_source/arch/arm64/configs/r5q_defconfig
+          
+          # 3. Copiere DTS (DOAR fișierele r5q, pentru a nu strica pm8150.dtsi)
           mkdir -p kernel_source/arch/arm64/boot/dts/vendor/qcom/
-          cp -r samsung_source/arch/arm64/boot/dts/vendor/qcom/r5q* kernel_source/arch/arm64/boot/dts/vendor/qcom/ || true
-
+          find samsung_source/arch/arm64/boot/dts/vendor/qcom/ -name "*r5q*" -exec cp {} kernel_source/arch/arm64/boot/dts/vendor/qcom/ \;
+          
           cd kernel_source
 
-          # === FIX AUDIO (L1SS_AUDIO Error) ===
-          # Adăugăm definitia lipsă în header-ul de PCM
+          # === FIX-URI COD ===
+          # Fix Audio L1SS
           sed -i '20i #define L1SS_AUDIO 0' techpack/audio/asoc/msm-pcm-q6-noirq.c
-          
-          # Redefinim jack-urile pentru Upstream
           sed -i 's/SND_JACK_MICROPHONE2/SND_JACK_MICROPHONE/g' techpack/audio/asoc/codecs/wcd-mbhc-v2.h
           sed -i 's/SND_JACK_ANC_HEADPHONE/SND_JACK_HEADPHONE/g' techpack/audio/asoc/codecs/wcd-mbhc-v2.c
 
-          # === FIX SMCINVOKE (Redefinition of size_add) ===
-          # Comentăm doar funcția problematică fără să stricăm restul fișierului
+          # Fix SMCInvoke (Comentăm redefinirea size_add)
           sed -i '/static inline size_t size_add/,/}/ s/^/\/\//' drivers/soc/qcom/smcinvoke.c
 
-          # Fix Samsung Tools
+          # Fix Samsung Security Tools
           echo -e '#!/bin/bash\necho "0"' > /tmp/secgetspf
           chmod +x /tmp/secgetspf
           sudo mv /tmp/secgetspf /usr/bin/secgetspf
@@ -68,18 +79,21 @@ jobs:
             LLVM_IAS=1
           "
           
+          # Flag-uri de toleranță
           export KCFLAGS="-Wno-error -Wno-implicit-function-declaration -Wno-int-conversion -Wno-incompatible-pointer-types -Wno-strict-prototypes"
 
           mkdir -p out
           make $MAKE_ARGS r5q_defconfig
           
-          # Dezactivăm LTO/BTF pentru stabilitate RAM
+          # Dezactivăm LTO și BTF (OBLIGATORIU pentru a nu îngheța la drivers/built-in.o)
           sed -i 's/CONFIG_LTO_CLANG=y/CONFIG_LTO_CLANG=n/g' out/.config
           sed -i 's/CONFIG_LTO=y/CONFIG_LTO=n/g' out/.config
           sed -i 's/CONFIG_DEBUG_INFO_BTF=y/CONFIG_DEBUG_INFO_BTF=n/g' out/.config
           
           make $MAKE_ARGS olddefconfig
-          make -j2 $MAKE_ARGS
+          
+          # Compilăm cu j2. Dacă eșuează, forțăm j1 pentru faza finală de linking
+          make -j2 $MAKE_ARGS || make -j1 $MAKE_ARGS
 
           if [ -f out/arch/arm64/boot/Image ]; then
             cp out/arch/arm64/boot/Image ../
@@ -87,11 +101,11 @@ jobs:
             echo "SUCCESS=true" >> $GITHUB_ENV
           fi
 
-      - name: Upload
+      - name: Upload Artifacts
         if: env.SUCCESS == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-Upstream-Hybrid
+          name: S10Lite-Hybrid-Upstream-Final
           path: |
             Image
             *.dtbo
