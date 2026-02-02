@@ -1,4 +1,4 @@
-name: S10 Lite - Hybrid Upstream (Manual Config Path)
+name: S10 Lite - Upstream 4.14.356 Hybrid
 
 on:
   push:
@@ -10,7 +10,7 @@ jobs:
     runs-on: ubuntu-22.04
 
     steps:
-      - name: Checkout Source
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Install Dependencies
@@ -23,27 +23,30 @@ jobs:
           git clone --depth=1 https://github.com/kdrag0n/proton-clang.git toolchain/proton-clang
           echo "PROTON_PATH=$(pwd)/toolchain/proton-clang/bin" >> $GITHUB_ENV
 
-      - name: Sync Sources
+      - name: Hybrid Source Preparation
         run: |
-          # 1. Clonăm baza Upstream (Lineage SM8150)
-          git clone --depth=1 https://github.com/LineageOS/android_kernel_qcom_sm8150.git kernel_base
+          # 1. Clonăm baza Upstream SM8150 (cea care tinde spre .356)
+          git clone --depth=1 https://github.com/LineageOS/android_kernel_qcom_sm8150.git kernel_source
           
-          # 2. Clonăm sursa Samsung r5q (pentru drivere și config)
+          # 2. Clonăm sursa Samsung r5q pentru a extrage driverele proprietare
           git clone --depth=1 https://github.com/LineageOS/android_kernel_samsung_r5q.git samsung_source
           
-          # 3. Copiem manual defconfig-ul indicat de tine în baza nouă
-          mkdir -p kernel_base/arch/arm64/configs/
-          cp samsung_source/arch/arm64/configs/r5q_eur_open_defconfig kernel_base/arch/arm64/configs/r5q_defconfig
+          # 3. Transferăm driverele Samsung peste baza Upstream
+          echo "Injecting Samsung drivers into Upstream base..."
+          cp -r samsung_source/drivers/soc/qcom/smcinvoke.c kernel_source/drivers/soc/qcom/ || true
+          [ -d samsung_source/techpack ] && cp -r samsung_source/techpack kernel_source/
           
-          # 4. Transferăm folderele critice pentru Samsung (Display/Camera/Battery)
-          # Acestea sunt adesea în techpack sau drivers/vendor
-          [ -d samsung_source/techpack ] && cp -r samsung_source/techpack kernel_base/
-          echo "Configurarea r5q_defconfig a fost injectată cu succes."
+          # 4. Copiem Configurația R5Q
+          cp samsung_source/arch/arm64/configs/r5q_eur_open_defconfig kernel_source/arch/arm64/configs/r5q_defconfig
+          
+          # 5. Copiem Device Tree-ul (DTS) - Fără asta nu pornește ecranul
+          mkdir -p kernel_source/arch/arm64/boot/dts/vendor/qcom/
+          cp -r samsung_source/arch/arm64/boot/dts/vendor/qcom/r5q* kernel_source/arch/arm64/boot/dts/vendor/qcom/ || true
 
       - name: Build Kernel
         run: |
           export PATH="${{ env.PROTON_PATH }}:$PATH"
-          cd kernel_base
+          cd kernel_source
           
           # Fix Samsung Tools
           echo -e '#!/bin/bash\necho "0"' > /tmp/secgetspf
@@ -61,21 +64,20 @@ jobs:
             LLVM_IAS=1
           "
           
+          # Flag-uri pentru a trece de eventualele incompatibilități între driverele vechi și kernelul nou
           export KCFLAGS="-Wno-error -Wno-implicit-function-declaration -Wno-int-conversion -Wno-incompatible-pointer-types"
 
           mkdir -p out
-          
-          # Generăm .config folosind fișierul copiat anterior
           make $MAKE_ARGS r5q_defconfig
           
-          # Patch config pentru a trece de restricțiile GitHub Actions
+          # Dezactivăm opțiunile grele care blochează GitHub Actions (LTO/BTF)
           sed -i 's/CONFIG_LTO_CLANG=y/CONFIG_LTO_CLANG=n/g' out/.config
           sed -i 's/CONFIG_LTO=y/CONFIG_LTO=n/g' out/.config
           sed -i 's/CONFIG_DEBUG_INFO_BTF=y/CONFIG_DEBUG_INFO_BTF=n/g' out/.config
           
           make $MAKE_ARGS olddefconfig
           
-          # Compilăm cu j2 (echilibru RAM/Viteză)
+          # Compilăm cu j2 pentru a nu depăși limita de RAM a GitHub Actions
           make -j2 $MAKE_ARGS
 
           if [ -f out/arch/arm64/boot/Image ]; then
@@ -88,7 +90,7 @@ jobs:
         if: env.SUCCESS == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-Hybrid-Kernel
+          name: S10Lite-Upstream-Hybrid-Kernel
           path: |
             Image
             *.dtbo
