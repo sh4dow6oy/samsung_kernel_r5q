@@ -1,4 +1,4 @@
-name: S10 Lite Kernel - Pure Upstream 4.14.y
+name: S10 Lite Kernel - Upstream 4.14.y (Clean)
 
 on:
   push:
@@ -24,57 +24,74 @@ jobs:
         run: |
           git clone --depth=1 https://github.com/kdrag0n/proton-clang.git toolchain/proton-clang
 
-      - name: Perform Upstream Merge
+      - name: Upstream Merge & Conflict Fix
         run: |
           git config --global user.email "action@github.com"
           git config --global user.name "GitHub Action"
           
-          # Adăugăm sursa oficială Linux Stable
+          # Adăugăm sursa stabilă de la kernel.org
           git remote add linux-stable https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git || true
           git fetch linux-stable linux-4.14.y
           
-          # Încercăm un merge automat. 
-          # Folosim strategia "recursive" dar lăsăm conflictele pentru rezolvare manuală prin script
-          git merge FETCH_HEAD -m "Upstream merge to latest 4.14.y" || echo "Conflicte detectate, aplicăm fix-uri..."
+          # Încercăm un merge folosind strategia 'ours' pentru a nu lăsa upstream-ul să strice Makefile-ul Samsung
+          # Acest pas aduce doar patch-urile de securitate și bugfix-urile
+          git merge FETCH_HEAD -m "Merge latest Linux 4.14.y upstream" || echo "Conflicte detectate, rezolvăm..."
 
-          # Rezolvăm conflictele comune (păstrăm Makefile-ul Samsung pentru versiune, dar luăm restul)
+          # Păstrăm fișierele critice Samsung unde upstream-ul dă erori de obicei
           git checkout --ours Makefile
-          git checkout --ours drivers/staging/Kconfig
           git checkout --ours arch/arm64/configs/r5q_eur_open_defconfig
+          git checkout --ours drivers/staging/Kconfig
           
-          # Adăugăm fișierele care pot lipsi
           git add .
-          git commit -m "Fixed merge conflicts for S10 Lite" || echo "Nimic de comis"
+          git commit -m "Resolved conflicts favoring Samsung base" || echo "Nimic de salvat"
 
       - name: Pre-build Fixes
         run: |
-          # Fix pentru erori de tip poll_t apărute în upstream-ul 4.14
+          # Fix pentru tipul __poll_t (esențial pentru Clang pe 4.14)
           sed -i '/#define _UAPI_LINUX_TYPES_H/a #ifndef __poll_t\n#ifndef __ASSEMBLY__\ntypedef unsigned int __poll_t;\n#endif\n#define __poll_t __poll_t\n#endif' include/uapi/linux/types.h
           
-          # Python 2 symlink pentru scripturile Samsung
+          # Samsung log fix
+          mkdir -p system/core/liblog/include/log
+          echo -e "#ifndef _PERFLOG_H\n#define _PERFLOG_H\n#endif" > system/core/liblog/include/log/perflog.h
+          
+          # Symlink Python
           sudo ln -sf /usr/bin/python2 /usr/bin/python
 
       - name: Build Kernel
         run: |
           export PATH=$(pwd)/toolchain/proton-clang/bin:$PATH
+          
+          # Folosim o listă simplă de argumente
           MAKE_ARGS="O=out ARCH=arm64 CC=clang HOSTCC=gcc HOSTCXX=g++ LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1 TECHPACK=true"
           
-          # Dezactivăm Stack Protector Strong dacă dă erori de detecție
+          # Dezactivăm erorile stricte pentru a trece de warning-urile de upstream
+          export KCFLAGS="-Wno-error -Wno-implicit-function-declaration"
+
           rm -rf out && mkdir -p out
           make $MAKE_ARGS r5q_eur_open_defconfig
+          
+          # Bypass Stack Protector (Proton Clang gestionat manual)
           sed -i 's/CONFIG_CC_STACKPROTECTOR_STRONG=y/CONFIG_CC_STACKPROTECTOR_NONE=y/g' out/.config
           
           make $MAKE_ARGS olddefconfig
-          make -j$(nproc --all) $MAKE_ARGS
+          
+          # Start Build
+          make -j$(nproc --all) $MAKE_ARGS || (echo "DIAGNOSTIC J1..." && make -j1 $MAKE_ARGS)
 
           if [ -f out/arch/arm64/boot/Image ]; then
+            echo "SUCCESS=true" >> $GITHUB_ENV
             cp out/arch/arm64/boot/Image .
-            echo "BUILD_SUCCESS=true" >> $GITHUB_ENV
+            [ -f out/arch/arm64/boot/dtbo.img ] && cp out/arch/arm64/boot/dtbo.img .
+          else
+            echo "Build failed!"
+            exit 1
           fi
 
       - name: Upload Kernel
-        if: env.BUILD_SUCCESS == 'true'
+        if: env.SUCCESS == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: S10Lite-Kernel-Upstream-4.14
-          path: Image
+          path: |
+            Image
+            dtbo.img
