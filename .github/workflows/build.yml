@@ -1,4 +1,4 @@
-name: S10 Lite - Upstream 4.14.356 Hybrid
+name: S10 Lite - Hybrid Upstream (Final Fix)
 
 on:
   push:
@@ -25,35 +25,36 @@ jobs:
 
       - name: Hybrid Source Preparation
         run: |
-          # 1. Clonăm baza Upstream SM8150 (cea care tinde spre .356)
           git clone --depth=1 https://github.com/LineageOS/android_kernel_qcom_sm8150.git kernel_source
-          
-          # 2. Clonăm sursa Samsung r5q pentru a extrage driverele proprietare
           git clone --depth=1 https://github.com/LineageOS/android_kernel_samsung_r5q.git samsung_source
           
-          # 3. Transferăm driverele Samsung peste baza Upstream
-          echo "Injecting Samsung drivers into Upstream base..."
-          cp -r samsung_source/drivers/soc/qcom/smcinvoke.c kernel_source/drivers/soc/qcom/ || true
+          # Injectăm driverele și config-ul
           [ -d samsung_source/techpack ] && cp -r samsung_source/techpack kernel_source/
-          
-          # 4. Copiem Configurația R5Q
           cp samsung_source/arch/arm64/configs/r5q_eur_open_defconfig kernel_source/arch/arm64/configs/r5q_defconfig
-          
-          # 5. Copiem Device Tree-ul (DTS) - Fără asta nu pornește ecranul
           mkdir -p kernel_source/arch/arm64/boot/dts/vendor/qcom/
           cp -r samsung_source/arch/arm64/boot/dts/vendor/qcom/r5q* kernel_source/arch/arm64/boot/dts/vendor/qcom/ || true
+
+          # === FIX-URI PENTRU ERORILE TALE ===
+          cd kernel_source
+
+          # 1. Fix Audio: Redefinim jack-urile lipsă pentru a se potrivi cu Upstream
+          sed -i 's/SND_JACK_MICROPHONE2/SND_JACK_MICROPHONE/g' techpack/audio/asoc/codecs/wcd-mbhc-v2.h
+          sed -i 's/SND_JACK_ANC_HEADPHONE/SND_JACK_HEADPHONE/g' techpack/audio/asoc/codecs/wcd-mbhc-v2.c
+
+          # 2. Fix SMCInvoke: Eliminăm redefinirea size_add (conflict cu overflow.h)
+          # Ștergem liniile 520-523 din smcinvoke.c unde este definit size_add
+          sed -i '520,523d' drivers/soc/qcom/smcinvoke.c || true
+          
+          # 3. Fix pentru scriptul de securitate Samsung
+          echo -e '#!/bin/bash\necho "0"' > /tmp/secgetspf
+          chmod +x /tmp/secgetspf
+          sudo mv /tmp/secgetspf /usr/bin/secgetspf
 
       - name: Build Kernel
         run: |
           export PATH="${{ env.PROTON_PATH }}:$PATH"
           cd kernel_source
           
-          # Fix Samsung Tools
-          echo -e '#!/bin/bash\necho "0"' > /tmp/secgetspf
-          chmod +x /tmp/secgetspf
-          sudo mv /tmp/secgetspf /usr/bin/secgetspf
-          sudo ln -sf /usr/bin/python2 /usr/bin/python
-
           MAKE_ARGS="
             O=out \
             ARCH=arm64 \
@@ -64,20 +65,17 @@ jobs:
             LLVM_IAS=1
           "
           
-          # Flag-uri pentru a trece de eventualele incompatibilități între driverele vechi și kernelul nou
           export KCFLAGS="-Wno-error -Wno-implicit-function-declaration -Wno-int-conversion -Wno-incompatible-pointer-types"
 
           mkdir -p out
           make $MAKE_ARGS r5q_defconfig
           
-          # Dezactivăm opțiunile grele care blochează GitHub Actions (LTO/BTF)
+          # Dezactivăm LTO/BTF pentru stabilitate RAM
           sed -i 's/CONFIG_LTO_CLANG=y/CONFIG_LTO_CLANG=n/g' out/.config
           sed -i 's/CONFIG_LTO=y/CONFIG_LTO=n/g' out/.config
           sed -i 's/CONFIG_DEBUG_INFO_BTF=y/CONFIG_DEBUG_INFO_BTF=n/g' out/.config
           
           make $MAKE_ARGS olddefconfig
-          
-          # Compilăm cu j2 pentru a nu depăși limita de RAM a GitHub Actions
           make -j2 $MAKE_ARGS
 
           if [ -f out/arch/arm64/boot/Image ]; then
@@ -86,11 +84,11 @@ jobs:
             echo "SUCCESS=true" >> $GITHUB_ENV
           fi
 
-      - name: Upload Artifacts
+      - name: Upload
         if: env.SUCCESS == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-Upstream-Hybrid-Kernel
+          name: S10Lite-Upstream-Hybrid-Final
           path: |
             Image
             *.dtbo
