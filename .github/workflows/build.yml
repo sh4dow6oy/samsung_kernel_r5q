@@ -1,4 +1,4 @@
-name: S10 Lite - Stock Build (Clang r416183b1)
+name: S10 Lite - Build with Official LLVM 9 (GitHub)
 
 on:
   push:
@@ -18,23 +18,21 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y bc bison flex libssl-dev libelf-dev dwarves libncurses-dev git wget make python2 python3 pahole tar xz-utils lib32z1
 
-      - name: Setup Toolchains
+      - name: Setup LLVM 9.0.1 from GitHub
         run: |
           mkdir -p toolchain/clang toolchain/gcc
           
-          # 1. Descarcăm Clang r416183b1 (Link-ul furnizat de tine)
-          wget -L "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/7d21a2e4192728bc50841994d88637ccc45b5692.tar.gz" -O clang.tar.gz
-          tar -xf clang.tar.gz -C toolchain/clang
+          # Descarcăm binarul oficial LLVM 9.0.1 compilat pentru Ubuntu (x86_64) de pe GitHub
+          wget https://github.com/llvm/llvm-project/releases/download/llvmorg-9.0.1/clang+llvm-9.0.1-x86_64-linux-gnu-ubuntu-16.04.tar.xz -O clang.tar.xz
+          tar -xf clang.tar.xz -C toolchain/clang --strip-components=1
           
-          # 2. Descarcăm GCC 4.9 pentru binutils (necesar pentru linking)
+          # Descarcăm și GCC-ul tău pentru asamblor și linker (binutils)
           wget -L "https://github.com/sh4dow6oy/samsung_kernel_r5q/releases/download/GCC/prebuilts.tar" -O gcc.tar
           tar -xf gcc.tar -C toolchain/gcc
           
-          # Detecție căi
           echo "CLANG_PATH=$(pwd)/toolchain/clang/bin" >> $GITHUB_ENV
-          # Căutăm folderul bin pentru GCC 64-bit
-          GCC64_BIN=$(find $(pwd)/toolchain/gcc -name "aarch64-linux-android-gcc" -type f -printf '%h\n' | head -n 1)
-          echo "GCC_PATH=$GCC64_BIN" >> $GITHUB_ENV
+          GCC_BIN=$(find $(pwd)/toolchain/gcc -name "aarch64-linux-android-gcc" -type f -printf '%h\n' | head -n 1)
+          echo "GCC_PATH=$GCC_BIN" >> $GITHUB_ENV
 
       - name: Essential Samsung Fixes
         run: |
@@ -42,17 +40,17 @@ jobs:
           mkdir -p system/core/liblog/include/log
           echo -e "#ifndef _PERFLOG_H\n#define _PERFLOG_H\n#endif" > system/core/liblog/include/log/perflog.h
           
-          # Eliminăm Werror pentru a trece de warning-urile de Techpack
+          # Dezactivăm Werror pentru a preveni oprirea build-ului la warning-uri de cod vechi
           find . -name "Makefile" -o -name "Kbuild" | xargs sed -i 's/-Werror//g' || true
           
-          # Fix pentru poll_t
+          # Fix pentru poll_t (esențial pentru kernel 4.14)
           sed -i '/#define _UAPI_LINUX_TYPES_H/a #ifndef __poll_t\n#ifndef __ASSEMBLY__\ntypedef unsigned int __poll_t;\n#endif\n#define __poll_t __poll_t\n#endif' include/uapi/linux/types.h
 
       - name: Build Kernel
         run: |
           export PATH="${{ env.CLANG_PATH }}:${{ env.GCC_PATH }}:$PATH"
           
-          # Verificăm dacă Clang rulează (pentru a evita exec format error)
+          # Verificare versiune (trebuie să apară clang version 9.0.1)
           clang --version
           
           MAKE_ARGS="
@@ -76,14 +74,14 @@ jobs:
           # 1. Defconfig
           make $MAKE_ARGS r5q_eur_open_defconfig
           
-          # 2. Bypass Stack Protector
+          # 2. Bypass Stack Protector (Necesar pentru stabilitate la compilare)
           sed -i 's/CONFIG_CC_STACKPROTECTOR_STRONG=y/CONFIG_CC_STACKPROTECTOR_NONE=y/g' out/.config
           make $MAKE_ARGS olddefconfig
           
-          # 3. Prepare
+          # 3. Pregătire headere
           make $MAKE_ARGS prepare scripts -j$(nproc --all)
           
-          # 4. Build
+          # 4. Compilare principală
           make -j$(nproc --all) $MAKE_ARGS || make -j1 $MAKE_ARGS
 
           if [ -f out/arch/arm64/boot/Image ]; then
@@ -96,7 +94,7 @@ jobs:
         if: env.SUCCESS == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-Kernel-r416183b
+          name: S10Lite-Kernel-LLVM9-GitHub
           path: |
             Image
             dtbo.img
