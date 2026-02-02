@@ -1,4 +1,4 @@
-name: S10 Lite - Stock Build (Clang 7.0 AOSP)
+name: S10 Lite - Stock Build (Clang r416183b1)
 
 on:
   push:
@@ -18,20 +18,23 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y bc bison flex libssl-dev libelf-dev dwarves libncurses-dev git wget make python2 python3 pahole tar xz-utils lib32z1
 
-      - name: Setup AOSP Clang 7.0 & GCC 4.9
+      - name: Setup Toolchains
         run: |
           mkdir -p toolchain/clang toolchain/gcc
           
-          # Descarcam Clang 7.0 (echivalent 4639204) de pe o sursa stabila pentru Linux
-          wget -L https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/master/clang-4639204.tar.gz -O clang.tar.gz
+          # 1. Descarcăm Clang r416183b1 (Link-ul furnizat de tine)
+          wget -L "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/7d21a2e4192728bc50841994d88637ccc45b5692.tar.gz" -O clang.tar.gz
           tar -xf clang.tar.gz -C toolchain/clang
           
-          # Descarcam GCC 4.9 pentru binutils (esențial pentru Clang vechi)
-          wget -L https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/+archive/refs/heads/master.tar.gz -O gcc.tar.gz
-          tar -xf gcc.tar.gz -C toolchain/gcc
+          # 2. Descarcăm GCC 4.9 pentru binutils (necesar pentru linking)
+          wget -L "https://github.com/sh4dow6oy/samsung_kernel_r5q/releases/download/GCC/prebuilts.tar" -O gcc.tar
+          tar -xf gcc.tar -C toolchain/gcc
           
-          echo "CLANG_BIN=$(pwd)/toolchain/clang/bin" >> $GITHUB_ENV
-          echo "GCC_BIN=$(pwd)/toolchain/gcc/bin" >> $GITHUB_ENV
+          # Detecție căi
+          echo "CLANG_PATH=$(pwd)/toolchain/clang/bin" >> $GITHUB_ENV
+          # Căutăm folderul bin pentru GCC 64-bit
+          GCC64_BIN=$(find $(pwd)/toolchain/gcc -name "aarch64-linux-android-gcc" -type f -printf '%h\n' | head -n 1)
+          echo "GCC_PATH=$GCC64_BIN" >> $GITHUB_ENV
 
       - name: Essential Samsung Fixes
         run: |
@@ -39,17 +42,19 @@ jobs:
           mkdir -p system/core/liblog/include/log
           echo -e "#ifndef _PERFLOG_H\n#define _PERFLOG_H\n#endif" > system/core/liblog/include/log/perflog.h
           
-          # Scoatem Werror pentru a evita blocajele in Techpack
+          # Eliminăm Werror pentru a trece de warning-urile de Techpack
           find . -name "Makefile" -o -name "Kbuild" | xargs sed -i 's/-Werror//g' || true
           
-          # Fix poll_t pentru Clang
+          # Fix pentru poll_t
           sed -i '/#define _UAPI_LINUX_TYPES_H/a #ifndef __poll_t\n#ifndef __ASSEMBLY__\ntypedef unsigned int __poll_t;\n#endif\n#define __poll_t __poll_t\n#endif' include/uapi/linux/types.h
 
       - name: Build Kernel
         run: |
-          export PATH="${{ env.CLANG_BIN }}:${{ env.GCC_BIN }}:$PATH"
+          export PATH="${{ env.CLANG_PATH }}:${{ env.GCC_PATH }}:$PATH"
           
-          # Argumente specifice pentru Clang 7.0
+          # Verificăm dacă Clang rulează (pentru a evita exec format error)
+          clang --version
+          
           MAKE_ARGS="
             O=out \
             ARCH=arm64 \
@@ -68,17 +73,17 @@ jobs:
 
           rm -rf out && mkdir -p out
           
-          # 1. Configurare defconfig
+          # 1. Defconfig
           make $MAKE_ARGS r5q_eur_open_defconfig
           
-          # 2. Bypass Stack Protector (necesar pentru combinatia Clang 7 / 4.14)
+          # 2. Bypass Stack Protector
           sed -i 's/CONFIG_CC_STACKPROTECTOR_STRONG=y/CONFIG_CC_STACKPROTECTOR_NONE=y/g' out/.config
           make $MAKE_ARGS olddefconfig
           
-          # 3. Pregatire headere
+          # 3. Prepare
           make $MAKE_ARGS prepare scripts -j$(nproc --all)
           
-          # 4. Compilare finala
+          # 4. Build
           make -j$(nproc --all) $MAKE_ARGS || make -j1 $MAKE_ARGS
 
           if [ -f out/arch/arm64/boot/Image ]; then
@@ -87,11 +92,11 @@ jobs:
             echo "SUCCESS=true" >> $GITHUB_ENV
           fi
 
-      - name: Upload
+      - name: Upload Artifacts
         if: env.SUCCESS == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-Stock-Clang463
+          name: S10Lite-Kernel-r416183b
           path: |
             Image
             dtbo.img
