@@ -1,4 +1,4 @@
-name: S10 Lite - Hybrid Upstream Build (SM8150 + R5Q Drivers)
+name: S10 Lite - Hybrid Upstream (Manual Config Path)
 
 on:
   push:
@@ -23,28 +23,29 @@ jobs:
           git clone --depth=1 https://github.com/kdrag0n/proton-clang.git toolchain/proton-clang
           echo "PROTON_PATH=$(pwd)/toolchain/proton-clang/bin" >> $GITHUB_ENV
 
-      - name: Merge Kernel Sources
+      - name: Sync Sources
         run: |
-          # 1. Descarcă baza SM8150 (Upstream)
+          # 1. Clonăm baza Upstream (Lineage SM8150)
           git clone --depth=1 https://github.com/LineageOS/android_kernel_qcom_sm8150.git kernel_base
           
-          # 2. Descarcă sursa Samsung r5q (pentru drivere)
-          git clone --depth=1 https://github.com/LineageOS/android_kernel_samsung_r5q.git samsung_r5q
+          # 2. Clonăm sursa Samsung r5q (pentru drivere și config)
+          git clone --depth=1 https://github.com/LineageOS/android_kernel_samsung_r5q.git samsung_source
           
-          # 3. Transferăm driverele specifice Samsung în baza SM8150
-          # Samsung ține de obicei driverele critice în techpack sau subfoldere specifice
-          cp -r samsung_r5q/arch/arm64/configs/. kernel_base/arch/arm64/configs/
+          # 3. Copiem manual defconfig-ul indicat de tine în baza nouă
+          mkdir -p kernel_base/arch/arm64/configs/
+          cp samsung_source/arch/arm64/configs/r5q_eur_open_defconfig kernel_base/arch/arm64/configs/r5q_defconfig
           
-          # Notă: Dacă build-ul eșuează din cauza driverelor lipsă, va trebui să facem 
-          # un merge mai agresiv al folderelor 'drivers/soc/qcom' și 'techpack/'.
-          # Pentru început, folosim defconfig-ul r5q pe baza SM8150.
+          # 4. Transferăm folderele critice pentru Samsung (Display/Camera/Battery)
+          # Acestea sunt adesea în techpack sau drivers/vendor
+          [ -d samsung_source/techpack ] && cp -r samsung_source/techpack kernel_base/
+          echo "Configurarea r5q_defconfig a fost injectată cu succes."
 
       - name: Build Kernel
         run: |
           export PATH="${{ env.PROTON_PATH }}:$PATH"
           cd kernel_base
           
-          # Fix-uri de mediu obligatorii
+          # Fix Samsung Tools
           echo -e '#!/bin/bash\necho "0"' > /tmp/secgetspf
           chmod +x /tmp/secgetspf
           sudo mv /tmp/secgetspf /usr/bin/secgetspf
@@ -64,31 +65,30 @@ jobs:
 
           mkdir -p out
           
-          # Încercăm să folosim defconfig-ul de r5q pe baza de sm8150
-          # Dacă 'r5q_defconfig' nu există, căutăm varianta corectă în arch/arm64/configs/
-          make $MAKE_ARGS r5q_defconfig || make $MAKE_ARGS lineage_r5q_defconfig || make $MAKE_ARGS vendor/r5q_eur_open_defconfig
+          # Generăm .config folosind fișierul copiat anterior
+          make $MAKE_ARGS r5q_defconfig
           
-          # Dezactivăm LTO și BTF pentru a evita crash-urile pe GitHub Actions
+          # Patch config pentru a trece de restricțiile GitHub Actions
           sed -i 's/CONFIG_LTO_CLANG=y/CONFIG_LTO_CLANG=n/g' out/.config
           sed -i 's/CONFIG_LTO=y/CONFIG_LTO=n/g' out/.config
           sed -i 's/CONFIG_DEBUG_INFO_BTF=y/CONFIG_DEBUG_INFO_BTF=n/g' out/.config
           
           make $MAKE_ARGS olddefconfig
           
-          # Build cu j2 (siguranță RAM)
+          # Compilăm cu j2 (echilibru RAM/Viteză)
           make -j2 $MAKE_ARGS
 
           if [ -f out/arch/arm64/boot/Image ]; then
             cp out/arch/arm64/boot/Image ../
-            [ -f out/arch/arm64/boot/dtbo.img ] && cp out/arch/arm64/boot/dtbo.img ../
+            find out/arch/arm64/boot/dts/ -name "*.dtbo" -exec cp {} ../ \; || true
             echo "SUCCESS=true" >> $GITHUB_ENV
           fi
 
-      - name: Upload Kernel
+      - name: Upload Artifacts
         if: env.SUCCESS == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-Hybrid-Upstream
+          name: S10Lite-Hybrid-Kernel
           path: |
             Image
-            dtbo.img
+            *.dtbo
