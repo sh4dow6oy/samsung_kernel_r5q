@@ -1,4 +1,4 @@
-name: S10 Lite - Proton Clang (BTF Ultimate Fix)
+name: S10 Lite - Final Stable Build
 
 on:
   push:
@@ -28,16 +28,10 @@ jobs:
           export PATH="${{ env.PROTON_PATH }}:$PATH"
           sudo ln -sf /usr/bin/python2 /usr/bin/python
           
-          # Fix pentru secgetspf
+          # Fix-uri de mediu (secgetspf & btf)
           echo -e '#!/bin/bash\necho "0"' > /tmp/secgetspf
           chmod +x /tmp/secgetspf
           sudo mv /tmp/secgetspf /usr/bin/secgetspf
-
-          # Setup directoare de build
-          rm -rf out && mkdir -p out/include/uapi/linux
-
-          # FIX PENTRU BTF.H: Îl copiem în toate locurile posibile unde îl caută compilatorul
-          cp include/linux/btf.h out/include/uapi/linux/btf.h || true
           mkdir -p include/uapi/linux
           cp include/linux/btf.h include/uapi/linux/btf.h || true
 
@@ -54,42 +48,39 @@ jobs:
             CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             LLVM=1 \
-            LLVM_IAS=1 \
-            V=1
+            LLVM_IAS=1
           "
           
-          # KCFLAGS îmbunătățit:
-          # 1. Adăugăm folderele de include manual
-          # 2. Ignorăm warning-urile care devin erori în Clang 13
-          export KCFLAGS="-Wno-error \
-            -Wno-implicit-function-declaration \
-            -Wno-unknown-warning-option \
-            -I$(pwd)/include/uapi \
-            -I$(pwd)/out/include/uapi \
-            -I$(pwd)/include/linux"
+          # KCFLAGS pentru stabilitate maximă
+          export KCFLAGS="-Wno-error -Wno-implicit-function-declaration -Wno-unknown-warning-option"
 
-          # 1. Defconfig
+          rm -rf out && mkdir -p out
+          
+          # 1. Configurare
           make $MAKE_ARGS r5q_eur_open_defconfig
           
-          # 2. Dezactivăm BTF și Stack Protector (cauzează erori de linking pe 4.14)
+          # 2. Optimizări de stabilitate în .config
+          # Dezactivăm KASAN și BTF pentru a preveni crash-ul linker-ului
+          sed -i 's/CONFIG_KASAN=y/CONFIG_KASAN=n/g' out/.config
           sed -i 's/CONFIG_DEBUG_INFO_BTF=y/CONFIG_DEBUG_INFO_BTF=n/g' out/.config
           sed -i 's/CONFIG_CC_STACKPROTECTOR_STRONG=y/CONFIG_CC_STACKPROTECTOR_NONE=y/g' out/.config
           make $MAKE_ARGS olddefconfig
           
-          # 3. Build principal
-          # Dacă eșuează din nou la bpf/core.c, forțăm o soluție de tip "header bypass"
-          make -j$(nproc --all) $MAKE_ARGS || \
-          (sed -i 's/#include <uapi\/linux\/btf.h>/\/\/#include <uapi\/linux\/btf.h>/g' kernel/bpf/core.c && \
-           make -j$(nproc --all) $MAKE_ARGS)
+          # 3. Build cu limitare de thread-uri (evită Error 2 la linking)
+          # Folosim 4 thread-uri în loc de "all" pentru a nu epuiza RAM-ul
+          make -j4 $MAKE_ARGS || make -j1 $MAKE_ARGS
 
           if [ -f out/arch/arm64/boot/Image ]; then
             cp out/arch/arm64/boot/Image .
+            [ -f out/arch/arm64/boot/dtbo.img ] && cp out/arch/arm64/boot/dtbo.img .
             echo "SUCCESS=true" >> $GITHUB_ENV
           fi
 
-      - name: Upload Artifact
+      - name: Upload Kernel
         if: env.SUCCESS == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-Kernel-Final
-          path: Image
+          name: S10Lite-Kernel-Proton
+          path: |
+            Image
+            dtbo.img
