@@ -1,4 +1,4 @@
-name: S10 Lite - Force Header Fix Build
+name: S10 Lite - Ultra-Safe Build
 
 on:
   push:
@@ -23,63 +23,54 @@ jobs:
           git clone --depth=1 https://github.com/kdrag0n/proton-clang.git toolchain/proton-clang
           echo "PROTON_PATH=$(pwd)/toolchain/proton-clang/bin" >> $GITHUB_ENV
 
-      - name: Hard Fix Headers & Scripts
+      - name: Fix Source
         run: |
-          # 1. Fix pentru btf.h: redirecționăm include-ul problematic către calea standard
-          # Folosim 'sed' pentru a schimba uapi/linux/btf.h în linux/btf.h (care există sigur)
+          # Redirecționăm include-ul problematic
           find . -type f -name "*.c" -o -name "*.h" | xargs sed -i 's/uapi\/linux\/btf.h/linux\/btf.h/g'
-
-          # 2. Fix pentru secgetspf (utilitar Samsung lipsă)
+          # Fix Samsung script
           echo -e '#!/bin/bash\necho "0"' > /tmp/secgetspf
           chmod +x /tmp/secgetspf
           sudo mv /tmp/secgetspf /usr/bin/secgetspf
-
-          # 3. Link pentru Python
           sudo ln -sf /usr/bin/python2 /usr/bin/python
 
       - name: Build Kernel
         run: |
           export PATH="${{ env.PROTON_PATH }}:$PATH"
           
+          # Argumente simplificate pentru a evita erorile de linking
           MAKE_ARGS="
             O=out \
             ARCH=arm64 \
             CC=clang \
-            LD=ld.lld \
-            AR=llvm-ar \
-            NM=llvm-nm \
-            OBJCOPY=llvm-objcopy \
-            OBJDUMP=llvm-objdump \
-            STRIP=llvm-strip \
             CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             LLVM=1 \
             LLVM_IAS=1
           "
           
-          # Ignorăm warning-urile care opresc build-ul pe Clang modern
           export KCFLAGS="-Wno-error -Wno-implicit-function-declaration -Wno-unknown-warning-option"
 
           rm -rf out && mkdir -p out
-          
-          # Generare Config
           make $MAKE_ARGS r5q_eur_open_defconfig
           
-          # Dezactivăm funcțiile problematice pentru GitHub Actions
+          # DEZACTIVĂM tot ce consumă RAM sau dă erori la final
+          sed -i 's/CONFIG_LTO_CLANG=y/CONFIG_LTO_CLANG=n/g' out/.config
+          sed -i 's/CONFIG_LTO=y/CONFIG_LTO=n/g' out/.config
           sed -i 's/CONFIG_DEBUG_INFO_BTF=y/CONFIG_DEBUG_INFO_BTF=n/g' out/.config
           sed -i 's/CONFIG_KASAN=y/CONFIG_KASAN=n/g' out/.config
           sed -i 's/CONFIG_CC_STACKPROTECTOR_STRONG=y/CONFIG_CC_STACKPROTECTOR_NONE=y/g' out/.config
+          
           make $MAKE_ARGS olddefconfig
           
-          # Build - limităm la 4 thread-uri pentru a evita crash-ul de RAM la final (faza Crypto/FS)
-          make -j4 $MAKE_ARGS
+          # Build cu doar 2 thread-uri pentru a economisi RAM pentru linker
+          make -j2 $MAKE_ARGS
 
           if [ -f out/arch/arm64/boot/Image ]; then
             cp out/arch/arm64/boot/Image .
             echo "SUCCESS=true" >> $GITHUB_ENV
           fi
 
-      - name: Upload Kernel
+      - name: Upload
         if: env.SUCCESS == 'true'
         uses: actions/upload-artifact@v4
         with:
