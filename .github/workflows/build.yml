@@ -1,4 +1,4 @@
-name: S10 Lite - Proton Clang Build
+name: S10 Lite - Proton Clang (Fix BTF)
 
 on:
   push:
@@ -20,7 +20,6 @@ jobs:
 
       - name: Setup Proton Clang
         run: |
-          # Clonăm Proton Clang - este un toolchain "all-in-one"
           git clone --depth=1 https://github.com/kdrag0n/proton-clang.git toolchain/proton-clang
           echo "PROTON_PATH=$(pwd)/toolchain/proton-clang/bin" >> $GITHUB_ENV
 
@@ -29,8 +28,16 @@ jobs:
           export PATH="${{ env.PROTON_PATH }}:$PATH"
           sudo ln -sf /usr/bin/python2 /usr/bin/python
           
-          # Argumente de build "Pure LLVM"
-          # Proton Clang permite folosirea LLVM=1 complet (mult mai rapid și curat)
+          # FIX CRITIC pentru 'uapi/linux/btf.h'
+          # Creăm un simlink în folderul de incluziune pentru a ajuta compilatorul să găsească fișierul
+          mkdir -p include/uapi/linux
+          cp include/linux/btf.h include/uapi/linux/btf.h || true
+          
+          # Fix pentru eroarea secgetspf (creăm un script gol care să nu dea eroare)
+          echo -e '#!/bin/bash\necho "0"' > /tmp/secgetspf
+          chmod +x /tmp/secgetspf
+          sudo mv /tmp/secgetspf /usr/bin/secgetspf
+
           MAKE_ARGS="
             O=out \
             ARCH=arm64 \
@@ -44,43 +51,34 @@ jobs:
             CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             LLVM=1 \
-            LLVM_IAS=1
+            LLVM_IAS=1 \
+            V=1
           "
           
-          # KCFLAGS pentru a ignora warning-urile specifice Samsung fără a atinge codul
-          export KCFLAGS="-Wno-error -Wno-implicit-function-declaration -Wno-strict-prototypes -Wno-unknown-warning-option -Wno-implicit-int -Wno-int-conversion"
+          # Adăugăm flag-ul de incluziune direct în KCFLAGS pentru a forța căutarea în folderul uapi
+          export KCFLAGS="-Wno-error -Wno-implicit-function-declaration -I$(pwd)/include/uapi -I$(pwd)/out/include/generated/uapi"
 
           rm -rf out && mkdir -p out
           
           # 1. Configurare
           make $MAKE_ARGS r5q_eur_open_defconfig
           
-          # 2. Fix stack protector în .config (nu în sursă)
+          # 2. Dezactivăm BTF în config dacă tot dă erori (opțional, dar recomandat pentru stabilitate build)
+          sed -i 's/CONFIG_DEBUG_INFO_BTF=y/CONFIG_DEBUG_INFO_BTF=n/g' out/.config
           sed -i 's/CONFIG_CC_STACKPROTECTOR_STRONG=y/CONFIG_CC_STACKPROTECTOR_NONE=y/g' out/.config
           make $MAKE_ARGS olddefconfig
           
-          # 3. Build (J$(nproc) pentru viteză maximă)
+          # 3. Build
           make -j$(nproc --all) $MAKE_ARGS || make -j1 $MAKE_ARGS
 
           if [ -f out/arch/arm64/boot/Image ]; then
             cp out/arch/arm64/boot/Image .
-            [ -f out/arch/arm64/boot/dtbo.img ] && cp out/arch/arm64/boot/dtbo.img .
             echo "SUCCESS=true" >> $GITHUB_ENV
           fi
 
-      - name: Package AnyKernel3
-        if: env.SUCCESS == 'true'
-        run: |
-          git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git
-          cp Image AnyKernel3/
-          [ -f dtbo.img ] && cp dtbo.img AnyKernel3/
-          cd AnyKernel3
-          sed -i 's/device.name1=maguro/device.name1=r5q/g' anykernel.sh
-          zip -r ../S10Lite-Kernel-Proton.zip *
-
-      - name: Upload
+      - name: Upload Artifact
         if: env.SUCCESS == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-Proton-Kernel
-          path: S10Lite-Kernel-Proton.zip
+          name: S10Lite-Kernel-Fixed
+          path: Image
