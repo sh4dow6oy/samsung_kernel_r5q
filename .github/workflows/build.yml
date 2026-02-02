@@ -1,4 +1,4 @@
-name: S10 Lite - Safe Core eBPF v142
+name: S10 Lite (r5q) - GKI Compatible Kernel 4.14 (Android 15)
 
 on:
   push:
@@ -9,68 +9,118 @@ jobs:
   build:
     runs-on: ubuntu-22.04
 
+    env:
+      ARCH: arm64
+      SUBARCH: arm64
+      LLVM: 1
+      LLVM_IAS: 1
+      CC: clang
+
     steps:
+      # ===============================
+      # Checkout kernel source
+      # ===============================
       - name: Checkout S10 Lite Kernel Source
         uses: actions/checkout@v4
         with:
           repository: sh4dow6oy/samsung_kernel_r5q
-          path: kernel-res
+          path: kernel
           fetch-depth: 1
 
-      - name: Setup Proton Clang
+      # ===============================
+      # Dependencies
+      # ===============================
+      - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y bc bison flex libssl-dev libelf-dev dwarves make python3 lz4
-          git clone --depth=1 https://github.com/kdrag0n/proton-clang.git toolchain/proton-clang
+          sudo apt-get install -y \
+            bc bison flex libssl-dev libelf-dev \
+            dwarves lz4 git make python3 \
+            gcc-aarch64-linux-gnu
 
-      - name: Patch Core eBPF (Header Fixes)
+      # ===============================
+      # Proton Clang
+      # ===============================
+      - name: Setup Proton Clang
         run: |
-          cd kernel-res
+          git clone --depth=1 https://github.com/kdrag0n/proton-clang.git toolchain
+          echo "$(pwd)/toolchain/bin" >> $GITHUB_PATH
 
-          # 1) Dummy header for bpf_lirc to fix missing include
-          mkdir -p include/uapi/linux
-          printf "#ifndef _LINUX_BPF_LIRC_H\n#define _LINUX_BPF_LIRC_H\n#endif\n" > include/uapi/linux/bpf_lirc.h
-
-          # 2) Resolve xdp_buff redefinition — guard actual struct
-          sed -i '/struct xdp_buff/ { s/struct xdp_buff/struct xdp_buff_bpf/ }' include/linux/filter.h
-
-          # 3) Add missing BTF headers for BPF core
-          mkdir -p include/uapi/linux
-          printf "#ifndef _UAPI_LINUX_BTF_H\n#define _UAPI_LINUX_BTF_H\n#endif\n" > include/uapi/linux/btf.h
-
-          # 4) Ensure access_ok macro works for BPF (inline compatibility)
-          sed -i 's/access_ok(/__kernel_access_ok(/g' kernel/bpf/syscall.c || true
-
-      - name: Configure & Build
+      # ===============================
+      # GKI + eBPF SAFE PATCHES
+      # ===============================
+      - name: Apply GKI + eBPF compatibility patches
         run: |
-          cd kernel-res
-          export PATH=$(pwd)/../toolchain/proton-clang/bin:$PATH
+          cd kernel
 
-          # Base config
-          make ARCH=arm64 CC=clang r5q_eur_open_defconfig
+          echo "[+] Fix access_ok() compatibility"
+          sed -i 's/access_ok(\([^,]*\),/access_ok(VERIFY_READ, \1,/' kernel/bpf/syscall.c || true
 
-          # Enable eBPF for Android 15
+          echo "[+] Disable BTF (Android 15 safe)"
+          sed -i 's/CONFIG_DEBUG_INFO_BTF=y/CONFIG_DEBUG_INFO_BTF=n/' arch/arm64/configs/r5q_* || true
+
+          echo "[+] Prevent xdp_buff redefinition"
+          sed -i '/struct xdp_buff {/,+5d' include/linux/bpf.h || true
+
+          echo "[+] Guard bpf_lirc include"
+          sed -i 's/#include <linux\/bpf_lirc.h>/\/\* disabled: not in 4.14 \*\//' kernel/bpf/syscall.c || true
+
+          echo "[+] Guard PERF_BPF_EVENT_*"
+          sed -i 's/PERF_BPF_EVENT_PROG_/PERF_EVENT_/g' kernel/bpf/syscall.c || true
+
+      # ===============================
+      # Kernel configuration
+      # ===============================
+      - name: Configure Kernel (GKI Compatible)
+        run: |
+          cd kernel
+
+          make r5q_eur_open_defconfig
+
+          ./scripts/config --enable CONFIG_MODULES
+          ./scripts/config --enable CONFIG_MODVERSIONS
+          ./scripts/config --enable CONFIG_IKCONFIG
+          ./scripts/config --enable CONFIG_IKCONFIG_PROC
+
+          # Android 15 eBPF (MINIMAL)
+          ./scripts/config --enable CONFIG_BPF
           ./scripts/config --enable CONFIG_BPF_SYSCALL
           ./scripts/config --enable CONFIG_BPF_JIT
           ./scripts/config --enable CONFIG_CGROUP_BPF
 
-          # Disable Samsung enforcement blockers
+          # REQUIRED DISABLES
+          ./scripts/config --disable CONFIG_DEBUG_INFO
+          ./scripts/config --disable CONFIG_DEBUG_INFO_BTF
+          ./scripts/config --disable CONFIG_RANDOMIZE_BASE
+
+          # Samsung blockers
           ./scripts/config --disable CONFIG_SECURITY_SAMSUNG_RKP
           ./scripts/config --disable CONFIG_SAMSUNG_PRODUCT_SHIP
-          ./scripts/config --disable CONFIG_SEC_DEBUG
 
-          make ARCH=arm64 CC=clang olddefconfig
+          make olddefconfig
 
-          export MAKE_ARGS="ARCH=arm64 CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1"
-          export KCFLAGS="-O3 -Wno-everything -Wno-error -Wno-implicit-function-declaration -Wno-int-conversion -Wno-incompatible-pointer-types"
+      # ===============================
+      # Build kernel
+      # ===============================
+      - name: Build Kernel Image + Modules
+        run: |
+          cd kernel
 
-          make -j$(nproc --all) $MAKE_ARGS Image.gz-dtb || make -j$(nproc --all) $MAKE_ARGS Image.gz
+          export KCFLAGS="-O3 -Wno-everything -Wno-error"
 
-      - name: Upload Artifact
-        if: success()
+          make -j$(nproc) \
+            ARCH=arm64 \
+            CC=clang \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            Image.gz-dtb modules
+
+      # ===============================
+      # Upload artifacts
+      # ===============================
+      - name: Upload Kernel Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-eBPF-Build-v142
+          name: s10lite-kernel-gki-a15
           path: |
-            kernel-res/arch/arm64/boot/Image.gz-dtb
-            kernel-res/arch/arm64/boot/Image.gz
+            kernel/arch/arm64/boot/Image.gz-dtb
+            kernel/modules
