@@ -1,4 +1,4 @@
-name: S10 Lite - Ultra-Safe Build
+name: S10 Lite - Final Header Fix
 
 on:
   push:
@@ -23,11 +23,21 @@ jobs:
           git clone --depth=1 https://github.com/kdrag0n/proton-clang.git toolchain/proton-clang
           echo "PROTON_PATH=$(pwd)/toolchain/proton-clang/bin" >> $GITHUB_ENV
 
-      - name: Fix Source
+      - name: Force Fix Headers
         run: |
-          # Redirecționăm include-ul problematic
-          find . -type f -name "*.c" -o -name "*.h" | xargs sed -i 's/uapi\/linux\/btf.h/linux\/btf.h/g'
-          # Fix Samsung script
+          # 1. Creăm directoarele necesare în sursă
+          mkdir -p include/linux
+          mkdir -p include/uapi/linux
+          
+          # 2. Generăm un btf.h minimal dacă nu există (pentru a satisface compilatorul)
+          if [ ! -f include/linux/btf.h ]; then
+            echo -e "#ifndef _LINUX_BTF_H\n#define _LINUX_BTF_H\n#include <linux/types.h>\n#endif" > include/linux/btf.h
+          fi
+          
+          # 3. Copiem peste tot unde e căutat
+          cp include/linux/btf.h include/uapi/linux/btf.h
+          
+          # 4. Fix Samsung scripts & Python
           echo -e '#!/bin/bash\necho "0"' > /tmp/secgetspf
           chmod +x /tmp/secgetspf
           sudo mv /tmp/secgetspf /usr/bin/secgetspf
@@ -37,7 +47,12 @@ jobs:
         run: |
           export PATH="${{ env.PROTON_PATH }}:$PATH"
           
-          # Argumente simplificate pentru a evita erorile de linking
+          # Sincronizăm headerul și în folderul de build (O=out)
+          mkdir -p out/include/linux
+          mkdir -p out/include/uapi/linux
+          cp include/linux/btf.h out/include/linux/
+          cp include/linux/btf.h out/include/uapi/linux/
+
           MAKE_ARGS="
             O=out \
             ARCH=arm64 \
@@ -48,31 +63,30 @@ jobs:
             LLVM_IAS=1
           "
           
-          export KCFLAGS="-Wno-error -Wno-implicit-function-declaration -Wno-unknown-warning-option"
+          # Adăugăm flag-ul de sistem pentru a include folderul local cu prioritate
+          export KCFLAGS="-Wno-error -Wno-implicit-function-declaration -Wno-unknown-warning-option -I$(pwd)/include"
 
-          rm -rf out && mkdir -p out
+          # Configurare
           make $MAKE_ARGS r5q_eur_open_defconfig
           
-          # DEZACTIVĂM tot ce consumă RAM sau dă erori la final
+          # Dezactivăm BTF și LTO pentru stabilitate
+          sed -i 's/CONFIG_DEBUG_INFO_BTF=y/CONFIG_DEBUG_INFO_BTF=n/g' out/.config
           sed -i 's/CONFIG_LTO_CLANG=y/CONFIG_LTO_CLANG=n/g' out/.config
           sed -i 's/CONFIG_LTO=y/CONFIG_LTO=n/g' out/.config
-          sed -i 's/CONFIG_DEBUG_INFO_BTF=y/CONFIG_DEBUG_INFO_BTF=n/g' out/.config
-          sed -i 's/CONFIG_KASAN=y/CONFIG_KASAN=n/g' out/.config
-          sed -i 's/CONFIG_CC_STACKPROTECTOR_STRONG=y/CONFIG_CC_STACKPROTECTOR_NONE=y/g' out/.config
           
           make $MAKE_ARGS olddefconfig
           
-          # Build cu doar 2 thread-uri pentru a economisi RAM pentru linker
-          make -j2 $MAKE_ARGS
+          # Build cu 3 thread-uri (echilibru între viteză și RAM)
+          make -j3 $MAKE_ARGS
 
           if [ -f out/arch/arm64/boot/Image ]; then
             cp out/arch/arm64/boot/Image .
             echo "SUCCESS=true" >> $GITHUB_ENV
           fi
 
-      - name: Upload
+      - name: Upload Artifact
         if: env.SUCCESS == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-Kernel-Final
+          name: S10Lite-Kernel-Fixed
           path: Image
