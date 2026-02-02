@@ -1,4 +1,4 @@
-name: S10 Lite - Hybrid Upstream (Final Fix)
+name: S10 Lite - Hybrid Upstream (Smart Fix)
 
 on:
   push:
@@ -29,23 +29,26 @@ jobs:
           git clone --depth=1 https://github.com/LineageOS/android_kernel_samsung_r5q.git samsung_source
           
           # Injectăm driverele și config-ul
-          [ -d samsung_source/techpack ] && cp -r samsung_source/techpack kernel_source/
+          cp -r samsung_source/techpack kernel_source/ || true
           cp samsung_source/arch/arm64/configs/r5q_eur_open_defconfig kernel_source/arch/arm64/configs/r5q_defconfig
           mkdir -p kernel_source/arch/arm64/boot/dts/vendor/qcom/
           cp -r samsung_source/arch/arm64/boot/dts/vendor/qcom/r5q* kernel_source/arch/arm64/boot/dts/vendor/qcom/ || true
 
-          # === FIX-URI PENTRU ERORILE TALE ===
           cd kernel_source
 
-          # 1. Fix Audio: Redefinim jack-urile lipsă pentru a se potrivi cu Upstream
+          # === FIX AUDIO (L1SS_AUDIO Error) ===
+          # Adăugăm definitia lipsă în header-ul de PCM
+          sed -i '20i #define L1SS_AUDIO 0' techpack/audio/asoc/msm-pcm-q6-noirq.c
+          
+          # Redefinim jack-urile pentru Upstream
           sed -i 's/SND_JACK_MICROPHONE2/SND_JACK_MICROPHONE/g' techpack/audio/asoc/codecs/wcd-mbhc-v2.h
           sed -i 's/SND_JACK_ANC_HEADPHONE/SND_JACK_HEADPHONE/g' techpack/audio/asoc/codecs/wcd-mbhc-v2.c
 
-          # 2. Fix SMCInvoke: Eliminăm redefinirea size_add (conflict cu overflow.h)
-          # Ștergem liniile 520-523 din smcinvoke.c unde este definit size_add
-          sed -i '520,523d' drivers/soc/qcom/smcinvoke.c || true
-          
-          # 3. Fix pentru scriptul de securitate Samsung
+          # === FIX SMCINVOKE (Redefinition of size_add) ===
+          # Comentăm doar funcția problematică fără să stricăm restul fișierului
+          sed -i '/static inline size_t size_add/,/}/ s/^/\/\//' drivers/soc/qcom/smcinvoke.c
+
+          # Fix Samsung Tools
           echo -e '#!/bin/bash\necho "0"' > /tmp/secgetspf
           chmod +x /tmp/secgetspf
           sudo mv /tmp/secgetspf /usr/bin/secgetspf
@@ -65,7 +68,7 @@ jobs:
             LLVM_IAS=1
           "
           
-          export KCFLAGS="-Wno-error -Wno-implicit-function-declaration -Wno-int-conversion -Wno-incompatible-pointer-types"
+          export KCFLAGS="-Wno-error -Wno-implicit-function-declaration -Wno-int-conversion -Wno-incompatible-pointer-types -Wno-strict-prototypes"
 
           mkdir -p out
           make $MAKE_ARGS r5q_defconfig
@@ -88,7 +91,7 @@ jobs:
         if: env.SUCCESS == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-Upstream-Hybrid-Final
+          name: S10Lite-Upstream-Hybrid
           path: |
             Image
             *.dtbo
