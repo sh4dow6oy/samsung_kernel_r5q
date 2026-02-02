@@ -1,4 +1,4 @@
-name: S10 Lite - Upstream 4.14.y with Proton Clang
+name: S10 Lite - Stock Source Build Test
 
 on:
   push:
@@ -12,8 +12,6 @@ jobs:
     steps:
       - name: Checkout Source
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - name: Install Dependencies
         run: |
@@ -24,39 +22,23 @@ jobs:
         run: |
           git clone --depth=1 https://github.com/kdrag0n/proton-clang.git toolchain/proton-clang
 
-      - name: Upstream Merge (Linux 4.14.y)
+      - name: Essential Samsung Fixes
         run: |
-          git config --global user.email "action@github.com"
-          git config --global user.name "GitHub Action"
+          # Samsung cere python2 pentru scripturile interne
+          sudo ln -sf /usr/bin/python2 /usr/bin/python
           
-          # Adăugăm sursa stabilă
-          git remote add linux-stable https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git || true
-          git fetch linux-stable linux-4.14.y --depth=50
-          
-          # Facem merge forțat pentru a aduce patch-urile de securitate
-          git merge FETCH_HEAD --allow-unrelated-histories -m "Upstream 4.14.y" || echo "Conflicte detectate, rezolvăm..."
-          
-          # Păstrăm structura Samsung unde apar conflicte de nerezolvat automat
-          git checkout --ours Makefile arch/arm64/configs/r5q_eur_open_defconfig drivers/staging/Kconfig || true
-          git add . && git commit -m "Resolved conflicts for Proton Clang build" || echo "Nimic de comis"
-
-      - name: Pre-build Fixes
-        run: |
-          # Fix __poll_t pentru compatibilitate Clang
-          sed -i '/#define _UAPI_LINUX_TYPES_H/a #ifndef __poll_t\n#ifndef __ASSEMBLY__\ntypedef unsigned int __poll_t;\n#endif\n#define __poll_t __poll_t\n#endif' include/uapi/linux/types.h
-          
-          # Samsung perflog fix
+          # Creăm headerele lipsă pe care Samsung le așteaptă în mod normal din mediul de build Android
           mkdir -p system/core/liblog/include/log
           echo -e "#ifndef _PERFLOG_H\n#define _PERFLOG_H\n#endif" > system/core/liblog/include/log/perflog.h
           
-          # Python symlink
-          sudo ln -sf /usr/bin/python2 /usr/bin/python
+          # Fix minor pentru compatibilitate Clang pe 4.14
+          sed -i '/#define _UAPI_LINUX_TYPES_H/a #ifndef __poll_t\n#ifndef __ASSEMBLY__\ntypedef unsigned int __poll_t;\n#endif\n#define __poll_t __poll_t\n#endif' include/uapi/linux/types.h
 
-      - name: Build Kernel
+      - name: Build Stock Kernel
         run: |
           export PATH=$(pwd)/toolchain/proton-clang/bin:$PATH
           
-          # Setăm argumentele pentru Proton Clang
+          # Argumente de build pentru arhitectura r5q
           MAKE_ARGS="
             O=out \
             ARCH=arm64 \
@@ -73,34 +55,40 @@ jobs:
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             LLVM=1 \
             LLVM_IAS=1 \
+            KCFLAGS=-Wno-error \
             TECHPACK=true
           "
-          
-          # Dezactivăm Werror pentru a preveni oprirea build-ului la warning-uri de upstream
-          export KCFLAGS="-Wno-error -Wno-implicit-function-declaration"
 
           rm -rf out && mkdir -p out
+          
+          # 1. Generăm .config din defconfig-ul stock al Samsung
           make $MAKE_ARGS r5q_eur_open_defconfig
           
-          # Fix Stack Protector pentru Proton Clang
+          # 2. Ajustăm configurarea pentru a evita erorile de compilator
+          # Stack protector strong cauzează deseori fail la check pe surse vechi
           sed -i 's/CONFIG_CC_STACKPROTECTOR_STRONG=y/CONFIG_CC_STACKPROTECTOR_NONE=y/g' out/.config
           
+          # 3. Aplicăm modificările în config
           make $MAKE_ARGS olddefconfig
           
-          # Build cu toate nucleele disponibile
-          make -j$(nproc --all) $MAKE_ARGS || (echo "DIAGNOSTIC J1..." && make -j1 $MAKE_ARGS)
+          # 4. Compilarea propriu-zisă
+          make -j$(nproc --all) $MAKE_ARGS
 
+          # Verificăm dacă a ieșit Image
           if [ -f out/arch/arm64/boot/Image ]; then
             cp out/arch/arm64/boot/Image .
             [ -f out/arch/arm64/boot/dtbo.img ] && cp out/arch/arm64/boot/dtbo.img .
             echo "SUCCESS=true" >> $GITHUB_ENV
+          else
+            echo "Build failed - Image not found"
+            exit 1
           fi
 
-      - name: Upload Artifacts
+      - name: Upload Stock Artifacts
         if: env.SUCCESS == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-Upstream-ProtonClang
+          name: S10Lite-Stock-Kernel
           path: |
             Image
             dtbo.img
