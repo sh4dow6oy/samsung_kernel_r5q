@@ -1,4 +1,4 @@
-name: S10 Lite - Safe Core eBPF v142
+name: S10 Lite – Android 15 eBPF (Kernel 4.14 SAFE)
 
 on:
   push:
@@ -10,61 +10,60 @@ jobs:
     runs-on: ubuntu-22.04
 
     steps:
-      - name: Checkout S10 Lite Kernel Source
+      - name: Checkout S10 Lite Kernel
         uses: actions/checkout@v4
         with:
           repository: sh4dow6oy/samsung_kernel_r5q
-          path: kernel-res
+          path: kernel
           fetch-depth: 1
 
-      - name: Setup Proton Clang
+      - name: Setup Toolchain
         run: |
-          sudo apt-get update
-          sudo apt-get install -y bc bison flex libssl-dev libelf-dev dwarves make python3 lz4
+          sudo apt update
+          sudo apt install -y bc bison flex libssl-dev libelf-dev make python3 lz4
           git clone --depth=1 https://github.com/kdrag0n/proton-clang.git toolchain/proton-clang
 
-      - name: Patch BPF Structures (No File Replacement)
+      - name: Configure Kernel (SAFE eBPF)
         run: |
-          cd kernel-res
-          # Adăugăm definițiile lipsă care cauzează erori în Android 15
-          # Injectăm direct în include/uapi/linux/bpf.h
-          
-          # 1. Definim BPF_OBJ_NAME_LEN dacă lipsește
-          sed -i '/enum bpf_cmd/i #define BPF_OBJ_NAME_LEN 16U' include/uapi/linux/bpf.h
-          
-          # 2. Adăugăm flag-urile de citire/scriere pe care le caută Android 15
-          sed -i '/BPF_F__LAST_FIELD/i #define BPF_F_RDONLY_PROG (1U << 7)\n#define BPF_F_WRONLY_PROG (1U << 8)' include/uapi/linux/bpf.h
-
-          # 3. Fix pentru struct bpf_map (incomplete type error)
-          # Ne asigurăm că headerele sunt incluse corect
-          sed -i '1s/^/#include <linux\/types.h>\n/' include/linux/bpf.h
-          
-          # 4. Reparăm conflictul de tip la polling
-          echo "typedef unsigned int __poll_t;" >> include/linux/types.h
-
-      - name: Configure & Build
-        run: |
-          cd kernel-res
+          cd kernel
           export PATH=$(pwd)/../toolchain/proton-clang/bin:$PATH
-          
-          # Resetăm config-ul la unul curat
+
           make ARCH=arm64 CC=clang r5q_eur_open_defconfig
-          
-          # Activăm eBPF fără să schimbăm logica internă a kernel-ului
+
+          # eBPF MINIM (kernel 4.14)
+          ./scripts/config --enable CONFIG_BPF
           ./scripts/config --enable CONFIG_BPF_SYSCALL
           ./scripts/config --enable CONFIG_BPF_JIT
           ./scripts/config --enable CONFIG_CGROUP_BPF
-          
-          # Eliminăm balastul Samsung care verifică integritatea BPF
+
+          # OPRIM TOT ce NU există în 4.14
+          ./scripts/config --disable CONFIG_DEBUG_INFO_BTF
+          ./scripts/config --disable CONFIG_BPF_LIRC_MODE2
+          ./scripts/config --disable CONFIG_BPF_EVENTS
+          ./scripts/config --disable CONFIG_BPF_PRELOAD
+          ./scripts/config --disable CONFIG_KPROBES
+          ./scripts/config --disable CONFIG_PERF_EVENTS
+
+          # Samsung security (altfel NU bootează A15)
           ./scripts/config --disable CONFIG_SECURITY_SAMSUNG_RKP
+          ./scripts/config --disable CONFIG_TIMA
+          ./scripts/config --disable CONFIG_DEFEX
           ./scripts/config --disable CONFIG_SAMSUNG_PRODUCT_SHIP
-          
+
           make ARCH=arm64 CC=clang olddefconfig
-          
+
+      - name: Build Kernel
+        run: |
+          cd kernel
+          export PATH=$(pwd)/../toolchain/proton-clang/bin:$PATH
+
           MAKE_ARGS="ARCH=arm64 CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1"
-          
-          # Flag-uri de suprimare a erorilor de tip (Crucial pentru succes)
-          export KCFLAGS="-O3 -Wno-everything -Wno-error -Wno-implicit-function-declaration -Wno-int-conversion -Wno-incompatible-pointer-types"
-          
+          export KCFLAGS="-Wno-error -Wno-implicit-function-declaration -Wno-int-conversion"
+
           make -j$(nproc --all) $MAKE_ARGS Image.gz-dtb
-          
+
+      - name: Upload Kernel
+        uses: actions/upload-artifact@v4
+        with:
+          name: S10Lite-A15-eBPF-k4.14
+          path: kernel/arch/arm64/boot/Image.gz-dtb
