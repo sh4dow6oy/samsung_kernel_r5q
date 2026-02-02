@@ -1,4 +1,4 @@
-name: S10 Lite - Stock Build (Clang + Prebuilts Combo)
+name: S10 Lite - Stock Build (Clang 7.0 AOSP)
 
 on:
   push:
@@ -18,57 +18,44 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y bc bison flex libssl-dev libelf-dev dwarves libncurses-dev git wget make python2 python3 pahole tar xz-utils lib32z1
 
-      - name: Setup Combined Toolchain
+      - name: Setup AOSP Clang 7.0 & GCC 4.9
         run: |
-          mkdir -p toolchain/combined
+          mkdir -p toolchain/clang toolchain/gcc
           
-          # 1. Descarcăm și extragem Prebuilts (GCC)
-          wget -L "https://github.com/sh4dow6oy/samsung_kernel_r5q/releases/download/GCC/prebuilts.tar" -O prebuilts.tar
-          tar -xf prebuilts.tar -C toolchain/combined
+          # Descarcam Clang 7.0 (echivalent 4639204) de pe o sursa stabila pentru Linux
+          wget -L https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/master/clang-4639204.tar.gz -O clang.tar.gz
+          tar -xf clang.tar.gz -C toolchain/clang
           
-          # 2. Descarcăm și extragem Clang r416183b peste ele
-          wget -L "https://github.com/sh4dow6oy/samsung_kernel_r5q/releases/download/GCC/clang-r416183b.tar" -O clang.tar
-          tar -xf clang.tar -C toolchain/combined
+          # Descarcam GCC 4.9 pentru binutils (esențial pentru Clang vechi)
+          wget -L https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/+archive/refs/heads/master.tar.gz -O gcc.tar.gz
+          tar -xf gcc.tar.gz -C toolchain/gcc
           
-          # Detectăm căile recursiv
-          CLANG_BIN=$(find $(pwd)/toolchain/combined -name clang -type f -printf '%h\n' | head -n 1)
-          GCC_BIN=$(find $(pwd)/toolchain/combined -name "aarch64-linux-android-gcc" -type f -printf '%h\n' | head -n 1)
-          GCC_ARM32=$(find $(pwd)/toolchain/combined -name "arm-linux-androideabi-gcc" -type f -printf '%h\n' | head -n 1)
-          
-          echo "CLANG_PATH=$CLANG_BIN" >> $GITHUB_ENV
-          echo "GCC_PATH=$GCC_BIN" >> $GITHUB_ENV
-          echo "GCC_ARM32_PATH=$GCC_ARM32" >> $GITHUB_ENV
-          
-          echo "Toolchain Detection:"
-          echo "Clang: $CLANG_BIN"
-          echo "GCC 64: $GCC_BIN"
-          echo "GCC 32: $GCC_ARM32"
+          echo "CLANG_BIN=$(pwd)/toolchain/clang/bin" >> $GITHUB_ENV
+          echo "GCC_BIN=$(pwd)/toolchain/gcc/bin" >> $GITHUB_ENV
 
-      - name: Essential Fixes
+      - name: Essential Samsung Fixes
         run: |
           sudo ln -sf /usr/bin/python2 /usr/bin/python
           mkdir -p system/core/liblog/include/log
           echo -e "#ifndef _PERFLOG_H\n#define _PERFLOG_H\n#endif" > system/core/liblog/include/log/perflog.h
           
-          # Dezactivăm Werror global pentru a trece de warning-urile Clang r416
-          sed -i 's/-Werror//g' Makefile || true
+          # Scoatem Werror pentru a evita blocajele in Techpack
+          find . -name "Makefile" -o -name "Kbuild" | xargs sed -i 's/-Werror//g' || true
           
-          # Fix pentru compatibilitate tip poll_t
+          # Fix poll_t pentru Clang
           sed -i '/#define _UAPI_LINUX_TYPES_H/a #ifndef __poll_t\n#ifndef __ASSEMBLY__\ntypedef unsigned int __poll_t;\n#endif\n#define __poll_t __poll_t\n#endif' include/uapi/linux/types.h
 
       - name: Build Kernel
         run: |
-          # Adăugăm toolchain-urile în PATH
-          export PATH="${{ env.CLANG_PATH }}:${{ env.GCC_PATH }}:${{ env.GCC_ARM32_PATH }}:$PATH"
+          export PATH="${{ env.CLANG_BIN }}:${{ env.GCC_BIN }}:$PATH"
           
-          # Argumente optimizate pentru Clang Google Prebuilt
+          # Argumente specifice pentru Clang 7.0
           MAKE_ARGS="
             O=out \
             ARCH=arm64 \
             CC=clang \
             CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=aarch64-linux-android- \
-            CROSS_COMPILE_ARM32=arm-linux-androideabi- \
             HOSTCC=gcc \
             HOSTCXX=g++ \
             LD=ld.lld \
@@ -81,18 +68,18 @@ jobs:
 
           rm -rf out && mkdir -p out
           
-          # Configurare
+          # 1. Configurare defconfig
           make $MAKE_ARGS r5q_eur_open_defconfig
           
-          # Fix Stack Protector (Bypass Clang 12+ version check)
+          # 2. Bypass Stack Protector (necesar pentru combinatia Clang 7 / 4.14)
           sed -i 's/CONFIG_CC_STACKPROTECTOR_STRONG=y/CONFIG_CC_STACKPROTECTOR_NONE=y/g' out/.config
           make $MAKE_ARGS olddefconfig
           
-          # Pregătire headere
+          # 3. Pregatire headere
           make $MAKE_ARGS prepare scripts -j$(nproc --all)
           
-          # Build propriu-zis
-          make -j$(nproc --all) $MAKE_ARGS || (echo "Eroare detectată, reluăm cu J1 pentru detalii..." && make -j1 $MAKE_ARGS)
+          # 4. Compilare finala
+          make -j$(nproc --all) $MAKE_ARGS || make -j1 $MAKE_ARGS
 
           if [ -f out/arch/arm64/boot/Image ]; then
             cp out/arch/arm64/boot/Image .
@@ -100,11 +87,11 @@ jobs:
             echo "SUCCESS=true" >> $GITHUB_ENV
           fi
 
-      - name: Upload Artifacts
+      - name: Upload
         if: env.SUCCESS == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-Kernel-Clang-Combo
+          name: S10Lite-Stock-Clang463
           path: |
             Image
             dtbo.img
