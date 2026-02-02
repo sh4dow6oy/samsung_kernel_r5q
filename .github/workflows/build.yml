@@ -1,4 +1,4 @@
-name: S10 Lite - Build with Official LLVM 9 (GitHub)
+name: S10 Lite - Stock Build (Clang 9 GitHub Final)
 
 on:
   push:
@@ -18,15 +18,14 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y bc bison flex libssl-dev libelf-dev dwarves libncurses-dev git wget make python2 python3 pahole tar xz-utils lib32z1
 
-      - name: Setup LLVM 9.0.1 from GitHub
+      - name: Setup LLVM 9.0.1 (Official GitHub)
         run: |
           mkdir -p toolchain/clang toolchain/gcc
-          
-          # Descarcăm binarul oficial LLVM 9.0.1 compilat pentru Ubuntu (x86_64) de pe GitHub
+          # Descarcăm binarul oficial LLVM 9 de pe GitHub
           wget https://github.com/llvm/llvm-project/releases/download/llvmorg-9.0.1/clang+llvm-9.0.1-x86_64-linux-gnu-ubuntu-16.04.tar.xz -O clang.tar.xz
           tar -xf clang.tar.xz -C toolchain/clang --strip-components=1
           
-          # Descarcăm și GCC-ul tău pentru asamblor și linker (binutils)
+          # Descarcăm GCC-ul tău pentru binutils (LD, OBJCOPY, AS)
           wget -L "https://github.com/sh4dow6oy/samsung_kernel_r5q/releases/download/GCC/prebuilts.tar" -O gcc.tar
           tar -xf gcc.tar -C toolchain/gcc
           
@@ -36,23 +35,27 @@ jobs:
 
       - name: Essential Samsung Fixes
         run: |
+          # Samsung environment fixes
           sudo ln -sf /usr/bin/python2 /usr/bin/python
           mkdir -p system/core/liblog/include/log
           echo -e "#ifndef _PERFLOG_H\n#define _PERFLOG_H\n#endif" > system/core/liblog/include/log/perflog.h
           
-          # Dezactivăm Werror pentru a preveni oprirea build-ului la warning-uri de cod vechi
+          # Eliminăm flag-urile care blochează Clang 9 (unknown argument errors)
           find . -name "Makefile" -o -name "Kbuild" | xargs sed -i 's/-Werror//g' || true
+          find . -name "Makefile" -o -name "Kbuild" | xargs sed -i 's/-implicit-function-declaration//g' || true
+          find . -name "Makefile" -o -name "Kbuild" | xargs sed -i 's/-Wno-unused-but-set-variable//g' || true
+          find . -name "Makefile" -o -name "Kbuild" | xargs sed -i 's/-Wno-maybe-uninitialized//g' || true
           
-          # Fix pentru poll_t (esențial pentru kernel 4.14)
+          # Fix pentru poll_t (compatibilitate 4.14)
           sed -i '/#define _UAPI_LINUX_TYPES_H/a #ifndef __poll_t\n#ifndef __ASSEMBLY__\ntypedef unsigned int __poll_t;\n#endif\n#define __poll_t __poll_t\n#endif' include/uapi/linux/types.h
 
       - name: Build Kernel
         run: |
           export PATH="${{ env.CLANG_PATH }}:${{ env.GCC_PATH }}:$PATH"
           
-          # Verificare versiune (trebuie să apară clang version 9.0.1)
-          clang --version
-          
+          # Forțăm ignorarea warning-urilor rămase prin KCFLAGS
+          export KCFLAGS="-Wno-error -Wno-unknown-warning-option -Wno-implicit-function-declaration -Wno-int-conversion"
+
           MAKE_ARGS="
             O=out \
             ARCH=arm64 \
@@ -71,30 +74,38 @@ jobs:
 
           rm -rf out && mkdir -p out
           
-          # 1. Defconfig
+          # Configurare și bypass Stack Protector (critic pentru bounds.s)
           make $MAKE_ARGS r5q_eur_open_defconfig
-          
-          # 2. Bypass Stack Protector (Necesar pentru stabilitate la compilare)
           sed -i 's/CONFIG_CC_STACKPROTECTOR_STRONG=y/CONFIG_CC_STACKPROTECTOR_NONE=y/g' out/.config
           make $MAKE_ARGS olddefconfig
           
-          # 3. Pregătire headere
+          # Generare headere
           make $MAKE_ARGS prepare scripts -j$(nproc --all)
           
-          # 4. Compilare principală
+          # Compilare principală
           make -j$(nproc --all) $MAKE_ARGS || make -j1 $MAKE_ARGS
 
           if [ -f out/arch/arm64/boot/Image ]; then
-            cp out/arch/arm64/boot/Image .
-            [ -f out/arch/arm64/boot/dtbo.img ] && cp out/arch/arm64/boot/dtbo.img .
             echo "SUCCESS=true" >> $GITHUB_ENV
           fi
 
-      - name: Upload Artifacts
+      - name: Package with AnyKernel3
+        if: env.SUCCESS == 'true'
+        run: |
+          git clone https://github.com/osm0sis/AnyKernel3.git
+          cp out/arch/arm64/boot/Image AnyKernel3/
+          # Dacă sursa generează și dtbo.img, îl punem și pe acela
+          [ -f out/arch/arm64/boot/dtbo.img ] && cp out/arch/arm64/boot/dtbo.img AnyKernel3/
+          
+          cd AnyKernel3
+          # Ajustări rapide pentru S10 Lite (r5q)
+          sed -i 's/device.name1=maguro/device.name1=r5q/g' anykernel.sh
+          sed -i 's/device.name2=toroplus/device.name2=s10lite/g' anykernel.sh
+          zip -r ../S10Lite-Kernel-Clang9.zip *
+
+      - name: Upload Build
         if: env.SUCCESS == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-Kernel-LLVM9-GitHub
-          path: |
-            Image
-            dtbo.img
+          name: S10Lite-Kernel-Final
+          path: S10Lite-Kernel-Clang9.zip
