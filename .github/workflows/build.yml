@@ -1,4 +1,4 @@
-name: S10 Lite - 4.19 Surgical Hybrid
+name: S10 Lite - 4.19 Hybrid (Surgical Display/Touch)
 
 on:
   push:
@@ -30,45 +30,45 @@ jobs:
           git clone --depth=1 https://github.com/sh4dow6oy/samsung_kernel_r5q.git drivers_source
           git clone --depth=1 https://github.com/mainey/android_kernel_samsung_r5q.git samsung_ref
           
-          # 2. Injectare Config & DTS (Path-ul corect de data trecuta)
+          # 2. Injectare Config & DTS
           cp samsung_ref/arch/arm64/configs/r5q_eur_open_defconfig kernel_source/arch/arm64/configs/r5q_defconfig
           mkdir -p kernel_source/arch/arm64/boot/dts/vendor/qcom/
           find samsung_ref/arch/arm64/boot/dts/ -maxdepth 1 -type f -name "*.dts*" -exec cp {} kernel_source/arch/arm64/boot/dts/vendor/qcom/ \;
           
           cd kernel_source
 
-          # 3. INJECTARE CHIRURGICALA (Doar ce e critic, fara sa stricam Kconfig-urile globale)
-          echo "Surgically injecting Samsung/Sh4dow6oy drivers..."
+          # === 3. INJECTARE SELECTIVA DISPLAY & TOUCH ===
+          # Nu copiem tot folderul drivers/, copiem doar sub-folderele specifice
+          echo "Injecting Display and Touch drivers..."
           
-          # Injectam Techpack-ul (e separat de drivers/ si e mai sigur)
-          rm -rf techpack
-          cp -r ../drivers_source/techpack .
-
-          # Injectam Touchscreen-ul Samsung (fara sa suprascriem tot folderul input)
+          # Display DRM Samsung (R5Q specific)
+          rm -rf drivers/gpu/drm/msm
+          cp -r ../drivers_source/drivers/gpu/drm/msm drivers/gpu/drm/
+          
+          # Touchscreen Samsung
           mkdir -p drivers/input/touchscreen/samsung
           cp -r ../drivers_source/drivers/input/touchscreen/* drivers/input/touchscreen/ || true
+
+          # === 4. REPARARE KCONFIG / MAKEFILE PENTRU TECHPACK ===
+          # Daca techpack-ul din sh4dow e stub, il folosim ca sa nu dea eroare de "file not found"
+          rm -rf techpack
+          cp -r ../drivers_source/techpack .
           
-          # Injectam Display (daca nu e in techpack)
-          # NOTA: Daca sh4dow are display in drivers/gpu/drm/msm, il copiem doar pe acela
-          if [ -d ../drivers_source/drivers/gpu/drm/msm ]; then
-            rm -rf drivers/gpu/drm/msm
-            cp -r ../drivers_source/drivers/gpu/drm/msm drivers/gpu/drm/
+          # Ne asiguram ca techpack/Kconfig exista si e valid
+          if [ ! -f techpack/Kconfig ]; then
+            echo 'menu "Techpack"' > techpack/Kconfig
+            [ -d techpack/audio ] && echo 'source "techpack/audio/Kconfig"' >> techpack/Kconfig
+            echo 'endmenu' >> techpack/Kconfig
           fi
 
-          # 4. FIX CLK-DEBUG TRACE (Calea absoluta)
+          # === 5. FIX CLK-DEBUG TRACE ===
           sed -i '/TRACE_INCLUDE_PATH/d' drivers/clk/qcom/clk-debug.c
           sed -i '18i #define TRACE_INCLUDE_PATH ../../drivers/clk/qcom' drivers/clk/qcom/clk-debug.c
 
-          # 5. FIX ERRNO / ERR_PTR (Adaugam doar unde e nevoie)
+          # === 6. GLOBAL HEADER FIXES (errno.h) ===
           sed -i '15i #include <linux/errno.h>' include/linux/usb/usbpd.h
-          find techpack/ -name "*.c" -exec grep -l "ENODEV" {} + | xargs -I {} sed -i '1i #include <linux/errno.h>' {} || true
+          find drivers/gpu/drm/msm/ -name "*.c" -exec sed -i '1i #include <linux/errno.h>' {} +
 
-          # 6. MAKEFILE / KCONFIG LINKING
-          # Adaugam techpack in Makefile-ul root
-          if ! grep -q "techpack" Makefile; then
-            sed -i 's/^core-y[[:space:]]*:=/core-y := techpack\/ /' Makefile
-          fi
-          
           # Fix Samsung SecTools
           echo -e '#!/bin/bash\necho "0"' > /tmp/secgetspf
           chmod +x /tmp/secgetspf
@@ -81,10 +81,10 @@ jobs:
           ARGS="ARCH=arm64 CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1"
           export KCFLAGS="-Wno-error -Wno-implicit-function-declaration -Wno-int-conversion -Wno-incompatible-pointer-types -Wno-unused-variable -Wno-unused-function -Wno-return-type"
 
-          # Pasul critic: generarea configuratiei
+          # Generare config
           make $ARGS r5q_defconfig
           
-          # Disable LTO/BTF
+          # Optimizari
           sed -i 's/CONFIG_LTO_CLANG=y/CONFIG_LTO_CLANG=n/g' .config
           sed -i 's/CONFIG_LTO=y/CONFIG_LTO=n/g' .config
           sed -i 's/CONFIG_DEBUG_INFO_BTF=y/CONFIG_DEBUG_INFO_BTF=n/g' .config
@@ -102,7 +102,7 @@ jobs:
         if: env.SUCCESS == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-4.19-Surgical-Kernel
+          name: S10Lite-4.19-Surgical-v2
           path: |
             Image
             *.dtbo
