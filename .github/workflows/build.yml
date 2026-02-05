@@ -1,4 +1,4 @@
-name: S10 Lite - 4.19 Hybrid (Kbuild Strategy)
+name: S10 Lite - 4.19 Hybrid (Linker Fix)
 
 on:
   push:
@@ -40,24 +40,19 @@ jobs:
           
           cd kernel_source
 
-          # === FIX KCONFIG (Direct Linking Strategy) ===
-          # Deoarece techpack/Kconfig NU există, legăm direct subfolderele audio/display în Kconfig-ul principal
-          sed -i '/techpack/d' Kconfig # Curățăm încercările vechi
+          # === FIX KCONFIG (Direct Linking) ===
+          # Includem Audio direct pentru a evita eroarea de deschidere Kconfig
+          sed -i '2i source "techpack/audio/Kconfig"' Kconfig
           
-          # Inserăm link-urile către Kconfig-urile reale din interiorul techpack
-          # Verificăm unde există fișiere Kconfig reale în techpack și le includem
-          if [ -f techpack/audio/Kconfig ]; then
-            sed -i 's|^# end of kernel config|source "techpack/audio/Kconfig"\n# end of kernel config|' Kconfig
-          fi
-          
-          # === FIX MAKEFILE ===
-          sed -i '/techpack/d' Makefile
-          echo "obj-y += techpack/" >> Makefile
+          # === FIX MAKEFILE (Metoda Safe pentru Simboluri) ===
+          # Inserăm techpack în core-y pentru a fi inclus în built-in.a corect
+          sed -i 's/^core-y[[:space:]]*:=/core-y := techpack\/ /' Makefile
 
-          # === FIX-URI COD (L1SS & Jack) ===
+          # === FIX-URI COD ===
           find techpack/audio/ -name "msm-pcm-q6-noirq.c" -exec sed -i '20i #define L1SS_AUDIO 0' {} +
           find techpack/audio/ -name "*.h" -o -name "*.c" -exec sed -i 's/SND_JACK_MICROPHONE2/SND_JACK_MICROPHONE/g' {} +
           
+          # Fix SMCInvoke (Redefinitie size_add)
           if [ -f drivers/soc/qcom/smcinvoke.c ]; then
             sed -i '/static inline size_t size_add/,/}/ s/^/\/\//' drivers/soc/qcom/smcinvoke.c
           fi
@@ -72,35 +67,33 @@ jobs:
           export PATH="${{ env.PROTON_PATH }}:$PATH"
           cd kernel_source
           
-          rm -rf out && mkdir -p out
-
-          MAKE_ARGS="
+          # Parametrii de build (FĂRĂ O=out pentru a evita simbolurile nedefinite)
+          ARGS="
             ARCH=arm64 \
             CC=clang \
             CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             LLVM=1 \
-            LLVM_IAS=1 \
-            O=out
+            LLVM_IAS=1
           "
           
           export KCFLAGS="-Wno-error -Wno-implicit-function-declaration -Wno-int-conversion -Wno-incompatible-pointer-types -Wno-unused-variable -Wno-format-security -Wno-strict-prototypes"
 
           # 1. Defconfig
-          make $MAKE_ARGS r5q_defconfig
+          make $ARGS r5q_defconfig
           
-          # 2. Config Tweaks (Dezactivare LTO/BTF)
-          sed -i 's/CONFIG_LTO_CLANG=y/CONFIG_LTO_CLANG=n/g' out/.config
-          sed -i 's/CONFIG_LTO=y/CONFIG_LTO=n/g' out/.config
-          sed -i 's/CONFIG_DEBUG_INFO_BTF=y/CONFIG_DEBUG_INFO_BTF=n/g' out/.config
+          # 2. Config Tweaks
+          sed -i 's/CONFIG_LTO_CLANG=y/CONFIG_LTO_CLANG=n/g' .config
+          sed -i 's/CONFIG_LTO=y/CONFIG_LTO=n/g' .config
+          sed -i 's/CONFIG_DEBUG_INFO_BTF=y/CONFIG_DEBUG_INFO_BTF=n/g' .config
           
-          # 3. Build
-          make $MAKE_ARGS olddefconfig
-          make -j$(nproc --all) $MAKE_ARGS || make -j1 $MAKE_ARGS
+          # 3. Compilare (Direct în sursă)
+          make $ARGS olddefconfig
+          make -j2 $ARGS
 
-          if [ -f out/arch/arm64/boot/Image ]; then
-            cp out/arch/arm64/boot/Image ../
-            find out/arch/arm64/boot/dts/ -name "*.dtbo" -exec cp {} ../ \; || true
+          if [ -f arch/arm64/boot/Image ]; then
+            cp arch/arm64/boot/Image ../
+            find arch/arm64/boot/dts/ -name "*.dtbo" -exec cp {} ../ \; || true
             echo "SUCCESS=true" >> $GITHUB_ENV
           fi
 
@@ -108,7 +101,7 @@ jobs:
         if: env.SUCCESS == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-4.19-Hybrid-Fixed
+          name: S10Lite-4.19-LinkerFixed-Kernel
           path: |
             Image
             *.dtbo
