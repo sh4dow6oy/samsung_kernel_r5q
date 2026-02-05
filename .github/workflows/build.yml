@@ -1,4 +1,4 @@
-name: S10 Lite - 4.19 Hybrid (Deep ASoC Refactor)
+name: S10 Lite - 4.19 Hybrid (Audio Kbuild Fixed)
 
 on:
   push:
@@ -40,37 +40,37 @@ jobs:
           
           cd kernel_source
 
-          # === FIX KCONFIG & MAKEFILE ===
-          sed -i '/techpack/d' Kconfig && echo 'source "techpack/audio/Kconfig"' >> Kconfig
-          sed -i '/techpack/d' Makefile && sed -i 's/^core-y[[:space:]]*:=/core-y := techpack\/ /' Makefile
+          # === FIX TECHPACK LINKING (Missing Kbuild) ===
+          echo "obj-y += audio/" > techpack/Kbuild
+          echo "obj-y += audio/" > techpack/Makefile
+          
+          # Fix Kconfig/Makefile in root
+          sed -i '/techpack/d' Kconfig && echo 'source "techpack/Kconfig"' >> Kconfig
+          echo 'source "techpack/audio/Kconfig"' > techpack/Kconfig
+          
+          sed -i '/techpack/d' Makefile
+          sed -i 's/^core-y[[:space:]]*:=/core-y := techpack\/ /' Makefile
 
-          # === 4.19 ASOC REFACTORING (THE "NUKE" OPTION) ===
-          echo "Deep patching ASoC for 4.19 compatibility..."
+          # === 4.19 ASOC REFACTORING ===
+          echo "Patching ASoC for 4.19..."
           
-          # Redefinim macro-urile care lipsesc pentru a evita erorile de tip "incomplete type"
-          echo "struct snd_dec_ddp { uint32_t params_length; uint32_t params_id[18]; uint32_t params_value[18]; };" >> techpack/audio/asoc/msm-compress-q6-v2.c
-          
-          # Înlocuiri globale structuri
+          # Fix structuri globale
           find techpack/audio/ -type f \( -name "*.c" -o -name "*.h" \) -exec sed -i 's/struct snd_soc_codec/struct snd_soc_component/g' {} +
           find techpack/audio/ -type f \( -name "*.c" -o -name "*.h" \) -exec sed -i 's/->component\./->/g' {} +
           find techpack/audio/ -type f -name "*.c" -exec sed -i 's/dai->codec/dai->component/g' {} +
           
-          # Platform Fix (Toate variantele posibile de rtd->platform)
+          # Platform access (rtd->platform fix)
           find techpack/audio/asoc/ -type f -name "*.c" -exec sed -i 's/rtd->platform/asoc_rtd_to_platform(rtd, 0)/g' {} +
           find techpack/audio/asoc/ -type f -name "*.c" -exec sed -i 's/soc_prtd->platform/asoc_rtd_to_platform(soc_prtd, 0)/g' {} +
 
-          # === FIX WCD934X REGMAP (Specific for line 10679) ===
-          # Ștergem pur și simplu linia get_regmap în loc să o comentăm, pentru a nu lăsa reziduuri
+          # Dolby DDP Inject
+          sed -i '30i struct snd_dec_ddp { uint32_t params_length; uint32_t params_id[18]; uint32_t params_value[18]; };' techpack/audio/asoc/msm-compress-q6-v2.c
+
+          # === WCD934X REGMAP FIX ===
+          # Stergem linia get_regmap care bloca build-ul
           sed -i '/\.get_regmap = tavil_get_regmap,/d' techpack/audio/asoc/codecs/wcd934x/wcd934x.c
           
-          # Dezactivăm manual blocurile de driver care nu se pupă cu 4.19
-          # Folosim o metodă mai sigură de comentare prin preprocesor (#if 0)
-          sed -i 's/static const struct snd_soc_component_driver tavil_soc_component_driver = {/#if 0\nstatic const struct snd_soc_component_driver tavil_soc_component_driver = {/g' techpack/audio/asoc/codecs/wcd934x/wcd934x.c
-          # Închidem #if 0 după structură (aproximativ)
-          sed -i '/};/ { :a; n; s/static int tavil_soc_component_probe/#endif\nstatic int tavil_soc_component_probe/; /#endif/!ba }' techpack/audio/asoc/codecs/wcd934x/wcd934x.c
-
-          # === MBHC & JACK STRIPPING ===
-          find techpack/audio/ -type f \( -name "*.c" -o -name "*.h" \) -exec sed -i 's/SND_JACK_MICROPHONE2/SND_JACK_MICROPHONE/g' {} +
+          # Nuke MBHC/Jack (No use for Jack on S10 Lite)
           find techpack/audio/asoc/codecs/ -name "Kbuild" -exec sed -i 's/obj-y += wcd-mbhc-v2.o/\# obj-y += wcd-mbhc-v2.o/g' {} +
           sed -i 's/wcd_mbhc_init(/\/\/ wcd_mbhc_init(/g' techpack/audio/asoc/codecs/wcd934x/wcd934x.c
           sed -i 's/wcd_mbhc_deinit(/\/\/ wcd_mbhc_deinit(/g' techpack/audio/asoc/codecs/wcd934x/wcd934x.c
@@ -95,6 +95,7 @@ jobs:
 
           make $ARGS r5q_defconfig
           
+          # Disable LTO for stability
           sed -i 's/CONFIG_LTO_CLANG=y/CONFIG_LTO_CLANG=n/g' .config
           sed -i 's/CONFIG_LTO=y/CONFIG_LTO=n/g' .config
           sed -i 's/CONFIG_DEBUG_INFO_BTF=y/CONFIG_DEBUG_INFO_BTF=n/g' .config
@@ -112,7 +113,7 @@ jobs:
         if: env.SUCCESS == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-4.19-DeepPatch-Kernel
+          name: S10Lite-4.19-AudioKbuild-Kernel
           path: |
             Image
             *.dtbo
