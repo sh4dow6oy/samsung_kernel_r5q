@@ -13,14 +13,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Maximize RAM (Swap)
-        run: |
-          sudo rm -rf /usr/share/dotnet /opt/ghc "/usr/local/share/boost"
-          sudo fallocate -l 4G /swapfile
-          sudo chmod 600 /swapfile
-          sudo mkswap /swapfile
-          sudo swapon /swapfile
-
       - name: Install Dependencies
         run: |
           sudo apt-get update
