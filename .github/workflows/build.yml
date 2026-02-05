@@ -1,4 +1,4 @@
-name: S10 Lite - 4.19 Hybrid (Mainey Drivers)
+name: S10 Lite - 4.19 Hybrid (Mainey Optimized)
 
 on:
   push:
@@ -32,23 +32,31 @@ jobs:
           git clone --depth=1 https://github.com/mainey/android_kernel_samsung_r5q.git samsung_source
           
           # 3. Injectare Techpack & Config
-          # Nota: techpack-ul lui mainey este esențial pentru sunet și display pe S10 Lite
           rm -rf kernel_source/techpack
           cp -r samsung_source/techpack kernel_source/
           cp samsung_source/arch/arm64/configs/r5q_eur_open_defconfig kernel_source/arch/arm64/configs/r5q_defconfig
           
-          # 4. Injectare DTS (Device Tree)
-          # Folosim find pentru a nu suprascrie pm8150.dtsi-ul bazei 4.19
-          find samsung_source/arch/arm64/boot/dts/vendor/qcom/ -name "*r5q*" -exec cp {} kernel_source/arch/arm64/boot/dts/vendor/qcom/ \;
+          # 4. Injectare DTS (Fix pentru eroarea de folder)
+          mkdir -p kernel_source/arch/arm64/boot/dts/vendor/qcom/
+          # Căutăm fișierele r5q oriunde în dts/ și le mutăm în baza 4.19
+          find samsung_source/arch/arm64/boot/dts/ -name "*r5q*" -exec cp {} kernel_source/arch/arm64/boot/dts/vendor/qcom/ \;
           
           cd kernel_source
 
           # === FIX-URI PENTRU COMPATIBILITATE 4.19 ===
-          # Fix Audio (L1SS s-ar putea să dea erori în pcm-q6)
-          sed -i '20i #define L1SS_AUDIO 0' techpack/audio/asoc/msm-pcm-q6-noirq.c || true
+          # Fix Audio L1SS
+          if [ -f techpack/audio/asoc/msm-pcm-q6-noirq.c ]; then
+            sed -i '20i #define L1SS_AUDIO 0' techpack/audio/asoc/msm-pcm-q6-noirq.c
+          fi
           
-          # Fix redefinire jack (Audio)
-          sed -i 's/SND_JACK_MICROPHONE2/SND_JACK_MICROPHONE/g' techpack/audio/asoc/codecs/wcd-mbhc-v2.h || true
+          # Fix redefinire jack (Global replacement în audio techpack)
+          find techpack/audio/ -name "*.h" -o -name "*.c" -exec sed -i 's/SND_JACK_MICROPHONE2/SND_JACK_MICROPHONE/g' {} +
+          find techpack/audio/ -name "*.h" -o -name "*.c" -exec sed -i 's/SND_JACK_ANC_HEADPHONE/SND_JACK_HEADPHONE/g' {} +
+
+          # Fix SMCInvoke (Redefiniție size_add)
+          if [ -f drivers/soc/qcom/smcinvoke.c ]; then
+            sed -i '/static inline size_t size_add/,/}/ s/^/\/\//' drivers/soc/qcom/smcinvoke.c
+          fi
 
           # Fix Samsung Tools
           echo -e '#!/bin/bash\necho "0"' > /tmp/secgetspf
@@ -70,19 +78,20 @@ jobs:
             LLVM_IAS=1
           "
           
-          # Flag-uri de suprimare erori (Esential pentru drivere 4.14 pe baza 4.19)
-          export KCFLAGS="-Wno-error -Wno-implicit-function-declaration -Wno-int-conversion -Wno-incompatible-pointer-types -Wno-unused-variable -Wno-format-security"
+          # KCFLAGS pentru a ignora warning-urile care devin erori în 4.19
+          export KCFLAGS="-Wno-error -Wno-implicit-function-declaration -Wno-int-conversion -Wno-incompatible-pointer-types -Wno-unused-variable -Wno-format-security -Wno-strict-prototypes"
 
           mkdir -p out
           make $MAKE_ARGS r5q_defconfig
           
-          # Dezactivam chestiile care blocheaza linking-ul
+          # Dezactivăm LTO și BTF pentru a preveni înghețarea RAM-ului
           sed -i 's/CONFIG_LTO_CLANG=y/CONFIG_LTO_CLANG=n/g' out/.config
+          sed -i 's/CONFIG_LTO=y/CONFIG_LTO=n/g' out/.config
           sed -i 's/CONFIG_DEBUG_INFO_BTF=y/CONFIG_DEBUG_INFO_BTF=n/g' out/.config
           
           make $MAKE_ARGS olddefconfig
           
-          # Build cu monitorizare RAM
+          # Build cu j2. Dacă eșuează la linking, forțăm j1.
           make -j2 $MAKE_ARGS || make -j1 $MAKE_ARGS
 
           if [ -f out/arch/arm64/boot/Image ]; then
@@ -91,11 +100,11 @@ jobs:
             echo "SUCCESS=true" >> $GITHUB_ENV
           fi
 
-      - name: Upload
+      - name: Upload Artifacts
         if: env.SUCCESS == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-4.19-Mainey-Hybrid
+          name: S10Lite-4.19-Hybrid-Kernel
           path: |
             Image
             *.dtbo
