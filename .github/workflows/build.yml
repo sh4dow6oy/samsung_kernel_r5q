@@ -1,4 +1,4 @@
-name: S10 Lite - 4.19 Hybrid (Linker Fix)
+name: S10 Lite - 4.19 Hybrid (Kbuild Integration Fix)
 
 on:
   push:
@@ -25,7 +25,7 @@ jobs:
 
       - name: Hybrid Source Preparation
         run: |
-          # 1. Clonare Baze
+          # 1. Clonare baze
           git clone --depth=1 https://github.com/duckyduckG/android_kernel_qcom_sm8150_419.git kernel_source
           git clone --depth=1 https://github.com/mainey/android_kernel_samsung_r5q.git samsung_source
           
@@ -40,19 +40,28 @@ jobs:
           
           cd kernel_source
 
-          # === FIX KCONFIG (Direct Linking) ===
-          # Includem Audio direct pentru a evita eroarea de deschidere Kconfig
-          sed -i '2i source "techpack/audio/Kconfig"' Kconfig
+          # === FIX KCONFIG (Fără a apela techpack/Kconfig care nu există) ===
+          # Ștergem orice referință problematică
+          sed -i '/techpack/d' Kconfig
           
-          # === FIX MAKEFILE (Metoda Safe pentru Simboluri) ===
-          # Inserăm techpack în core-y pentru a fi inclus în built-in.a corect
+          # Deoarece techpack are doar Kbuild, el se bazează pe configurațiile din subfoldere.
+          # Includem direct Kconfig-ul audio la finalul Kconfig-ului principal.
+          if [ -f techpack/audio/Kconfig ]; then
+            echo 'menu "Samsung Audio Support"' >> Kconfig
+            echo 'source "techpack/audio/Kconfig"' >> Kconfig
+            echo 'endmenu' >> Kconfig
+          fi
+
+          # === FIX MAKEFILE (Kbuild Integration) ===
+          # Aceasta este linia critică: îi spunem Makefile-ului să proceseze folderul techpack
+          # Inserăm în core-y pentru a evita erorile de simboluri nedefinite (undefined symbols)
+          sed -i '/techpack/d' Makefile
           sed -i 's/^core-y[[:space:]]*:=/core-y := techpack\/ /' Makefile
 
           # === FIX-URI COD ===
           find techpack/audio/ -name "msm-pcm-q6-noirq.c" -exec sed -i '20i #define L1SS_AUDIO 0' {} +
           find techpack/audio/ -name "*.h" -o -name "*.c" -exec sed -i 's/SND_JACK_MICROPHONE2/SND_JACK_MICROPHONE/g' {} +
           
-          # Fix SMCInvoke (Redefinitie size_add)
           if [ -f drivers/soc/qcom/smcinvoke.c ]; then
             sed -i '/static inline size_t size_add/,/}/ s/^/\/\//' drivers/soc/qcom/smcinvoke.c
           fi
@@ -67,27 +76,16 @@ jobs:
           export PATH="${{ env.PROTON_PATH }}:$PATH"
           cd kernel_source
           
-          # Parametrii de build (FĂRĂ O=out pentru a evita simbolurile nedefinite)
-          ARGS="
-            ARCH=arm64 \
-            CC=clang \
-            CROSS_COMPILE=aarch64-linux-gnu- \
-            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-            LLVM=1 \
-            LLVM_IAS=1
-          "
-          
+          # Compilăm direct în sursă pentru stabilitatea linker-ului
+          ARGS="ARCH=arm64 CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1"
           export KCFLAGS="-Wno-error -Wno-implicit-function-declaration -Wno-int-conversion -Wno-incompatible-pointer-types -Wno-unused-variable -Wno-format-security -Wno-strict-prototypes"
 
-          # 1. Defconfig
           make $ARGS r5q_defconfig
           
-          # 2. Config Tweaks
+          # Dezactivăm LTO (Link Time Optimization) - reduce consumul de RAM și erorile de linking
           sed -i 's/CONFIG_LTO_CLANG=y/CONFIG_LTO_CLANG=n/g' .config
           sed -i 's/CONFIG_LTO=y/CONFIG_LTO=n/g' .config
-          sed -i 's/CONFIG_DEBUG_INFO_BTF=y/CONFIG_DEBUG_INFO_BTF=n/g' .config
           
-          # 3. Compilare (Direct în sursă)
           make $ARGS olddefconfig
           make -j2 $ARGS
 
@@ -101,7 +99,7 @@ jobs:
         if: env.SUCCESS == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-4.19-LinkerFixed-Kernel
+          name: S10Lite-4.19-Hybrid-KbuildFixed
           path: |
             Image
             *.dtbo
