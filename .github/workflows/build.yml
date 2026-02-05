@@ -1,4 +1,4 @@
-name: S10 Lite - 4.19 Hybrid (Audio Header Fix)
+name: S10 Lite - 4.19 Hybrid (Deep Audio Fix)
 
 on:
   push:
@@ -48,19 +48,28 @@ jobs:
           sed -i '/techpack/d' Makefile
           sed -i 's/^core-y[[:space:]]*:=/core-y := techpack\/ /' Makefile
 
-          # === FIX COMPATIBILITATE AUDIO (ASoC Legacy Fix) ===
+          # === FIX COMPATIBILITATE AUDIO DEEP MAPPING ===
+          echo "Applying Deep ASoC structure mapping..."
+          
           # Inlocuim structura de baza in tot techpack-ul
           find techpack/audio/ -type f \( -name "*.c" -o -name "*.h" \) -exec sed -i 's/struct snd_soc_codec/struct snd_soc_component/g' {} +
+          
+          # FIX CRITIC: Eliminam accesarea .component (Ex: codec->component.card devine codec->card)
+          # Deoarece am transformat deja 'codec' in 'component', 'component->component' ar fi eronat.
+          find techpack/audio/ -type f \( -name "*.c" -o -name "*.h" \) -exec sed -i 's/->component\./->/g' {} +
           
           # Inlocuim functiile de drvdata
           find techpack/audio/ -type f -name "*.c" -exec sed -i 's/snd_soc_codec_get_drvdata/snd_soc_component_get_drvdata/g' {} +
           find techpack/audio/ -type f -name "*.c" -exec sed -i 's/snd_soc_codec_set_drvdata/snd_soc_component_set_drvdata/g' {} +
           
-          # MAGIC FIX: Cream un alias pentru preprocesor. 
-          # Oriunde codul Samsung foloseste 'codec', compilatorul va vedea 'component'.
-          # Aplicam in headerele si fisierele C din wcd934x
+          # Alias pentru preprocesor pentru a mentine compatibilitatea numelui 'codec'
           find techpack/audio/asoc/codecs/wcd934x/ -name "*.h" -exec sed -i '20i #define codec component' {} +
           find techpack/audio/asoc/codecs/wcd934x/ -name "*.c" -exec sed -i '25i #define codec component' {} +
+
+          # Fix structura snd_soc_component_driver pentru 4.19
+          # get_regmap si definitia imbricata a component_driver nu mai exista
+          find techpack/audio/asoc/codecs/wcd934x/wcd934x.c -exec sed -i 's/\.get_regmap = tavil_get_regmap,//g' {} +
+          sed -i '/\.component_driver = {/,/},/ s/^/\/\//' techpack/audio/asoc/codecs/wcd934x/wcd934x.c
 
           # === FIX-URI RAMASE ===
           find techpack/audio/ -name "msm-pcm-q6-noirq.c" -exec sed -i '20i #define L1SS_AUDIO 0' {} +
@@ -80,15 +89,13 @@ jobs:
           export PATH="${{ env.PROTON_PATH }}:$PATH"
           cd kernel_source
           
-          # Compilare In-Tree
           ARGS="ARCH=arm64 CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1"
           
-          # Adaugam flag-uri de ignorare pentru a trece de orice avertisment minor
-          export KCFLAGS="-Wno-error -Wno-implicit-function-declaration -Wno-int-conversion -Wno-incompatible-pointer-types -Wno-unused-variable -Wno-format-security -Wno-strict-prototypes -Wno-visibility -Wno-unused-parameter"
+          # Flag-uri extinse pentru a ignora warning-urile generate de hack-urile de compatibilitate
+          export KCFLAGS="-Wno-error -Wno-implicit-function-declaration -Wno-int-conversion -Wno-incompatible-pointer-types -Wno-unused-variable -Wno-format-security -Wno-strict-prototypes -Wno-visibility -Wno-unused-parameter -Wno-unused-function"
 
           make $ARGS r5q_defconfig
           
-          # Dezactivare LTO/BTF
           sed -i 's/CONFIG_LTO_CLANG=y/CONFIG_LTO_CLANG=n/g' .config
           sed -i 's/CONFIG_LTO=y/CONFIG_LTO=n/g' .config
           sed -i 's/CONFIG_DEBUG_INFO_BTF=y/CONFIG_DEBUG_INFO_BTF=n/g' .config
@@ -106,7 +113,7 @@ jobs:
         if: env.SUCCESS == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-4.19-Success-Kernel
+          name: S10Lite-4.19-DeepFixed-Kernel
           path: |
             Image
             *.dtbo
