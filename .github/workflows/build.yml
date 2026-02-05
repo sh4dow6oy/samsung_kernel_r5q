@@ -1,4 +1,4 @@
-name: S10 Lite - 4.19 Hybrid (Trace & USBPD Fix)
+name: S10 Lite - 4.19 Hybrid (Clock & Display Trace Fix)
 
 on:
   push:
@@ -29,35 +29,34 @@ jobs:
           git clone --depth=1 https://github.com/duckyduckG/android_kernel_qcom_sm8150_419.git kernel_source
           git clone --depth=1 https://github.com/mainey/android_kernel_samsung_r5q.git samsung_source
           
-          # 2. Injectare Config & DTS (Cale plata Samsung 4.9 -> Vendor 4.19)
+          # 2. Injectare Config & DTS
           cp samsung_source/arch/arm64/configs/r5q_eur_open_defconfig kernel_source/arch/arm64/configs/r5q_defconfig
           mkdir -p kernel_source/arch/arm64/boot/dts/vendor/qcom/
           find samsung_source/arch/arm64/boot/dts/ -maxdepth 1 -type f -name "*.dts*" -exec cp {} kernel_source/arch/arm64/boot/dts/vendor/qcom/ \;
           
           cd kernel_source
 
-          # 3. Injectare DISPLAY & TOUCH (Samsung Specific)
+          # 3. Injectare DISPLAY & TOUCH (Paths confirmate anterior)
           rm -rf drivers/gpu/drm/msm
           cp -r ../samsung_source/drivers/gpu/drm/msm drivers/gpu/drm/
           rm -rf drivers/input/touchscreen
           cp -r ../samsung_source/drivers/input/touchscreen drivers/input/
 
-          # 4. === FIX TRACE ERRORS (drivers/clk/qcom) ===
-          # Fortam path-ul pentru trace header
-          sed -i 's|#define TRACE_INCLUDE_PATH .|#define TRACE_INCLUDE_PATH ../../drivers/clk/qcom|g' drivers/clk/qcom/clk-debug.c || true
+          # === 4. FIX CLK-DEBUG TRACE ERROR ===
+          # Inlocuim path-ul relativ (.) cu cel corect raportat la include/trace/define_trace.h
+          sed -i 's|#define TRACE_INCLUDE_PATH .|#define TRACE_INCLUDE_PATH ../../drivers/clk/qcom|g' drivers/clk/qcom/clk-debug.c
 
-          # 5. === FIX DISPLAY USBPD (Missing errno.h) ===
-          # Injectam include-ul lipsa in headerul usbpd.h pentru a repara ENODEV/EINVAL
+          # === 5. FIX DISPLAY ERR_PTR / ERRNO ===
+          # Injectam errno.h in headerele care folosesc ENODEV/EINVAL
           sed -i '15i #include <linux/errno.h>' include/linux/usb/usbpd.h
-          # De asemenea, il punem si in fisierul care a dat eroarea direct
-          sed -i '5i #include <linux/errno.h>' techpack/display/msm/dp/dp_usbpd.c
+          sed -i '10i #include <linux/errno.h>' techpack/display/msm/dp/dp_usbpd.c
 
           # 6. ASOC / AUDIO (Folosim Audio Nativ 4.19)
           if ! grep -q "techpack" Makefile; then
             sed -i 's/^core-y[[:space:]]*:=/core-y := techpack\/ /' Makefile
           fi
 
-          # 7. MISC COMPATIBILITY
+          # 7. DRM COMPATIBILITY FIXES
           find drivers/gpu/drm/msm/ -type f \( -name "*.c" -o -name "*.h" \) -exec sed -i 's/ddev->struct_mutex/dev->struct_mutex/g' {} +
           
           # Fix Samsung SecTools
@@ -70,11 +69,13 @@ jobs:
           export PATH="${{ env.PROTON_PATH }}:$PATH"
           cd kernel_source
           ARGS="ARCH=arm64 CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1"
+          
+          # KCFLAGS pentru a ignora warning-urile care pot fi tratate ca erori
           export KCFLAGS="-Wno-error -Wno-implicit-function-declaration -Wno-int-conversion -Wno-incompatible-pointer-types -Wno-unused-variable -Wno-unused-function -Wno-return-type"
 
           make $ARGS r5q_defconfig
           
-          # Disable LTO/BTF
+          # Dezactivare LTO/BTF
           sed -i 's/CONFIG_LTO_CLANG=y/CONFIG_LTO_CLANG=n/g' .config
           sed -i 's/CONFIG_LTO=y/CONFIG_LTO=n/g' .config
           sed -i 's/CONFIG_DEBUG_INFO_BTF=y/CONFIG_DEBUG_INFO_BTF=n/g' .config
@@ -92,7 +93,7 @@ jobs:
         if: env.SUCCESS == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-4.19-TraceUSB-Fixed
+          name: S10Lite-4.19-Clock-Display-Fixed
           path: |
             Image
             *.dtbo
