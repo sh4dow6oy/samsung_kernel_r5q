@@ -1,4 +1,4 @@
-name: S10 Lite - 4.19 Hybrid (Mainey Fixed)
+name: S10 Lite - 4.19 Hybrid (Kbuild Strategy)
 
 on:
   push:
@@ -25,7 +25,7 @@ jobs:
 
       - name: Hybrid Source Preparation
         run: |
-          # 1. Clonare Baza 4.19 si Sursa Samsung
+          # 1. Clonare Baze
           git clone --depth=1 https://github.com/duckyduckG/android_kernel_qcom_sm8150_419.git kernel_source
           git clone --depth=1 https://github.com/mainey/android_kernel_samsung_r5q.git samsung_source
           
@@ -34,29 +34,30 @@ jobs:
           cp -r samsung_source/techpack kernel_source/
           cp samsung_source/arch/arm64/configs/r5q_eur_open_defconfig kernel_source/arch/arm64/configs/r5q_defconfig
           
-          # 3. Injectare DTS (Căutare recursivă pentru fișierele r5q)
+          # 3. Injectare DTS
           mkdir -p kernel_source/arch/arm64/boot/dts/vendor/qcom/
           find samsung_source/arch/arm64/boot/dts/ -name "*r5q*" -exec cp {} kernel_source/arch/arm64/boot/dts/vendor/qcom/ \;
           
           cd kernel_source
 
-          # === FIX CRITIC: KCONFIG & MAKEFILE LINKING ===
-          # Aceste linii forțează kernelul 4.19 să vadă folderul techpack copiat
-          # Folosim 'sed' pentru a insera 'source' înainte de ultimul 'endmenu' sau la final
-          sed -i '/endmenu/i source "techpack/Kconfig"' Kconfig || echo 'source "techpack/Kconfig"' >> Kconfig
-          echo 'obj-y += techpack/' >> Makefile
-
-          # === FIX-URI COMPATIBILITATE AUDIO & SOC ===
-          # Fix L1SS_AUDIO
-          if [ -f techpack/audio/asoc/msm-pcm-q6-noirq.c ]; then
-            sed -i '20i #define L1SS_AUDIO 0' techpack/audio/asoc/msm-pcm-q6-noirq.c
+          # === FIX KCONFIG (Direct Linking Strategy) ===
+          # Deoarece techpack/Kconfig NU există, legăm direct subfolderele audio/display în Kconfig-ul principal
+          sed -i '/techpack/d' Kconfig # Curățăm încercările vechi
+          
+          # Inserăm link-urile către Kconfig-urile reale din interiorul techpack
+          # Verificăm unde există fișiere Kconfig reale în techpack și le includem
+          if [ -f techpack/audio/Kconfig ]; then
+            sed -i 's|^# end of kernel config|source "techpack/audio/Kconfig"\n# end of kernel config|' Kconfig
           fi
           
-          # Redefinire Jack-uri (Global în techpack/audio)
-          find techpack/audio/ -name "*.h" -o -name "*.c" -exec sed -i 's/SND_JACK_MICROPHONE2/SND_JACK_MICROPHONE/g' {} +
-          find techpack/audio/ -name "*.h" -o -name "*.c" -exec sed -i 's/SND_JACK_ANC_HEADPHONE/SND_JACK_HEADPHONE/g' {} +
+          # === FIX MAKEFILE ===
+          sed -i '/techpack/d' Makefile
+          echo "obj-y += techpack/" >> Makefile
 
-          # Fix redefiniție size_add în smcinvoke
+          # === FIX-URI COD (L1SS & Jack) ===
+          find techpack/audio/ -name "msm-pcm-q6-noirq.c" -exec sed -i '20i #define L1SS_AUDIO 0' {} +
+          find techpack/audio/ -name "*.h" -o -name "*.c" -exec sed -i 's/SND_JACK_MICROPHONE2/SND_JACK_MICROPHONE/g' {} +
+          
           if [ -f drivers/soc/qcom/smcinvoke.c ]; then
             sed -i '/static inline size_t size_add/,/}/ s/^/\/\//' drivers/soc/qcom/smcinvoke.c
           fi
@@ -71,35 +72,32 @@ jobs:
           export PATH="${{ env.PROTON_PATH }}:$PATH"
           cd kernel_source
           
+          rm -rf out && mkdir -p out
+
           MAKE_ARGS="
-            O=out \
             ARCH=arm64 \
             CC=clang \
             CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             LLVM=1 \
-            LLVM_IAS=1
+            LLVM_IAS=1 \
+            O=out
           "
           
-          # Flag-uri de toleranță pentru compilator
           export KCFLAGS="-Wno-error -Wno-implicit-function-declaration -Wno-int-conversion -Wno-incompatible-pointer-types -Wno-unused-variable -Wno-format-security -Wno-strict-prototypes"
 
-          mkdir -p out
-          
-          # Configurare
+          # 1. Defconfig
           make $MAKE_ARGS r5q_defconfig
           
-          # Dezactivare LTO/BTF pentru a evita crash-ul de memorie (RAM)
+          # 2. Config Tweaks (Dezactivare LTO/BTF)
           sed -i 's/CONFIG_LTO_CLANG=y/CONFIG_LTO_CLANG=n/g' out/.config
           sed -i 's/CONFIG_LTO=y/CONFIG_LTO=n/g' out/.config
           sed -i 's/CONFIG_DEBUG_INFO_BTF=y/CONFIG_DEBUG_INFO_BTF=n/g' out/.config
           
+          # 3. Build
           make $MAKE_ARGS olddefconfig
-          
-          # Build cu j2 (Echilibru între viteză și stabilitate RAM)
-          make -j2 $MAKE_ARGS
+          make -j$(nproc --all) $MAKE_ARGS || make -j1 $MAKE_ARGS
 
-          # Verificare binar și pregătire upload
           if [ -f out/arch/arm64/boot/Image ]; then
             cp out/arch/arm64/boot/Image ../
             find out/arch/arm64/boot/dts/ -name "*.dtbo" -exec cp {} ../ \; || true
@@ -110,7 +108,7 @@ jobs:
         if: env.SUCCESS == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-4.19-Hybrid-Final
+          name: S10Lite-4.19-Hybrid-Fixed
           path: |
             Image
             *.dtbo
