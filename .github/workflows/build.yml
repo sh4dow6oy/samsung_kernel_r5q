@@ -1,4 +1,4 @@
-name: S10 Lite - 4.19 Hybrid (Deep Driver Fix)
+name: S10 Lite - 4.19 Surgical Hybrid
 
 on:
   push:
@@ -25,38 +25,46 @@ jobs:
 
       - name: Hybrid Source Preparation
         run: |
-          # 1. Clonare Baza de Kernel 4.19 (Motorul)
+          # 1. Baze
           git clone --depth=1 https://github.com/duckyduckG/android_kernel_qcom_sm8150_419.git kernel_source
-          
-          # 2. Clonare Sursa de Drivere (Sursa sh4dow6oy)
           git clone --depth=1 https://github.com/sh4dow6oy/samsung_kernel_r5q.git drivers_source
-          
-          # 3. Clonare Sursa Samsung (Config & DTS)
           git clone --depth=1 https://github.com/mainey/android_kernel_samsung_r5q.git samsung_ref
           
-          # 4. Deep Injection: Copiem driverele si techpack-ul din sursa sh4dow6oy
-          echo "Injecting Drivers and Techpacks..."
-          cp -r drivers_source/techpack/* kernel_source/techpack/ || true
-          cp -r drivers_source/drivers/* kernel_source/drivers/ || true
-          
-          # 5. Injectare Config si DTS
+          # 2. Injectare Config & DTS (Path-ul corect de data trecuta)
           cp samsung_ref/arch/arm64/configs/r5q_eur_open_defconfig kernel_source/arch/arm64/configs/r5q_defconfig
           mkdir -p kernel_source/arch/arm64/boot/dts/vendor/qcom/
           find samsung_ref/arch/arm64/boot/dts/ -maxdepth 1 -type f -name "*.dts*" -exec cp {} kernel_source/arch/arm64/boot/dts/vendor/qcom/ \;
           
           cd kernel_source
 
-          # === FIX CLK-DEBUG TRACE (Calea absoluta pentru a evita erorile anterioare) ===
-          # In loc de sed, stergem linia problematica si o redefinim corect
+          # 3. INJECTARE CHIRURGICALA (Doar ce e critic, fara sa stricam Kconfig-urile globale)
+          echo "Surgically injecting Samsung/Sh4dow6oy drivers..."
+          
+          # Injectam Techpack-ul (e separat de drivers/ si e mai sigur)
+          rm -rf techpack
+          cp -r ../drivers_source/techpack .
+
+          # Injectam Touchscreen-ul Samsung (fara sa suprascriem tot folderul input)
+          mkdir -p drivers/input/touchscreen/samsung
+          cp -r ../drivers_source/drivers/input/touchscreen/* drivers/input/touchscreen/ || true
+          
+          # Injectam Display (daca nu e in techpack)
+          # NOTA: Daca sh4dow are display in drivers/gpu/drm/msm, il copiem doar pe acela
+          if [ -d ../drivers_source/drivers/gpu/drm/msm ]; then
+            rm -rf drivers/gpu/drm/msm
+            cp -r ../drivers_source/drivers/gpu/drm/msm drivers/gpu/drm/
+          fi
+
+          # 4. FIX CLK-DEBUG TRACE (Calea absoluta)
           sed -i '/TRACE_INCLUDE_PATH/d' drivers/clk/qcom/clk-debug.c
           sed -i '18i #define TRACE_INCLUDE_PATH ../../drivers/clk/qcom' drivers/clk/qcom/clk-debug.c
 
-          # === FIX ERRNO / ERR_PTR (Global fix) ===
-          # Adaugam errno.h in headerele critice de USB si DRM care au dat erori
+          # 5. FIX ERRNO / ERR_PTR (Adaugam doar unde e nevoie)
           sed -i '15i #include <linux/errno.h>' include/linux/usb/usbpd.h
-          find . -name "dp_usbpd.c" -exec sed -i '1i #include <linux/errno.h>' {} +
+          find techpack/ -name "*.c" -exec grep -l "ENODEV" {} + | xargs -I {} sed -i '1i #include <linux/errno.h>' {} || true
 
-          # === MAKEFILE LINKING ===
+          # 6. MAKEFILE / KCONFIG LINKING
+          # Adaugam techpack in Makefile-ul root
           if ! grep -q "techpack" Makefile; then
             sed -i 's/^core-y[[:space:]]*:=/core-y := techpack\/ /' Makefile
           fi
@@ -71,13 +79,12 @@ jobs:
           export PATH="${{ env.PROTON_PATH }}:$PATH"
           cd kernel_source
           ARGS="ARCH=arm64 CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1"
-          
-          # Adaugam flag-uri pentru a ignora warning-urile de redefinire (fiindca am injectat multe drivere)
-          export KCFLAGS="-Wno-error -Wno-implicit-function-declaration -Wno-int-conversion -Wno-incompatible-pointer-types -Wno-unused-variable -Wno-unused-function -Wno-return-type -Wno-redefined-stateless"
+          export KCFLAGS="-Wno-error -Wno-implicit-function-declaration -Wno-int-conversion -Wno-incompatible-pointer-types -Wno-unused-variable -Wno-unused-function -Wno-return-type"
 
+          # Pasul critic: generarea configuratiei
           make $ARGS r5q_defconfig
           
-          # Dezactivare LTO/BTF
+          # Disable LTO/BTF
           sed -i 's/CONFIG_LTO_CLANG=y/CONFIG_LTO_CLANG=n/g' .config
           sed -i 's/CONFIG_LTO=y/CONFIG_LTO=n/g' .config
           sed -i 's/CONFIG_DEBUG_INFO_BTF=y/CONFIG_DEBUG_INFO_BTF=n/g' .config
@@ -95,7 +102,7 @@ jobs:
         if: env.SUCCESS == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-4.19-DeepInjection-Kernel
+          name: S10Lite-4.19-Surgical-Kernel
           path: |
             Image
             *.dtbo
