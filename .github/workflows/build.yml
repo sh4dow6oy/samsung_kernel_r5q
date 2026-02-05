@@ -1,4 +1,4 @@
-name: S10 Lite - 4.19 Hybrid (DTS Flattened Fix)
+name: S10 Lite - 4.19 Hybrid (Trace & USBPD Fix)
 
 on:
   push:
@@ -29,38 +29,35 @@ jobs:
           git clone --depth=1 https://github.com/duckyduckG/android_kernel_qcom_sm8150_419.git kernel_source
           git clone --depth=1 https://github.com/mainey/android_kernel_samsung_r5q.git samsung_source
           
-          # 2. Injectare Config
+          # 2. Injectare Config & DTS (Cale plata Samsung 4.9 -> Vendor 4.19)
           cp samsung_source/arch/arm64/configs/r5q_eur_open_defconfig kernel_source/arch/arm64/configs/r5q_defconfig
-          
-          # 3. FIX DTS STRUCTURE (Samsung 4.9 Flat -> QCOM 4.19 Vendor style)
-          # Cream structura de foldere pe care o asteapta baza 4.19
           mkdir -p kernel_source/arch/arm64/boot/dts/vendor/qcom/
-          
-          # Copiem tot ce este in folderul DTS al Samsung (fara subfoldere) in noua locatie
-          # Folosim -maxdepth 1 pentru a evita eventuale loop-uri, dar luam tot ce e dts/dtsi
           find samsung_source/arch/arm64/boot/dts/ -maxdepth 1 -type f -name "*.dts*" -exec cp {} kernel_source/arch/arm64/boot/dts/vendor/qcom/ \;
           
-          # Verificam daca Samsung avea si un subfolder 'qcom' ascuns acolo
-          if [ -d samsung_source/arch/arm64/boot/dts/qcom ]; then
-            cp samsung_source/arch/arm64/boot/dts/qcom/*.dts* kernel_source/arch/arm64/boot/dts/vendor/qcom/ || true
-          fi
-
           cd kernel_source
 
-          # 4. Injectare DISPLAY & TOUCH (Paths confirmate)
-          echo "Injecting Samsung Drivers..."
+          # 3. Injectare DISPLAY & TOUCH (Samsung Specific)
           rm -rf drivers/gpu/drm/msm
           cp -r ../samsung_source/drivers/gpu/drm/msm drivers/gpu/drm/
-          
           rm -rf drivers/input/touchscreen
           cp -r ../samsung_source/drivers/input/touchscreen drivers/input/
 
-          # 5. ASOC / AUDIO (Folosim Audio Nativ 4.19)
+          # 4. === FIX TRACE ERRORS (drivers/clk/qcom) ===
+          # Fortam path-ul pentru trace header
+          sed -i 's|#define TRACE_INCLUDE_PATH .|#define TRACE_INCLUDE_PATH ../../drivers/clk/qcom|g' drivers/clk/qcom/clk-debug.c || true
+
+          # 5. === FIX DISPLAY USBPD (Missing errno.h) ===
+          # Injectam include-ul lipsa in headerul usbpd.h pentru a repara ENODEV/EINVAL
+          sed -i '15i #include <linux/errno.h>' include/linux/usb/usbpd.h
+          # De asemenea, il punem si in fisierul care a dat eroarea direct
+          sed -i '5i #include <linux/errno.h>' techpack/display/msm/dp/dp_usbpd.c
+
+          # 6. ASOC / AUDIO (Folosim Audio Nativ 4.19)
           if ! grep -q "techpack" Makefile; then
             sed -i 's/^core-y[[:space:]]*:=/core-y := techpack\/ /' Makefile
           fi
 
-          # 6. DRM / DISPLAY COMPATIBILITY
+          # 7. MISC COMPATIBILITY
           find drivers/gpu/drm/msm/ -type f \( -name "*.c" -o -name "*.h" \) -exec sed -i 's/ddev->struct_mutex/dev->struct_mutex/g' {} +
           
           # Fix Samsung SecTools
@@ -75,10 +72,9 @@ jobs:
           ARGS="ARCH=arm64 CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1"
           export KCFLAGS="-Wno-error -Wno-implicit-function-declaration -Wno-int-conversion -Wno-incompatible-pointer-types -Wno-unused-variable -Wno-unused-function -Wno-return-type"
 
-          # Configuram kernelul
           make $ARGS r5q_defconfig
           
-          # Dezactivare LTO/BTF
+          # Disable LTO/BTF
           sed -i 's/CONFIG_LTO_CLANG=y/CONFIG_LTO_CLANG=n/g' .config
           sed -i 's/CONFIG_LTO=y/CONFIG_LTO=n/g' .config
           sed -i 's/CONFIG_DEBUG_INFO_BTF=y/CONFIG_DEBUG_INFO_BTF=n/g' .config
@@ -96,7 +92,7 @@ jobs:
         if: env.SUCCESS == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-4.19-Hybrid-V3
+          name: S10Lite-4.19-TraceUSB-Fixed
           path: |
             Image
             *.dtbo
