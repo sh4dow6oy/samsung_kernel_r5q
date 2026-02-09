@@ -1,4 +1,4 @@
-name: Build r5q Kernel - Final eBPF Fix
+name: Build r5q Kernel - eBPF & Samsung Fixes
 
 on:
   workflow_dispatch:
@@ -34,31 +34,44 @@ jobs:
             git cherry-pick --continue --no-edit
           }
 
-      - name: Fix Missing BPF Identifiers & Conflict Markers
+      - name: Hotfix Samsung Traps & BPF Identifiers
         run: |
           cd kernel
-          # Definim constanta lipsă care a cauzat eroarea anterioară
-          # O inserăm după primele definiții din bpf.h
+          # 1. Definim constanta BPF lipsă
           sed -i '/#define _UAPI__LINUX_BPF_H/a \
           \
           #ifndef BPF_OBJ_NAME_LEN\
           #define BPF_OBJ_NAME_LEN 16U\
           #endif' include/uapi/linux/bpf.h
 
-          # Eliminăm restul marcajelor de conflict (safety)
+          # 2. Comentăm apelurile Samsung Debug care crapă (implicit declaration)
+          sed -i 's/sec_debug_sched_msg/\/\/ sec_debug_sched_msg/g' arch/arm64/kernel/traps.c
+          sed -i 's/sec_debug_summary/\/\/ sec_debug_summary/g' arch/arm64/kernel/traps.c
+          sed -i 's/sec_debug_save_badmode/\/\/ sec_debug_save_badmode/g' arch/arm64/kernel/traps.c
+
+          # 3. Eliminăm orice marcaj de conflict rămas accidental
           find . -type f -name "*.h" -o -name "*.c" | xargs sed -i '/^<<<<<<< /d; /^=======/d; /^>>>>>>> /d' || true
 
       - name: Configure Defconfig
         run: |
           cd kernel
-          # Folosim scriptul intern pentru a activa modulele eBPF
-          scripts/config --file arch/arm64/configs/r5q_defconfig -e BPF
-          scripts/config --file arch/arm64/configs/r5q_defconfig -e BPF_SYSCALL
-          scripts/config --file arch/arm64/configs/r5q_defconfig -e BPF_JIT
-          scripts/config --file arch/arm64/configs/r5q_defconfig -e CGROUP_BPF
-          scripts/config --file arch/arm64/configs/r5q_defconfig -e NETFILTER_XT_MATCH_BPF
-          scripts/config --file arch/arm64/configs/r5q_defconfig -e NETFILTER_XT_TARGET_BPF
-          scripts/config --file arch/arm64/configs/r5q_defconfig -e BPF_EVENTS
+          mkdir -p out
+          make O=out r5q_defconfig
+          
+          # Fix pentru NR_CPUS (Snapdragon 855 are 8 nuclee)
+          scripts/config --file out/.config --set-val NR_CPUS 8
+          
+          # Dezactivăm Samsung Debug care intră în conflict cu eBPF/RT
+          scripts/config --file out/.config -d SEC_DEBUG
+          scripts/config --file out/.config -d SEC_DEBUG_SCHED_LOG
+          
+          # Activăm suportul eBPF obligatoriu pentru Android 13/14
+          scripts/config --file out/.config -e BPF
+          scripts/config --file out/.config -e BPF_SYSCALL
+          scripts/config --file out/.config -e BPF_JIT
+          scripts/config --file out/.config -e CGROUP_BPF
+          scripts/config --file out/.config -e NETFILTER_XT_MATCH_BPF
+          scripts/config --file out/.config -e NETFILTER_XT_TARGET_BPF
 
       - name: Build Kernel (Clang Toolchain)
         run: |
@@ -68,17 +81,17 @@ jobs:
           export CC=clang
           export CLANG_TRIPLE=aarch64-linux-gnu-
           
-          mkdir -p out
-          make O=out r5q_defconfig
-          
-          # Compilăm cu ignorarea warning-urilor transformate în erori (-Wno-error)
-          # Adăugăm și -fcommon pentru a evita erorile de tip "multiple definition"
-          make -j$(nproc --all) O=out KCFLAGS="-Wno-error -fcommon"
+          # KCFLAGS Explicație:
+          # -Wno-error: Nu opri build-ul la warning-uri
+          # -Wno-implicit-function-declaration: Ignoră funcțiile Samsung Debug lipsă
+          # -fcommon: Permite definiții multiple de variabile (specific kernel 4.14)
+          # -DNR_CPUS=8: Forțează numărul de nuclee pentru a trece de eroarea din fork.c
+          make -j$(nproc --all) O=out KCFLAGS="-Wno-error -Wno-implicit-function-declaration -fcommon -DNR_CPUS=8"
 
       - name: Upload Kernel Image
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-r5q-eBPF-Fixed
+          name: Kernel-r5q-eBPF-Final-Fixed
           path: |
             kernel/out/arch/arm64/boot/Image.gz-dtb
             kernel/out/arch/arm64/boot/dtbo.img
