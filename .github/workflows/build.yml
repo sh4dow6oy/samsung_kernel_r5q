@@ -1,4 +1,4 @@
-name: Build r5q Kernel - eBPF & Samsung Fixes
+name: Build r5q Kernel - Final eBPF & Toolchain Fix
 
 on:
   workflow_dispatch:
@@ -10,7 +10,7 @@ jobs:
       - name: Install Build Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y bc bison build-essential flex gcc-aarch64-linux-gnu git libssl-dev python3 clang llvm lld
+          sudo apt-get install -y bc bison build-essential flex gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi git libssl-dev python3 clang llvm lld
 
       - name: Clone Mainey Kernel (Base lineage-19.0)
         run: |
@@ -34,64 +34,57 @@ jobs:
             git cherry-pick --continue --no-edit
           }
 
-      - name: Hotfix Samsung Traps & BPF Identifiers
+      - name: Hotfix Path & Samsung Traps
         run: |
           cd kernel
-          # 1. Definim constanta BPF lipsă
+          # 1. Eliminăm referințele hardcoded către toolchain-ul local Samsung care nu există pe GitHub
+          sed -i 's/CROSS_COMPILE_ARM32 :=/# CROSS_COMPILE_ARM32 :=/g' Makefile
+          
+          # 2. Definim constanta BPF_OBJ_NAME_LEN pentru a trece de eroarea de compilare
           sed -i '/#define _UAPI__LINUX_BPF_H/a \
           \
           #ifndef BPF_OBJ_NAME_LEN\
           #define BPF_OBJ_NAME_LEN 16U\
           #endif' include/uapi/linux/bpf.h
 
-          # 2. Comentăm apelurile Samsung Debug care crapă (implicit declaration)
+          # 3. Comentăm funcțiile Samsung Debug care blochează build-ul (Implicit Declaration)
           sed -i 's/sec_debug_sched_msg/\/\/ sec_debug_sched_msg/g' arch/arm64/kernel/traps.c
           sed -i 's/sec_debug_summary/\/\/ sec_debug_summary/g' arch/arm64/kernel/traps.c
           sed -i 's/sec_debug_save_badmode/\/\/ sec_debug_save_badmode/g' arch/arm64/kernel/traps.c
 
-          # 3. Eliminăm orice marcaj de conflict rămas accidental
+          # 4. Curățăm marcajele de conflict
           find . -type f -name "*.h" -o -name "*.c" | xargs sed -i '/^<<<<<<< /d; /^=======/d; /^>>>>>>> /d' || true
 
       - name: Configure Defconfig
         run: |
           cd kernel
           mkdir -p out
-          make O=out r5q_defconfig
+          # Forțăm ARCH=arm64 pentru a nu căuta config-ul în x86
+          make O=out ARCH=arm64 r5q_defconfig
           
-          # Fix pentru NR_CPUS (Snapdragon 855 are 8 nuclee)
+          # Ajustăm configurația pentru Android 13/14 și fixăm NR_CPUS
           scripts/config --file out/.config --set-val NR_CPUS 8
-          
-          # Dezactivăm Samsung Debug care intră în conflict cu eBPF/RT
           scripts/config --file out/.config -d SEC_DEBUG
-          scripts/config --file out/.config -d SEC_DEBUG_SCHED_LOG
-          
-          # Activăm suportul eBPF obligatoriu pentru Android 13/14
-          scripts/config --file out/.config -e BPF
-          scripts/config --file out/.config -e BPF_SYSCALL
-          scripts/config --file out/.config -e BPF_JIT
-          scripts/config --file out/.config -e CGROUP_BPF
-          scripts/config --file out/.config -e NETFILTER_XT_MATCH_BPF
-          scripts/config --file out/.config -e NETFILTER_XT_TARGET_BPF
+          scripts/config --file out/.config -e BPF -e BPF_SYSCALL -e BPF_JIT -e CGROUP_BPF -e NETFILTER_XT_MATCH_BPF -e NETFILTER_XT_TARGET_BPF
 
       - name: Build Kernel (Clang Toolchain)
         run: |
           cd kernel
+          # Setăm variabilele necesare pentru cross-compilare
           export ARCH=arm64
           export CROSS_COMPILE=aarch64-linux-gnu-
+          export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
           export CC=clang
           export CLANG_TRIPLE=aarch64-linux-gnu-
           
-          # KCFLAGS Explicație:
-          # -Wno-error: Nu opri build-ul la warning-uri
-          # -Wno-implicit-function-declaration: Ignoră funcțiile Samsung Debug lipsă
-          # -fcommon: Permite definiții multiple de variabile (specific kernel 4.14)
-          # -DNR_CPUS=8: Forțează numărul de nuclee pentru a trece de eroarea din fork.c
-          make -j$(nproc --all) O=out KCFLAGS="-Wno-error -Wno-implicit-function-declaration -fcommon -DNR_CPUS=8"
+          # Compilăm imaginea kernelului
+          # KCFLAGS conține hack-urile de compatibilitate pentru a ignora warning-urile și erorile specifice Samsung
+          make -j$(nproc --all) O=out ARCH=arm64 KCFLAGS="-Wno-error -Wno-implicit-function-declaration -fcommon -DNR_CPUS=8"
 
       - name: Upload Kernel Image
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-r5q-eBPF-Final-Fixed
+          name: Kernel-r5q-Final-Build
           path: |
             kernel/out/arch/arm64/boot/Image.gz-dtb
             kernel/out/arch/arm64/boot/dtbo.img
