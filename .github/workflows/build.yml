@@ -1,4 +1,4 @@
-name: Build r5q Kernel - LineageOS 20 Ready (eBPF + CIP)
+name: Build r5q Kernel - Final eBPF Fix
 
 on:
   workflow_dispatch:
@@ -14,7 +14,6 @@ jobs:
 
       - name: Clone Mainey Kernel (Base lineage-19.0)
         run: |
-          # Clonăm cu istoric suficient pentru a permite cherry-pick
           git clone --depth=500 https://github.com/mainey/android_kernel_samsung_r5q.git -b lineage-19.0 kernel
           cd kernel
           git config user.email "wizard@build.com"
@@ -23,62 +22,63 @@ jobs:
       - name: Fetch and Apply eBPF Patch (Gerrit 387879)
         run: |
           cd kernel
-          # Luăm patch-ul de eBPF specificat de tine
           git fetch https://github.com/LineageOS/android_kernel_samsung_sm7125 refs/changes/79/387879/1
           
-          # Strategie: Încercăm cherry-pick. Dacă dă eroare (cum s-a întâmplat), 
-          # forțăm versiunea eBPF de la LineageOS peste fișierele cu conflicte.
+          # Aplicăm patch-ul cu prioritate pentru codul LineageOS
           git cherry-pick FETCH_HEAD -X theirs || {
-            echo "Rezolvăm manual conflictele prin forțarea versiunii LineageOS..."
+            echo "Forțăm fișierele eBPF critice..."
             git checkout FETCH_HEAD -- include/uapi/linux/bpf.h
-            git checkout FETCH_HEAD -- net/core/filter.c
             git checkout FETCH_HEAD -- include/linux/bpf.h
+            git checkout FETCH_HEAD -- net/core/filter.c
             git add .
             git cherry-pick --continue --no-edit
           }
 
-      - name: Manual Conflict Cleanup
+      - name: Fix Missing BPF Identifiers & Conflict Markers
         run: |
           cd kernel
-          # Eliminăm orice marcaj de conflict rămas accidental (<<<< / >>>>)
+          # Definim constanta lipsă care a cauzat eroarea anterioară
+          # O inserăm după primele definiții din bpf.h
+          sed -i '/#define _UAPI__LINUX_BPF_H/a \
+          \
+          #ifndef BPF_OBJ_NAME_LEN\
+          #define BPF_OBJ_NAME_LEN 16U\
+          #endif' include/uapi/linux/bpf.h
+
+          # Eliminăm restul marcajelor de conflict (safety)
           find . -type f -name "*.h" -o -name "*.c" | xargs sed -i '/^<<<<<<< /d; /^=======/d; /^>>>>>>> /d' || true
 
-      - name: Configure Defconfig (Enable eBPF & RT)
+      - name: Configure Defconfig
         run: |
           cd kernel
-          # Setăm flag-urile esențiale pentru Android 13/14
+          # Folosim scriptul intern pentru a activa modulele eBPF
           scripts/config --file arch/arm64/configs/r5q_defconfig -e BPF
           scripts/config --file arch/arm64/configs/r5q_defconfig -e BPF_SYSCALL
           scripts/config --file arch/arm64/configs/r5q_defconfig -e BPF_JIT
           scripts/config --file arch/arm64/configs/r5q_defconfig -e CGROUP_BPF
           scripts/config --file arch/arm64/configs/r5q_defconfig -e NETFILTER_XT_MATCH_BPF
           scripts/config --file arch/arm64/configs/r5q_defconfig -e NETFILTER_XT_TARGET_BPF
-          
-          # Opțional: Poți adăuga și CONFIG_PREEMPT_RT dacă vrei să mergi pe varianta Real-Time
-          # echo "CONFIG_PREEMPT_RT=y" >> arch/arm64/configs/r5q_defconfig
+          scripts/config --file arch/arm64/configs/r5q_defconfig -e BPF_EVENTS
 
-      - name: Build Kernel with Clang
+      - name: Build Kernel (Clang Toolchain)
         run: |
           cd kernel
           export ARCH=arm64
           export CROSS_COMPILE=aarch64-linux-gnu-
-          # Folosim Clang pentru suportul corect de bytecode eBPF
           export CC=clang
           export CLANG_TRIPLE=aarch64-linux-gnu-
           
-          # Creăm directorul de output
           mkdir -p out
-          
-          # Generăm configurația finală
           make O=out r5q_defconfig
           
-          # Compilăm. KCFLAGS="-Wno-error" previne oprirea build-ului la warning-uri simple.
-          make -j$(nproc --all) O=out KCFLAGS="-Wno-error" || make -j$(nproc --all) O=out KCFLAGS="-Wno-error"
+          # Compilăm cu ignorarea warning-urilor transformate în erori (-Wno-error)
+          # Adăugăm și -fcommon pentru a evita erorile de tip "multiple definition"
+          make -j$(nproc --all) O=out KCFLAGS="-Wno-error -fcommon"
 
-      - name: Upload Kernel & DTBO
+      - name: Upload Kernel Image
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-r5q-eBPF-Final
+          name: Kernel-r5q-eBPF-Fixed
           path: |
             kernel/out/arch/arm64/boot/Image.gz-dtb
             kernel/out/arch/arm64/boot/dtbo.img
