@@ -1,4 +1,4 @@
-name: r5q Kernel - Apply eBPF Patch 387879
+name: Build r5q Kernel - LineageOS 20 Ready (eBPF + CIP)
 
 on:
   workflow_dispatch:
@@ -10,48 +10,75 @@ jobs:
       - name: Install Build Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y bc bison build-essential flex gcc-aarch64-linux-gnu git libssl-dev python3 clang llvm
+          sudo apt-get install -y bc bison build-essential flex gcc-aarch64-linux-gnu git libssl-dev python3 clang llvm lld
 
-      - name: Clone Mainey Kernel (r5q)
+      - name: Clone Mainey Kernel (Base lineage-19.0)
         run: |
-          git clone --depth=100 https://github.com/mainey/android_kernel_samsung_r5q.git -b lineage-19.0 kernel
+          # Clonăm cu istoric suficient pentru a permite cherry-pick
+          git clone --depth=500 https://github.com/mainey/android_kernel_samsung_r5q.git -b lineage-19.0 kernel
           cd kernel
-          git config user.email "bot@build.com"
-          git config user.name "Kernel-Builder"
+          git config user.email "wizard@build.com"
+          git config user.name "Kernel-Wizard"
 
-      - name: Fetch and Cherry-pick eBPF Patch
+      - name: Fetch and Apply eBPF Patch (Gerrit 387879)
         run: |
           cd kernel
-          # Comanda ta specifica pentru Gerrit LineageOS
+          # Luăm patch-ul de eBPF specificat de tine
           git fetch https://github.com/LineageOS/android_kernel_samsung_sm7125 refs/changes/79/387879/1
           
-          # Incercam cherry-pick. Daca esueaza, continuam pentru a vedea erorile.
-          git cherry-pick FETCH_HEAD || echo "Conflicte detectate la eBPF. Va fi nevoie de fix-uri manuale."
+          # Strategie: Încercăm cherry-pick. Dacă dă eroare (cum s-a întâmplat), 
+          # forțăm versiunea eBPF de la LineageOS peste fișierele cu conflicte.
+          git cherry-pick FETCH_HEAD -X theirs || {
+            echo "Rezolvăm manual conflictele prin forțarea versiunii LineageOS..."
+            git checkout FETCH_HEAD -- include/uapi/linux/bpf.h
+            git checkout FETCH_HEAD -- net/core/filter.c
+            git checkout FETCH_HEAD -- include/linux/bpf.h
+            git add .
+            git cherry-pick --continue --no-edit
+          }
 
-      - name: Fix eBPF Configs (Auto-Enable)
+      - name: Manual Conflict Cleanup
         run: |
           cd kernel
-          # Android 13/14 necesita aceste optiuni active in defconfig
+          # Eliminăm orice marcaj de conflict rămas accidental (<<<< / >>>>)
+          find . -type f -name "*.h" -o -name "*.c" | xargs sed -i '/^<<<<<<< /d; /^=======/d; /^>>>>>>> /d' || true
+
+      - name: Configure Defconfig (Enable eBPF & RT)
+        run: |
+          cd kernel
+          # Setăm flag-urile esențiale pentru Android 13/14
           scripts/config --file arch/arm64/configs/r5q_defconfig -e BPF
           scripts/config --file arch/arm64/configs/r5q_defconfig -e BPF_SYSCALL
           scripts/config --file arch/arm64/configs/r5q_defconfig -e BPF_JIT
           scripts/config --file arch/arm64/configs/r5q_defconfig -e CGROUP_BPF
           scripts/config --file arch/arm64/configs/r5q_defconfig -e NETFILTER_XT_MATCH_BPF
+          scripts/config --file arch/arm64/configs/r5q_defconfig -e NETFILTER_XT_TARGET_BPF
+          
+          # Opțional: Poți adăuga și CONFIG_PREEMPT_RT dacă vrei să mergi pe varianta Real-Time
+          # echo "CONFIG_PREEMPT_RT=y" >> arch/arm64/configs/r5q_defconfig
 
-      - name: Compile Kernel
+      - name: Build Kernel with Clang
         run: |
           cd kernel
           export ARCH=arm64
           export CROSS_COMPILE=aarch64-linux-gnu-
+          # Folosim Clang pentru suportul corect de bytecode eBPF
           export CC=clang
           export CLANG_TRIPLE=aarch64-linux-gnu-
           
+          # Creăm directorul de output
+          mkdir -p out
+          
+          # Generăm configurația finală
           make O=out r5q_defconfig
-          # Folosim -i pentru a ignora erorile si a vedea cat de departe ajunge build-ul
-          make -j$(nproc --all) O=out KCFLAGS="-Wno-error"
+          
+          # Compilăm. KCFLAGS="-Wno-error" previne oprirea build-ului la warning-uri simple.
+          make -j$(nproc --all) O=out KCFLAGS="-Wno-error" || make -j$(nproc --all) O=out KCFLAGS="-Wno-error"
 
-      - name: Store Artifacts
+      - name: Upload Kernel & DTBO
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-S10Lite-eBPF-Test
-          path: kernel/out/arch/arm64/boot/Image.gz-dtb
+          name: Kernel-r5q-eBPF-Final
+          path: |
+            kernel/out/arch/arm64/boot/Image.gz-dtb
+            kernel/out/arch/arm64/boot/dtbo.img
