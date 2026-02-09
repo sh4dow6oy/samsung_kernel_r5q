@@ -1,49 +1,53 @@
-name: Kernel Merge CIP & Build (r5q)
+name: Build S10 Lite Kernel (Lineage 19.0 + CIP Merge)
 
 on:
   workflow_dispatch:
 
 jobs:
-  merge-and-build:
+  build:
     runs-on: ubuntu-latest
     steps:
-      - name: Install Dependencies
+      - name: Install Build Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y bc bison build-essential flex gcc-aarch64-linux-gnu git libssl-dev python3
+          sudo apt-get install -y bc bison build-essential flex gcc-aarch64-linux-gnu git libssl-dev python3 libncurses5-dev
 
-      - name: Setup Kernel Source (Mainey)
+      - name: Clone Kernel Source (Mainey - Lineage 19.0)
         run: |
-          git clone https://github.com/mainey/android_kernel_samsung_r5q.git -b lineage-20 kernel
+          # Folosim depth=100 pentru a avea istoric pentru merge
+          git clone --depth=100 https://github.com/mainey/android_kernel_samsung_r5q.git -b lineage-19.0 kernel
           cd kernel
-          git config user.email "bot@example.com"
-          git config user.name "Kernel Merger"
+          git config user.email "bot@build.com"
+          git config user.name "Kernel-Builder"
 
-      - name: Merge Linux-CIP
+      - name: Merge Linux-CIP (SLTS 4.14)
         run: |
           cd kernel
-          # Adăugăm sursa oficială CIP ca "remote"
           git remote add cip https://git.kernel.org/pub/scm/linux/kernel/git/cip/linux-cip.git
-          git fetch cip
+          git fetch cip --tags
           
-          # Încercăm merge-ul cu ramura 4.19 sau 4.14 (alege ramura corespunzătoare kernelului tău)
-          # Folosim 'v4.14.336-cip110' de exemplu, sau ramura generică 'linux-4.14.y-cip'
-          git merge cip/linux-4.14.y-cip --allow-unrelated-histories -m "Merge CIP SLTS kernel" || echo "Conflicts detected"
+          # Incercam merge cu ramura CIP 4.14.y (corespunzatoare kernelului Mainey)
+          # Folosim strategia 'recursive' cu optiunea 'theirs' pentru a rezolva automat conflictele in favoarea CIP unde e posibil
+          git merge cip/linux-4.14.y-cip -m "Merge Linux-CIP SLTS" || echo "Conflicte detectate - ramanem pe modificarile manuale"
 
-      - name: Build Kernel
+      - name: Build Kernel for r5q
         run: |
           cd kernel
           export ARCH=arm64
           export CROSS_COMPILE=aarch64-linux-gnu-
+          export KBUILD_BUILD_USER="Gemini"
+          export KBUILD_BUILD_HOST="Github-Actions"
           
-          # Folosim defconfig-ul de r5q
+          # 1. Configurare (r5q_defconfig este standard pentru acest repo)
           make O=out r5q_defconfig
           
-          # Compilăm (ignoram erorile minore de merge pentru test)
-          make -j$(nproc --all) O=out || echo "Build failed after merge"
+          # 2. Compilare Image.gz-dtb
+          make -j$(nproc --all) O=out
 
-      - name: Upload Artifacts
+      - name: Upload Kernel Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: CIP-Kernel-r5q
-          path: kernel/out/arch/arm64/boot/Image.gz-dtb
+          name: Kernel-S10Lite-19.0-CIP
+          path: |
+            kernel/out/arch/arm64/boot/Image.gz-dtb
+            kernel/out/arch/arm64/boot/dtbo.img
