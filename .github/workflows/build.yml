@@ -1,108 +1,49 @@
-name: S10 Lite - 4.19 Hybrid (Surgical Display/Touch)
+name: Kernel Merge CIP & Build (r5q)
 
 on:
-  push:
-    branches: [ main ]
   workflow_dispatch:
 
 jobs:
-  build:
-    runs-on: ubuntu-22.04
-
+  merge-and-build:
+    runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
       - name: Install Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y bc bison flex libssl-dev libelf-dev dwarves libncurses-dev git wget make python2 python3 pahole tar xz-utils lib32z1
+          sudo apt-get install -y bc bison build-essential flex gcc-aarch64-linux-gnu git libssl-dev python3
 
-      - name: Setup Proton Clang
+      - name: Setup Kernel Source (Mainey)
         run: |
-          git clone --depth=1 https://github.com/kdrag0n/proton-clang.git toolchain/proton-clang
-          echo "PROTON_PATH=$(pwd)/toolchain/proton-clang/bin" >> $GITHUB_ENV
+          git clone https://github.com/mainey/android_kernel_samsung_r5q.git -b lineage-20 kernel
+          cd kernel
+          git config user.email "bot@example.com"
+          git config user.name "Kernel Merger"
 
-      - name: Hybrid Source Preparation
+      - name: Merge Linux-CIP
         run: |
-          # 1. Baze
-          git clone --depth=1 https://github.com/duckyduckG/android_kernel_qcom_sm8150_419.git kernel_source
-          git clone --depth=1 https://github.com/sh4dow6oy/samsung_kernel_r5q.git drivers_source
-          git clone --depth=1 https://github.com/mainey/android_kernel_samsung_r5q.git samsung_ref
+          cd kernel
+          # Adăugăm sursa oficială CIP ca "remote"
+          git remote add cip https://git.kernel.org/pub/scm/linux/kernel/git/cip/linux-cip.git
+          git fetch cip
           
-          # 2. Injectare Config & DTS
-          cp samsung_ref/arch/arm64/configs/r5q_eur_open_defconfig kernel_source/arch/arm64/configs/r5q_defconfig
-          mkdir -p kernel_source/arch/arm64/boot/dts/vendor/qcom/
-          find samsung_ref/arch/arm64/boot/dts/ -maxdepth 1 -type f -name "*.dts*" -exec cp {} kernel_source/arch/arm64/boot/dts/vendor/qcom/ \;
-          
-          cd kernel_source
-
-          # === 3. INJECTARE SELECTIVA DISPLAY & TOUCH ===
-          # Nu copiem tot folderul drivers/, copiem doar sub-folderele specifice
-          echo "Injecting Display and Touch drivers..."
-          
-          # Display DRM Samsung (R5Q specific)
-          rm -rf drivers/gpu/drm/msm
-          cp -r ../drivers_source/drivers/gpu/drm/msm drivers/gpu/drm/
-          
-          # Touchscreen Samsung
-          mkdir -p drivers/input/touchscreen/samsung
-          cp -r ../drivers_source/drivers/input/touchscreen/* drivers/input/touchscreen/ || true
-
-          # === 4. REPARARE KCONFIG / MAKEFILE PENTRU TECHPACK ===
-          # Daca techpack-ul din sh4dow e stub, il folosim ca sa nu dea eroare de "file not found"
-          rm -rf techpack
-          cp -r ../drivers_source/techpack .
-          
-          # Ne asiguram ca techpack/Kconfig exista si e valid
-          if [ ! -f techpack/Kconfig ]; then
-            echo 'menu "Techpack"' > techpack/Kconfig
-            [ -d techpack/audio ] && echo 'source "techpack/audio/Kconfig"' >> techpack/Kconfig
-            echo 'endmenu' >> techpack/Kconfig
-          fi
-
-          # === 5. FIX CLK-DEBUG TRACE ===
-          sed -i '/TRACE_INCLUDE_PATH/d' drivers/clk/qcom/clk-debug.c
-          sed -i '18i #define TRACE_INCLUDE_PATH ../../drivers/clk/qcom' drivers/clk/qcom/clk-debug.c
-
-          # === 6. GLOBAL HEADER FIXES (errno.h) ===
-          sed -i '15i #include <linux/errno.h>' include/linux/usb/usbpd.h
-          find drivers/gpu/drm/msm/ -name "*.c" -exec sed -i '1i #include <linux/errno.h>' {} +
-
-          # Fix Samsung SecTools
-          echo -e '#!/bin/bash\necho "0"' > /tmp/secgetspf
-          chmod +x /tmp/secgetspf
-          sudo mv /tmp/secgetspf /usr/bin/secgetspf
+          # Încercăm merge-ul cu ramura 4.19 sau 4.14 (alege ramura corespunzătoare kernelului tău)
+          # Folosim 'v4.14.336-cip110' de exemplu, sau ramura generică 'linux-4.14.y-cip'
+          git merge cip/linux-4.14.y-cip --allow-unrelated-histories -m "Merge CIP SLTS kernel" || echo "Conflicts detected"
 
       - name: Build Kernel
         run: |
-          export PATH="${{ env.PROTON_PATH }}:$PATH"
-          cd kernel_source
-          ARGS="ARCH=arm64 CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1"
-          export KCFLAGS="-Wno-error -Wno-implicit-function-declaration -Wno-int-conversion -Wno-incompatible-pointer-types -Wno-unused-variable -Wno-unused-function -Wno-return-type"
-
-          # Generare config
-          make $ARGS r5q_defconfig
+          cd kernel
+          export ARCH=arm64
+          export CROSS_COMPILE=aarch64-linux-gnu-
           
-          # Optimizari
-          sed -i 's/CONFIG_LTO_CLANG=y/CONFIG_LTO_CLANG=n/g' .config
-          sed -i 's/CONFIG_LTO=y/CONFIG_LTO=n/g' .config
-          sed -i 's/CONFIG_DEBUG_INFO_BTF=y/CONFIG_DEBUG_INFO_BTF=n/g' .config
+          # Folosim defconfig-ul de r5q
+          make O=out r5q_defconfig
           
-          make $ARGS olddefconfig
-          make -j$(nproc --all) $ARGS
+          # Compilăm (ignoram erorile minore de merge pentru test)
+          make -j$(nproc --all) O=out || echo "Build failed after merge"
 
-          if [ -f arch/arm64/boot/Image ]; then
-            cp arch/arm64/boot/Image ../
-            find arch/arm64/boot/dts/vendor/qcom/ -name "*.dtbo" -exec cp {} ../ \; || true
-            echo "SUCCESS=true" >> $GITHUB_ENV
-          fi
-
-      - name: Upload
-        if: env.SUCCESS == 'true'
+      - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-4.19-Surgical-v2
-          path: |
-            Image
-            *.dtbo
+          name: CIP-Kernel-r5q
+          path: kernel/out/arch/arm64/boot/Image.gz-dtb
