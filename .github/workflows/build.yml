@@ -1,4 +1,4 @@
-name: Build r5q Kernel - Mainey + eBPF Backport
+name: r5q Kernel - Apply eBPF Patch 387879
 
 on:
   workflow_dispatch:
@@ -12,52 +12,46 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y bc bison build-essential flex gcc-aarch64-linux-gnu git libssl-dev python3 clang llvm
 
-      - name: Clone Mainey Kernel (Base lineage-19.0)
+      - name: Clone Mainey Kernel (r5q)
         run: |
-          git clone --depth=50 https://github.com/mainey/android_kernel_samsung_r5q.git -b lineage-19.0 kernel
+          git clone --depth=100 https://github.com/mainey/android_kernel_samsung_r5q.git -b lineage-19.0 kernel
           cd kernel
-          git config user.email "developer@r5q.com"
-          git config user.name "Kernel-Wizard"
+          git config user.email "bot@build.com"
+          git config user.name "Kernel-Builder"
 
-      - name: Fetch and Apply eBPF Patch (Gerrit 387879)
+      - name: Fetch and Cherry-pick eBPF Patch
         run: |
           cd kernel
-          # Adăugăm remote-ul oficial LineageOS pentru sm7125 (care are commit-ul de eBPF)
-          git remote add lineage_gerrit https://github.com/LineageOS/android_kernel_samsung_sm7125.git
-          git fetch lineage_gerrit
+          # Comanda ta specifica pentru Gerrit LineageOS
+          git fetch https://github.com/LineageOS/android_kernel_samsung_sm7125 refs/changes/79/387879/1
           
-          # Încercăm să aplicăm commit-ul specific pentru eBPF
-          # Folosim -X theirs pentru a forța logica LineageOS în fișierele de rețea
-          git cherry-pick 36c4b9d1456a0649755866164287515024225095 || echo "Conflicte detectate - Rezolvă manual sau verifică compatibilitatea"
+          # Incercam cherry-pick. Daca esueaza, continuam pentru a vedea erorile.
+          git cherry-pick FETCH_HEAD || echo "Conflicte detectate la eBPF. Va fi nevoie de fix-uri manuale."
 
-      - name: Configure Kernel (Enable BPF Flags)
+      - name: Fix eBPF Configs (Auto-Enable)
         run: |
           cd kernel
-          # Injectăm manual flag-urile de eBPF necesare pentru Android 13 în defconfig
-          cat <<EOF >> arch/arm64/configs/r5q_defconfig
-          CONFIG_BPF=y
-          CONFIG_BPF_SYSCALL=y
-          CONFIG_BPF_JIT=y
-          CONFIG_CGROUP_BPF=y
-          CONFIG_NETFILTER_XT_MATCH_BPF=y
-          CONFIG_NETFILTER_XT_TARGET_BPF=y
-          CONFIG_BPF_EVENTS=y
-          EOF
+          # Android 13/14 necesita aceste optiuni active in defconfig
+          scripts/config --file arch/arm64/configs/r5q_defconfig -e BPF
+          scripts/config --file arch/arm64/configs/r5q_defconfig -e BPF_SYSCALL
+          scripts/config --file arch/arm64/configs/r5q_defconfig -e BPF_JIT
+          scripts/config --file arch/arm64/configs/r5q_defconfig -e CGROUP_BPF
+          scripts/config --file arch/arm64/configs/r5q_defconfig -e NETFILTER_XT_MATCH_BPF
 
-      - name: Compile with Clang
+      - name: Compile Kernel
         run: |
           cd kernel
           export ARCH=arm64
           export CROSS_COMPILE=aarch64-linux-gnu-
-          # Android 13/14 eBPF necesită LLVM/Clang pentru a compila corect programele BPF
           export CC=clang
           export CLANG_TRIPLE=aarch64-linux-gnu-
           
           make O=out r5q_defconfig
+          # Folosim -i pentru a ignora erorile si a vedea cat de departe ajunge build-ul
           make -j$(nproc --all) O=out KCFLAGS="-Wno-error"
 
-      - name: Upload Image
+      - name: Store Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-r5q-Lineage20-Ready
+          name: Kernel-S10Lite-eBPF-Test
           path: kernel/out/arch/arm64/boot/Image.gz-dtb
