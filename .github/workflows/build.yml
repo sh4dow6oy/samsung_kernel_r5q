@@ -1,4 +1,4 @@
-name: Build S10 Lite Kernel (Lineage 19.0 + CIP Merge)
+name: Kernel Merge CIP 4.19.325 (r5q)
 
 on:
   workflow_dispatch:
@@ -12,42 +12,40 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y bc bison build-essential flex gcc-aarch64-linux-gnu git libssl-dev python3 libncurses5-dev
 
-      - name: Clone Kernel Source (Mainey - Lineage 19.0)
+      - name: Clone Kernel Source (Mainey)
         run: |
-          # Folosim depth=100 pentru a avea istoric pentru merge
-          git clone --depth=100 https://github.com/mainey/android_kernel_samsung_r5q.git -b lineage-19.0 kernel
+          # Clonăm cu istoric pentru a permite merge-ul
+          git clone --depth=500 https://github.com/mainey/android_kernel_samsung_r5q.git -b lineage-19.0 kernel
           cd kernel
           git config user.email "bot@build.com"
           git config user.name "Kernel-Builder"
 
-      - name: Merge Linux-CIP (SLTS 4.14)
+      - name: Merge Linux-CIP 4.19
         run: |
           cd kernel
           git remote add cip https://git.kernel.org/pub/scm/linux/kernel/git/cip/linux-cip.git
           git fetch cip --tags
           
-          # Incercam merge cu ramura CIP 4.14.y (corespunzatoare kernelului Mainey)
-          # Folosim strategia 'recursive' cu optiunea 'theirs' pentru a rezolva automat conflictele in favoarea CIP unde e posibil
-          git merge cip/linux-4.14.y-cip -m "Merge Linux-CIP SLTS" || echo "Conflicte detectate - ramanem pe modificarile manuale"
+          # Încercăm merge-ul cu ramura 4.19-cip (care conține 4.19.325+)
+          # ATENȚIE: Această operațiune va genera conflicte dacă baza Mainey este 4.14
+          git merge cip/linux-4.19.y-cip --allow-unrelated-histories -m "Upgrade to Linux-CIP 4.19.325" || echo "Conflicte majore detectate"
 
-      - name: Build Kernel for r5q
+      - name: Build Kernel (Snapdragon 855 / r5q)
         run: |
           cd kernel
           export ARCH=arm64
           export CROSS_COMPILE=aarch64-linux-gnu-
-          export KBUILD_BUILD_USER="Gemini"
-          export KBUILD_BUILD_HOST="Github-Actions"
           
-          # 1. Configurare (r5q_defconfig este standard pentru acest repo)
-          make O=out r5q_defconfig
+          # Verificăm dacă defconfig-ul mai este valid după merge
+          make O=out r5q_defconfig || make O=out vendor/r5q_eur_open_defconfig
           
-          # 2. Compilare Image.gz-dtb
+          # Compilare
           make -j$(nproc --all) O=out
 
       - name: Upload Kernel Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-S10Lite-19.0-CIP
+          name: Kernel-S10Lite-4.19-CIP
           path: |
             kernel/out/arch/arm64/boot/Image.gz-dtb
             kernel/out/arch/arm64/boot/dtbo.img
