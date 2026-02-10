@@ -1,4 +1,4 @@
-name: S10 Lite - Safe eBPF v3 (Build Fix)
+name: S10 Lite - Safe eBPF v4 (Final Fix)
 
 on:
   push:
@@ -25,39 +25,35 @@ jobs:
           mkdir -p toolchain
           git clone --depth=1 https://github.com/kdrag0n/proton-clang.git toolchain/proton-clang
 
-      - name: Apply Safe eBPF Injection & Build Fixes
+      - name: Patch BPF Syntax & Samsung Makefile
         run: |
           cd kernel
-          # 1. Fix BPF Syntax (Injectare corectă în enum)
-          # Adăugăm flag-urile cu virgulă la final pentru a nu strica enumerarea
-          sed -i '/enum bpf_cmd/i #define BPF_OBJ_NAME_LEN 16U' include/uapi/linux/bpf.h
-          sed -i '/BPF_F_WRONLY/a \	BPF_F_RDONLY_PROG = (1U << 7),\n	BPF_F_WRONLY_PROG = (1U << 8),' include/uapi/linux/bapi/linux/bpf.h || true
+          # 1. Fix BPF enum syntax - adaugam elementele corect cu virgula
+          # Cautam ultima acolada a enum-ului bpf_cmd si inseram inainte
+          sed -i '/BPF_OBJ_GET,/a \	BPF_OBJ_NAME_LEN = 16,' include/uapi/linux/bpf.h
           sed -i '/BPF_F_WRONLY/a \	BPF_F_RDONLY_PROG = (1U << 7),\n	BPF_F_WRONLY_PROG = (1U << 8),' include/uapi/linux/bpf.h
 
-          # 2. Bypass Samsung Security (SPF)
+          # 2. Curatam Makefile-ul de caile Samsung inexistente
+          # Eliminam prefixul care cauta folderul de GCC 4.9 local
+          sed -i 's|$(srctree)/../toolchain/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/bin/aarch64-linux-android-||g' Makefile
+          
+          # 3. Cream scriptul secgetspf necesar pentru build
           echo -e "#!/bin/sh\necho '00000000000000000000000000000000'\nexit 0" > secgetspf
           chmod +x secgetspf
-
-          # 3. Clean Makefile (Remove hardcoded Samsung toolchain paths)
-          # Înlocuim căile fixe către GCC 4.9 cu variabilele de mediu standard
-          sed -i 's|$(srctree)/../toolchain/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/bin/aarch64-linux-android-||g' Makefile
-
-          # 4. Fix access_ok & Structs
-          sed -i '1i #include <linux/version.h>\n#include <linux/types.h>' include/linux/bpf.h
-          echo 'struct bpf_raw_event_map { struct bpf_map map; };' >> include/linux/bpf.h
 
       - name: Configure & Build
         run: |
           cd kernel
-          # Adăugăm toolchain-ul în PATH și scriptul secgetspf în rădăcină
+          # Adaugam toolchain-ul si scriptul secgetspf in PATH
           export PATH=$(pwd):$(pwd)/../toolchain/proton-clang/bin:$PATH
           
-          # Parametrii de build pentru Proton Clang
+          # Definirea argumentelor de build
           export MAKE_ARGS="ARCH=arm64 CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1"
           
+          # Generare config
           make $MAKE_ARGS r5q_eur_open_defconfig
           
-          # Activare eBPF minimală pentru Android 15
+          # Activare BPF pentru Android 15
           ./scripts/config --enable CONFIG_BPF_SYSCALL
           ./scripts/config --enable CONFIG_BPF_JIT
           ./scripts/config --enable CONFIG_CGROUP_BPF
@@ -66,12 +62,12 @@ jobs:
           
           make $MAKE_ARGS olddefconfig
           
-          # Build final cu suprimarea warning-urilor
+          # Build propriu-zis cu suprimarea erorilor de tip
           export KCFLAGS="-O2 -Wno-everything -Wno-error -fcommon"
           make -j$(nproc --all) $MAKE_ARGS Image.gz-dtb
 
-      - name: Upload Kernel Artifact
+      - name: Upload Kernel
         uses: actions/upload-artifact@v4
         with:
-          name: s10-lite-ebpf-fix-v19
+          name: s10-lite-ebpf-kernel-v20
           path: kernel/arch/arm64/boot/Image.gz-dtb
