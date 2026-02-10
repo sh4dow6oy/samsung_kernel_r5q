@@ -1,4 +1,4 @@
-name: Build r5q Kernel - Xiaomi BPF Final Fix v10
+name: Build r5q Kernel - Xiaomi BPF Final Fix v11
 
 on:
   workflow_dispatch:
@@ -43,31 +43,33 @@ jobs:
           git add .
           git commit -m "BPF Core & Memory Fix Integrated"
 
-      - name: 2. Nuclear Conflict Resolution (v10)
+      - name: 2. Nuclear Conflict Resolution (v11)
         run: |
           cd kernel
-          # 1. Fix 'bool' și tipuri în filter.h
+          # 1. Fix 'bool' in filter.h
           sed -i 's/#ifndef _LINUX_FILTER_H/#ifndef _LINUX_FILTER_H\n#include <linux/types.h>/g' include/linux/filter.h
           
-          # 2. Rezolvăm conflictele bpf_map_area_alloc (eliminăm static)
+          # 2. Fix bpf_map_area_alloc visibility
           sed -i 's/static void \*bpf_map_area_alloc/void \*bpf_map_area_alloc/g' kernel/bpf/syscall.c
           sed -i 's/static void bpf_map_area_free/void bpf_map_area_free/g' kernel/bpf/syscall.c
           
-          # 3. Ștergem structurile duplicat care cauzează Redefinition
+          # 3. Clean verifier.c from duplicates
           sed -i '/struct bpf_verifier_log {/,/};/d' kernel/bpf/verifier.c
           sed -i '/struct bpf_line_info {/,/};/d' kernel/bpf/verifier.c
           sed -i '/struct bpf_func_info {/,/};/d' kernel/bpf/verifier.c
+          sed -i '1i #include <linux/bpf.h>' kernel/bpf/verifier.c
+          
+          # 4. Clean global headers
           sed -i '/struct bpf_verifier_env {/,/};/d' include/linux/bpf_verifier.h || true
           sed -i '/struct bpf_prog_offload_ols {/,/};/d' kernel/bpf/core.c
           
-          # 4. Sincronizăm prototipurile în bpf.h
-          if ! grep -q "void \*bpf_map_area_alloc" include/linux/bpf.h; then
-            sed -i '/#define _LINUX_BPF_H/a void *bpf_map_area_alloc(size_t size, int numa_node);\nvoid bpf_map_area_free(void *area);' include/linux/bpf.h
-          fi
+          # 5. Fix UAPI BPF_PROG_TYPE_NETFILTER (Single Injection)
+          # Stergem orice tentativa anterioara si injectam curat
+          sed -i '/BPF_PROG_TYPE_NETFILTER/d' include/uapi/linux/bpf.h
+          sed -i '/BPF_PROG_TYPE_LWT_SEG6LOCAL,/a \	BPF_PROG_TYPE_NETFILTER,' include/uapi/linux/bpf.h
           
-          # 5. Fix-uri Connectivity & Samsung
+          # 6. Fix Connectivity & Samsung
           sed -i 's/dev_get_by_index_rcu/dev_get_by_index/g' net/core/filter.c
-          sed -i '/BPF_PROG_TYPE_LWT_SEG6LOCAL,/a \	BPF_PROG_TYPE_NETFILTER,' include/uapi/linux/bapi/linux/bpf.h || sed -i '/BPF_PROG_TYPE_LWT_SEG6LOCAL,/a \	BPF_PROG_TYPE_NETFILTER,' include/uapi/linux/bpf.h
           sed -i 's/sec_debug_sched_msg/\/\/ sec_debug_sched_msg/g' arch/arm64/kernel/traps.c
           sed -i 's|$(srctree)/../toolchain/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/bin/aarch64-linux-android-||g' Makefile
           echo -e "#!/bin/sh\necho '00000000000000000000000000000000'\nexit 0" > secgetspf
@@ -86,7 +88,7 @@ jobs:
           mkdir -p out
           make O=out ARCH=arm64 r5q_eur_open_defconfig
           
-          # Configurație eBPF SM8150
+          # SM8150 eBPF Connectivity Config
           scripts/config --file out/.config -e BPF -e BPF_SYSCALL -e BPF_JIT -e CGROUP_BPF
           scripts/config --file out/.config -e NETFILTER_XT_MATCH_BPF -e NET_ACT_BPF -e BPF_STREAM_PARSER
           scripts/config --file out/.config -e NET_CLS_ACT -e NET_CLS_BPF -e STREAM_PARSER
@@ -100,9 +102,9 @@ jobs:
             KCFLAGS="-Wno-error -Wno-implicit-function-declaration -fcommon -DNR_CPUS=8"
 
       - name: Upload Kernel
-        uses: actions/upload-artifact@v4
+        uses: upload-artifact@v4
         with:
-          name: Kernel-r5q-Xiaomi-BPF-v10
+          name: Kernel-r5q-Xiaomi-BPF-v11
           path: |
             kernel/out/arch/arm64/boot/Image.gz-dtb
             kernel/out/arch/arm64/boot/dtbo.img
