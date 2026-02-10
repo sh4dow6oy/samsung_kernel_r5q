@@ -1,4 +1,4 @@
-name: S10 Lite (r5q) - Kernel 4.14.x + Safe eBPF (Android 15)
+name: S10 Lite (r5q) - Kernel 4.14 + Safe eBPF
 
 on:
   workflow_dispatch:
@@ -10,7 +10,7 @@ jobs:
     runs-on: ubuntu-22.04
 
     steps:
-      - name: Checkout kernel source (Lineage 19.0 r5q)
+      - name: Checkout kernel source (r5q)
         uses: actions/checkout@v4
         with:
           repository: mainey/android_kernel_samsung_r5q
@@ -22,62 +22,51 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             bc bison flex git make python3 \
-            libssl-dev libelf-dev dwarves \
-            lz4 ccache clang llvm
+            libssl-dev libelf-dev lz4 \
+            gcc g++ wget tar
 
-      - name: Setup Proton Clang
+      - name: Setup Android GCC 4.9 (Samsung required)
         run: |
-          git clone --depth=1 https://github.com/kdrag0n/proton-clang.git $HOME/proton-clang
+          mkdir -p kernel/toolchain/gcc/linux-x86/aarch64
+          cd kernel/toolchain/gcc/linux-x86/aarch64
 
-      - name: Configure kernel (r5q + SAFE eBPF)
+          wget -q https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/+archive/refs/heads/master.tar.gz
+          tar -xzf master.tar.gz
+
+      - name: Configure kernel (r5q_eur_open + SAFE eBPF)
         run: |
           cd kernel
-          export PATH=$HOME/proton-clang/bin:$PATH
 
-          make ARCH=arm64 r5q_defconfig
+          export ARCH=arm64
+          export CROSS_COMPILE=toolchain/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/bin/aarch64-linux-android-
 
-          # === ENABLE SAFE eBPF (4.14 COMPATIBLE) ===
+          make r5q_eur_open_defconfig
+
+          # ===== SAFE eBPF (4.14 compatible) =====
           scripts/config --enable CONFIG_BPF
           scripts/config --enable CONFIG_BPF_SYSCALL
           scripts/config --enable CONFIG_BPF_JIT
           scripts/config --enable CONFIG_HAVE_EBPF_JIT
           scripts/config --enable CONFIG_BPF_EVENTS
-
-          scripts/config --enable CONFIG_CGROUPS
           scripts/config --enable CONFIG_CGROUP_BPF
 
-          scripts/config --enable CONFIG_NET
-          scripts/config --enable CONFIG_NETFILTER
-          scripts/config --enable CONFIG_NETFILTER_XT_MATCH_BPF
-
-          scripts/config --enable CONFIG_BPF_JIT_ALWAYS_ON
-          scripts/config --enable CONFIG_BPF_JIT_DEFAULT_ON
-
-          # === DISABLE FEATURES NOT SUPPORTED ON 4.14 ===
+          # ===== Disable unsupported / crashy features =====
           scripts/config --disable CONFIG_XDP_SOCKETS
-          scripts/config --disable CONFIG_XDP_SOCKETS_DIAG
-          scripts/config --disable CONFIG_BPF_STREAM_PARSER
-          scripts/config --disable CONFIG_BPF_LSM
           scripts/config --disable CONFIG_DEBUG_INFO_BTF
+          scripts/config --disable CONFIG_BPF_LSM
           scripts/config --disable CONFIG_BPF_PRELOAD
           scripts/config --disable CONFIG_BPF_RAW_TRACEPOINTS
-          scripts/config --disable CONFIG_BPF_KPROBE_OVERRIDE
           scripts/config --disable CONFIG_FUNCTION_TRACER
           scripts/config --disable CONFIG_FTRACE_SYSCALLS
 
-          make ARCH=arm64 olddefconfig
+          make olddefconfig
 
-      - name: Build kernel
+      - name: Build kernel Image.gz-dtb
         run: |
           cd kernel
-          export PATH=$HOME/proton-clang/bin:$PATH
 
           export ARCH=arm64
-          export CC=clang
-          export LLVM=1
-          export LLVM_IAS=1
-          export CROSS_COMPILE=aarch64-linux-gnu-
-          export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
+          export CROSS_COMPILE=toolchain/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/bin/aarch64-linux-android-
 
           make -j$(nproc) Image.gz-dtb
 
