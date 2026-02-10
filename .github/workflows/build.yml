@@ -1,4 +1,4 @@
-name: Build r5q Kernel - Final BPF Fix v12
+name: Build r5q Kernel - Pure BPF (No Upstream)
 
 on:
   workflow_dispatch:
@@ -14,20 +14,15 @@ jobs:
 
       - name: Clone Mainey Kernel
         run: |
-          git clone --depth=500 https://github.com/mainey/android_kernel_samsung_r5q.git -b lineage-19.0 kernel
+          git clone --depth=1 https://github.com/mainey/android_kernel_samsung_r5q.git -b lineage-19.0 kernel
           cd kernel
           git config user.email "wizard@build.com"
           git config user.name "Kernel-Wizard"
 
-      - name: 1. Upstream & Clean Patching
+      - name: 1. Apply Xiaomi eBPF Backport
         run: |
           cd kernel
-          git remote add clo https://git.codelinaro.org/clo/la/kernel/msm.git
-          git fetch clo aosp-common/android-4.14-stable --depth=50
-          git merge FETCH_HEAD -m "Upstream CLO" -X ours --allow-unrelated-histories || echo "Merge ok"
-          git reset --mixed
-          
-          # Import Xiaomi BPF Backport
+          # Importam doar ce ne trebuie pentru Android 14/15 Connectivity
           git fetch https://github.com/LineageOS/android_kernel_xiaomi_sm6150 refs/changes/08/469808/1
           git checkout FETCH_HEAD -f -- \
             include/linux/bpf.h \
@@ -38,43 +33,31 @@ jobs:
             kernel/bpf/syscall.c \
             net/core/filter.c
           
-          # Fix Memorie (f623fe3)
+          # Fix Memorie (f623fe3) - Esential pentru Maps
           git fetch https://github.com/LineageOS/android_kernel_xiaomi_sm6150 f623fe3c3acf869236649d2bb16191899c44ca6f
           git checkout FETCH_HEAD -f -- kernel/bpf/syscall.c include/linux/bpf.h
           
           git add .
-          git commit -m "eBPF Base applied"
+          git commit -m "Pure eBPF Backport applied"
 
-      - name: 2. Core Fixes & Header Alignment
+      - name: 2. Minimal Fixes (No Conflict Edition)
         run: |
           cd kernel
-          # Fix 'bool' in filter.h (folosind o metoda mai sigura)
+          # 1. Fix 'bool' in filter.h
           sed -i 's/#define _LINUX_FILTER_H/#define _LINUX_FILTER_H\n#include <linux/types.h>/g' include/linux/filter.h
           
-          # Rezolvam vizibilitatea alocatorului de memorie
+          # 2. Sincronizam alocatorul de memorie
           sed -i 's/static void \*bpf_map_area_alloc/void \*bpf_map_area_alloc/g' kernel/bpf/syscall.c
           sed -i 's/static void bpf_map_area_free/void bpf_map_area_free/g' kernel/bpf/syscall.c
           
-          # Curatare Verifier - Eliminam definitiile care se bat cu bpf.h
-          # Folosim un regex mai larg pentru a prinde tot blocul structurilor
-          sed -i '/struct bpf_verifier_log {/,/};/d' kernel/bpf/verifier.c
-          sed -i '/struct bpf_line_info {/,/};/d' kernel/bpf/verifier.c
-          sed -i '/struct bpf_func_info {/,/};/d' kernel/bpf/verifier.c
-          
-          # Curatare headere globale de duplicate CLO
-          sed -i '/struct bpf_verifier_env {/,/};/d' include/linux/bpf_verifier.h || true
-          sed -i '/struct bpf_prog_offload_ols {/,/};/d' kernel/bpf/core.c
-          
-          # Injectare curata BPF_PROG_TYPE_NETFILTER
-          sed -i '/BPF_PROG_TYPE_NETFILTER/d' include/uapi/linux/bpf.h
+          # 3. Injectam tipul BPF_PROG_TYPE_NETFILTER (Locul corect in UAPI)
           sed -i '/BPF_PROG_TYPE_LWT_SEG6LOCAL,/a \	BPF_PROG_TYPE_NETFILTER,' include/uapi/linux/bpf.h
           
-          # Fix simboluri retea si Samsung
-          sed -i 's/dev_get_by_index_rcu/dev_get_by_index/g' net/core/filter.c
+          # 4. Fix Samsung Traps & Makefile
           sed -i 's/sec_debug_sched_msg/\/\/ sec_debug_sched_msg/g' arch/arm64/kernel/traps.c
           sed -i 's|$(srctree)/../toolchain/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/bin/aarch64-linux-android-||g' Makefile
           
-          # Securitate Samsung bypass
+          # Bypass Samsung Security
           echo -e "#!/bin/sh\necho '00000000000000000000000000000000'\nexit 0" > secgetspf
           chmod +x secgetspf
 
@@ -91,7 +74,7 @@ jobs:
           mkdir -p out
           make O=out ARCH=arm64 r5q_eur_open_defconfig
           
-          # Configurație eBPF Connectivity (SM8150/Android 15)
+          # BPF Flags pentru Android 15
           ./scripts/config --file out/.config -e BPF -e BPF_SYSCALL -e BPF_JIT -e CGROUP_BPF
           ./scripts/config --file out/.config -e NETFILTER_XT_MATCH_BPF -e NET_ACT_BPF -e BPF_STREAM_PARSER
           ./scripts/config --file out/.config -e NET_CLS_ACT -e NET_CLS_BPF -e STREAM_PARSER
@@ -107,7 +90,7 @@ jobs:
       - name: Upload Kernel
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-r5q-Final-v12
+          name: Kernel-r5q-Pure-BPF
           path: |
             kernel/out/arch/arm64/boot/Image.gz-dtb
             kernel/out/arch/arm64/boot/dtbo.img
