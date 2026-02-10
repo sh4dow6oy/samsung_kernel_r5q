@@ -1,94 +1,123 @@
-name: Build r5q - Xiaomi Upstream v15 (Final Syntax)
+name: S10 Lite - Kernel 4.14.356 + Lineage BPF
 
 on:
+  push:
+    branches: [ main ]
   workflow_dispatch:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
+
     steps:
-      - name: Install Build Dependencies
+      - name: Checkout S10 Lite Kernel (Lineage 19 base)
+        uses: actions/checkout@v4
+        with:
+          repository: mainey/android_kernel_samsung_r5q
+          ref: lineage-19.0
+          path: kernel
+          fetch-depth: 1
+
+      - name: Install Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y bc bison build-essential flex gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi libssl-dev python3 clang llvm lld
+          sudo apt-get install -y \
+            bc bison flex libssl-dev libelf-dev \
+            dwarves python3 lz4 make \
+            gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi
 
-      - name: Clone Samsung Kernel
+      - name: Setup Proton Clang
         run: |
-          git clone --depth=1 https://github.com/mainey/android_kernel_samsung_r5q.git -b lineage-19.0 kernel
-          cd kernel
-          git config user.email "wizard@build.com"
-          git config user.name "Kernel-Wizard"
+          git clone --depth=1 https://github.com/kdrag0n/proton-clang.git toolchain/proton-clang
 
-      - name: 1. Import Xiaomi Upstream (4.14.356)
-        run: |
-          cd kernel
-          git remote add xiaomi https://github.com/LineageOS/android_kernel_xiaomi_sm6150.git
-          git fetch xiaomi lineage-23.2 --depth=1
-          
-          # Înlocuim nucleul, păstrăm driverele Samsung
-          git checkout xiaomi/lineage-23.2 -f -- \
-            kernel/ mm/ net/ include/ lib/ ipc/ crypto/ scripts/
-          
-          git add .
-          git commit -m "Upstream to 4.14.356 & eBPF"
-
-      - name: 2. Heavy Compatibility Patching
+      - name: Add Linux Stable 4.14.y
         run: |
           cd kernel
-          # Fix 'task_struct->state' -> 'task_struct->__state'
-          # Folosim find cu verificare pentru a evita "no input files"
-          find drivers/soc/samsung/ drivers/gpu/msm/ -type f \( -name "*.c" -o -name "*.h" \) -exec sed -i 's/->state/->__state/g' {} + || echo "No files found to patch"
+          git remote add linux-stable https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git || true
+          git fetch linux-stable linux-4.14.y --depth=1
 
-          # Fix 'bool' in filter.h
-          if [ -f include/linux/filter.h ]; then
-            sed -i 's/#define _LINUX_FILTER_H/#define _LINUX_FILTER_H\n#include <linux/types.h>/g' include/linux/filter.h
-          fi
-          
-          # Fix timekeeping în GPU
-          find drivers/gpu/msm/ -type f -name "*.c" -exec sed -i 's/get_seconds()/ktime_get_real_seconds()/g' {} + || true
-
-          # Fix Samsung Traps
-          if [ -f arch/arm64/kernel/traps.c ]; then
-            sed -i 's/sec_debug_sched_msg/\/\/ sec_debug_sched_msg/g' arch/arm64/kernel/traps.c
-          fi
-          
-          # Toolchain fix - folosim | ca delimitator pentru a evita eroarea de "unknown option"
-          sed -i 's|$(srctree)/../toolchain/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/bin/aarch64-linux-android-||g' Makefile
-          
-          # Bypass Samsung Security
-          echo -e "#!/bin/sh\necho '00000000000000000000000000000000'\nexit 0" > secgetspf
-          chmod +x secgetspf
-
-      - name: 3. Configure and Build
+      - name: Upstream Kernel to 4.14.356
         run: |
           cd kernel
-          export ARCH=arm64
-          export CROSS_COMPILE=aarch64-linux-gnu-
-          export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
-          export CC=clang
-          export CLANG_TRIPLE=aarch64-linux-gnu-
-          export PATH=$PATH:$(pwd)
+          git cherry-pick \
+            $(git rev-list --reverse v4.14.191..v4.14.356) || true
 
-          mkdir -p out
-          make O=out ARCH=arm64 r5q_eur_open_defconfig
-          
-          # Configurație eBPF
-          ./scripts/config --file out/.config -e BPF -e BPF_SYSCALL -e BPF_JIT -e CGROUP_BPF
-          ./scripts/config --file out/.config -e NETFILTER_XT_MATCH_BPF -e NET_ACT_BPF -e BPF_STREAM_PARSER
-          ./scripts/config --file out/.config -e NET_CLS_ACT -e NET_CLS_BPF -e STREAM_PARSER
-          ./scripts/config --file out/.config --set-val NR_CPUS 8
-          ./scripts/config --file out/.config -d SEC_DEBUG
-          
-          yes "" | make O=out ARCH=arm64 oldconfig
-          
-          make -j$(nproc --all) O=out ARCH=arm64 \
-            LD=ld.lld \
-            KCFLAGS="-Wno-error -Wno-implicit-function-declaration -fcommon -DNR_CPUS=8"
+      - name: Fetch LineageOS BPF Source
+        run: |
+          git clone --depth=1 \
+            https://github.com/LineageOS/android_kernel_xiaomi_sm6150 \
+            -b lineage-23.2 lineage-bpf
 
-      - name: Upload Artifacts
+      - name: Port Lineage BPF Core (SAFE)
+        run: |
+          cd kernel
+
+          # kernel/bpf (doar fisierele compatibile 4.14)
+          rsync -av --ignore-existing \
+            ../lineage-bpf/kernel/bpf/ kernel/bpf/
+
+          # headers
+          rsync -av \
+            ../lineage-bpf/include/linux/bpf*.h include/linux/
+
+          rsync -av \
+            ../lineage-bpf/include/uapi/linux/bpf*.h include/uapi/linux/
+
+          rsync -av \
+            ../lineage-bpf/include/linux/filter.h include/linux/
+
+          rsync -av \
+            ../lineage-bpf/include/linux/tnum.h include/linux/
+
+      - name: Fix Known 4.14 BPF Conflicts
+        run: |
+          cd kernel
+
+          # access_ok compat
+          sed -i 's/access_ok(/access_ok(VERIFY_READ, /g' kernel/bpf/syscall.c || true
+
+          # Disable unsupported perf hooks
+          sed -i 's/PERF_BPF_EVENT_PROG_LOAD/0/g' kernel/bpf/syscall.c || true
+          sed -i 's/PERF_BPF_EVENT_PROG_UNLOAD/0/g' kernel/bpf/syscall.c || true
+
+          # Disable raw tracepoint if missing
+          sed -i 's/bpf_get_raw_tracepoint/NULL/g' kernel/bpf/syscall.c || true
+
+      - name: Configure Kernel
+        run: |
+          cd kernel
+          export PATH=$(pwd)/../toolchain/proton-clang/bin:$PATH
+
+          make ARCH=arm64 r5q_eur_open_defconfig
+
+          ./scripts/config --enable CONFIG_BPF
+          ./scripts/config --enable CONFIG_BPF_SYSCALL
+          ./scripts/config --enable CONFIG_BPF_JIT
+          ./scripts/config --enable CONFIG_CGROUP_BPF
+
+          ./scripts/config --disable CONFIG_SECURITY_SAMSUNG_RKP
+          ./scripts/config --disable CONFIG_DEFEX
+          ./scripts/config --disable CONFIG_KPERFMON
+
+          make ARCH=arm64 olddefconfig
+
+      - name: Build Kernel
+        run: |
+          cd kernel
+          export PATH=$(pwd)/../toolchain/proton-clang/bin:$PATH
+
+          export KCFLAGS="-Wno-error -Wno-incompatible-pointer-types -Wno-int-conversion"
+
+          make -j$(nproc) \
+            ARCH=arm64 \
+            CC=clang \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            LLVM=1 LLVM_IAS=1 \
+            Image.gz-dtb
+
+      - name: Upload Image
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-r5q-4.14.356-Final-v15
-          path: |
-            kernel/out/arch/arm64/boot/Image.gz-dtb
-            kernel/out/arch/arm64/boot/dtbo.img
+          name: S10Lite-4.14.356-LineageBPF
+          path: kernel/arch/arm64/boot/Image.gz-dtb
