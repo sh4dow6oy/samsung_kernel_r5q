@@ -21,43 +21,57 @@ jobs:
       - name: Setup Toolchain
         run: |
           sudo apt-get update
-          sudo apt-get install -y bc bison flex libssl-dev libelf-dev dwarves make python3 lz4
+          sudo apt-get install -y bc bison flex libssl-dev libelf-dev dwarves make python3 lz4 rsync
           mkdir -p toolchain
           git clone --depth=1 https://github.com/kdrag0n/proton-clang.git toolchain/proton-clang
 
-      - name: Apply Safe eBPF Backport
+      - name: Apply Safe eBPF Backport (Injection Mode)
         run: |
           cd kernel
+          # 1. Adăugăm constantele lipsă în UAPI BPF
           sed -i '/enum bpf_cmd/i #define BPF_OBJ_NAME_LEN 16U' include/uapi/linux/bpf.h
-          sed -i '/BPF_F__LAST_FIELD/i #define BPF_F_RDONLY_PROG (1U << 7)\n#define BPF_F_WRONLY_PROG (1U << 8)' include/uapi/linux/bpf.h
-          echo '#if LINUX_VERSION_CODE < KERNEL_VERSION(5,0,0)' >> include/linux/bpf.h
-          echo '#define access_ok(addr, size) access_ok(VERIFY_READ, addr, size)' >> include/linux/bpf.h
-          echo '#endif' >> include/linux/bpf.h
+          sed -i '/BPF_F_WRONLY/a #define BPF_F_RDONLY_PROG (1U << 7)\n#define BPF_F_WRONLY_PROG (1U << 8)' include/uapi/linux/bpf.h
+          
+          # 2. Fix access_ok compatibilitate (metoda sigură)
+          # Injectăm un shim la începutul bpf.h
+          sed -i '1i #include <linux/uaccess.h>\n#include <linux/version.h>\n#if LINUX_VERSION_CODE < KERNEL_VERSION(5,0,0)\n#undef access_ok\n#define access_ok(addr, size) __access_ok((unsigned long)(addr), (size), get_fs())\n#endif' include/linux/bpf.h
+
+          # 3. Definim structuri lipsă cerute de Android 15
           echo 'struct bpf_raw_event_map { struct bpf_map map; };' >> include/linux/bpf.h
-          echo '#define PERF_BPF_EVENT_PROG_LOAD 1' >> include/linux/perf_event.h
-          echo '#define PERF_BPF_EVENT_PROG_UNLOAD 2' >> include/linux/perf_event.h
+          
+          # 4. Fix Perf Events
+          sed -i '/enum perf_event_type/a \	PERF_BPF_EVENT_PROG_LOAD = 1,\n	PERF_BPF_EVENT_PROG_UNLOAD = 2,' include/uapi/linux/perf_event.h || \
+          echo -e "#define PERF_BPF_EVENT_PROG_LOAD 1\n#define PERF_BPF_EVENT_PROG_UNLOAD 2" >> include/linux/perf_event.h
 
       - name: Configure & Build
         run: |
           cd kernel
           export PATH=$(pwd)/../toolchain/proton-clang/bin:$PATH
-          make ARCH=arm64 CC=clang r5q_eur_open_defconfig
+          
+          make ARCH=arm64 r5q_eur_open_defconfig
+          
+          # Activăm eBPF pentru Android Networking
           ./scripts/config --enable CONFIG_BPF_SYSCALL
           ./scripts/config --enable CONFIG_BPF_JIT
           ./scripts/config --enable CONFIG_CGROUP_BPF
-          ./scripts/config --disable CONFIG_XDP_SOCKETS
-          ./scripts/config --disable CONFIG_BPF_LSM
+          ./scripts/config --enable CONFIG_NET_CLS_BPF
+          ./scripts/config --enable CONFIG_NET_ACT_BPF
+          
+          # Dezactivăm funcțiile problematice pentru 4.14
           ./scripts/config --disable CONFIG_DEBUG_INFO_BTF
-          ./scripts/config --disable CONFIG_BPF_PRELOAD
-          ./scripts/config --disable CONFIG_BPF_RAW_TRACEPOINTS
-          ./scripts/config --disable CONFIG_NETFILTER_XT_MATCH_BPF
-          make ARCH=arm64 CC=clang olddefconfig
+          ./scripts/config --disable CONFIG_BPF_LSM
+          ./scripts/config --disable CONFIG_SECURITY_SAMSUNG_RKP
+          
+          make ARCH=arm64 olddefconfig
+          
+          # Compilare cu Proton Clang și flag-uri de toleranță
           MAKE_ARGS="ARCH=arm64 CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1"
-          export KCFLAGS="-O2 -Wno-everything -Wno-error -Wno-implicit-function-declaration -Wno-int-conversion -Wno-incompatible-pointer-types"
+          export KCFLAGS="-O2 -Wno-everything -Wno-error -fcommon -DNR_CPUS=8"
+          
           make -j$(nproc --all) $MAKE_ARGS Image.gz-dtb
 
       - name: Upload Kernel Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: s10-lite-safe-ebpf-kernel
+          name: s10-lite-safe-ebpf-v1
           path: kernel/arch/arm64/boot/Image.gz-dtb
