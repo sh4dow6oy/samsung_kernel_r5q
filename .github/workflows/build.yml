@@ -1,4 +1,4 @@
-name: Build r5q Kernel - Xiaomi BPF Final Fix v9
+name: Build r5q Kernel - Xiaomi BPF Final Fix v10
 
 on:
   workflow_dispatch:
@@ -22,13 +22,11 @@ jobs:
       - name: 1. Upstream & Xiaomi eBPF Integration
         run: |
           cd kernel
-          # Upstream CLO
           git remote add clo https://git.codelinaro.org/clo/la/kernel/msm.git
           git fetch clo aosp-common/android-4.14-stable --depth=50
           git merge FETCH_HEAD -m "Upstream CLO" -X ours --allow-unrelated-histories || echo "Merge handled"
           git reset --mixed
           
-          # Import eBPF Backport (Xiaomi SM6150)
           git fetch https://github.com/LineageOS/android_kernel_xiaomi_sm6150 refs/changes/08/469808/1
           git checkout FETCH_HEAD -f -- \
             include/linux/bpf.h \
@@ -39,39 +37,37 @@ jobs:
             kernel/bpf/syscall.c \
             net/core/filter.c
           
-          # Fix Memorie Xiaomi
           git fetch https://github.com/LineageOS/android_kernel_xiaomi_sm6150 f623fe3c3acf869236649d2bb16191899c44ca6f
           git cherry-pick FETCH_HEAD || git checkout FETCH_HEAD -f -- kernel/bpf/syscall.c include/linux/bpf.h
           
           git add .
           git commit -m "BPF Core & Memory Fix Integrated"
 
-      - name: 2. Nuclear Conflict Resolution (v9)
+      - name: 2. Nuclear Conflict Resolution (v10)
         run: |
           cd kernel
-          # Fix 'bool' unknown type in filter.h
-          sed -i '1i #include <linux/types.h>' include/linux/filter.h
+          # 1. Fix 'bool' și tipuri în filter.h
+          sed -i 's/#ifndef _LINUX_FILTER_H/#ifndef _LINUX_FILTER_H\n#include <linux/types.h>/g' include/linux/filter.h
           
-          # Rezolvăm redefinirea structurilor în verifier.c (eliminăm duplicatele locale)
+          # 2. Rezolvăm conflictele bpf_map_area_alloc (eliminăm static)
+          sed -i 's/static void \*bpf_map_area_alloc/void \*bpf_map_area_alloc/g' kernel/bpf/syscall.c
+          sed -i 's/static void bpf_map_area_free/void bpf_map_area_free/g' kernel/bpf/syscall.c
+          
+          # 3. Ștergem structurile duplicat care cauzează Redefinition
+          sed -i '/struct bpf_verifier_log {/,/};/d' kernel/bpf/verifier.c
           sed -i '/struct bpf_line_info {/,/};/d' kernel/bpf/verifier.c
           sed -i '/struct bpf_func_info {/,/};/d' kernel/bpf/verifier.c
-          
-          # Uniformizăm bpf_map_area_alloc
-          sed -i 's/void \*bpf_map_area_alloc(size_t size, int numa_node)/void \*bpf_map_area_alloc(size_t size, int numa_node)/g' include/linux/bpf.h
-          
-          # Curățăm headerele globale
           sed -i '/struct bpf_verifier_env {/,/};/d' include/linux/bpf_verifier.h || true
           sed -i '/struct bpf_prog_offload_ols {/,/};/d' kernel/bpf/core.c
           
-          # Fix simboluri rețea CLO
-          sed -i 's/dev_get_by_index_rcu/dev_get_by_index/g' net/core/filter.c
-          
-          # Injectăm tipuri BPF lipsă
-          if ! grep -q "BPF_PROG_TYPE_NETFILTER" include/uapi/linux/bpf.h; then
-            sed -i '/BPF_PROG_TYPE_LWT_SEG6LOCAL,/a \	BPF_PROG_TYPE_NETFILTER,' include/uapi/linux/bpf.h
+          # 4. Sincronizăm prototipurile în bpf.h
+          if ! grep -q "void \*bpf_map_area_alloc" include/linux/bpf.h; then
+            sed -i '/#define _LINUX_BPF_H/a void *bpf_map_area_alloc(size_t size, int numa_node);\nvoid bpf_map_area_free(void *area);' include/linux/bpf.h
           fi
-
-          # Fix Samsung specific
+          
+          # 5. Fix-uri Connectivity & Samsung
+          sed -i 's/dev_get_by_index_rcu/dev_get_by_index/g' net/core/filter.c
+          sed -i '/BPF_PROG_TYPE_LWT_SEG6LOCAL,/a \	BPF_PROG_TYPE_NETFILTER,' include/uapi/linux/bapi/linux/bpf.h || sed -i '/BPF_PROG_TYPE_LWT_SEG6LOCAL,/a \	BPF_PROG_TYPE_NETFILTER,' include/uapi/linux/bpf.h
           sed -i 's/sec_debug_sched_msg/\/\/ sec_debug_sched_msg/g' arch/arm64/kernel/traps.c
           sed -i 's|$(srctree)/../toolchain/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/bin/aarch64-linux-android-||g' Makefile
           echo -e "#!/bin/sh\necho '00000000000000000000000000000000'\nexit 0" > secgetspf
@@ -106,7 +102,7 @@ jobs:
       - name: Upload Kernel
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-r5q-Xiaomi-BPF-v9
+          name: Kernel-r5q-Xiaomi-BPF-v10
           path: |
             kernel/out/arch/arm64/boot/Image.gz-dtb
             kernel/out/arch/arm64/boot/dtbo.img
