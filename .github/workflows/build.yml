@@ -1,4 +1,4 @@
-name: Build r5q Kernel - eBPF Final Fix
+name: Build r5q Kernel - eBPF Hard Backport
 
 on:
   workflow_dispatch:
@@ -19,31 +19,39 @@ jobs:
           git config user.email "wizard@build.com"
           git config user.name "Kernel-Wizard"
 
-      - name: Fetch and Apply eBPF Patch (Gerrit 387879)
+      - name: Fetch and Hard-Apply eBPF Files
         run: |
           cd kernel
+          # Luăm referința de pe Gerrit
           git fetch https://github.com/LineageOS/android_kernel_samsung_sm7125 refs/changes/79/387879/1
           
-          # Strategie: Încercăm cherry-pick, dacă dă conflict forțăm fișierele de rețea
-          git cherry-pick FETCH_HEAD -X theirs || {
-            git checkout FETCH_HEAD -- include/uapi/linux/bpf.h
-            git checkout FETCH_HEAD -- include/linux/bpf.h
-            git checkout FETCH_HEAD -- net/core/filter.c
-            git add .
-            git cherry-pick --continue --no-edit
-          }
+          echo "Forțăm checkout pe lista de fișiere eBPF solicitată..."
+          # Forțăm fișierele individuale din commit-ul LineageOS peste sursa curentă
+          git checkout FETCH_HEAD -- include/linux/bpf.h
+          git checkout FETCH_HEAD -- include/linux/bpf_verifier.h
+          git checkout FETCH_HEAD -- include/linux/netdevice.h
+          git checkout FETCH_HEAD -- include/uapi/linux/bpf.h
+          git checkout FETCH_HEAD -- kernel/bpf/core.c
+          git checkout FETCH_HEAD -- kernel/bpf/Makefile
+          git checkout FETCH_HEAD -- kernel/bpf/offload.c
+          git checkout FETCH_HEAD -- kernel/bpf/syscall.c
+          git checkout FETCH_HEAD -- kernel/bpf/verifier.c
+          git checkout FETCH_HEAD -- net/core/filter.c
+          
+          git add .
+          git commit -m "Hard backport eBPF components from LineageOS sm7125" || echo "Nimic de commit-uit"
 
       - name: Nuclear Path & Samsung Debug Fix
         run: |
           cd kernel
-          # 1. Ștergem căile hardcoded care cauzează eroarea "not found"
+          # Eliminăm căile hardcoded către toolchain-ul local Google
           sed -i 's|$(srctree)/../toolchain/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/bin/aarch64-linux-android-||g' Makefile
           sed -i 's|CROSS_COMPILE_ARM32 :=.*|CROSS_COMPILE_ARM32 := arm-linux-gnueabi-|g' Makefile
           
-          # 2. Fix BPF_OBJ_NAME_LEN (macro-ul lipsă)
+          # Injectăm BPF_OBJ_NAME_LEN (macro obligatoriu)
           sed -i '/#define _UAPI__LINUX_BPF_H/a #ifndef BPF_OBJ_NAME_LEN\n#define BPF_OBJ_NAME_LEN 16U\n#endif' include/uapi/linux/bpf.h
 
-          # 3. Comentăm codul Samsung Debug care dă erori de declarare
+          # Comentăm codul Samsung Debug care intră în conflict cu noile headere
           sed -i 's/sec_debug_sched_msg/\/\/ sec_debug_sched_msg/g' arch/arm64/kernel/traps.c
           sed -i 's/sec_debug_summary/\/\/ sec_debug_summary/g' arch/arm64/kernel/traps.c
           sed -i 's/sec_debug_save_badmode/\/\/ sec_debug_save_badmode/g' arch/arm64/kernel/traps.c
@@ -51,7 +59,6 @@ jobs:
       - name: Configure and Build
         run: |
           cd kernel
-          # Setăm variabilele de mediu pentru ARM64
           export ARCH=arm64
           export CROSS_COMPILE=aarch64-linux-gnu-
           export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
@@ -60,23 +67,23 @@ jobs:
           
           mkdir -p out
           
-          # Pasul 1: Generăm configurația folosind fișierul specificat de tine
+          # Folosim defconfig-ul indicat de tine
           make O=out ARCH=arm64 r5q_eur_open_defconfig
           
-          # Pasul 2: Injectăm setările eBPF necesare pentru Android 13/14
+          # Setări de performanță și suport eBPF
           scripts/config --file out/.config --set-val NR_CPUS 8
           scripts/config --file out/.config -d SEC_DEBUG
           scripts/config --file out/.config -e BPF -e BPF_SYSCALL -e BPF_JIT -e CGROUP_BPF -e NETFILTER_XT_MATCH_BPF
           
-          # Pasul 3: Compilăm folosind Linker-ul din sistem (LD=ld.lld) pentru a evita eroarea "not found"
+          # Compilare forțată cu Linker-ul modern LLD
           make -j$(nproc --all) O=out ARCH=arm64 \
             LD=ld.lld \
             KCFLAGS="-Wno-error -Wno-implicit-function-declaration -fcommon -DNR_CPUS=8"
 
-      - name: Upload Kernel Artifacts
+      - name: Upload Kernel Image
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-r5q-eBPF-Ready
+          name: Kernel-r5q-eBPF-Hard-Backport
           path: |
             kernel/out/arch/arm64/boot/Image.gz-dtb
             kernel/out/arch/arm64/boot/dtbo.img
