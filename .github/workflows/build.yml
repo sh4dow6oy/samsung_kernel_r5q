@@ -22,39 +22,42 @@ jobs:
       - name: 1. Upstream & eBPF Patching (Clean)
         run: |
           cd kernel
-          # Upstream CLO
+          # Upstream CLO 4.14 Stable
           git remote add clo https://git.codelinaro.org/clo/la/kernel/msm.git
           git fetch clo aosp-common/android-4.14-stable --depth=50
           git merge FETCH_HEAD -m "Upstream CLO" -X ours --allow-unrelated-histories || echo "Merged"
           
-          # eBPF Connectivity
+          # eBPF Core & Offload Files
           git fetch https://github.com/LineageOS/android_kernel_samsung_sm7125 refs/changes/79/387879/1
-          git checkout FETCH_HEAD -f -- net/core/filter.c kernel/bpf/core.c
+          git checkout FETCH_HEAD -f -- net/core/filter.c kernel/bpf/core.c kernel/bpf/offload.c kernel/bpf/Makefile
           
-          # Offload Fix
+          # Hardware Offload Logic
           git fetch https://github.com/LineageOS/android_kernel_samsung_sm7125 c3a78a941a2f57ba2d65923b7c2bdf704f1cef98
           git cherry-pick FETCH_HEAD -X theirs || { git cherry-pick --abort; git checkout FETCH_HEAD -f -- .; }
+          
+          git add .
+          git commit -m "eBPF Infrastructure Integrated"
 
-      - name: 2. Nuclear Conflict Resolution
+      - name: 2. Nuclear Conflict Resolution & Linker Fix
         run: |
           cd kernel
-          # Rezolvăm redefinirea 'struct bpf_prog_offload_ols' în core.c
-          # Ștergem definiția din core.c pentru a o folosi pe cea din headerele sistemului
+          # Ștergem definitiile duplicat care blochează core.c
           sed -i '/struct bpf_prog_offload_ols {/,/};/d' kernel/bpf/core.c
-          
-          # Rezolvăm conflictele din headere (Verifier & UAPI)
           sed -i '/struct bpf_verifier_env {/,/};/d' include/linux/bpf_verifier.h || true
           sed -i '/struct bpf_line_info {/,/};/d' include/uapi/linux/bpf.h || true
           
-          # Injectăm tipul de program NETFILTER dacă lipsește (cerut de noile patch-uri)
-          sed -i '/BPF_PROG_TYPE_LWT_SEG6LOCAL,/a \	BPF_PROG_TYPE_NETFILTER,' include/uapi/linux/bpf.h
+          # Injectăm manual prototipurile funcțiilor offload în headere dacă lipsesc
+          if ! grep -q "bpf_prog_offload_init" include/linux/bpf.h; then
+            sed -i '/#define _LINUX_BPF_H/a \int bpf_prog_offload_init(struct bpf_prog *prog, union bpf_attr *attr);\nvoid bpf_prog_offload_destroy(struct bpf_prog *prog);' include/linux/bpf.h
+          fi
 
-          # Fix BPF_OBJ_NAME_LEN & Samsung Traps
-          sed -i '/#define _UAPI__LINUX_BPF_H/a #ifndef BPF_OBJ_NAME_LEN\n#define BPF_OBJ_NAME_LEN 16U\n#endif' include/uapi/linux/bpf.h
-          sed -i 's/sec_debug_sched_msg/\/\/ sec_debug_sched_msg/g' arch/arm64/kernel/traps.c
+          # Fix BPF_PROG_TYPE_NETFILTER
+          sed -i '/BPF_PROG_TYPE_LWT_SEG6LOCAL,/a \	BPF_PROG_TYPE_NETFILTER,' include/uapi/linux/bpf.h
           
-          # Fix Makefile & secgetspf
+          # Fix Samsung Debug & Makefile
+          sed -i 's/sec_debug_sched_msg/\/\/ sec_debug_sched_msg/g' arch/arm64/kernel/traps.c
           sed -i 's|$(srctree)/../toolchain/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/bin/aarch64-linux-android-||g' Makefile
+          
           echo -e "#!/bin/sh\necho '00000000000000000000000000000000'\nexit 0" > secgetspf
           chmod +x secgetspf
 
@@ -71,15 +74,16 @@ jobs:
           mkdir -p out
           make O=out ARCH=arm64 r5q_eur_open_defconfig
           
-          # Connectivity Flags
+          # Connectivity & eBPF Config
           scripts/config --file out/.config -e BPF -e BPF_SYSCALL -e BPF_JIT -e CGROUP_BPF
           scripts/config --file out/.config -e NETFILTER_XT_MATCH_BPF -e NET_ACT_BPF -e BPF_STREAM_PARSER
+          scripts/config --file out/.config -e STREAM_PARSER
           scripts/config --file out/.config --set-val NR_CPUS 8
           scripts/config --file out/.config -d SEC_DEBUG
           
           yes "" | make O=out ARCH=arm64 oldconfig
           
-          # Build cu flag-uri de toleranță pentru redefiniri rămase
+          # Build
           make -j$(nproc --all) O=out ARCH=arm64 \
             LD=ld.lld \
             KCFLAGS="-Wno-error -Wno-implicit-function-declaration -fcommon -DNR_CPUS=8"
@@ -87,7 +91,7 @@ jobs:
       - name: Upload Kernel
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-r5q-CLO-eBPF-Final
+          name: Kernel-r5q-CLO-eBPF-v3
           path: |
             kernel/out/arch/arm64/boot/Image.gz-dtb
             kernel/out/arch/arm64/boot/dtbo.img
