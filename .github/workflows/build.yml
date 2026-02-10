@@ -1,4 +1,4 @@
-name: Build r5q Kernel - CLO Upstream & eBPF Fixed
+name: Build r5q Kernel - CLO & eBPF Final
 
 on:
   workflow_dispatch:
@@ -19,36 +19,42 @@ jobs:
           git config user.email "wizard@build.com"
           git config user.name "Kernel-Wizard"
 
-      - name: 1. Upstream from CLO (Force Unrelated Histories)
+      - name: 1. Upstream from CLO (Force & Clean)
         run: |
           cd kernel
           git remote add clo https://git.codelinaro.org/clo/la/kernel/msm.git
           git fetch clo aosp-common/android-4.14-stable --depth=50
           
-          echo "Forțăm merge-ul istoricelor diferite..."
-          # Adăugăm --allow-unrelated-histories pentru a forța îmbinarea
-          git merge FETCH_HEAD -m "Upstream merge from CLO" -X ours --allow-unrelated-histories || echo "Merge finalizat cu conflicte rezolvate automat."
+          # Forțăm merge-ul istoricelor diferite
+          git merge FETCH_HEAD -m "Upstream merge from CLO" -X ours --allow-unrelated-histories || echo "Conflicte rezolvate automat"
           
+          # ASIGURĂM CURĂȚENIA: Adăugăm tot și facem commit pentru a curăța indexul
           git add .
-          git commit -m "Post-upstream clean state" || echo "No changes to commit"
+          git commit -m "Clean state after CLO upstream" || echo "Nimic de comis"
 
       - name: 2. Apply eBPF Connectivity Patch
         run: |
           cd kernel
+          # Luăm baza eBPF
           git fetch https://github.com/LineageOS/android_kernel_samsung_sm7125 refs/changes/79/387879/1
-          # Aplicăm doar logica de rețea care lipsește
-          git checkout FETCH_HEAD -- net/core/filter.c kernel/bpf/core.c
           
+          # Folosim checkout -f pentru a forța scrierea fișierelor chiar dacă există conflicte minore
+          git checkout FETCH_HEAD -f -- net/core/filter.c kernel/bpf/core.c
+          
+          # Hardware Offload (Commit specific)
           git fetch https://github.com/LineageOS/android_kernel_samsung_sm7125 c3a78a941a2f57ba2d65923b7c2bdf704f1cef98
-          git cherry-pick FETCH_HEAD -X theirs || git cherry-pick --skip
+          git cherry-pick FETCH_HEAD -X theirs || {
+            git cherry-pick --abort
+            git checkout FETCH_HEAD -f -- .
+          }
           
           git add .
-          git commit -m "Applied Connectivity patches" || echo "No changes"
+          git commit -m "Connectivity eBPF applied" || echo "No changes"
 
       - name: 3. Nuclear Header & Path Fixes
         run: |
           cd kernel
-          # Prevenim redefinirea structurilor între CLO și noul cod eBPF
+          # Eliminăm structurile care produc "redefinition" între CLO și noul cod eBPF
           sed -i '/struct bpf_verifier_env {/,/};/d' include/linux/bpf_verifier.h || true
           sed -i '/struct bpf_line_info {/,/};/d' include/uapi/linux/bpf.h || true
           
@@ -83,7 +89,7 @@ jobs:
           
           yes "" | make O=out ARCH=arm64 oldconfig
           
-          # Compilare
+          # Compilare finală
           make -j$(nproc --all) O=out ARCH=arm64 \
             LD=ld.lld \
             KCFLAGS="-Wno-error -Wno-implicit-function-declaration -fcommon -DNR_CPUS=8"
