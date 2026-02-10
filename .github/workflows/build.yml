@@ -1,4 +1,4 @@
-name: S10 Lite - Safe eBPF v6 (Redefinition Fix)
+name: S10 Lite - Safe eBPF v8 (Robust Patching)
 
 on:
   push:
@@ -25,43 +25,45 @@ jobs:
           mkdir -p toolchain
           git clone --depth=1 https://github.com/kdrag0n/proton-clang.git toolchain/proton-clang
 
-      - name: Hard Patching & Samsung Cleanup
+      - name: Surgical Header Patching
         run: |
           cd kernel
-          # 1. Reset la bpf.h pentru a pleca de la o stare curata
-          git checkout include/uapi/linux/bpf.h
-          git checkout include/linux/bpf.h
+          # 1. Reset headere pentru a asigura un punct de plecare curat
+          git checkout include/uapi/linux/bpf.h include/linux/bpf.h
 
-          # 2. Injectare Safe (folosim #ifndef pentru a evita redefinirea)
-          # Adaugam garda de protectie in jurul structurii bpf_raw_event_map
-          sed -i '$a #ifndef __BPF_RAW_EVENT_MAP_DEFINED\n#define __BPF_RAW_EVENT_MAP_DEFINED\nstruct bpf_raw_event_map { struct bpf_map map; };\n#endif' include/linux/bpf.h
-
-          # 3. Fix Enum BPF (Sintaxa confirmata)
+          # 2. Injectare constante BPF folosind o metoda care nu strica indentarea (crucial pentru Clang)
+          # Folosim printf pentru a evita problemele de interpretare a caracterelor speciale de catre sed
+          NEW_BPF_FLAGS="\tBPF_F_RDONLY_PROG = (1U << 7),\n\tBPF_F_WRONLY_PROG = (1U << 8),"
+          sed -i "/BPF_F_WRONLY/a $NEW_BPF_FLAGS" include/uapi/linux/bpf.h
           sed -i '/BPF_OBJ_GET,/a \	BPF_OBJ_NAME_LEN = 16,' include/uapi/linux/bpf.h
-          sed -i '/BPF_F_WRONLY[[:space:]]*=[[:space:]]*(1U << 6),/a \	BPF_F_RDONLY_PROG = (1U << 7),\n	BPF_F_WRONLY_PROG = (1U << 8),' include/uapi/linux/bpf.h
 
-          # 4. Bypass Total Samsung Security & Toolchain
-          # Stergem liniile care forteaza folosirea GCC-ului vechi din Makefile
+          # 3. Rezolvare redefinire structura bpf_raw_event_map
+          # In loc sa o adaugam la final, o injectam cu protectie IFNDEF chiar dupa struct bpf_map
+          sed -i '/struct bpf_map {/i struct bpf_raw_event_map;\n#ifndef __BPF_RAW_MAP_FIX\n#define __BPF_RAW_MAP_FIX\nstruct bpf_raw_event_map { struct bpf_map map; };\n#endif\n' include/linux/bpf.h
+
+          # 4. Makefile Fixes (Samsung specific)
+          # Eliminam referinta la toolchain-ul lor de 4.9 care nu exista
           sed -i 's|$(srctree)/../toolchain/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/bin/aarch64-linux-android-||g' Makefile
           
-          # Cream un binar fals pentru secgetspf in loc de script
+          # Bypass Samsung Security (SPF)
           echo "int main() { return 0; }" > secgetspf.c
           gcc secgetspf.c -o secgetspf
           chmod +x secgetspf
           sudo cp secgetspf /usr/local/bin/
-          cp secgetspf .
 
       - name: Configure & Build
         run: |
           cd kernel
+          # Setam PATH corect pentru a gasi atat Clang cat si micul binar secgetspf
           export PATH=$(pwd):$(pwd)/../toolchain/proton-clang/bin:$PATH
           
-          # Parametrii de build (fortam LLVM pentru a ignora erorile de toolchain Samsung)
+          # Argumente Build
           export MAKE_ARGS="ARCH=arm64 CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1"
           
+          # 1. Defconfig
           make $MAKE_ARGS r5q_eur_open_defconfig
           
-          # Activare eBPF
+          # 2. Android 15 eBPF Requirements
           ./scripts/config --enable CONFIG_BPF_SYSCALL
           ./scripts/config --enable CONFIG_BPF_JIT
           ./scripts/config --enable CONFIG_CGROUP_BPF
@@ -70,13 +72,14 @@ jobs:
           
           make $MAKE_ARGS olddefconfig
           
-          # KCFLAGS agresiv pentru a ignora orice redefinire ramasa
-          export KCFLAGS="-O2 -Wno-everything -Wno-error -fcommon -D__BPF_RAW_EVENT_MAP_DEFINED"
+          # 3. Compilare efectiva cu suprimare masiva a warning-urilor de compatibilitate
+          # Adaugam -fno-stack-protector daca build-ul pica la final (optional)
+          export KCFLAGS="-O2 -Wno-everything -Wno-error -fcommon -Wno-incompatible-pointer-types"
           
           make -j$(nproc --all) $MAKE_ARGS Image.gz-dtb
 
-      - name: Upload Kernel
+      - name: Upload Kernel Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: s10-lite-ebpf-v22
+          name: s10-lite-ebpf-v24
           path: kernel/arch/arm64/boot/Image.gz-dtb
