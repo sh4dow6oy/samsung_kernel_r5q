@@ -1,4 +1,4 @@
-name: S10 Lite - Safe eBPF v4 (Final Fix)
+name: S10 Lite - Safe eBPF v5 (Clean Patch)
 
 on:
   push:
@@ -25,35 +25,42 @@ jobs:
           mkdir -p toolchain
           git clone --depth=1 https://github.com/kdrag0n/proton-clang.git toolchain/proton-clang
 
-      - name: Patch BPF Syntax & Samsung Makefile
+      - name: Patch BPF & Cleanup Makefile
         run: |
           cd kernel
-          # 1. Fix BPF enum syntax - adaugam elementele corect cu virgula
-          # Cautam ultima acolada a enum-ului bpf_cmd si inseram inainte
-          sed -i '/BPF_OBJ_GET,/a \	BPF_OBJ_NAME_LEN = 16,' include/uapi/linux/bpf.h
-          sed -i '/BPF_F_WRONLY/a \	BPF_F_RDONLY_PROG = (1U << 7),\n	BPF_F_WRONLY_PROG = (1U << 8),' include/uapi/linux/bpf.h
+          # 1. Resetăm bpf.h la starea originală pentru a evita dublările din build-urile trecute
+          git checkout include/uapi/linux/bpf.h
 
-          # 2. Curatam Makefile-ul de caile Samsung inexistente
-          # Eliminam prefixul care cauta folderul de GCC 4.9 local
-          sed -i 's|$(srctree)/../toolchain/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/bin/aarch64-linux-android-||g' Makefile
+          # 2. Inserăm constantele BPF corect (Sintaxă fixă pentru Enum)
+          # Folosim un marker existent (BPF_OBJ_GET) pentru a insera noile tipuri
+          sed -i '/BPF_OBJ_GET,/a \	BPF_OBJ_NAME_LEN = 16,' include/uapi/linux/bpf.h
           
-          # 3. Cream scriptul secgetspf necesar pentru build
+          # Căutăm BPF_F_WRONLY și inserăm flag-urile imediat după, cu virgulă la final
+          sed -i '/BPF_F_WRONLY[[:space:]]*=[[:space:]]*(1U << 6),/a \	BPF_F_RDONLY_PROG = (1U << 7),\n	BPF_F_WRONLY_PROG = (1U << 8),' include/uapi/linux/bpf.h
+
+          # 3. Bypass Samsung Security (SPF) - Trebuie să fie vizibil global
           echo -e "#!/bin/sh\necho '00000000000000000000000000000000'\nexit 0" > secgetspf
           chmod +x secgetspf
+          sudo cp secgetspf /usr/local/bin/
+
+          # 4. Curățăm Makefile de path-uri brute
+          sed -i 's|$(srctree)/../toolchain/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/bin/aarch64-linux-android-||g' Makefile
+
+          # 5. Adăugăm structura lipsă în header-ul de sistem
+          echo 'struct bpf_raw_event_map { struct bpf_map map; };' >> include/linux/bpf.h
 
       - name: Configure & Build
         run: |
           cd kernel
-          # Adaugam toolchain-ul si scriptul secgetspf in PATH
           export PATH=$(pwd):$(pwd)/../toolchain/proton-clang/bin:$PATH
           
-          # Definirea argumentelor de build
+          # Argumente de build pentru LLVM/Clang
           export MAKE_ARGS="ARCH=arm64 CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1"
           
-          # Generare config
+          # Generăm config-ul
           make $MAKE_ARGS r5q_eur_open_defconfig
           
-          # Activare BPF pentru Android 15
+          # Forțăm activarea eBPF
           ./scripts/config --enable CONFIG_BPF_SYSCALL
           ./scripts/config --enable CONFIG_BPF_JIT
           ./scripts/config --enable CONFIG_CGROUP_BPF
@@ -62,12 +69,12 @@ jobs:
           
           make $MAKE_ARGS olddefconfig
           
-          # Build propriu-zis cu suprimarea erorilor de tip
-          export KCFLAGS="-O2 -Wno-everything -Wno-error -fcommon"
+          # Compilare cu flag-uri de compatibilitate
+          export KCFLAGS="-Wno-everything -Wno-error -fcommon -DNR_CPUS=8"
           make -j$(nproc --all) $MAKE_ARGS Image.gz-dtb
 
       - name: Upload Kernel
         uses: actions/upload-artifact@v4
         with:
-          name: s10-lite-ebpf-kernel-v20
+          name: s10-lite-ebpf-v21
           path: kernel/arch/arm64/boot/Image.gz-dtb
