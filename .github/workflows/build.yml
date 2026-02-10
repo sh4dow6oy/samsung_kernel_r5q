@@ -1,4 +1,4 @@
-name: Build r5q Kernel - Pure BPF (No Upstream)
+name: Build r5q Kernel - Modern eBPF (lineage-23.2)
 
 on:
   workflow_dispatch:
@@ -19,45 +19,43 @@ jobs:
           git config user.email "wizard@build.com"
           git config user.name "Kernel-Wizard"
 
-      - name: 1. Apply Xiaomi eBPF Backport
+      - name: 1. Import Modern eBPF from Xiaomi 23.2
         run: |
           cd kernel
-          # Importam doar ce ne trebuie pentru Android 14/15 Connectivity
-          git fetch https://github.com/LineageOS/android_kernel_xiaomi_sm6150 refs/changes/08/469808/1
-          git checkout FETCH_HEAD -f -- \
+          # Adaugam Xiaomi ca sursa pentru eBPF modern (Android 15)
+          git remote add xiaomi https://github.com/LineageOS/android_kernel_xiaomi_sm6150.git
+          git fetch xiaomi lineage-23.2 --depth=1
+          
+          # Inlocuim complet infrastructura eBPF veche cu cea moderna
+          git checkout xiaomi/lineage-23.2 -f -- \
             include/linux/bpf.h \
+            include/linux/bpf_verifier.h \
             include/linux/filter.h \
             include/uapi/linux/bpf.h \
-            kernel/bpf/core.c \
-            kernel/bpf/verifier.c \
-            kernel/bpf/syscall.c \
+            kernel/bpf/ \
             net/core/filter.c
           
-          # Fix Memorie (f623fe3) - Esential pentru Maps
-          git fetch https://github.com/LineageOS/android_kernel_xiaomi_sm6150 f623fe3c3acf869236649d2bb16191899c44ca6f
-          git checkout FETCH_HEAD -f -- kernel/bpf/syscall.c include/linux/bpf.h
-          
           git add .
-          git commit -m "Pure eBPF Backport applied"
+          git commit -m "Integrated modern eBPF subsystem from lineage-23.2"
 
-      - name: 2. Minimal Fixes (No Conflict Edition)
+      - name: 2. Critical Fixes for Samsung Compatibility
         run: |
           cd kernel
-          # 1. Fix 'bool' in filter.h
+          # Fix 'bool' unknown type in filter.h
           sed -i 's/#define _LINUX_FILTER_H/#define _LINUX_FILTER_H\n#include <linux/types.h>/g' include/linux/filter.h
           
-          # 2. Sincronizam alocatorul de memorie
-          sed -i 's/static void \*bpf_map_area_alloc/void \*bpf_map_area_alloc/g' kernel/bpf/syscall.c
-          sed -i 's/static void bpf_map_area_free/void bpf_map_area_free/g' kernel/bpf/syscall.c
+          # Rezolvam simbolurile de retea (Samsung foloseste variante standard)
+          sed -i 's/dev_get_by_index_rcu/dev_get_by_index/g' net/core/filter.c
           
-          # 3. Injectam tipul BPF_PROG_TYPE_NETFILTER (Locul corect in UAPI)
-          sed -i '/BPF_PROG_TYPE_LWT_SEG6LOCAL,/a \	BPF_PROG_TYPE_NETFILTER,' include/uapi/linux/bpf.h
+          # Sincronizam alocatorul de memorie Xiaomi cu kernel-ul Samsung
+          sed -i 's/static void \*bpf_map_area_alloc/void \*bpf_map_area_alloc/g' kernel/bpf/syscall.c || true
+          sed -i 's/static void bpf_map_area_free/void bpf_map_area_free/g' kernel/bpf/syscall.c || true
           
-          # 4. Fix Samsung Traps & Makefile
+          # Fix Samsung Traps & Makefile
           sed -i 's/sec_debug_sched_msg/\/\/ sec_debug_sched_msg/g' arch/arm64/kernel/traps.c
           sed -i 's|$(srctree)/../toolchain/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/bin/aarch64-linux-android-||g' Makefile
           
-          # Bypass Samsung Security
+          # Securitate Samsung bypass
           echo -e "#!/bin/sh\necho '00000000000000000000000000000000'\nexit 0" > secgetspf
           chmod +x secgetspf
 
@@ -74,7 +72,7 @@ jobs:
           mkdir -p out
           make O=out ARCH=arm64 r5q_eur_open_defconfig
           
-          # BPF Flags pentru Android 15
+          # Activam suportul eBPF complet (necesar pentru noul kernel/bpf/)
           ./scripts/config --file out/.config -e BPF -e BPF_SYSCALL -e BPF_JIT -e CGROUP_BPF
           ./scripts/config --file out/.config -e NETFILTER_XT_MATCH_BPF -e NET_ACT_BPF -e BPF_STREAM_PARSER
           ./scripts/config --file out/.config -e NET_CLS_ACT -e NET_CLS_BPF -e STREAM_PARSER
@@ -83,6 +81,7 @@ jobs:
           
           yes "" | make O=out ARCH=arm64 oldconfig
           
+          # Compilare cu flag-uri de compatibilitate
           make -j$(nproc --all) O=out ARCH=arm64 \
             LD=ld.lld \
             KCFLAGS="-Wno-error -Wno-implicit-function-declaration -fcommon -DNR_CPUS=8"
@@ -90,7 +89,7 @@ jobs:
       - name: Upload Kernel
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-r5q-Pure-BPF
+          name: Kernel-r5q-Modern-BPF-A15
           path: |
             kernel/out/arch/arm64/boot/Image.gz-dtb
             kernel/out/arch/arm64/boot/dtbo.img
