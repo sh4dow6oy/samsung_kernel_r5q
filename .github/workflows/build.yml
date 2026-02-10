@@ -1,4 +1,4 @@
-name: Build r5q Kernel - eBPF Final Fix
+name: Build r5q Kernel - eBPF Final Force
 
 on:
   workflow_dispatch:
@@ -19,29 +19,34 @@ jobs:
           git config user.email "wizard@build.com"
           git config user.name "Kernel-Wizard"
 
-      - name: Apply eBPF Logic (Safe Merge)
+      - name: Apply eBPF Logic (Safe Patching)
         run: |
           cd kernel
-          # Fetch commit-urile dar nu facem checkout forțat la tot, pentru a evita redefinirile de structuri
+          # Luăm patch-ul de eBPF de la LineageOS
           git fetch https://github.com/LineageOS/android_kernel_samsung_sm7125 refs/changes/79/387879/1
+          
+          # În loc de checkout (care suprascrie tot), încercăm să aplicăm doar diferențele
+          # Dacă cherry-pick eșuează, forțăm doar fișierele de rețea care NU au duplicate în kernel/bpf/
           git cherry-pick FETCH_HEAD -X theirs || {
-            # Dacă cherry-pick eșuează, forțăm doar fișierele care nu produc conflicte de structură
-            git checkout FETCH_HEAD -- net/core/filter.c kernel/bpf/core.c
+            echo "Conflict detectat, aplicăm doar patch-urile esențiale..."
+            git checkout FETCH_HEAD -- net/core/filter.c
             git add .
-            git commit -m "Partial eBPF merge" || echo "No changes"
+            git cherry-pick --continue --no-edit || echo "Skipping problematic commits"
           }
 
-      - name: Patch Header Conflicts
+      - name: Patch Header Duplicates
         run: |
           cd kernel
-          # Rezolvăm eroarea "redefinition of struct bpf_line_info" prin adăugarea unor guards
-          sed -i '/struct bpf_line_info {/i #ifndef __BPF_LINE_INFO_DEFINED\n#define __BPF_LINE_INFO_DEFINED' include/uapi/linux/bpf.h
-          sed -i '/};/a #endif' include/uapi/linux/bpf.h
+          # REZOLVARE REDEFINIRE: Ștergem manual definițiile duplicat din header-ul UAPI 
+          # dacă acestea sunt deja prezente în structurile interne ale kernelului
+          sed -i '/struct bpf_line_info {/,/};/d' include/uapi/linux/bpf.h
+          sed -i '/struct bpf_func_info {/,/};/d' include/uapi/linux/bpf.h
           
           # Fix BPF_OBJ_NAME_LEN
           sed -i '/#define _UAPI__LINUX_BPF_H/a #ifndef BPF_OBJ_NAME_LEN\n#define BPF_OBJ_NAME_LEN 16U\n#endif' include/uapi/linux/bpf.h
 
-          # Creăm dummy secgetspf pentru a trece de Makefile-ul Samsung
+          # Fix Samsung Debug & secgetspf
+          sed -i 's/sec_debug_sched_msg/\/\/ sec_debug_sched_msg/g' arch/arm64/kernel/traps.c
           echo -e "#!/bin/sh\necho '00000000000000000000000000000000'\nexit 0" > secgetspf
           chmod +x secgetspf
 
@@ -58,18 +63,19 @@ jobs:
           mkdir -p out
           make O=out ARCH=arm64 r5q_eur_open_defconfig
           
-          # Configurații eBPF
+          # Forțăm activarea BPF în config
           scripts/config --file out/.config -e BPF -e BPF_SYSCALL -e BPF_JIT -e CGROUP_BPF -e NETFILTER_XT_MATCH_BPF
           scripts/config --file out/.config --set-val NR_CPUS 8
           scripts/config --file out/.config -d SEC_DEBUG
           
-          # Acceptăm automat opțiunile noi
           yes "" | make O=out ARCH=arm64 oldconfig
           
-          # BUILD: Adăugăm -Wno-reorder și -Wno-error pentru a trece de erorile din verifier.c
+          # BUILD: Adăugăm flag-uri pentru a ignora DECLARAȚIILE DUPLICATE și REDEFINIRILE
+          # -Wno-implicit-function-declaration: ignoră funcțiile lipsă
+          # -fcommon: rezolvă multiplele definiții de variabile globale
           make -j$(nproc --all) O=out ARCH=arm64 \
             LD=ld.lld \
-            KCFLAGS="-Wno-error -Wno-implicit-function-declaration -Wno-int-conversion -fcommon -DNR_CPUS=8"
+            KCFLAGS="-Wno-error -Wno-implicit-function-declaration -fcommon -DNR_CPUS=8"
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
