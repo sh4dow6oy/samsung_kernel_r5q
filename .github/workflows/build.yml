@@ -1,4 +1,4 @@
-name: Build r5q Kernel - Final eBPF & Toolchain Fix
+name: Build r5q Kernel - eBPF Final Fix
 
 on:
   workflow_dispatch:
@@ -14,7 +14,7 @@ jobs:
 
       - name: Clone Mainey Kernel (Base lineage-19.0)
         run: |
-          git clone --depth=500 https://github.com/mainey/android_kernel_samsung_r5q.git -b lineage-19.0 kernel
+          git clone --depth=100 https://github.com/mainey/android_kernel_samsung_r5q.git -b lineage-19.0 kernel
           cd kernel
           git config user.email "wizard@build.com"
           git config user.name "Kernel-Wizard"
@@ -24,9 +24,8 @@ jobs:
           cd kernel
           git fetch https://github.com/LineageOS/android_kernel_samsung_sm7125 refs/changes/79/387879/1
           
-          # Aplicăm patch-ul cu prioritate pentru codul LineageOS
+          # Strategie: Încercăm cherry-pick, dacă dă conflict forțăm fișierele de rețea
           git cherry-pick FETCH_HEAD -X theirs || {
-            echo "Forțăm fișierele eBPF critice..."
             git checkout FETCH_HEAD -- include/uapi/linux/bpf.h
             git checkout FETCH_HEAD -- include/linux/bpf.h
             git checkout FETCH_HEAD -- net/core/filter.c
@@ -34,57 +33,50 @@ jobs:
             git cherry-pick --continue --no-edit
           }
 
-      - name: Hotfix Path & Samsung Traps
+      - name: Nuclear Path & Samsung Debug Fix
         run: |
           cd kernel
-          # 1. Eliminăm referințele hardcoded către toolchain-ul local Samsung care nu există pe GitHub
-          sed -i 's/CROSS_COMPILE_ARM32 :=/# CROSS_COMPILE_ARM32 :=/g' Makefile
+          # 1. Ștergem căile hardcoded care cauzează eroarea "not found"
+          sed -i 's|$(srctree)/../toolchain/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/bin/aarch64-linux-android-||g' Makefile
+          sed -i 's|CROSS_COMPILE_ARM32 :=.*|CROSS_COMPILE_ARM32 := arm-linux-gnueabi-|g' Makefile
           
-          # 2. Definim constanta BPF_OBJ_NAME_LEN pentru a trece de eroarea de compilare
-          sed -i '/#define _UAPI__LINUX_BPF_H/a \
-          \
-          #ifndef BPF_OBJ_NAME_LEN\
-          #define BPF_OBJ_NAME_LEN 16U\
-          #endif' include/uapi/linux/bpf.h
+          # 2. Fix BPF_OBJ_NAME_LEN (macro-ul lipsă)
+          sed -i '/#define _UAPI__LINUX_BPF_H/a #ifndef BPF_OBJ_NAME_LEN\n#define BPF_OBJ_NAME_LEN 16U\n#endif' include/uapi/linux/bpf.h
 
-          # 3. Comentăm funcțiile Samsung Debug care blochează build-ul (Implicit Declaration)
+          # 3. Comentăm codul Samsung Debug care dă erori de declarare
           sed -i 's/sec_debug_sched_msg/\/\/ sec_debug_sched_msg/g' arch/arm64/kernel/traps.c
           sed -i 's/sec_debug_summary/\/\/ sec_debug_summary/g' arch/arm64/kernel/traps.c
           sed -i 's/sec_debug_save_badmode/\/\/ sec_debug_save_badmode/g' arch/arm64/kernel/traps.c
 
-          # 4. Curățăm marcajele de conflict
-          find . -type f -name "*.h" -o -name "*.c" | xargs sed -i '/^<<<<<<< /d; /^=======/d; /^>>>>>>> /d' || true
-
-      - name: Configure Defconfig
+      - name: Configure and Build
         run: |
           cd kernel
-          mkdir -p out
-          # Forțăm ARCH=arm64 pentru a nu căuta config-ul în x86
-          make O=out ARCH=arm64 r5q_defconfig
-          
-          # Ajustăm configurația pentru Android 13/14 și fixăm NR_CPUS
-          scripts/config --file out/.config --set-val NR_CPUS 8
-          scripts/config --file out/.config -d SEC_DEBUG
-          scripts/config --file out/.config -e BPF -e BPF_SYSCALL -e BPF_JIT -e CGROUP_BPF -e NETFILTER_XT_MATCH_BPF -e NETFILTER_XT_TARGET_BPF
-
-      - name: Build Kernel (Clang Toolchain)
-        run: |
-          cd kernel
-          # Setăm variabilele necesare pentru cross-compilare
+          # Setăm variabilele de mediu pentru ARM64
           export ARCH=arm64
           export CROSS_COMPILE=aarch64-linux-gnu-
           export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
           export CC=clang
           export CLANG_TRIPLE=aarch64-linux-gnu-
           
-          # Compilăm imaginea kernelului
-          # KCFLAGS conține hack-urile de compatibilitate pentru a ignora warning-urile și erorile specifice Samsung
-          make -j$(nproc --all) O=out ARCH=arm64 KCFLAGS="-Wno-error -Wno-implicit-function-declaration -fcommon -DNR_CPUS=8"
+          mkdir -p out
+          
+          # Pasul 1: Generăm configurația folosind fișierul specificat de tine
+          make O=out ARCH=arm64 r5q_eur_open_defconfig
+          
+          # Pasul 2: Injectăm setările eBPF necesare pentru Android 13/14
+          scripts/config --file out/.config --set-val NR_CPUS 8
+          scripts/config --file out/.config -d SEC_DEBUG
+          scripts/config --file out/.config -e BPF -e BPF_SYSCALL -e BPF_JIT -e CGROUP_BPF -e NETFILTER_XT_MATCH_BPF
+          
+          # Pasul 3: Compilăm folosind Linker-ul din sistem (LD=ld.lld) pentru a evita eroarea "not found"
+          make -j$(nproc --all) O=out ARCH=arm64 \
+            LD=ld.lld \
+            KCFLAGS="-Wno-error -Wno-implicit-function-declaration -fcommon -DNR_CPUS=8"
 
-      - name: Upload Kernel Image
+      - name: Upload Kernel Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-r5q-Final-Build
+          name: Kernel-r5q-eBPF-Ready
           path: |
             kernel/out/arch/arm64/boot/Image.gz-dtb
             kernel/out/arch/arm64/boot/dtbo.img
