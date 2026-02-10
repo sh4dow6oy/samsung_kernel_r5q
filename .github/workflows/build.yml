@@ -1,4 +1,4 @@
-name: Build r5q Kernel - Xiaomi BPF Final Fix
+name: Build r5q Kernel - Xiaomi BPF Final Fix v9
 
 on:
   workflow_dispatch:
@@ -46,25 +46,32 @@ jobs:
           git add .
           git commit -m "BPF Core & Memory Fix Integrated"
 
-      - name: 2. Resolve Type Conflicts (Fixing syscall.c)
+      - name: 2. Nuclear Conflict Resolution (v9)
         run: |
           cd kernel
-          # Forțăm prototipul bpf_map_area_alloc să fie uniform peste tot
+          # Fix 'bool' unknown type in filter.h
+          sed -i '1i #include <linux/types.h>' include/linux/filter.h
+          
+          # Rezolvăm redefinirea structurilor în verifier.c (eliminăm duplicatele locale)
+          sed -i '/struct bpf_line_info {/,/};/d' kernel/bpf/verifier.c
+          sed -i '/struct bpf_func_info {/,/};/d' kernel/bpf/verifier.c
+          
+          # Uniformizăm bpf_map_area_alloc
           sed -i 's/void \*bpf_map_area_alloc(size_t size, int numa_node)/void \*bpf_map_area_alloc(size_t size, int numa_node)/g' include/linux/bpf.h
           
-          # Eliminăm redefinirile care blochează compilarea după upstream
+          # Curățăm headerele globale
           sed -i '/struct bpf_verifier_env {/,/};/d' include/linux/bpf_verifier.h || true
           sed -i '/struct bpf_prog_offload_ols {/,/};/d' kernel/bpf/core.c
           
-          # Fix simboluri de rețea pentru CLO
+          # Fix simboluri rețea CLO
           sed -i 's/dev_get_by_index_rcu/dev_get_by_index/g' net/core/filter.c
           
-          # Injectăm tipuri lipsă pentru Android Connectivity
+          # Injectăm tipuri BPF lipsă
           if ! grep -q "BPF_PROG_TYPE_NETFILTER" include/uapi/linux/bpf.h; then
             sed -i '/BPF_PROG_TYPE_LWT_SEG6LOCAL,/a \	BPF_PROG_TYPE_NETFILTER,' include/uapi/linux/bpf.h
           fi
 
-          # Fix Samsung Traps & Toolchain
+          # Fix Samsung specific
           sed -i 's/sec_debug_sched_msg/\/\/ sec_debug_sched_msg/g' arch/arm64/kernel/traps.c
           sed -i 's|$(srctree)/../toolchain/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/bin/aarch64-linux-android-||g' Makefile
           echo -e "#!/bin/sh\necho '00000000000000000000000000000000'\nexit 0" > secgetspf
@@ -83,7 +90,7 @@ jobs:
           mkdir -p out
           make O=out ARCH=arm64 r5q_eur_open_defconfig
           
-          # Configurație eBPF finală pentru SM8150
+          # Configurație eBPF SM8150
           scripts/config --file out/.config -e BPF -e BPF_SYSCALL -e BPF_JIT -e CGROUP_BPF
           scripts/config --file out/.config -e NETFILTER_XT_MATCH_BPF -e NET_ACT_BPF -e BPF_STREAM_PARSER
           scripts/config --file out/.config -e NET_CLS_ACT -e NET_CLS_BPF -e STREAM_PARSER
@@ -92,7 +99,6 @@ jobs:
           
           yes "" | make O=out ARCH=arm64 oldconfig
           
-          # Build cu toleranță la tipuri conflictuale rămase
           make -j$(nproc --all) O=out ARCH=arm64 \
             LD=ld.lld \
             KCFLAGS="-Wno-error -Wno-implicit-function-declaration -fcommon -DNR_CPUS=8"
@@ -100,7 +106,7 @@ jobs:
       - name: Upload Kernel
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-r5q-Xiaomi-BPF-v8
+          name: Kernel-r5q-Xiaomi-BPF-v9
           path: |
             kernel/out/arch/arm64/boot/Image.gz-dtb
             kernel/out/arch/arm64/boot/dtbo.img
