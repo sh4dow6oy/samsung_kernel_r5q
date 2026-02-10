@@ -1,4 +1,4 @@
-name: Build r5q Kernel - eBPF & Modules Final
+name: Build r5q Kernel - eBPF Connectivity Final
 
 on:
   workflow_dispatch:
@@ -19,10 +19,10 @@ jobs:
           git config user.email "wizard@build.com"
           git config user.name "Kernel-Wizard"
 
-      - name: Apply eBPF & Hardware Offload
+      - name: Apply eBPF & Hardware Offload (Connectivity Fix)
         run: |
           cd kernel
-          # 1. Fetch baza de eBPF (Gerrit 387879)
+          # Fetch eBPF base
           git fetch https://github.com/LineageOS/android_kernel_samsung_sm7125 refs/changes/79/387879/1
           git checkout FETCH_HEAD -- include/linux/bpf.h \
                                      include/linux/bpf_verifier.h \
@@ -35,9 +35,9 @@ jobs:
                                      kernel/bpf/verifier.c \
                                      net/core/filter.c
           git add .
-          git commit -m "Import eBPF core"
+          git commit -m "Import eBPF core for Connectivity"
 
-          # 2. Fetch Hardware Offload (c3a78a9)
+          # Fetch Hardware Offload (Essential for Android 15 Connectivity)
           git fetch https://github.com/LineageOS/android_kernel_samsung_sm7125 c3a78a941a2f57ba2d65923b7c2bdf704f1cef98
           git cherry-pick FETCH_HEAD -X theirs || {
             git cherry-pick --abort
@@ -49,23 +49,23 @@ jobs:
       - name: Patch Conflicts & Paths
         run: |
           cd kernel
-          # Curățăm redefinirile de structuri din UAPI bpf.h pentru a evita erorile în verifier.c
+          # Eliminăm structurile duplicate care cauzează erori de compilare
           sed -i '/struct bpf_line_info {/,/};/d' include/uapi/linux/bpf.h
           sed -i '/struct bpf_func_info {/,/};/d' include/uapi/linux/bpf.h
           
-          # Fix BPF_OBJ_NAME_LEN & Samsung Traps
+          # Fix BPF Identifiers & Samsung Debug
           sed -i '/#define _UAPI__LINUX_BPF_H/a #ifndef BPF_OBJ_NAME_LEN\n#define BPF_OBJ_NAME_LEN 16U\n#endif' include/uapi/linux/bpf.h
           sed -i 's/sec_debug_sched_msg/\/\/ sec_debug_sched_msg/g' arch/arm64/kernel/traps.c
           
-          # Eliminăm toolchain-ul Samsung hardcoded
+          # Fix Toolchain Paths
           sed -i 's|$(srctree)/../toolchain/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/bin/aarch64-linux-android-||g' Makefile
           sed -i 's|CROSS_COMPILE_ARM32 :=.*|CROSS_COMPILE_ARM32 := arm-linux-gnueabi-|g' Makefile
           
-          # Dummy secgetspf
+          # Create dummy security script
           echo -e "#!/bin/sh\necho '00000000000000000000000000000000'\nexit 0" > secgetspf
           chmod +x secgetspf
 
-      - name: Configure, Modules & Build
+      - name: Configure, Modules & Connectivity Build
         run: |
           cd kernel
           export ARCH=arm64
@@ -78,33 +78,31 @@ jobs:
           mkdir -p out
           make O=out ARCH=arm64 r5q_eur_open_defconfig
           
-          # --- SECȚIUNE MODULE ---
-          # Mutăm drivere non-critice la module pentru a micșora imaginea kernelului
+          # --- MODULES ---
           scripts/config --file out/.config -m CONFIG_JOYSTICK_XPAD
-          scripts/config --file out/.config -m CONFIG_INPUT_JOYSTICK
           scripts/config --file out/.config -m CONFIG_USB_STORAGE_DATAFAB
-          scripts/config --file out/.config -m CONFIG_USB_STORAGE_FREECOM
-          # -----------------------
-
-          # Configurații eBPF și Fix NR_CPUS
-          scripts/config --file out/.config -e BPF -e BPF_SYSCALL -e BPF_JIT -e CGROUP_BPF -e NETFILTER_XT_MATCH_BPF
+          
+          # --- CONNECTIVITY & eBPF FLAGS ---
+          scripts/config --file out/.config -e BPF -e BPF_SYSCALL -e BPF_JIT -e CGROUP_BPF
+          scripts/config --file out/.config -e NETFILTER_XT_MATCH_BPF -e NET_ACT_BPF
+          scripts/config --file out/.config -e BPF_STREAM_PARSER
           scripts/config --file out/.config --set-val NR_CPUS 8
           scripts/config --file out/.config -d SEC_DEBUG
           
           yes "" | make O=out ARCH=arm64 oldconfig
           
-          # Build Kernel + Module
+          # Full Build
           make -j$(nproc --all) O=out ARCH=arm64 \
             LD=ld.lld \
             KCFLAGS="-Wno-error -Wno-implicit-function-declaration -fcommon -DNR_CPUS=8"
           
-          # Instalare module pentru export
+          # Export Modules
           make O=out ARCH=arm64 INSTALL_MOD_PATH=../modules_out modules_install
 
       - name: Upload Kernel & Modules
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-r5q-eBPF-Modules
+          name: Kernel-r5q-Connectivity-Ready
           path: |
             kernel/out/arch/arm64/boot/Image.gz-dtb
             kernel/out/arch/arm64/boot/dtbo.img
