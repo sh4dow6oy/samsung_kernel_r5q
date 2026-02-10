@@ -1,4 +1,4 @@
-name: Build r5q Kernel - eBPF Hard Backport
+name: Build r5q Kernel - eBPF & Hardware Offload
 
 on:
   workflow_dispatch:
@@ -19,39 +19,40 @@ jobs:
           git config user.email "wizard@build.com"
           git config user.name "Kernel-Wizard"
 
-      - name: Fetch and Hard-Apply eBPF Files
+      - name: Fetch and Hard-Apply eBPF & Offload
         run: |
           cd kernel
-          # Luăm referința de pe Gerrit
+          # 1. Fetch baza de eBPF (Gerrit 387879)
           git fetch https://github.com/LineageOS/android_kernel_samsung_sm7125 refs/changes/79/387879/1
           
-          echo "Forțăm checkout pe lista de fișiere eBPF solicitată..."
-          # Forțăm fișierele individuale din commit-ul LineageOS peste sursa curentă
-          git checkout FETCH_HEAD -- include/linux/bpf.h
-          git checkout FETCH_HEAD -- include/linux/bpf_verifier.h
-          git checkout FETCH_HEAD -- include/linux/netdevice.h
-          git checkout FETCH_HEAD -- include/uapi/linux/bpf.h
-          git checkout FETCH_HEAD -- kernel/bpf/core.c
-          git checkout FETCH_HEAD -- kernel/bpf/Makefile
-          git checkout FETCH_HEAD -- kernel/bpf/offload.c
-          git checkout FETCH_HEAD -- kernel/bpf/syscall.c
-          git checkout FETCH_HEAD -- kernel/bpf/verifier.c
-          git checkout FETCH_HEAD -- net/core/filter.c
-          
-          git add .
-          git commit -m "Hard backport eBPF components from LineageOS sm7125" || echo "Nimic de commit-uit"
+          # Forțăm fișierele de bază eBPF
+          git checkout FETCH_HEAD -- include/linux/bpf.h \
+                                     include/linux/bpf_verifier.h \
+                                     include/linux/netdevice.h \
+                                     include/uapi/linux/bpf.h \
+                                     kernel/bpf/core.c \
+                                     kernel/bpf/Makefile \
+                                     kernel/bpf/offload.c \
+                                     kernel/bpf/syscall.c \
+                                     kernel/bpf/verifier.c \
+                                     net/core/filter.c
+
+          # 2. Fetch și aplicare commit specific pentru Offload (c3a78a9)
+          # Acest commit aduce suportul pentru bpf_offload_dev_create
+          git fetch https://github.com/LineageOS/android_kernel_samsung_sm7125 c3a78a941a2f57ba2d65923b7c2bdf704f1cef98
+          git cherry-pick FETCH_HEAD -X theirs || git cherry-pick --skip
 
       - name: Nuclear Path & Samsung Debug Fix
         run: |
           cd kernel
-          # Eliminăm căile hardcoded către toolchain-ul local Google
+          # Eliminăm căile rigide către toolchain-ul Google
           sed -i 's|$(srctree)/../toolchain/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/bin/aarch64-linux-android-||g' Makefile
           sed -i 's|CROSS_COMPILE_ARM32 :=.*|CROSS_COMPILE_ARM32 := arm-linux-gnueabi-|g' Makefile
           
-          # Injectăm BPF_OBJ_NAME_LEN (macro obligatoriu)
+          # Fix BPF_OBJ_NAME_LEN
           sed -i '/#define _UAPI__LINUX_BPF_H/a #ifndef BPF_OBJ_NAME_LEN\n#define BPF_OBJ_NAME_LEN 16U\n#endif' include/uapi/linux/bpf.h
 
-          # Comentăm codul Samsung Debug care intră în conflict cu noile headere
+          # Comentăm debug-ul Samsung care intră în conflict cu noile headere
           sed -i 's/sec_debug_sched_msg/\/\/ sec_debug_sched_msg/g' arch/arm64/kernel/traps.c
           sed -i 's/sec_debug_summary/\/\/ sec_debug_summary/g' arch/arm64/kernel/traps.c
           sed -i 's/sec_debug_save_badmode/\/\/ sec_debug_save_badmode/g' arch/arm64/kernel/traps.c
@@ -66,24 +67,22 @@ jobs:
           export CLANG_TRIPLE=aarch64-linux-gnu-
           
           mkdir -p out
-          
-          # Folosim defconfig-ul indicat de tine
           make O=out ARCH=arm64 r5q_eur_open_defconfig
           
-          # Setări de performanță și suport eBPF
+          # Injectăm setările eBPF
           scripts/config --file out/.config --set-val NR_CPUS 8
           scripts/config --file out/.config -d SEC_DEBUG
           scripts/config --file out/.config -e BPF -e BPF_SYSCALL -e BPF_JIT -e CGROUP_BPF -e NETFILTER_XT_MATCH_BPF
           
-          # Compilare forțată cu Linker-ul modern LLD
+          # Compilare cu LD modern
           make -j$(nproc --all) O=out ARCH=arm64 \
             LD=ld.lld \
             KCFLAGS="-Wno-error -Wno-implicit-function-declaration -fcommon -DNR_CPUS=8"
 
-      - name: Upload Kernel Image
+      - name: Upload Kernel Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-r5q-eBPF-Hard-Backport
+          name: Kernel-r5q-eBPF-Offload-Ready
           path: |
             kernel/out/arch/arm64/boot/Image.gz-dtb
             kernel/out/arch/arm64/boot/dtbo.img
