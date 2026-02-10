@@ -1,77 +1,82 @@
-name: S10 Lite (r5q) - Kernel 4.14 + Safe eBPF
+name: S10 Lite - Stock Kernel + Safe eBPF v1
 
 on:
-  workflow_dispatch:
   push:
     branches: [ main ]
+  workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-22.04
 
     steps:
-      - name: Checkout kernel source (r5q)
+      - name: Checkout Kernel Source
         uses: actions/checkout@v4
         with:
           repository: mainey/android_kernel_samsung_r5q
           ref: lineage-19.0
           path: kernel
+          fetch-depth: 1
 
-      - name: Install build dependencies
+      - name: Setup Toolchain
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            bc bison flex git make python3 \
-            libssl-dev libelf-dev lz4 \
-            gcc g++ wget tar
+          sudo apt-get install -y bc bison flex libssl-dev libelf-dev dwarves make python3 lz4
+          mkdir -p toolchain
+          git clone --depth=1 https://github.com/kdrag0n/proton-clang.git toolchain/proton-clang
 
-      - name: Setup Android GCC 4.9 (Samsung required)
-        run: |
-          mkdir -p kernel/toolchain/gcc/linux-x86/aarch64
-          cd kernel/toolchain/gcc/linux-x86/aarch64
-
-          wget -q https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/+archive/refs/heads/master.tar.gz
-          tar -xzf master.tar.gz
-
-      - name: Configure kernel (r5q_eur_open + SAFE eBPF)
+      - name: Apply Safe eBPF Backport
         run: |
           cd kernel
 
-          export ARCH=arm64
-          export CROSS_COMPILE=toolchain/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/bin/aarch64-linux-android-
+          # Define missing flags for Android 15
+          sed -i '/enum bpf_cmd/i #define BPF_OBJ_NAME_LEN 16U' include/uapi/linux/bpf.h
+          sed -i '/BPF_F__LAST_FIELD/i #define BPF_F_RDONLY_PROG (1U << 7)\n#define BPF_F_WRONLY_PROG (1U << 8)' include/uapi/linux/bpf.h
 
-          make r5q_eur_open_defconfig
+          # Fix access_ok for old kernel 4.14
+          echo '#if LINUX_VERSION_CODE < KERNEL_VERSION(5,0,0)' >> include/linux/bpf.h
+          echo '#define access_ok(addr, size) access_ok(VERIFY_READ, addr, size)' >> include/linux/bpf.h
+          echo '#endif' >> include/linux/bpf.h
 
-          # ===== SAFE eBPF (4.14 compatible) =====
-          scripts/config --enable CONFIG_BPF
-          scripts/config --enable CONFIG_BPF_SYSCALL
-          scripts/config --enable CONFIG_BPF_JIT
-          scripts/config --enable CONFIG_HAVE_EBPF_JIT
-          scripts/config --enable CONFIG_BPF_EVENTS
-          scripts/config --enable CONFIG_CGROUP_BPF
+          # Minimal struct for raw_event_map
+          echo 'struct bpf_raw_event_map { struct bpf_map map; };' >> include/linux/bpf.h
 
-          # ===== Disable unsupported / crashy features =====
-          scripts/config --disable CONFIG_XDP_SOCKETS
-          scripts/config --disable CONFIG_DEBUG_INFO_BTF
-          scripts/config --disable CONFIG_BPF_LSM
-          scripts/config --disable CONFIG_BPF_PRELOAD
-          scripts/config --disable CONFIG_BPF_RAW_TRACEPOINTS
-          scripts/config --disable CONFIG_FUNCTION_TRACER
-          scripts/config --disable CONFIG_FTRACE_SYSCALLS
+          # Minimal PERF_BPF_EVENT flags
+          echo '#define PERF_BPF_EVENT_PROG_LOAD 1' >> include/linux/perf_event.h
+          echo '#define PERF_BPF_EVENT_PROG_UNLOAD 2' >> include/linux/perf_event.h
 
-          make olddefconfig
-
-      - name: Build kernel Image.gz-dtb
+      - name: Configure & Build
         run: |
           cd kernel
+          export PATH=$(pwd)/../toolchain/proton-clang/bin:$PATH
 
-          export ARCH=arm64
-          export CROSS_COMPILE=toolchain/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/bin/aarch64-linux-android-
+          # Use the stock Samsung defconfig
+          make ARCH=arm64 CC=clang r5q_eur_open_defconfig
 
-          make -j$(nproc) Image.gz-dtb
+          # Enable minimal eBPF
+          ./scripts/config --enable CONFIG_BPF_SYSCALL
+          ./scripts/config --enable CONFIG_BPF_JIT
+          ./scripts/config --enable CONFIG_CGROUP_BPF
 
-      - name: Upload kernel image
-        uses: actions/upload-artifact@v4
+          # Disable features that break 4.14 build
+          ./scripts/config --disable CONFIG_XDP_SOCKETS
+          ./scripts/config --disable CONFIG_BPF_LSM
+          ./scripts/config --disable CONFIG_DEBUG_INFO_BTF
+          ./scripts/config --disable CONFIG_BPF_PRELOAD
+          ./scripts/config --disable CONFIG_BPF_RAW_TRACEPOINTS
+          ./scripts/config --disable CONFIG_NETFILTER_XT_MATCH_BPF
+
+          make ARCH=arm64 CC=clang olddefconfig
+
+          MAKE_ARGS="ARCH=arm64 CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1"
+
+          # Suppress warnings that break old kernel eBPF backport
+          export KCFLAGS="-O2 -Wno-everything -Wno-error -Wno-implicit-function-declaration -Wno-int-conversion -Wno-incompatible-pointer-types"
+
+          make -j$(nproc --all) $MAKE_ARGS Image.gz-dtb
+
+      - name: Upload Kernel Artifact
+        uses: actions/upload-artifact@v3
         with:
-          name: r5q-kernel-4.14-ebpf-safe
+          name: s10-lite-safe-ebpf-kernel
           path: kernel/arch/arm64/boot/Image.gz-dtb
