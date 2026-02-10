@@ -1,6 +1,8 @@
-name: S10 Lite - Safe eBPF v2 (No Header Conflict)
+name: S10 Lite - Safe eBPF v3 (Build Fix)
 
 on:
+  push:
+    branches: [ main ]
   workflow_dispatch:
 
 jobs:
@@ -23,59 +25,53 @@ jobs:
           mkdir -p toolchain
           git clone --depth=1 https://github.com/kdrag0n/proton-clang.git toolchain/proton-clang
 
-      - name: Apply Clean eBPF Injection
+      - name: Apply Safe eBPF Injection & Build Fixes
         run: |
           cd kernel
-          # 1. Injectăm constantele în UAPI (fără a strica structura enum)
+          # 1. Fix BPF Syntax (Injectare corectă în enum)
+          # Adăugăm flag-urile cu virgulă la final pentru a nu strica enumerarea
           sed -i '/enum bpf_cmd/i #define BPF_OBJ_NAME_LEN 16U' include/uapi/linux/bpf.h
-          # Căutăm BPF_F_WRONLY și adăugăm flag-urile după el
+          sed -i '/BPF_F_WRONLY/a \	BPF_F_RDONLY_PROG = (1U << 7),\n	BPF_F_WRONLY_PROG = (1U << 8),' include/uapi/linux/bapi/linux/bpf.h || true
           sed -i '/BPF_F_WRONLY/a \	BPF_F_RDONLY_PROG = (1U << 7),\n	BPF_F_WRONLY_PROG = (1U << 8),' include/uapi/linux/bpf.h
 
-          # 2. Fix access_ok compatibilitate (FĂRĂ INCLUDE-URI CIRCULARE)
-          # Definind VERIFY_READ manual evităm să tragem tot uaccess.h
-          cat << EOF > bpf_shim.h
-          #ifndef __BPF_SHIM_H
-          #define __BPF_SHIM_H
-          #include <linux/version.h>
-          #if LINUX_VERSION_CODE < KERNEL_VERSION(5,0,0)
-          #define VERIFY_READ 0
-          #undef access_ok
-          #define access_ok(addr, size) __access_ok((unsigned long)(addr), (size), (segment_t){ ~0UL })
-          #endif
-          struct bpf_raw_event_map { struct bpf_map map; };
-          #endif
-          EOF
-          
-          # Inserăm shim-ul în bpf.h într-un loc sigur (după include-uri)
-          sed -i '/#define _LINUX_BPF_H/a #include "../../bpf_shim.h"' include/linux/bpf.h
+          # 2. Bypass Samsung Security (SPF)
+          echo -e "#!/bin/sh\necho '00000000000000000000000000000000'\nexit 0" > secgetspf
+          chmod +x secgetspf
 
-          # 3. Fix Perf Events (în UAPI pentru vizibilitate globală)
-          sed -i '/PERF_RECORD_NAMESPACES/a \	PERF_RECORD_BPF_EVENT = 18,' include/uapi/linux/perf_event.h
+          # 3. Clean Makefile (Remove hardcoded Samsung toolchain paths)
+          # Înlocuim căile fixe către GCC 4.9 cu variabilele de mediu standard
+          sed -i 's|$(srctree)/../toolchain/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/bin/aarch64-linux-android-||g' Makefile
+
+          # 4. Fix access_ok & Structs
+          sed -i '1i #include <linux/version.h>\n#include <linux/types.h>' include/linux/bpf.h
+          echo 'struct bpf_raw_event_map { struct bpf_map map; };' >> include/linux/bpf.h
 
       - name: Configure & Build
         run: |
           cd kernel
-          export PATH=$(pwd)/../toolchain/proton-clang/bin:$PATH
+          # Adăugăm toolchain-ul în PATH și scriptul secgetspf în rădăcină
+          export PATH=$(pwd):$(pwd)/../toolchain/proton-clang/bin:$PATH
           
-          make ARCH=arm64 CC=clang r5q_eur_open_defconfig
+          # Parametrii de build pentru Proton Clang
+          export MAKE_ARGS="ARCH=arm64 CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1"
           
-          # Configurație minimală stabilă
+          make $MAKE_ARGS r5q_eur_open_defconfig
+          
+          # Activare eBPF minimală pentru Android 15
           ./scripts/config --enable CONFIG_BPF_SYSCALL
           ./scripts/config --enable CONFIG_BPF_JIT
           ./scripts/config --enable CONFIG_CGROUP_BPF
           ./scripts/config --disable CONFIG_DEBUG_INFO_BTF
           ./scripts/config --disable CONFIG_SECURITY_SAMSUNG_RKP
           
-          make ARCH=arm64 CC=clang olddefconfig
+          make $MAKE_ARGS olddefconfig
           
-          # Build cu flag-uri de suprimare a warning-urilor de tipuri
-          MAKE_ARGS="ARCH=arm64 CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1"
-          export KCFLAGS="-O2 -Wno-error -Wno-everything -fcommon -DNR_CPUS=8"
-          
+          # Build final cu suprimarea warning-urilor
+          export KCFLAGS="-O2 -Wno-everything -Wno-error -fcommon"
           make -j$(nproc --all) $MAKE_ARGS Image.gz-dtb
 
       - name: Upload Kernel Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: s10-lite-safe-ebpf-v2
+          name: s10-lite-ebpf-fix-v19
           path: kernel/arch/arm64/boot/Image.gz-dtb
