@@ -1,8 +1,6 @@
-name: S10 Lite - Safe eBPF v8 (Robust Patching)
+name: S10 Lite - Xceed eBPF Integration v25
 
 on:
-  push:
-    branches: [ main ]
   workflow_dispatch:
 
 jobs:
@@ -10,7 +8,7 @@ jobs:
     runs-on: ubuntu-22.04
 
     steps:
-      - name: Checkout Kernel Source
+      - name: Checkout Kernel S10 Lite (r5q)
         uses: actions/checkout@v4
         with:
           repository: mainey/android_kernel_samsung_r5q
@@ -21,65 +19,61 @@ jobs:
       - name: Setup Toolchain
         run: |
           sudo apt-get update
-          sudo apt-get install -y bc bison flex libssl-dev libelf-dev dwarves make python3 lz4
-          mkdir -p toolchain
+          sudo apt-get install -y bc bison flex libssl-dev libelf-dev dwarves make python3 lz4 rsync
           git clone --depth=1 https://github.com/kdrag0n/proton-clang.git toolchain/proton-clang
 
-      - name: Surgical Header Patching
+      - name: Fetch Xceed BPF Source (SM8250)
+        run: |
+          git clone --depth=1 https://github.com/pascua28/android_kernel_samsung_sm8250.git -b sixteen xceed-source
+
+      - name: Port Xceed eBPF (Surgical Sync)
         run: |
           cd kernel
-          # 1. Reset headere pentru a asigura un punct de plecare curat
-          git checkout include/uapi/linux/bpf.h include/linux/bpf.h
+          # Sincronizam subsistemul BPF si Netfilter Match
+          rsync -av --delete ../xceed-source/kernel/bpf/ kernel/bpf/
+          rsync -av ../xceed-source/include/linux/bpf* include/linux/
+          rsync -av ../xceed-source/include/uapi/linux/bpf* include/uapi/linux/
+          rsync -av ../xceed-source/net/netfilter/xt_bpf.c net/netfilter/xt_bpf.c || true
 
-          # 2. Injectare constante BPF folosind o metoda care nu strica indentarea (crucial pentru Clang)
-          # Folosim printf pentru a evita problemele de interpretare a caracterelor speciale de catre sed
-          NEW_BPF_FLAGS="\tBPF_F_RDONLY_PROG = (1U << 7),\n\tBPF_F_WRONLY_PROG = (1U << 8),"
-          sed -i "/BPF_F_WRONLY/a $NEW_BPF_FLAGS" include/uapi/linux/bpf.h
-          sed -i '/BPF_OBJ_GET,/a \	BPF_OBJ_NAME_LEN = 16,' include/uapi/linux/bpf.h
-
-          # 3. Rezolvare redefinire structura bpf_raw_event_map
-          # In loc sa o adaugam la final, o injectam cu protectie IFNDEF chiar dupa struct bpf_map
-          sed -i '/struct bpf_map {/i struct bpf_raw_event_map;\n#ifndef __BPF_RAW_MAP_FIX\n#define __BPF_RAW_MAP_FIX\nstruct bpf_raw_event_map { struct bpf_map map; };\n#endif\n' include/linux/bpf.h
-
-          # 4. Makefile Fixes (Samsung specific)
-          # Eliminam referinta la toolchain-ul lor de 4.9 care nu exista
-          sed -i 's|$(srctree)/../toolchain/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/bin/aarch64-linux-android-||g' Makefile
-          
+      - name: Fix Samsung Specific Conflicts
+        run: |
+          cd kernel
           # Bypass Samsung Security (SPF)
           echo "int main() { return 0; }" > secgetspf.c
           gcc secgetspf.c -o secgetspf
           chmod +x secgetspf
-          sudo cp secgetspf /usr/local/bin/
+          
+          # Curatare Makefile Samsung
+          sed -i 's|$(srctree)/../toolchain/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/bin/aarch64-linux-android-||g' Makefile
+          
+          # Fix pentru task_struct->__state (necesar pentru kernel 4.14 modernizat)
+          find drivers/soc/samsung/ -type f -name "*.c" -exec sed -i 's/->state/->__state/g' {} + || true
 
       - name: Configure & Build
         run: |
           cd kernel
-          # Setam PATH corect pentru a gasi atat Clang cat si micul binar secgetspf
           export PATH=$(pwd):$(pwd)/../toolchain/proton-clang/bin:$PATH
-          
-          # Argumente Build
           export MAKE_ARGS="ARCH=arm64 CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1"
           
-          # 1. Defconfig
           make $MAKE_ARGS r5q_eur_open_defconfig
           
-          # 2. Android 15 eBPF Requirements
+          # Activare BPF completa din configuratia Xceed
+          ./scripts/config --enable CONFIG_BPF
           ./scripts/config --enable CONFIG_BPF_SYSCALL
           ./scripts/config --enable CONFIG_BPF_JIT
           ./scripts/config --enable CONFIG_CGROUP_BPF
+          ./scripts/config --enable CONFIG_NETFILTER_XT_MATCH_BPF
           ./scripts/config --disable CONFIG_DEBUG_INFO_BTF
           ./scripts/config --disable CONFIG_SECURITY_SAMSUNG_RKP
           
           make $MAKE_ARGS olddefconfig
           
-          # 3. Compilare efectiva cu suprimare masiva a warning-urilor de compatibilitate
-          # Adaugam -fno-stack-protector daca build-ul pica la final (optional)
-          export KCFLAGS="-O2 -Wno-everything -Wno-error -fcommon -Wno-incompatible-pointer-types"
-          
+          # Compilare cu flag-uri de compatibilitate
+          export KCFLAGS="-O2 -Wno-everything -Wno-error -fcommon"
           make -j$(nproc --all) $MAKE_ARGS Image.gz-dtb
 
       - name: Upload Kernel Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: s10-lite-ebpf-v24
+          name: S10Lite-Xceed-eBPF-v25
           path: kernel/arch/arm64/boot/Image.gz-dtb
