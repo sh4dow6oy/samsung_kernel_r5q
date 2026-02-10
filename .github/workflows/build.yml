@@ -28,20 +28,12 @@ jobs:
       - name: Apply Safe eBPF Backport
         run: |
           cd kernel
-
-          # Define missing flags for Android 15
           sed -i '/enum bpf_cmd/i #define BPF_OBJ_NAME_LEN 16U' include/uapi/linux/bpf.h
           sed -i '/BPF_F__LAST_FIELD/i #define BPF_F_RDONLY_PROG (1U << 7)\n#define BPF_F_WRONLY_PROG (1U << 8)' include/uapi/linux/bpf.h
-
-          # Fix access_ok for old kernel 4.14
           echo '#if LINUX_VERSION_CODE < KERNEL_VERSION(5,0,0)' >> include/linux/bpf.h
           echo '#define access_ok(addr, size) access_ok(VERIFY_READ, addr, size)' >> include/linux/bpf.h
           echo '#endif' >> include/linux/bpf.h
-
-          # Minimal struct for raw_event_map
           echo 'struct bpf_raw_event_map { struct bpf_map map; };' >> include/linux/bpf.h
-
-          # Minimal PERF_BPF_EVENT flags
           echo '#define PERF_BPF_EVENT_PROG_LOAD 1' >> include/linux/perf_event.h
           echo '#define PERF_BPF_EVENT_PROG_UNLOAD 2' >> include/linux/perf_event.h
 
@@ -49,34 +41,23 @@ jobs:
         run: |
           cd kernel
           export PATH=$(pwd)/../toolchain/proton-clang/bin:$PATH
-
-          # Use the stock Samsung defconfig
           make ARCH=arm64 CC=clang r5q_eur_open_defconfig
-
-          # Enable minimal eBPF
           ./scripts/config --enable CONFIG_BPF_SYSCALL
           ./scripts/config --enable CONFIG_BPF_JIT
           ./scripts/config --enable CONFIG_CGROUP_BPF
-
-          # Disable features that break 4.14 build
           ./scripts/config --disable CONFIG_XDP_SOCKETS
           ./scripts/config --disable CONFIG_BPF_LSM
           ./scripts/config --disable CONFIG_DEBUG_INFO_BTF
           ./scripts/config --disable CONFIG_BPF_PRELOAD
           ./scripts/config --disable CONFIG_BPF_RAW_TRACEPOINTS
           ./scripts/config --disable CONFIG_NETFILTER_XT_MATCH_BPF
-
           make ARCH=arm64 CC=clang olddefconfig
-
           MAKE_ARGS="ARCH=arm64 CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1"
-
-          # Suppress warnings that break old kernel eBPF backport
           export KCFLAGS="-O2 -Wno-everything -Wno-error -Wno-implicit-function-declaration -Wno-int-conversion -Wno-incompatible-pointer-types"
-
           make -j$(nproc --all) $MAKE_ARGS Image.gz-dtb
 
       - name: Upload Kernel Artifact
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: s10-lite-safe-ebpf-kernel
           path: kernel/arch/arm64/boot/Image.gz-dtb
