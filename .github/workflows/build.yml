@@ -1,6 +1,6 @@
-name: Build S10 Lite Android 15 Kernel
+name: Build S10 Lite Kernel (Proton Clang)
 on:
-  workflow_dispatch: # Permite pornirea manuală
+  workflow_dispatch:
 
 jobs:
   build:
@@ -10,72 +10,65 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: sh4dow6oy/samsung_kernel_r5q
-          fetch-depth: 0
+          fetch-depth: 1
 
       - name: Install Build Dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y bc build-essential flex bison lz4 libssl-dev libelf-dev \
-          ccache aarch64-linux-gnu-gcc image-sig-verifier python3 python-is-python3
+          ccache python3 python-is-python3 libarchive-tools
 
-      - name: Setup Google Clang & Toolchains
+      - name: Download Proton Clang
         run: |
-          mkdir toolchain
-          cd toolchain
-          # Descarcă Clang-ul oficial Android folosit pentru Kernel 5.x/6.x (necesar pentru eBPF modern)
-          git clone https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 --depth=1 -b master-kernel-build-2024 clang
-          # Descarcă GCC pentru arhitectura arm64 (necesar pentru anumite headere libgcc)
-          git clone https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 --depth=1 gcc64
-          git clone https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9 --depth=1 gcc32
+          mkdir proton-clang
+          curl -L https://github.com/kdrag0n/proton-clang/archive/refs/heads/master.tar.gz | tar -xzf - --strip-components=1 -C proton-clang
 
-      - name: Patch Kernel (Disable Knox & Prep eBPF)
+      - name: Patch Kernel (No Knox & eBPF Prep)
         run: |
-          # 1. Dezactivează Knox și Samsung Security în DEFCONFIG
           DEFCONFIG="arch/arm64/configs/vendor/r5q_eur_open_defconfig"
+          # Dezactivare Samsung Knox & Security
           sed -i 's/CONFIG_KNOX_KAP=y/CONFIG_KNOX_KAP=n/g' $DEFCONFIG
           sed -i 's/CONFIG_SECURITY_SAMSUNG_KNOX=y/CONFIG_SECURITY_SAMSUNG_KNOX=n/g' $DEFCONFIG
           sed -i 's/CONFIG_INTEGRITY_SAMSUNG=y/CONFIG_INTEGRITY_SAMSUNG=n/g' $DEFCONFIG
           sed -i 's/CONFIG_RKP_KDP=y/CONFIG_RKP_KDP=n/g' $DEFCONFIG
+          sed -i 's/CONFIG_SAMSUNG_PRODUCT_SHIP=y/CONFIG_SAMSUNG_PRODUCT_SHIP=n/g' $DEFCONFIG
           
-          # 2. Activează eBPF pentru Android 15
-          echo "CONFIG_BPF=y" >> $DEFCONFIG
-          echo "CONFIG_BPF_SYSCALL=y" >> $DEFCONFIG
-          echo "CONFIG_BPF_JIT=y" >> $DEFCONFIG
-          echo "CONFIG_CGROUP_BPF=y" >> $DEFCONFIG
-          echo "CONFIG_NETFILTER_XT_MATCH_BPF=y" >> $DEFCONFIG
-          echo "CONFIG_NET_CLS_BPF=y" >> $DEFCONFIG
-          echo "CONFIG_NET_ACT_BPF=y" >> $DEFCONFIG
-
-      - name: Apply eBPF Backports (Remote Fetch)
-        run: |
-          git config --global user.email "action@github.com"
-          git config --global user.name "GitHub Action"
-          git remote add lineage https://github.com/LineageOS/android_kernel_google_msm-4.14
-          git fetch lineage lineage-21
-          
-          # NOTĂ: Aici trebuie adăugate hash-urile de cherry-pick specifice după ce rezolvi conflictele manual
-          # Pentru început, încercăm să aducem header-ul UAPI pentru BPF
-          git checkout lineage/lineage-21 include/uapi/linux/bpf.h
-          git checkout lineage/lineage-21 include/linux/bpf.h
+          # Configurare obligatorie eBPF pentru Android 15
+          {
+            echo "CONFIG_BPF=y"
+            echo "CONFIG_BPF_SYSCALL=y"
+            echo "CONFIG_BPF_JIT=y"
+            echo "CONFIG_CGROUP_BPF=y"
+            echo "CONFIG_NETFILTER_XT_MATCH_BPF=y"
+            echo "CONFIG_NET_CLS_BPF=y"
+            echo "CONFIG_NET_ACT_BPF=y"
+          } >> $DEFCONFIG
 
       - name: Build Kernel
         run: |
-          # Setare căi toolchain
-          CLANG_DIR=$GITHUB_WORKSPACE/toolchain/clang/clang-r487747c # Verifică versiunea exactă în folder
-          export PATH=$CLANG_DIR/bin:$GITHUB_WORKSPACE/toolchain/gcc64/bin:$GITHUB_WORKSPACE/toolchain/gcc32/bin:$PATH
+          export PATH=$GITHUB_WORKSPACE/proton-clang/bin:$PATH
           
+          # Argumente de build pentru Proton Clang
           MAKE_ARGS="ARCH=arm64 \
             CC=clang \
-            CLANG_TRIPLE=aarch64-linux-gnu- \
-            CROSS_COMPILE=aarch64-linux-android- \
-            CROSS_COMPILE_ARM32=arm-linux-androideabi- \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            AR=llvm-ar \
+            NM=llvm-nm \
+            OBJCOPY=llvm-objcopy \
+            OBJDUMP=llvm-objdump \
+            STRIP=llvm-strip \
+            LD=ld.lld \
             O=out"
 
+          # Generare config
           make $MAKE_ARGS vendor/r5q_eur_open_defconfig
+          
+          # Compilare propriu-zisă
           make -j$(nproc --all) $MAKE_ARGS
 
       - name: Upload Kernel Image
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-A15-Kernel
+          name: S10Lite-A15-Proton-Kernel
           path: out/arch/arm64/boot/Image.gz-dtb
