@@ -9,6 +9,7 @@ jobs:
       - name: Checkout Kernel Source
         uses: actions/checkout@v4
         with:
+          # Folosim repo-ul tău menționat anterior
           repository: sh4dow6oy/samsung_kernel_r5q
           fetch-depth: 1
 
@@ -16,24 +17,26 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y bc build-essential flex bison lz4 libssl-dev libelf-dev \
-          ccache python3 python-is-python3 libarchive-tools
+          ccache python3 python-is-python3 libarchive-tools libncurses-dev
 
       - name: Download Proton Clang
         run: |
           mkdir proton-clang
           curl -L https://github.com/kdrag0n/proton-clang/archive/refs/heads/master.tar.gz | tar -xzf - --strip-components=1 -C proton-clang
 
-      - name: Patch Kernel (No Knox & eBPF Prep)
+      - name: Patch Kernel Config (Disable Knox & Enable eBPF)
         run: |
-          DEFCONFIG="arch/arm64/configs/vendor/r5q_eur_open_defconfig"
-          # Dezactivare Samsung Knox & Security
-          sed -i 's/CONFIG_KNOX_KAP=y/CONFIG_KNOX_KAP=n/g' $DEFCONFIG
-          sed -i 's/CONFIG_SECURITY_SAMSUNG_KNOX=y/CONFIG_SECURITY_SAMSUNG_KNOX=n/g' $DEFCONFIG
-          sed -i 's/CONFIG_INTEGRITY_SAMSUNG=y/CONFIG_INTEGRITY_SAMSUNG=n/g' $DEFCONFIG
-          sed -i 's/CONFIG_RKP_KDP=y/CONFIG_RKP_KDP=n/g' $DEFCONFIG
-          sed -i 's/CONFIG_SAMSUNG_PRODUCT_SHIP=y/CONFIG_SAMSUNG_PRODUCT_SHIP=n/g' $DEFCONFIG
+          CONF="arch/arm64/configs/r5q_eur_open_defconfig"
           
-          # Configurare obligatorie eBPF pentru Android 15
+          # Dezactivăm Knox și restul mizeriilor de securitate Samsung
+          sed -i 's/CONFIG_KNOX_KAP=y/CONFIG_KNOX_KAP=n/g' $CONF
+          sed -i 's/CONFIG_SECURITY_SAMSUNG_KNOX=y/CONFIG_SECURITY_SAMSUNG_KNOX=n/g' $CONF
+          sed -i 's/CONFIG_INTEGRITY_SAMSUNG=y/CONFIG_INTEGRITY_SAMSUNG=n/g' $CONF
+          sed -i 's/CONFIG_RKP_KDP=y/CONFIG_RKP_KDP=n/g' $CONF
+          sed -i 's/CONFIG_SAMSUNG_PRODUCT_SHIP=y/CONFIG_SAMSUNG_PRODUCT_SHIP=n/g' $CONF
+          sed -i 's/CONFIG_KDP_NS_RESTRICTION=y/CONFIG_KDP_NS_RESTRICTION=n/g' $CONF
+
+          # Forțăm activarea eBPF pentru Android 15
           {
             echo "CONFIG_BPF=y"
             echo "CONFIG_BPF_SYSCALL=y"
@@ -42,13 +45,14 @@ jobs:
             echo "CONFIG_NETFILTER_XT_MATCH_BPF=y"
             echo "CONFIG_NET_CLS_BPF=y"
             echo "CONFIG_NET_ACT_BPF=y"
-          } >> $DEFCONFIG
+          } >> $CONF
 
       - name: Build Kernel
         run: |
           export PATH=$GITHUB_WORKSPACE/proton-clang/bin:$PATH
           
-          # Argumente de build pentru Proton Clang
+          # Setăm variabilele pentru Proton Clang
+          # Notă: Am adăugat LD_LIBRARY_PATH pentru a preveni erori de linkuire
           MAKE_ARGS="ARCH=arm64 \
             CC=clang \
             CROSS_COMPILE=aarch64-linux-gnu- \
@@ -59,16 +63,23 @@ jobs:
             OBJDUMP=llvm-objdump \
             STRIP=llvm-strip \
             LD=ld.lld \
+            HOSTCC=clang \
+            HOSTCXX=clang++ \
             O=out"
 
-          # Generare config
-          make $MAKE_ARGS vendor/r5q_eur_open_defconfig
+          # 1. Curățare
+          make $MAKE_ARGS clean
           
-          # Compilare propriu-zisă
+          # 2. Configurare folosind calea corectă indicată de tine
+          make $MAKE_ARGS r5q_eur_open_defconfig
+          
+          # 3. Compilare (folosim toatate nucleele disponibile)
           make -j$(nproc --all) $MAKE_ARGS
 
-      - name: Upload Kernel Image
+      - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-A15-Proton-Kernel
-          path: out/arch/arm64/boot/Image.gz-dtb
+          name: S10Lite-A15-Kernel-$(date +%Y%m%d)
+          path: |
+            out/arch/arm64/boot/Image.gz-dtb
+            out/arch/arm64/boot/dtbo.img
