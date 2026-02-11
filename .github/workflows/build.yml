@@ -1,4 +1,4 @@
-name: S10 Lite - Xceed eBPF Integration v25
+name: S10 Lite - Xceed Port v27 (Debug Mode)
 
 on:
   workflow_dispatch:
@@ -8,72 +8,74 @@ jobs:
     runs-on: ubuntu-22.04
 
     steps:
-      - name: Checkout Kernel S10 Lite (r5q)
+      - name: Checkout S10 Lite Source
         uses: actions/checkout@v4
         with:
           repository: mainey/android_kernel_samsung_r5q
           ref: lineage-19.0
           path: kernel
-          fetch-depth: 1
 
-      - name: Setup Toolchain
+      - name: Setup Build Environment
         run: |
           sudo apt-get update
-          sudo apt-get install -y bc bison flex libssl-dev libelf-dev dwarves make python3 lz4 rsync
+          sudo apt-get install -y bc bison flex libssl-dev libelf-dev dwarves make python3 lz4 rsync libncurses5-dev
           git clone --depth=1 https://github.com/kdrag0n/proton-clang.git toolchain/proton-clang
 
-      - name: Fetch Xceed BPF Source (SM8250)
+      - name: Fetch & Sync Xceed BPF
         run: |
           git clone --depth=1 https://github.com/pascua28/android_kernel_samsung_sm8250.git -b sixteen xceed-source
-
-      - name: Port Xceed eBPF (Surgical Sync)
-        run: |
           cd kernel
-          # Sincronizam subsistemul BPF si Netfilter Match
-          rsync -av --delete ../xceed-source/kernel/bpf/ kernel/bpf/
+          # Sincronizare agresiva a subsistemului BPF
+          rm -rf kernel/bpf/ include/linux/bpf* include/uapi/linux/bpf*
+          rsync -av ../xceed-source/kernel/bpf/ kernel/bpf/
           rsync -av ../xceed-source/include/linux/bpf* include/linux/
           rsync -av ../xceed-source/include/uapi/linux/bpf* include/uapi/linux/
-          rsync -av ../xceed-source/net/netfilter/xt_bpf.c net/netfilter/xt_bpf.c || true
+          rsync -av ../xceed-source/include/linux/filter.h include/linux/filter.h
 
-      - name: Fix Samsung Specific Conflicts
+      - name: Samsung & Toolchain Fixes
         run: |
           cd kernel
-          # Bypass Samsung Security (SPF)
+          # Rezolvam eroarea ->state care apare la backport-ul BPF
+          find drivers/soc/samsung/ -type f -name "*.c" | xargs sed -i 's/->state/->__state/g' 2>/dev/null || true
+          
+          # Bypass Samsung security tools
           echo "int main() { return 0; }" > secgetspf.c
           gcc secgetspf.c -o secgetspf
           chmod +x secgetspf
           
-          # Curatare Makefile Samsung
+          # Curatare Makefile de toolchain-ul Samsung inexistent
           sed -i 's|$(srctree)/../toolchain/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/bin/aarch64-linux-android-||g' Makefile
-          
-          # Fix pentru task_struct->__state (necesar pentru kernel 4.14 modernizat)
-          find drivers/soc/samsung/ -type f -name "*.c" -exec sed -i 's/->state/->__state/g' {} + || true
 
       - name: Configure & Build
         run: |
           cd kernel
+          # Adaugam toolchain-ul si binarele noastre in PATH
           export PATH=$(pwd):$(pwd)/../toolchain/proton-clang/bin:$PATH
-          export MAKE_ARGS="ARCH=arm64 CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1"
           
+          # Argumente de compilare - LLVM=1 este critic pentru a ignora erorile de toolchain vechi
+          MAKE_ARGS="ARCH=arm64 CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1"
+          
+          echo "--- START CONFIG ---"
           make $MAKE_ARGS r5q_eur_open_defconfig
           
-          # Activare BPF completa din configuratia Xceed
-          ./scripts/config --enable CONFIG_BPF
+          # Fortam configuratia necesara pentru eBPF Android 15
           ./scripts/config --enable CONFIG_BPF_SYSCALL
           ./scripts/config --enable CONFIG_BPF_JIT
           ./scripts/config --enable CONFIG_CGROUP_BPF
-          ./scripts/config --enable CONFIG_NETFILTER_XT_MATCH_BPF
           ./scripts/config --disable CONFIG_DEBUG_INFO_BTF
           ./scripts/config --disable CONFIG_SECURITY_SAMSUNG_RKP
           
           make $MAKE_ARGS olddefconfig
           
-          # Compilare cu flag-uri de compatibilitate
-          export KCFLAGS="-O2 -Wno-everything -Wno-error -fcommon"
-          make -j$(nproc --all) $MAKE_ARGS Image.gz-dtb
+          echo "--- START COMPILATION ---"
+          # -O2 pentru performanta, suprimam toate warning-urile pentru a vedea doar erorile fatale
+          export KCFLAGS="-O2 -Wno-everything -Wno-error -fcommon -Wno-incompatible-pointer-types -Wno-implicit-function-declaration"
+          
+          # Folosim V=1 pentru a vedea exact ce comanda esueaza daca build-ul se opreste
+          make -j$(nproc --all) $MAKE_ARGS V=1 Image.gz-dtb
 
-      - name: Upload Kernel Artifact
+      - name: Upload Kernel
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-Xceed-eBPF-v25
+          name: S10Lite-eBPF-v27
           path: kernel/arch/arm64/boot/Image.gz-dtb
