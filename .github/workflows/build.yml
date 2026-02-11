@@ -4,7 +4,7 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest # Folosim latest pentru viteza, dar gestionam dependintele
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout Kernel Source
         uses: actions/checkout@v4
@@ -16,40 +16,20 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y bc build-essential flex bison lz4 libssl-dev libelf-dev \
-          ccache python3 python-is-python3 libarchive-tools libncurses-dev wget
+          ccache python3 python-is-python3 libarchive-tools libncurses-dev wget \
+          gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi # Adăugăm GCC-urile lipsă
 
       - name: Download Proton Clang
         run: |
           git clone https://github.com/kdrag0n/proton-clang.git --depth=1 proton-clang
 
-      - name: Patch for Android 15 & No Knox
-        run: |
-          CONF="arch/arm64/configs/r5q_eur_open_defconfig"
-          
-          # Eliminam definitiile Knox care blocheaza boot-ul pe A15 custom
-          sed -i '/CONFIG_KNOX/d' $CONF
-          sed -i '/CONFIG_SECURITY_SAMSUNG/d' $CONF
-          {
-            echo "CONFIG_SECURITY_SAMSUNG_KNOX=n"
-            echo "CONFIG_KNOX_KAP=n"
-            echo "CONFIG_RKP_KDP=n"
-            # Activare eBPF obligatorie pentru Android 15
-            echo "CONFIG_BPF=y"
-            echo "CONFIG_BPF_SYSCALL=y"
-            echo "CONFIG_BPF_JIT=y"
-            echo "CONFIG_CGROUP_BPF=y"
-            echo "CONFIG_NET_CLS_BPF=y"
-            echo "CONFIG_NET_ACT_BPF=y"
-          } >> $CONF
-
       - name: Build Kernel
         run: |
+          # Adăugăm Proton Clang în PATH
           export PATH=$GITHUB_WORKSPACE/proton-clang/bin:$PATH
           
-          # Fix critic pentru 'yylloc' (eroare comuna pe Clang nou la kernel vechi)
-          export CFLAGS="-fcommon"
-          export HOSTCFLAGS="-fcommon"
-
+          # Parametrii critici:
+          # Folosim LD=ld.lld pentru kernel, dar forțăm HOSTLDFLAGS gol pentru a folosi linkerul sistemului la utilitarele interne
           MAKE_ARGS="ARCH=arm64 \
             CC=clang \
             CROSS_COMPILE=aarch64-linux-gnu- \
@@ -60,15 +40,26 @@ jobs:
             OBJDUMP=llvm-objdump \
             STRIP=llvm-strip \
             LD=ld.lld \
-            HOSTCC=clang \
-            HOSTCXX=clang++ \
+            HOSTCC=gcc \
+            HOSTCXX=g++ \
             O=out"
 
-          # Build cycle
-          make $MAKE_ARGS clean
+          # 1. Pregătim eBPF și scoatem Knox direct în comandă (mai sigur)
           make $MAKE_ARGS r5q_eur_open_defconfig
-          # Dezactivam avertismentele ca erori pentru a trece de micile incompatibilitati
-          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-Wno-error" HOSTCFLAGS="-Wno-error"
+          
+          scripts/config --file out/.config \
+            -d CONFIG_KNOX_KAP \
+            -d CONFIG_SECURITY_SAMSUNG_KNOX \
+            -d CONFIG_RKP_KDP \
+            -e CONFIG_BPF \
+            -e CONFIG_BPF_SYSCALL \
+            -e CONFIG_BPF_JIT \
+            -e CONFIG_CGROUP_BPF \
+            -e CONFIG_NET_CLS_BPF
+
+          # 2. Compilare cu ignorarea warning-urilor (Proton e foarte strict)
+          # Am scos HOSTCC=clang și am pus gcc pentru a evita eroarea de libc.so.6
+          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-Wno-error -fcommon"
 
       - name: Upload Artifacts
         if: success()
