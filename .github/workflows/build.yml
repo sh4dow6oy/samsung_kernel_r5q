@@ -1,4 +1,4 @@
-name: Build Roynas R5Q - Android 15 BPF Ready
+name: Build Roynas R5Q - A15 BPF Merge
 on:
   workflow_dispatch:
 
@@ -11,7 +11,7 @@ jobs:
         with:
           repository: Roynas-Android-Playground/kernel_samsung_r3q
           ref: master
-          fetch-depth: 0 # Avem nevoie de istoric pentru cherry-pick
+          fetch-depth: 0 # Esențial pentru merge/cherry-pick
 
       - name: Install Dependencies
         run: |
@@ -19,21 +19,22 @@ jobs:
           sudo apt-get install -y bc build-essential flex bison lz4 libssl-dev libelf-dev \
           ccache python3 python-is-python3 libarchive-tools wget zstd libtinfo6 zip git
 
-      - name: Cherry-pick BPF Patches
+      - name: Integrate A15 BPF Support
         run: |
           git config --global user.email "bot@example.com"
           git config --global user.name "Kernel Bot"
           
-          # Adăugăm sursa LineageOS ca remote
-          git remote add lineage https://github.com/LineageOS/android_kernel_google_msm-4.14
-          git fetch lineage lineag-21.0 # Sau ramura corespunzătoare pentru A14/A15
+          # Adăugăm LineageOS ca sursă de patches
+          git remote add lineage https://github.com/LineageOS/android_kernel_google_msm-4.14.git
+          git fetch lineage lineage-23.0
           
-          # Lista de commit-uri critice pentru BPF (Android 12+)
-          # Notă: ID-urile de commit pot varia, de obicei se face merge la ramura de BPF
-          # Vom încerca să facem merge la schimburile specifice de rețea/bpf
-          git cherry-pick 162985f67b55 || git cherry-pick --skip
-          git cherry-pick 68b20063251c || git cherry-pick --skip
-          git cherry-pick 2f00a40a876a || git cherry-pick --skip
+          # Încercăm să aducem doar folderele critice pentru BPF pentru a evita conflicte masive în driverele Samsung
+          # Aceasta este o metodă mai sigură decât un merge complet
+          git checkout lineage/lineage-23.0 -- kernel/bpf/ net/core/filter.c include/linux/filter.h include/uapi/linux/bpf.h
+          
+          # Commit-uim schimbările aduse din Lineage
+          git add .
+          git commit -m "Add Android 15 eBPF support from LineageOS 23.0" || echo "No changes to commit"
 
       - name: Setup Neutron Clang
         run: |
@@ -45,7 +46,7 @@ jobs:
         run: |
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           
-          # Fix VDSO & Cleanup (Păstrăm logica de succes anterioară)
+          # Cleanup specific Samsung
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
           if [ -f arch/arm64/kernel/vdso/Makefile ]; then
             sed -i 's/$(LDFLAGS)/$(filter-out -static,$(LDFLAGS))/g' arch/arm64/kernel/vdso/Makefile
@@ -55,16 +56,16 @@ jobs:
 
           make $MAKE_ARGS r5q_defconfig
           
-          # ACTIVARE BPF ÎN CONFIG (Esențial pentru Android 15)
+          # FORȚĂM ACTIVAREA EBPF PENTRU ANDROID 15
           ./scripts/config --file out/.config \
             -e CONFIG_BPF \
             -e CONFIG_BPF_SYSCALL \
-            -e CONFIG_NETFILTER_XT_MATCH_BPF \
-            -e CONFIG_AF_KCM \
             -e CONFIG_BPF_JIT \
             -e CONFIG_BPF_JIT_ALWAYS_ON \
+            -e CONFIG_NETFILTER_XT_MATCH_BPF \
             -e CONFIG_NET_CLS_BPF \
             -e CONFIG_NET_ACT_BPF \
+            -e CONFIG_CGROUP_BPF \
             -d CONFIG_LTO_CLANG -e CONFIG_LTO_NONE
 
           make $MAKE_ARGS olddefconfig
@@ -75,10 +76,14 @@ jobs:
           git clone https://github.com/osm0sis/AnyKernel3.git
           cp out/arch/arm64/boot/Image.gz AnyKernel3/
           [ -f out/arch/arm64/boot/dtbo.img ] && cp out/arch/arm64/boot/dtbo.img AnyKernel3/
-          cd AnyKernel3 && zip -r9 ../Kernel-R5Q-A15-BPF.zip *
+          
+          # Update AnyKernel script for r5q
+          sed -i 's/device.name1=maguro/device.name1=r5q/g' AnyKernel3/anykernel.sh
+          
+          cd AnyKernel3 && zip -r9 ../Kernel-R5Q-A15-BPF-Final.zip *
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-BPF-Ready
-          path: Kernel-R5Q-A15-BPF.zip
+          name: Kernel-A15-Ready
+          path: Kernel-R5Q-A15-BPF-Final.zip
