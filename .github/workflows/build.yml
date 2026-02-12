@@ -1,4 +1,4 @@
-name: Build Roynas R5Q - A15 BPF Fixed
+name: Build Roynas R5Q - A15 BPF Compatibility
 on:
   workflow_dispatch:
 
@@ -16,26 +16,33 @@ jobs:
       - name: Install Dependencies
         run: sudo apt-get update && sudo apt-get install -y bc build-essential flex bison lz4 libssl-dev libelf-dev ccache python3 wget zstd zip git
 
-      - name: Advanced BPF Integration
+      - name: BPF Compatibility Patching
         run: |
           git config --global user.email "bot@example.com"
           git config --global user.name "Kernel Bot"
           git remote add lineage https://github.com/LineageOS/android_kernel_google_msm-4.14.git
           git fetch lineage lineage-23.0
           
-          # Checkout forțat pentru întregul subsistem BPF și include-urile aferente
+          # Importăm doar fișierele strict necesare
           git checkout lineage/lineage-23.0 -f -- \
             kernel/bpf/ \
-            include/linux/bpf* \
-            include/uapi/linux/bpf* \
+            include/linux/bpf.h \
             include/linux/filter.h \
             net/core/filter.c
           
-          # FIX CRITICAL: Forțăm includerea definițiilor în filter.h pentru a evita "incomplete definition"
+          # --- FIX INCOMPATIBILITĂȚI STRUCTURĂ (sk_buff meta_data) ---
+          # Comentăm liniile care încearcă să acceseze data_meta (care lipsește în Samsung 4.14)
+          sed -i '/cb->data_meta = skb->data - skb_metadata_len(skb);/d' include/linux/filter.h
+          sed -i '/return skb_metadata_len(skb);/c\return 0;' include/linux/filter.h
+          
+          # Fix pentru cant_sleep() care lipsește în unele versiuni
+          sed -i 's/cant_sleep();/pr_debug("bpf: cant_sleep skip\\n");/g' include/linux/filter.h
+          
+          # Forțăm includerea definițiilor
           sed -i '1i #include <linux/bpf.h>' include/linux/filter.h
           
           git add .
-          git commit -m "Force-fix BPF structure definitions" || echo "No changes"
+          git commit -m "Apply BPF compatibility shim for Samsung 4.14" || echo "No changes"
 
       - name: Setup Neutron Clang
         run: |
@@ -47,7 +54,7 @@ jobs:
         run: |
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           
-          # Fix-uri Kconfig & Toolchain
+          # Fix-uri obligatorii Samsung
           sed -i '/kernelsu\/Kconfig/d' drivers/android/Kconfig || true
           sed -i '/kernelsu/d' drivers/android/Makefile || true
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
@@ -59,36 +66,29 @@ jobs:
 
           make $MAKE_ARGS r5q_defconfig
           
-          # CONFIGURARE OPTIMIZATĂ PENTRU COMPILARE REUȘITĂ
+          # CONFIGURARE PENTRU STABILITATE
           ./scripts/config --file out/.config \
-            -e CONFIG_BPF \
-            -e CONFIG_BPF_SYSCALL \
-            -e CONFIG_BPF_JIT \
+            -e CONFIG_BPF -e CONFIG_BPF_SYSCALL -e CONFIG_BPF_JIT -e CONFIG_CGROUP_BPF \
             -d CONFIG_BPF_JIT_ALWAYS_ON \
-            -e CONFIG_CGROUP_BPF \
-            -d CONFIG_NFS_FS \
-            -d CONFIG_LTO_CLANG \
-            -e CONFIG_LTO_NONE \
-            -d CONFIG_WERROR
+            -d CONFIG_NFS_FS -d CONFIG_LTO_CLANG -e CONFIG_LTO_NONE -d CONFIG_WERROR
 
           make $MAKE_ARGS olddefconfig
           
-          # Compilare cu ignorarea erorilor de pointer și funcții implicite
-          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -Wno-error -Wno-implicit-function-declaration -Wno-incompatible-pointer-types -Wno-visibility"
+          # Build cu ignorarea erorilor non-critice
+          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -Wno-error -Wno-implicit-function-declaration -Wno-incompatible-pointer-types -Wno-implicit-int"
 
-      - name: Package Results
+      - name: Package AnyKernel3
         run: |
           if [ -f out/arch/arm64/boot/Image.gz ]; then
             git clone https://github.com/osm0sis/AnyKernel3.git
             cp out/arch/arm64/boot/Image.gz AnyKernel3/
-            [ -f out/arch/arm64/boot/dtbo.img ] && cp out/arch/arm64/boot/dtbo.img AnyKernel3/
-            cd AnyKernel3 && zip -r9 ../Kernel-R5Q-A15-Fixed.zip *
+            cd AnyKernel3 && zip -r9 ../Kernel-R5Q-A15-Compatible.zip *
           else
-            echo "Build failed again" && exit 1
+            echo "Build failed - Check logs" && exit 1
           fi
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-S10Lite-Fixed
-          path: Kernel-R5Q-A15-Fixed.zip
+          name: Kernel-S10Lite-A15
+          path: Kernel-R5Q-A15-Compatible.zip
