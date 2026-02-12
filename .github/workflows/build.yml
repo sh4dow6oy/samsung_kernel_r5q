@@ -25,12 +25,10 @@ jobs:
 
       - name: Build Kernel
         run: |
-          # Punem proton-clang la sfârșitul PATH-ului sau îl definim manual
-          # pentru a evita ca 'ld' din proton să suprascrie 'ld' din sistem
+          # Definim calea către toolchain
           PROTON_PATH=$GITHUB_WORKSPACE/proton-clang/bin
           
-          # Parametrii pentru compilare
-          # Observă forțarea HOSTLDFLAGS pentru a folosi linker-ul sistemului
+          # Parametrii de build - Observă HOSTLDFLAGS pentru a evita eroarea de libc
           MAKE_ARGS="ARCH=arm64 \
             CC=$PROTON_PATH/clang \
             CROSS_COMPILE=aarch64-linux-gnu- \
@@ -46,31 +44,38 @@ jobs:
             HOSTLDFLAGS=-fuse-ld=bfd \
             O=out"
 
-          # 1. Configurare (r5q direct în configs)
+          # 1. Generăm config-ul de bază (r5q_eur_open_defconfig)
           make $MAKE_ARGS r5q_eur_open_defconfig
           
-          # 2. Patching Defconfig pentru eBPF/No Knox
+          # 2. Patching Defconfig: Dezactivăm Knox și activăm eBPF pentru Android 15
+          # Folosim scripts/config pentru a manipula .config-ul generat anterior
           ./scripts/config --file out/.config \
             -d CONFIG_KNOX_KAP \
             -d CONFIG_SECURITY_SAMSUNG_KNOX \
             -d CONFIG_RKP_KDP \
             -d CONFIG_SAMSUNG_PRODUCT_SHIP \
+            -d CONFIG_KDP_NS_RESTRICTION \
             -e CONFIG_BPF \
             -e CONFIG_BPF_SYSCALL \
             -e CONFIG_BPF_JIT \
             -e CONFIG_CGROUP_BPF \
             -e CONFIG_NET_CLS_BPF \
-            -e CONFIG_NET_ACT_BPF
+            -e CONFIG_NET_ACT_BPF \
+            -e CONFIG_DEBUG_INFO_BTF
 
-          # 3. Build propriu-zis
-          # Folosim PATH-ul original pentru host tools și calea absolută pentru restul
+          # 3. Rezolvăm întrebările noi din config (BPF_JIT_ALWAYS_ON etc.)
+          # Această comandă setează automat noile opțiuni la valorile lor default
+          make $MAKE_ARGS olddefconfig
+
+          # 4. Compilarea propriu-zisă
+          # KCFLAGS="-Wno-error" previne oprirea build-ului la avertismentele Proton Clang
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-Wno-error -fcommon"
 
       - name: Upload Artifacts
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-Kernel-A15
+          name: S10Lite-A15-Kernel
           path: |
             out/arch/arm64/boot/Image.gz-dtb
             out/arch/arm64/boot/dtbo.img
