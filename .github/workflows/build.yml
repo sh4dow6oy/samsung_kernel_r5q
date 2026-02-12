@@ -1,16 +1,44 @@
-- name: Build Kernel
+name: Build Roynas R5Q - Final Fix
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout Source
+        uses: actions/checkout@v4
+        with:
+          repository: Roynas-Android-Playground/kernel_samsung_r3q
+          ref: master
+          fetch-depth: 1
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bc build-essential flex bison lz4 libssl-dev libelf-dev \
+          ccache python3 python-is-python3 libarchive-tools wget gcc-aarch64-linux-gnu \
+          gcc-arm-linux-gnueabi libtinfo5
+
+      - name: Setup ZyC Clang 15
+        run: |
+          mkdir zyc-clang
+          cd zyc-clang
+          wget https://github.com/ZyCromerZ/Clang/releases/download/15.0.7-20260208-release/Clang-15.0.7-20260208.tar.gz
+          tar -xf Clang-15.0.7-20260208.tar.gz
+          rm Clang-15.0.7-20260208.tar.gz
+
+      - name: Build Kernel
         run: |
           Z_PATH=$GITHUB_WORKSPACE/zyc-clang/bin
           export PATH="$Z_PATH:$PATH"
           
-          # FIX: Eliminăm orice flag Polly specific care cauzează erori
-          # Ștergem varianta cu loopfusion-greedy și varianta cu opt-fusion
-          find . -name "Makefile*" -o -name "*.mk" | xargs sed -i 's/-polly-loopfusion-greedy=1//g'
-          find . -name "Makefile*" -o -name "*.mk" | xargs sed -i 's/--polly-opt-fusion=1//g'
-          find . -name "Makefile*" -o -name "*.mk" | xargs sed -i 's/-mllvm -polly//g' 
-          
-          # Reactivăm Polly curat (opțional, dar mai sigur fără flag-uri experimentale dacă dă erori)
-          # Dacă vrei să fii 100% sigur că trece, lasă-l să folosească optimizările standard O3
+          # FIX AGRESIV: Eliminăm absolut orice referință la Polly sau optimizări LLVM experimentale
+          # care pot bloca procesul de compilare pe Clang 15
+          find . -type f -name "Makefile*" -exec sed -i 's/-polly-loopfusion-greedy=1//g' {} +
+          find . -type f -name "Makefile*" -exec sed -i 's/--polly-opt-fusion=1//g' {} +
+          find . -type f -name "Makefile*" -exec sed -i 's/-mllvm -polly//g' {} +
+          find . -type f -name "*.mk" -exec sed -i 's/-polly-loopfusion-greedy=1//g' {} +
           
           # Fix Kconfig
           sed -i '/kernelsu/d' drivers/android/Kconfig
@@ -32,13 +60,12 @@
           # 1. Config
           make $MAKE_ARGS r5q_defconfig
 
-          # 2. Patch .config
+          # 2. Patch .config (Android 15 + eBPF)
           ./scripts/config --file out/.config \
             -d CONFIG_KNOX_KAP \
             -d CONFIG_SECURITY_SAMSUNG_KNOX \
             -d CONFIG_RKP_KDP \
             -d CONFIG_SAMSUNG_PRODUCT_SHIP \
-            -d CONFIG_SECURITY_DEFEX \
             -d CONFIG_CC_STACKPROTECTOR_STRONG \
             -e CONFIG_CC_STACKPROTECTOR_NONE \
             -e CONFIG_BPF -e CONFIG_BPF_SYSCALL -e CONFIG_BPF_JIT \
@@ -47,6 +74,14 @@
           make $MAKE_ARGS olddefconfig
 
           # 3. Compilare
-          clang --version
-          # Adăugăm flag-ul de ignorare a erorilor de optimizare dacă mai apar în KCFLAGS
-          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-Wno-error -fcommon -Wno-unused-command-line-argument"
+          # Adăugăm -Wno-unknown-warning-option pentru a ignora orice alt flag de optimizare buclucaș
+          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-Wno-error -fcommon -Wno-unused-command-line-argument -Wno-unknown-warning-option"
+
+      - name: Upload Artifacts
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: S10Lite-R5Q-A15-Fixed
+          path: |
+            out/arch/arm64/boot/Image.gz-dtb
+            out/arch/arm64/boot/dtbo.img
