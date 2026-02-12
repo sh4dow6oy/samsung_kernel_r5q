@@ -36,19 +36,18 @@ jobs:
           
           export PATH="$CLANG_BIN:$GCC_BIN:$PATH"
 
-          # 2. Fix Linker (Mapping gnu -> android pentru Samsung)
+          # 2. Fix Linker (Mapping gnu -> android)
           ln -sf "$GOLD_LD" "$GCC_BIN/aarch64-linux-gnu-ld.gold"
           ln -sf "$GOLD_LD" "$GCC_BIN/aarch64-linux-gnu-ld"
 
           # 3. NUCLEAR CLEANUP & KERNELSU REMOVAL
           # Eliminăm complet referințele KernelSU din ierarhia de build
-          sed -i '/kernelsu/d' drivers/android/Kconfig
-          sed -i '/kernelsu/d' drivers/android/Makefile
-          # Ștergem și folderul dacă există, pentru a fi siguri
+          sed -i '/kernelsu/d' drivers/android/Kconfig || true
+          sed -i '/kernelsu/d' drivers/android/Makefile || true
           rm -rf drivers/kernelsu
 
           # Patch-uri Ravindu Style (VDSO + Compiler Fixes)
-          sed -i 's/-static//g' arch/arm64/kernel/vdso/Makefile
+          sed -i 's/-static//g' arch/arm64/kernel/vdso/Makefile || true
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-run-dce//g' {} +
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-run-inliner//g' {} +
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-vectorizer=stripmine//g' {} +
@@ -71,7 +70,7 @@ jobs:
           # 5. Build Sequence
           make $MAKE_ARGS r5q_defconfig
           
-          # Dezactivăm KernelSU din .config (dacă a rămas ceva) + alte fix-uri
+          # Dezactivăm KernelSU din .config + alte fix-uri de securitate Samsung
           ./scripts/config --file out/.config \
             -d CONFIG_ASSIST_KSU \
             -d CONFIG_KSU \
@@ -88,7 +87,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-Ravindu-NoKSU-Clean
+          name: S10Lite-Kernel-Final
           path: |
             out/arch/arm64/boot/Image.gz-dtb
             out/arch/arm64/boot/dtbo.img
