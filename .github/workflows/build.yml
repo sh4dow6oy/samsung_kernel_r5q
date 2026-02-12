@@ -1,4 +1,4 @@
-name: Build Roynas R5Q - A15 BPF Surgical
+name: Build Roynas R5Q - A15 BPF Clean Surgical
 on:
   workflow_dispatch:
 
@@ -16,15 +16,15 @@ jobs:
       - name: Install Dependencies
         run: sudo apt-get update && sudo apt-get install -y bc build-essential flex bison lz4 libssl-dev libelf-dev ccache python3 wget zstd zip git
 
-      - name: Surgical BPF Backport
+      - name: Surgical BPF Backport & Header Cleanup
         run: |
           git config --global user.email "bot@example.com"
           git config --global user.name "Kernel Bot"
           
-          # 1. Resetăm kernel/bpf la starea originală Samsung (Esențial pentru a evita redefinirile)
+          # 1. Resetăm kernel/bpf la Samsung original
           git checkout HEAD -- kernel/bpf/
           
-          # 2. Aduce doar antetele și filtrul de rețea de la Sixteen
+          # 2. Importăm doar fișierele necesare de la Sixteen
           git remote add sixteen https://github.com/pascua28/android_kernel_samsung_sm8250.git
           git fetch sixteen sixteen
           git checkout sixteen/sixteen -f -- \
@@ -33,7 +33,7 @@ jobs:
             include/uapi/linux/bpf.h \
             net/core/filter.c
 
-          # 3. Creăm sockptr.h (necesar pentru noul filter.c)
+          # 3. Creăm sockptr.h
           cat <<EOF > include/linux/sockptr.h
           #ifndef _LINUX_SOCKPTR_H
           #define _LINUX_SOCKPTR_H
@@ -43,7 +43,6 @@ jobs:
           static inline bool sockptr_is_kernel(sockptr_t s) { return s.is_kernel; }
           static inline sockptr_t KERNEL_SOCKPTR(void *p) { return (sockptr_t){ .kernel = p, .is_kernel = true }; }
           static inline sockptr_t USER_SOCKPTR(void __user *p) { return (sockptr_t){ .user = p, .is_kernel = false }; }
-          static inline bool sockptr_is_null(sockptr_t s) { return !s.kernel; }
           static inline int copy_from_sockptr(void *dst, sockptr_t src, size_t size) {
               if (src.is_kernel) { memcpy(dst, src.kernel, size); return 0; }
               return copy_from_user(dst, src.user, size);
@@ -51,8 +50,30 @@ jobs:
           #endif
           EOF
 
-          # 4. Patch pentru BPF_PROG_RUN_ARRAY (Redefinim macro-ul lipsă pentru compatibilitate)
-          sed -i '/#define BPF_PROG_RUN/a #define BPF_PROG_RUN_ARRAY(array, ctx, func) ({ \\
+          # 4. PYTHON HEADER CLEANUP (Rezolvă bpf_stats_enabled_key și bpf_prog_stats)
+          python3 -c '
+          import os, re
+          
+          def cleanup_header(file_path):
+              if not os.path.exists(file_path): return
+              with open(file_path, "r") as f: lines = f.readlines()
+              new_lines = []
+              for line in lines:
+                  # Eliminăm declarația externă care cauzează eroarea
+                  if "extern struct static_key_false bpf_stats_enabled_key;" in line: continue
+                  # Comentăm apelurile de stats care folosesc cheia inexistentă
+                  if "static_branch_unlikely(&bpf_stats_enabled_key)" in line:
+                      new_lines.append("if (false) {\n")
+                      continue
+                  new_lines.append(line)
+              with open(file_path, "w") as f: f.writelines(new_lines)
+
+          cleanup_header("include/linux/filter.h")
+          cleanup_header("include/linux/bpf.h")
+          '
+
+          # 5. Patch pentru BPF_PROG_RUN_ARRAY simplificat (fără statistici)
+          sed -i "/#define BPF_PROG_RUN/a #define BPF_PROG_RUN_ARRAY(array, ctx, func) ({ \\
             struct bpf_prog_array_item *_item; \\
             struct bpf_prog *_prog; \\
             struct bpf_prog_array *_array = rcu_dereference(array); \\
@@ -64,13 +85,10 @@ jobs:
                     _item++; \\
                 } \\
             } \\
-            _ret; })' include/linux/filter.h
-
-          # 5. Fix pentru struct bpf_prog (Să nu se bată cu versiunea Samsung)
-          sed -i 's/void bpf_prog_free_rcu/void __bpf_prog_free_rcu/g' include/linux/filter.h || true
+            _ret; })" include/linux/filter.h
 
           git add .
-          git commit -m "Surgical BPF port for Android 15 compatibility" || echo "No changes"
+          git commit -m "Fix BPF stats and surgical backport" || echo "No changes"
 
       - name: Setup Toolchain & Build
         run: |
@@ -80,9 +98,9 @@ jobs:
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           
           # Fix Samsung Kconfig
-          sed -i '/kernelsu\/Kconfig/d' drivers/android/Kconfig || true
-          sed -i '/kernelsu/d' drivers/android/Makefile || true
-          find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
+          sed -i "/kernelsu\/Kconfig/d" drivers/android/Kconfig || true
+          sed -i "/kernelsu/d" drivers/android/Makefile || true
+          find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i "s/-mllvm -polly[^ ]*//g" {} +
 
           MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
 
@@ -98,5 +116,10 @@ jobs:
           if [ -f out/arch/arm64/boot/Image.gz ]; then
             git clone https://github.com/osm0sis/AnyKernel3.git
             cp out/arch/arm64/boot/Image.gz AnyKernel3/
-            cd AnyKernel3 && zip -r9 ../Kernel-R5Q-A15-Surgical.zip *
+            cd AnyKernel3 && zip -r9 ../Kernel-R5Q-A15-Surgical-v2.zip *
           fi
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: Kernel-S10Lite-A15-Final
+          path: "*.zip"
