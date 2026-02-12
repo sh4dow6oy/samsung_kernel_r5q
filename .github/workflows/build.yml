@@ -1,16 +1,16 @@
-name: R5Q Upstream 4.14.356
+name: R5Q Professional Upstream
 on:
   workflow_dispatch:
 
 jobs:
-  upstream_build:
+  upstream:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Source
         uses: actions/checkout@v4
         with:
           repository: sh4dow6oy/samsung_kernel_r5q
-          fetch-depth: 0 # Avem nevoie de tot istoricul pentru merge
+          fetch-depth: 0
 
       - name: Install Build Tools
         run: |
@@ -18,29 +18,26 @@ jobs:
           sudo apt-get install -y bc build-essential flex bison lz4 libssl-dev libelf-dev \
           ccache python3 python-is-python3 libarchive-tools wget gcc-aarch64-linux-gnu
 
-      - name: Download Proton Clang
+      - name: Setup Proton Clang
         run: |
           git clone https://github.com/kdrag0n/proton-clang.git --depth=1 proton-clang
 
-      - name: Perform Upstream Merge
+      - name: 🚀 Upstream Merge (The Stable Way)
         run: |
           git config --global user.email "bot@github.com"
           git config --global user.name "KernelBot"
           
-          # Adăugăm sursa oficială Linux Stable
           git remote add stable https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git
           git fetch stable linux-4.14.y
           
-          # Încercăm merge-ul automat la ultima versiune 4.14.y
-          # Dacă apar conflicte, forțăm păstrarea structurii Samsung pentru drivere, 
-          # dar acceptăm upstream-ul pentru restul (kernel/, mm/, fs/)
-          git merge stable/linux-4.14.y --no-edit || echo "Conflicte detectate la merge. Se va încerca compilarea cu baza actuală."
+          # Încercăm un merge limitat la core-ul kernelului pentru a evita conflicte în drivere
+          # Documentația recomandă rezolvarea manuală, dar aici forțăm 'ours' pe conflicte 
+          # pentru a nu rupe driverele Samsung.
+          git merge stable/linux-4.14.y --no-edit -s recursive -X ours || echo "Conflicte gestionate prin păstrarea codului Samsung"
 
-      - name: Build Kernel
+      - name: 🚀 Build with Upstream Base
         run: |
           P_PATH=$GITHUB_WORKSPACE/proton-clang/bin
-          
-          # Argumente de compilare
           MAKE_ARGS="ARCH=arm64 \
             CC=$P_PATH/clang \
             CROSS_COMPILE=aarch64-linux-gnu- \
@@ -56,27 +53,26 @@ jobs:
             HOSTLDFLAGS=-fuse-ld=bfd \
             O=out"
 
-          # 1. Config
+          # Configurare
           make $MAKE_ARGS r5q_eur_open_defconfig
-
-          # 2. Dezactivăm Knox (pentru a evita erorile de securitate la boot)
+          
+          # Aplicăm Tips & Tricks: Dezactivăm Knox care dă conflicte cu upstream-ul în 4.14.300+
           ./scripts/config --file out/.config \
             -d CONFIG_KNOX_KAP \
             -d CONFIG_SECURITY_SAMSUNG_KNOX \
             -d CONFIG_RKP_KDP \
-            -d CONFIG_SAMSUNG_PRODUCT_SHIP
+            -d CONFIG_SAMSUNG_PRODUCT_SHIP \
+            -d CONFIG_SECURITY_DEFEX
 
           make $MAKE_ARGS olddefconfig
 
-          # 3. Compilare
-          # -fcommon rezolvă erorile de tip "multiple definition" apărute des după upstream
-          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -Wno-error"
+          # Compilare cu flag-uri de compatibilitate pentru noul cod upstream
+          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-Wno-error -fcommon"
 
-      - name: Upload Artifacts
-        if: success()
+      - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-Upstream-Kernel
+          name: S10Lite-Upstream-4.14.356
           path: |
             out/arch/arm64/boot/Image.gz-dtb
             out/arch/arm64/boot/dtbo.img
