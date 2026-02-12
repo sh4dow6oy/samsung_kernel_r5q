@@ -1,4 +1,4 @@
-name: Build Roynas R5Q - A15 BPF Compatibility
+name: Build Roynas R5Q - A15 BPF Structure Bypass
 on:
   workflow_dispatch:
 
@@ -16,79 +16,81 @@ jobs:
       - name: Install Dependencies
         run: sudo apt-get update && sudo apt-get install -y bc build-essential flex bison lz4 libssl-dev libelf-dev ccache python3 wget zstd zip git
 
-      - name: BPF Compatibility Patching
+      - name: BPF Deep Patching
         run: |
           git config --global user.email "bot@example.com"
           git config --global user.name "Kernel Bot"
           git remote add lineage https://github.com/LineageOS/android_kernel_google_msm-4.14.git
           git fetch lineage lineage-23.0
           
-          # Importăm doar fișierele strict necesare
+          # Importăm fișierele critice
           git checkout lineage/lineage-23.0 -f -- \
-            kernel/bpf/ \
-            include/linux/bpf.h \
             include/linux/filter.h \
+            include/linux/bpf.h \
             net/core/filter.c
           
-          # --- FIX INCOMPATIBILITĂȚI STRUCTURĂ (sk_buff meta_data) ---
-          # Comentăm liniile care încearcă să acceseze data_meta (care lipsește în Samsung 4.14)
+          # --- FIX: BYPASS BPF STATS (Rezolvă eroarea 'no member named stats') ---
+          # Redefinim BPF_PROG_RUN să fie simplu, fără apeluri de stats care nu există în Samsung
+          python3 -c '
+          import os
+          path = "include/linux/filter.h"
+          with open(path, "r") as f:
+              content = f.read()
+          
+          # Înlocuim blocul macro BPF_PROG_RUN complex cu unul simplu compatibil
+          simple_bpf_run = """#define BPF_PROG_RUN(prog, ctx) ({ \\
+              uint32_t _ret; \\
+              preempt_disable(); \\
+              _ret = (*(prog)->bpf_func)(ctx, (prog)->insnsi); \\
+              preempt_enable(); \\
+              _ret; })"""
+          
+          import re
+          content = re.sub(r"#define BPF_PROG_RUN\(prog, ctx\).*?preempt_enable\(\); \\.*?_ret; \}\)", simple_bpf_run, content, flags=re.DOTALL)
+          with open(path, "w") as f:
+              f.write(content)
+          '
+          
+          # Alte fix-uri pentru sk_buff
           sed -i '/cb->data_meta = skb->data - skb_metadata_len(skb);/d' include/linux/filter.h
-          sed -i '/return skb_metadata_len(skb);/c\return 0;' include/linux/filter.h
-          
-          # Fix pentru cant_sleep() care lipsește în unele versiuni
-          sed -i 's/cant_sleep();/pr_debug("bpf: cant_sleep skip\\n");/g' include/linux/filter.h
-          
-          # Forțăm includerea definițiilor
+          sed -i 's/return skb_metadata_len(skb);/return 0;/g' include/linux/filter.h
           sed -i '1i #include <linux/bpf.h>' include/linux/filter.h
           
           git add .
-          git commit -m "Apply BPF compatibility shim for Samsung 4.14" || echo "No changes"
+          git commit -m "Bypass BPF stats for Samsung compatibility" || echo "No changes"
 
-      - name: Setup Neutron Clang
+      - name: Setup Toolchain & Build
         run: |
+          # Setup Clang
           mkdir clang
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
-
-      - name: Build Kernel
-        run: |
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           
-          # Fix-uri obligatorii Samsung
+          # Fix Samsung Kconfig & VDSO
           sed -i '/kernelsu\/Kconfig/d' drivers/android/Kconfig || true
           sed -i '/kernelsu/d' drivers/android/Makefile || true
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
-          if [ -f arch/arm64/kernel/vdso/Makefile ]; then
-            sed -i 's/$(LDFLAGS)/$(filter-out -static,$(LDFLAGS))/g' arch/arm64/kernel/vdso/Makefile
-          fi
+          [ -f arch/arm64/kernel/vdso/Makefile ] && sed -i 's/$(LDFLAGS)/$(filter-out -static,$(LDFLAGS))/g' arch/arm64/kernel/vdso/Makefile
 
           MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
 
           make $MAKE_ARGS r5q_defconfig
-          
-          # CONFIGURARE PENTRU STABILITATE
-          ./scripts/config --file out/.config \
-            -e CONFIG_BPF -e CONFIG_BPF_SYSCALL -e CONFIG_BPF_JIT -e CONFIG_CGROUP_BPF \
-            -d CONFIG_BPF_JIT_ALWAYS_ON \
-            -d CONFIG_NFS_FS -d CONFIG_LTO_CLANG -e CONFIG_LTO_NONE -d CONFIG_WERROR
-
+          ./scripts/config --file out/.config -e CONFIG_BPF -e CONFIG_BPF_SYSCALL -e CONFIG_BPF_JIT -e CONFIG_CGROUP_BPF -d CONFIG_LTO_CLANG -e CONFIG_LTO_NONE -d CONFIG_WERROR
           make $MAKE_ARGS olddefconfig
           
-          # Build cu ignorarea erorilor non-critice
-          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -Wno-error -Wno-implicit-function-declaration -Wno-incompatible-pointer-types -Wno-implicit-int"
+          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -Wno-error -Wno-implicit-function-declaration -Wno-incompatible-pointer-types"
 
-      - name: Package AnyKernel3
+      - name: Upload Artifact
+        if: always()
         run: |
           if [ -f out/arch/arm64/boot/Image.gz ]; then
             git clone https://github.com/osm0sis/AnyKernel3.git
             cp out/arch/arm64/boot/Image.gz AnyKernel3/
-            cd AnyKernel3 && zip -r9 ../Kernel-R5Q-A15-Compatible.zip *
-          else
-            echo "Build failed - Check logs" && exit 1
+            cd AnyKernel3 && zip -r9 ../Kernel-R5Q-A15-Bypass.zip *
           fi
-
-      - name: Upload
+      - name: Publish
         uses: actions/upload-artifact@v4
         with:
           name: Kernel-S10Lite-A15
-          path: Kernel-R5Q-A15-Compatible.zip
+          path: "*.zip"
