@@ -29,33 +29,41 @@ jobs:
 
       - name: Build Kernel
         run: |
-          # 1. Identificăm dinamic locațiile binarelor
+          # 1. Identificăm dinamic locațiile binarelor (Smart Discovery)
           CLANG_BIN=$(find $GITHUB_WORKSPACE/clang -name clang -type f -printf '%h\n' | head -n 1)
           GCC_BIN=$(find $GITHUB_WORKSPACE/gcc-cfp -name "aarch64-linux-android-gcc" -type f -printf '%h\n' | head -n 1)
           GOLD_LD=$(find $GITHUB_WORKSPACE/gcc-cfp -name "ld.gold" -type f -printf '%p\n' | head -n 1)
           
           export PATH="$CLANG_BIN:$GCC_BIN:$PATH"
 
-          # 2. FIX Linker - Creăm symlink-urile necesare
+          # 2. FIX Linker - Creăm symlink-urile necesare pentru prefixul GNU pe care îl caută Samsung
           ln -sf "$GOLD_LD" "$GCC_BIN/aarch64-linux-gnu-ld.gold"
           ln -sf "$GOLD_LD" "$GCC_BIN/aarch64-linux-gnu-ld"
           ln -sf "$GOLD_LD" "$GCC_BIN/aarch64-linux-android-ld.gold"
 
-          # 3. NUCLEAR CLEANUP - Eliminăm flag-urile problematice și LTO
+          # 3. NUCLEAR CLEANUP & VDSO FIX
+          # Eliminăm flag-urile de optimizare incompatibile cu acest Clang
           find . -type f \( -name "Makefile*" -o -name "*.mk" -o -name "Kconfig*" \) -exec sed -i 's/-run-dce//g' {} +
           find . -type f \( -name "Makefile*" -o -name "*.mk" -o -name "Kconfig*" \) -exec sed -i 's/-run-inliner//g' {} +
           find . -type f \( -name "Makefile*" -o -name "*.mk" -o -name "Kconfig*" \) -exec sed -i 's/-vectorizer=stripmine//g' {} +
           find . -type f \( -name "Makefile*" -o -name "*.mk" -o -name "Kconfig*" \) -exec sed -i 's/-mllvm -polly//g' {} +
           
-          # Dezactivăm forțarea LTO în Makefile-urile secundare
-          find . -type f -name "Makefile*" -exec sed -i 's/CONFIG_LTO_CLANG/CONFIG_LTO_NONE/g' {} +
+          # Fix specific pentru VDSO: eliminăm forțarea LTO și cache-ul ThinLTO care cauzează eroarea shared/static
           find . -type f -name "Makefile*" -exec sed -i 's/--thinlto-cache-dir=.thinlto-cache//g' {} +
+          if [ -f arch/arm64/kernel/vdso/Makefile ]; then
+            sed -i 's/$(disable-lto)//g' arch/arm64/kernel/vdso/Makefile
+            # Eliminăm orice referință de linkare statică forțată în VDSO
+            sed -i 's/-static//g' arch/arm64/kernel/vdso/Makefile
+          fi
 
+          # Eliminăm KernelSU din configurare
           sed -i '/kernelsu/d' drivers/android/Kconfig
           sed -i '/kernelsu/d' drivers/android/Makefile
+          
+          # Dezactivăm wrapper-ul Samsung
           sed -i 's/ifneq ($(wildcard $(srctree)\/scripts\/gcc-wrapper.py),)/ifeq (0,1)/g' Makefile
 
-          # 4. Argumente Build
+          # 4. Argumente Build (Logica Ravindu)
           MAKE_ARGS="ARCH=arm64 \
             CC=clang \
             CLANG_TRIPLE=aarch64-linux-android- \
@@ -69,7 +77,7 @@ jobs:
           # 5. Generare Config
           make $MAKE_ARGS r5q_defconfig
           
-          # 6. Patch .config - DEZACTIVĂM LTO și Shadow Call Stack
+          # 6. Patch .config - Dezactivăm LTO și Shadow Call Stack
           ./scripts/config --file out/.config \
             -d CONFIG_LTO \
             -d CONFIG_LTO_CLANG \
@@ -88,14 +96,14 @@ jobs:
 
           make $MAKE_ARGS olddefconfig
 
-          # 7. Compilare
-          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -Wno-error -Wno-unknown-warning-option -Wno-unused-command-line-argument"
+          # 7. Compilare (KCFLAGS curăță avertismentele rămase)
+          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -fno-lto -Wno-error -Wno-unknown-warning-option -Wno-unused-command-line-argument"
 
       - name: Upload Artifacts
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-Ravindu-NoLTO
+          name: S10Lite-Ravindu-VDSO-Fixed
           path: |
             out/arch/arm64/boot/Image.gz-dtb
             out/arch/arm64/boot/dtbo.img
