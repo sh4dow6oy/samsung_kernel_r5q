@@ -36,27 +36,27 @@ jobs:
           
           export PATH="$CLANG_BIN:$GCC_BIN:$PATH"
 
-          # 2. Fix Linker
+          # 2. Fix Linker (Mapare gnu -> android)
           ln -sf "$GOLD_LD" "$GCC_BIN/aarch64-linux-gnu-ld.gold"
           ln -sf "$GOLD_LD" "$GCC_BIN/aarch64-linux-gnu-ld"
 
-          # 3. DEEP CLEANUP - Eliminăm Polly și prefixele -mllvm
-          # Această comandă șterge perechea "-mllvm -argument"
+          # 3. NUCLEAR CLEANUP - Rezolvăm conflictul -shared vs -static
+          # Pasul A: Curățăm flag-urile LLVM/Polly care pot injecta mizerii
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm//g' {} +
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-polly[^ ]*//g' {} +
           
-          # Eliminăm restul de flag-uri problematice raportate
-          find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-ast-use-context//g' {} +
-          find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-detect-keep-going//g' {} +
-          find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-run-dce//g' {} +
-          find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-run-inliner//g' {} +
-          find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-vectorizer=stripmine//g' {} +
-          
-          # Fix VDSO
-          sed -i 's/-static//g' arch/arm64/kernel/vdso/Makefile || true
-          
-          # Cleanup KernelSU & Wrapper
+          # Pasul B: FIX CRITIC VDSO (Eroarea ta actuală)
+          # Forțăm Makefile-ul VDSO să elimine orice instanță de -static
+          # și să nu folosească LTO care ar putea declanșa linking static.
+          if [ -f arch/arm64/kernel/vdso/Makefile ]; then
+            sed -i 's/-static//g' arch/arm64/kernel/vdso/Makefile
+            sed -i 's/$(disable-lto)//g' arch/arm64/kernel/vdso/Makefile
+            # Adăugăm un hack să filtrăm LDFLAGS pentru VDSO
+            sed -i 's/$(LDFLAGS)/$(filter-out -static,$(LDFLAGS))/g' arch/arm64/kernel/vdso/Makefile
+          fi
+
+          # Pasul C: Cleanup Samsung & KernelSU
           sed -i '/kernelsu/d' drivers/android/Kconfig || true
           sed -i '/kernelsu/d' drivers/android/Makefile || true
           rm -rf drivers/kernelsu
@@ -73,9 +73,10 @@ jobs:
             HOSTCXX=g++ \
             O=out"
 
-          # 5. Build
+          # 5. Configurare
           make $MAKE_ARGS r5q_defconfig
           
+          # Patch .config pentru a dezactiva tot ce forțează LTO sau Stack Protection incompatibil
           ./scripts/config --file out/.config \
             -d CONFIG_CC_STACKPROTECTOR_STRONG \
             -d CONFIG_CC_STACKPROTECTOR \
@@ -86,14 +87,15 @@ jobs:
 
           make $MAKE_ARGS olddefconfig
           
-          # Folosim KCFLAGS pentru a curăța orice argumente LLVM care ar putea veni din surse
-          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -fno-stack-protector -Wno-error -Wno-unknown-warning-option -Wno-unused-command-line-argument"
+          # 6. Compilare Finală
+          # Adăugăm -fno-lto și dezactivăm stack protector global pentru a preveni injecția de -static
+          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -fno-lto -fno-stack-protector -Wno-error -Wno-unknown-warning-option -Wno-unused-command-line-argument"
 
       - name: Upload Artifacts
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-Ravindu-Clean
+          name: S10Lite-Ravindu-Final-Fixed
           path: |
             out/arch/arm64/boot/Image.gz-dtb
             out/arch/arm64/boot/dtbo.img
