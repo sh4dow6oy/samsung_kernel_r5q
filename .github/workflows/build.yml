@@ -1,4 +1,4 @@
-name: Build Roynas R5Q - A15 BPF Sixteen Clean
+name: Build Roynas R5Q - A15 BPF Sixteen Sockptr
 on:
   workflow_dispatch:
 
@@ -21,7 +21,7 @@ jobs:
           git config --global user.email "bot@example.com"
           git config --global user.name "Kernel Bot"
           
-          # Ștergem complet fișierele vechi BPF pentru a evita redefinirile (duplicatele)
+          # Curățare totală înainte de import
           rm -rf kernel/bpf/
           rm -f include/linux/bpf.h include/linux/bpf_types.h include/linux/filter.h
           rm -f include/uapi/linux/bpf.h include/uapi/linux/bpf_common.h
@@ -30,7 +30,6 @@ jobs:
           git remote add sixteen https://github.com/pascua28/android_kernel_samsung_sm8250.git
           git fetch sixteen sixteen
           
-          # Importăm versiunea curată din Sixteen
           git checkout sixteen/sixteen -f -- \
             kernel/bpf/ \
             include/linux/bpf.h \
@@ -39,13 +38,33 @@ jobs:
             include/uapi/linux/bpf.h \
             include/uapi/linux/bpf_common.h \
             net/core/filter.c
-          
+
+          # --- FIX: CREARE LINUX/SOCKPTR.H (Lipsește în kernel 4.14 vechi) ---
+          cat <<EOF > include/linux/sockptr.h
+          #ifndef _LINUX_SOCKPTR_H
+          #define _LINUX_SOCKPTR_H
+          #include <linux/slab.h>
+          #include <linux/uaccess.h>
+          typedef struct {
+              union {
+                  void *kernel;
+                  void __user *user;
+              };
+              bool is_kernel;
+          } sockptr_t;
+          static inline bool sockptr_is_kernel(sockptr_t s) { return s.is_kernel; }
+          static inline sockptr_t KERNEL_SOCKPTR(void *p) { return (sockptr_t){ .kernel = p, .is_kernel = true }; }
+          static inline sockptr_t USER_SOCKPTR(void __user *p) { return (sockptr_t){ .user = p, .is_kernel = false }; }
+          static inline bool sockptr_is_null(sockptr_t s) { return !s.kernel; }
+          #endif
+          EOF
+
           # Patch critic pentru sk_buff (Samsung r5q are o structură sk_buff ușor diferită)
           sed -i '/cb->data_meta = skb->data - skb_metadata_len(skb);/d' include/linux/filter.h
           sed -i 's/return skb_metadata_len(skb);/return 0;/g' include/linux/filter.h
           
           git add .
-          git commit -m "Clean port of BPF from Sixteen SM8250" || echo "No changes"
+          git commit -m "Port BPF from Sixteen + Manual Sockptr" || echo "No changes"
 
       - name: Setup Toolchain & Build
         run: |
@@ -66,8 +85,7 @@ jobs:
           ./scripts/config --file out/.config -e CONFIG_BPF -e CONFIG_BPF_SYSCALL -e CONFIG_BPF_JIT -e CONFIG_CGROUP_BPF -d CONFIG_LTO_CLANG -e CONFIG_LTO_NONE -d CONFIG_WERROR
           make $MAKE_ARGS olddefconfig
           
-          # Compilăm cu toleranță la pointeri incompatibili (specific portărilor hibride)
-          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -Wno-error -Wno-implicit-function-declaration -Wno-incompatible-pointer-types -Wno-format"
+          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -Wno-error -Wno-implicit-function-declaration -Wno-incompatible-pointer-types -Wno-format -Wno-int-conversion"
 
       - name: Package
         if: always()
@@ -75,11 +93,11 @@ jobs:
           if [ -f out/arch/arm64/boot/Image.gz ]; then
             git clone https://github.com/osm0sis/AnyKernel3.git
             cp out/arch/arm64/boot/Image.gz AnyKernel3/
-            cd AnyKernel3 && zip -r9 ../Kernel-R5Q-A15-Sixteen-Clean.zip *
+            cd AnyKernel3 && zip -r9 ../Kernel-R5Q-A15-Sixteen-Sockptr.zip *
           fi
 
       - name: Publish
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-S10Lite-A15-Sixteen
+          name: Kernel-S10Lite-A15-Sockptr
           path: "*.zip"
