@@ -1,4 +1,4 @@
-name: Build Roynas R5Q - A15 BPF Merge
+name: Build Roynas R5Q - A15 BPF Ultimate
 on:
   workflow_dispatch:
 
@@ -11,7 +11,7 @@ jobs:
         with:
           repository: Roynas-Android-Playground/kernel_samsung_r3q
           ref: master
-          fetch-depth: 0 # Esențial pentru merge/cherry-pick
+          fetch-depth: 0
 
       - name: Install Dependencies
         run: |
@@ -24,15 +24,13 @@ jobs:
           git config --global user.email "bot@example.com"
           git config --global user.name "Kernel Bot"
           
-          # Adăugăm LineageOS ca sursă de patches
+          # Adăugăm LineageOS ca sursă pentru BPF Android 15
           git remote add lineage https://github.com/LineageOS/android_kernel_google_msm-4.14.git
           git fetch lineage lineage-23.0
           
-          # Încercăm să aducem doar folderele critice pentru BPF pentru a evita conflicte masive în driverele Samsung
-          # Aceasta este o metodă mai sigură decât un merge complet
-          git checkout lineage/lineage-23.0 -- kernel/bpf/ net/core/filter.c include/linux/filter.h include/uapi/linux/bpf.h
+          # Checkout selectiv pentru fișierele eBPF (Forțat peste Samsung)
+          git checkout lineage/lineage-23.0 -f -- kernel/bpf/ net/core/filter.c include/linux/filter.h include/uapi/linux/bpf.h
           
-          # Commit-uim schimbările aduse din Lineage
           git add .
           git commit -m "Add Android 15 eBPF support from LineageOS 23.0" || echo "No changes to commit"
 
@@ -46,17 +44,43 @@ jobs:
         run: |
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           
-          # Cleanup specific Samsung
+          # 1. FIX KCONFIG (KernelSU Error)
+          sed -i '/kernelsu\/Kconfig/d' drivers/android/Kconfig || true
+          sed -i '/kernelsu/d' drivers/android/Makefile || true
+          rm -rf drivers/kernelsu
+          
+          # 2. NUCLEAR CLEANUP (Polly & LLVM Flags)
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
+          find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm//g' {} +
+          find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-polly[^ ]*//g' {} +
+          
+          # 3. FIX VDSO (Shared/Static Error)
           if [ -f arch/arm64/kernel/vdso/Makefile ]; then
             sed -i 's/$(LDFLAGS)/$(filter-out -static,$(LDFLAGS))/g' arch/arm64/kernel/vdso/Makefile
           fi
+          
+          # 4. SAMSUNG WRAPPER DISABLE
+          sed -i 's/ifneq ($(wildcard $(srctree)\/scripts\/gcc-wrapper.py),)/ifeq (0,1)/g' Makefile
 
-          MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
+          # 5. ARGUMENTE BUILD (Neutron LLVM)
+          MAKE_ARGS="ARCH=arm64 \
+            LLVM=1 \
+            LLVM_IAS=1 \
+            CC=clang \
+            LD=ld.lld \
+            AR=llvm-ar \
+            NM=llvm-nm \
+            OBJCOPY=llvm-objcopy \
+            OBJDUMP=llvm-objdump \
+            STRIP=llvm-strip \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            O=out"
 
+          # 6. CONFIGURARE
           make $MAKE_ARGS r5q_defconfig
           
-          # FORȚĂM ACTIVAREA EBPF PENTRU ANDROID 15
+          # ACTIVARE EBPF PENTRU ANDROID 15
           ./scripts/config --file out/.config \
             -e CONFIG_BPF \
             -e CONFIG_BPF_SYSCALL \
@@ -66,24 +90,33 @@ jobs:
             -e CONFIG_NET_CLS_BPF \
             -e CONFIG_NET_ACT_BPF \
             -e CONFIG_CGROUP_BPF \
-            -d CONFIG_LTO_CLANG -e CONFIG_LTO_NONE
+            -d CONFIG_LTO_CLANG -e CONFIG_LTO_NONE \
+            -d CONFIG_CC_STACKPROTECTOR_STRONG -e CONFIG_CC_STACKPROTECTOR_NONE
 
           make $MAKE_ARGS olddefconfig
-          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -Wno-error"
+          
+          # 7. COMPILARE FINALĂ
+          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -Wno-error -Wno-unknown-warning-option"
 
       - name: Package AnyKernel3
         run: |
+          if [ ! -f out/arch/arm64/boot/Image.gz ]; then
+            echo "EROARE: Image.gz nu a fost gasit!"
+            exit 1
+          fi
+
           git clone https://github.com/osm0sis/AnyKernel3.git
           cp out/arch/arm64/boot/Image.gz AnyKernel3/
           [ -f out/arch/arm64/boot/dtbo.img ] && cp out/arch/arm64/boot/dtbo.img AnyKernel3/
           
-          # Update AnyKernel script for r5q
+          # Configurare pentru S10 Lite (r5q)
           sed -i 's/device.name1=maguro/device.name1=r5q/g' AnyKernel3/anykernel.sh
+          sed -i 's/device.name2=toroplus/device.name2=SM-G770F/g' AnyKernel3/anykernel.sh
           
-          cd AnyKernel3 && zip -r9 ../Kernel-R5Q-A15-BPF-Final.zip *
+          cd AnyKernel3 && zip -r9 ../Kernel-S10Lite-A15-BPF-Final.zip *
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-A15-Ready
-          path: Kernel-R5Q-A15-BPF-Final.zip
+          name: Kernel-S10Lite-R5Q-A15
+          path: Kernel-S10Lite-A15-BPF-Final.zip
