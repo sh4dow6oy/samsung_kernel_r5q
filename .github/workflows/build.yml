@@ -1,4 +1,4 @@
-name: Build Roynas R5Q - Ravindu Toolchain
+name: Build Roynas R5Q - Ravindu Final NoKSU
 on:
   workflow_dispatch:
 
@@ -21,49 +21,43 @@ jobs:
 
       - name: Setup Toolchains
         run: |
-          # Descarcă Clang-ul recomandat (CFP Support)
-          mkdir clang
+          mkdir clang gcc
           wget -q https://github.com/ravindu644/Android-Kernel-Tutorials/releases/download/toolchains/clang-4639204-cfp-jopp.tar.gz
           tar -xf clang-4639204-cfp-jopp.tar.gz -C clang
-          
-          # Descarcă GCC-ul pentru linking și componentele de 32-bit
-          mkdir gcc
           wget -q https://github.com/ravindu644/Android-Kernel-Tutorials/releases/download/toolchains/gcc-cfp-jopp-only.tar.gz
           tar -xf gcc-cfp-jopp-only.tar.gz -C gcc
 
       - name: Build Kernel
         run: |
-          # 1. Localizare dinamică a binarelor
+          # 1. Localizare binare
           CLANG_BIN=$(find $GITHUB_WORKSPACE/clang -name clang -type f -printf '%h\n' | head -n 1)
           GCC_BIN=$(find $GITHUB_WORKSPACE/gcc -name "aarch64-linux-android-gcc" -type f -printf '%h\n' | head -n 1)
-          GCC_32_BIN=$(find $GITHUB_WORKSPACE/gcc -name "arm-linux-androideabi-gcc" -type f -printf '%h\n' | head -n 1)
-          # Linker-ul Gold (esențial pentru VDSO)
           GOLD_LD=$(find $GITHUB_WORKSPACE/gcc -name "ld.gold" -type f -printf '%p\n' | head -n 1)
           
-          export PATH="$CLANG_BIN:$GCC_BIN:$GCC_32_BIN:$PATH"
+          export PATH="$CLANG_BIN:$GCC_BIN:$PATH"
 
-          # 2. Fix Linker (Samsung caută prefixul gnu-)
+          # 2. Fix Linker (Mapping gnu -> android pentru Samsung)
           ln -sf "$GOLD_LD" "$GCC_BIN/aarch64-linux-gnu-ld.gold"
           ln -sf "$GOLD_LD" "$GCC_BIN/aarch64-linux-gnu-ld"
-          ln -sf "$GOLD_LD" "$GCC_BIN/aarch64-linux-android-ld.gold"
 
-          # 3. Nuclear Cleanup - Eliminăm flag-urile care fac Clang 6.0 să crăpe
-          find . -type f \( -name "Makefile*" -o -name "*.mk" -o -name "Kconfig*" \) -exec sed -i 's/-run-dce//g' {} +
-          find . -type f \( -name "Makefile*" -o -name "*.mk" -o -name "Kconfig*" \) -exec sed -i 's/-run-inliner//g' {} +
-          find . -type f \( -name "Makefile*" -o -name "*.mk" -o -name "Kconfig*" \) -exec sed -i 's/-vectorizer=stripmine//g' {} +
-          find . -type f \( -name "Makefile*" -o -name "*.mk" -o -name "Kconfig*" \) -exec sed -i 's/-mllvm -polly//g' {} +
-          
-          # Fix VDSO (Shared vs Static conflict)
+          # 3. NUCLEAR CLEANUP & KERNELSU REMOVAL
+          # Eliminăm complet referințele KernelSU din ierarhia de build
+          sed -i '/kernelsu/d' drivers/android/Kconfig
+          sed -i '/kernelsu/d' drivers/android/Makefile
+          # Ștergem și folderul dacă există, pentru a fi siguri
+          rm -rf drivers/kernelsu
+
+          # Patch-uri Ravindu Style (VDSO + Compiler Fixes)
+          sed -i 's/-static//g' arch/arm64/kernel/vdso/Makefile
+          find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-run-dce//g' {} +
+          find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-run-inliner//g' {} +
+          find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-vectorizer=stripmine//g' {} +
           find . -type f -name "Makefile*" -exec sed -i 's/--thinlto-cache-dir=.thinlto-cache//g' {} +
-          if [ -f arch/arm64/kernel/vdso/Makefile ]; then
-            sed -i 's/$(disable-lto)//g' arch/arm64/kernel/vdso/Makefile
-            sed -i 's/-static//g' arch/arm64/kernel/vdso/Makefile
-          fi
-
+          
           # Dezactivăm wrapper-ul Samsung
           sed -i 's/ifneq ($(wildcard $(srctree)\/scripts\/gcc-wrapper.py),)/ifeq (0,1)/g' Makefile
 
-          # 4. Argumente Build (Standard Ravindu)
+          # 4. Argumente Build
           MAKE_ARGS="ARCH=arm64 \
             CC=clang \
             CLANG_TRIPLE=aarch64-linux-android- \
@@ -74,24 +68,27 @@ jobs:
             HOSTCXX=g++ \
             O=out"
 
-          # 5. Execuție Build
+          # 5. Build Sequence
           make $MAKE_ARGS r5q_defconfig
           
-          # Configurație pentru Android 15 (No LTO, No Knox)
+          # Dezactivăm KernelSU din .config (dacă a rămas ceva) + alte fix-uri
           ./scripts/config --file out/.config \
+            -d CONFIG_ASSIST_KSU \
+            -d CONFIG_KSU \
             -d CONFIG_LTO -d CONFIG_LTO_CLANG -e CONFIG_LTO_NONE \
             -d CONFIG_SHADOW_CALL_STACK -d CONFIG_KNOX_KAP -d CONFIG_SECURITY_SAMSUNG_KNOX \
-            -d CONFIG_SAMSUNG_PRODUCT_SHIP -d CONFIG_SECURITY_DEFEX \
-            -e CONFIG_BPF -e CONFIG_BPF_SYSCALL -e CONFIG_BPF_JIT
+            -d CONFIG_RKP_KDP -d CONFIG_SAMSUNG_PRODUCT_SHIP -d CONFIG_SECURITY_DEFEX
 
           make $MAKE_ARGS olddefconfig
-          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -fno-lto -Wno-error -Wno-unknown-warning-option"
+          
+          # Compilare finală
+          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -Wno-error -Wno-unknown-warning-option -Wno-unused-command-line-argument"
 
       - name: Upload Artifacts
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-Ravindu-Final
+          name: S10Lite-Ravindu-NoKSU-Clean
           path: |
             out/arch/arm64/boot/Image.gz-dtb
             out/arch/arm64/boot/dtbo.img
