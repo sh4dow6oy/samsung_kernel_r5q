@@ -29,35 +29,34 @@ jobs:
 
       - name: Build Kernel
         run: |
-          # 1. Localizare dinamică binară
+          # 1. Localizare binare
           CLANG_BIN=$(find $GITHUB_WORKSPACE/clang -name clang -type f -printf '%h\n' | head -n 1)
           GCC_BIN=$(find $GITHUB_WORKSPACE/gcc -name "aarch64-linux-android-gcc" -type f -printf '%h\n' | head -n 1)
           GOLD_LD=$(find $GITHUB_WORKSPACE/gcc -name "ld.gold" -type f -printf '%p\n' | head -n 1)
           
           export PATH="$CLANG_BIN:$GCC_BIN:$PATH"
 
-          # 2. Fix Linker (Mapping gnu -> android)
+          # 2. Fix Linker
           ln -sf "$GOLD_LD" "$GCC_BIN/aarch64-linux-gnu-ld.gold"
           ln -sf "$GOLD_LD" "$GCC_BIN/aarch64-linux-gnu-ld"
 
-          # 3. NUCLEAR CLEANUP - Eliminăm flag-urile care blochează Clang
-          # Ștergem orice referință la Polly (motivul erorii anterioare)
-          find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-polly//g' {} +
+          # 3. DEEP CLEANUP - Eliminăm Polly și prefixele -mllvm
+          # Această comandă șterge perechea "-mllvm -argument"
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
-          find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-polly-loopfusion-greedy=1//g' {} +
-          find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-polly-ast-use-context//g' {} +
-          find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-polly-detect-keep-going//g' {} +
-          find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-polly-invariant-load-hoisting//g' {} +
+          find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm//g' {} +
+          find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-polly[^ ]*//g' {} +
           
-          # Ștergem optimizările specifice altor toolchain-uri
+          # Eliminăm restul de flag-uri problematice raportate
+          find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-ast-use-context//g' {} +
+          find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-detect-keep-going//g' {} +
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-run-dce//g' {} +
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-run-inliner//g' {} +
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-vectorizer=stripmine//g' {} +
           
-          # Fix VDSO shared/static
+          # Fix VDSO
           sed -i 's/-static//g' arch/arm64/kernel/vdso/Makefile || true
           
-          # Eliminăm KernelSU și wrapper-ul Samsung
+          # Cleanup KernelSU & Wrapper
           sed -i '/kernelsu/d' drivers/android/Kconfig || true
           sed -i '/kernelsu/d' drivers/android/Makefile || true
           rm -rf drivers/kernelsu
@@ -74,30 +73,27 @@ jobs:
             HOSTCXX=g++ \
             O=out"
 
-          # 5. Generare Defconfig
+          # 5. Build
           make $MAKE_ARGS r5q_defconfig
           
-          # 6. Patch .config - Dezactivăm tot ce blochează acest toolchain
           ./scripts/config --file out/.config \
             -d CONFIG_CC_STACKPROTECTOR_STRONG \
             -d CONFIG_CC_STACKPROTECTOR \
             -e CONFIG_CC_STACKPROTECTOR_NONE \
             -d CONFIG_LTO -d CONFIG_LTO_CLANG -e CONFIG_LTO_NONE \
             -d CONFIG_SHADOW_CALL_STACK -d CONFIG_KNOX_KAP -d CONFIG_SECURITY_SAMSUNG_KNOX \
-            -d CONFIG_RKP_KDP -d CONFIG_SAMSUNG_PRODUCT_SHIP -d CONFIG_SECURITY_DEFEX \
             -d CONFIG_ASSIST_KSU -d CONFIG_KSU
 
           make $MAKE_ARGS olddefconfig
           
-          # 7. Compilare Finală
-          # KCFLAGS conține măsuri de siguranță pentru a ignora flag-uri LLVM reziduale
+          # Folosim KCFLAGS pentru a curăța orice argumente LLVM care ar putea veni din surse
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -fno-stack-protector -Wno-error -Wno-unknown-warning-option -Wno-unused-command-line-argument"
 
       - name: Upload Artifacts
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-Ravindu-Fixed
+          name: S10Lite-Ravindu-Clean
           path: |
             out/arch/arm64/boot/Image.gz-dtb
             out/arch/arm64/boot/dtbo.img
