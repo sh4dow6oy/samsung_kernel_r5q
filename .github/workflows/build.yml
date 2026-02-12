@@ -1,4 +1,4 @@
-name: Build Roynas R5Q - Neutron Clang
+name: Build Roynas R5Q - Neutron Final
 on:
   workflow_dispatch:
 
@@ -33,19 +33,31 @@ jobs:
 
       - name: Build Kernel
         run: |
+          # 1. PATH setup
           N_PATH=$GITHUB_WORKSPACE/neutron/bin
           G64_PATH=$GITHUB_WORKSPACE/gcc64/bin
           G32_PATH=$GITHUB_WORKSPACE/gcc32/bin
           export PATH="$N_PATH:$G64_PATH:$G32_PATH:$PATH"
 
-          # NUCLEAR CLEANUP: Eliminăm flag-urile Polly care nu sunt standard în Neutron
-          find . -type f -name "Makefile*" -exec sed -i 's/-polly-loopfusion-greedy=1//g' {} +
-          find . -type f -name "Makefile*" -exec sed -i 's/-mllvm -polly//g' {} +
+          # 2. Fix GCC Wrapper (Symlinks) - Esențial pentru sursele Samsung
+          ln -s $G64_PATH/aarch64-none-linux-gnu-gcc $G64_PATH/aarch64-linux-gnu-gcc
+          ln -s $G32_PATH/arm-none-linux-gnueabihf-gcc $G32_PATH/arm-linux-gnueabi-gcc
+
+          # 3. Nuclear Cleanup (Polly/DCE/Inliner)
+          # Curățăm orice flag care ar putea supăra Neutron Clang
+          grep -rl "polly-loopfusion-greedy" . | xargs sed -i 's/-polly-loopfusion-greedy=1//g' || true
+          grep -rl "polly-opt-fusion" . | xargs sed -i 's/-polly-opt-fusion=1//g' || true
+          grep -rl "run-dce" . | xargs sed -i 's/-run-dce//g' || true
+          grep -rl "run-inliner" . | xargs sed -i 's/-run-inliner//g' || true
+          grep -rl "vectorizer=stripmine" . | xargs sed -i 's/-vectorizer=stripmine//g' || true
           
-          # Fix Kconfig
+          # Dezactivăm forțat wrapper-ul Samsung în Makefile-ul principal
+          sed -i 's/ifneq ($(wildcard $(srctree)\/scripts\/gcc-wrapper.py),)/ifeq (0,1)/g' Makefile
+
+          # 4. KernelSU Fix
           sed -i '/kernelsu/d' drivers/android/Kconfig
 
-          # Argumente Build
+          # 5. Build Arguments
           MAKE_ARGS="ARCH=arm64 \
             CC=clang \
             CROSS_COMPILE=aarch64-none-linux-gnu- \
@@ -62,10 +74,9 @@ jobs:
             HOSTCXX=g++ \
             O=out"
 
-          # 1. Config
+          # 6. Config & Patch
           make $MAKE_ARGS r5q_defconfig
-
-          # 2. Patch .config (Android 15 eBPF Support)
+          
           ./scripts/config --file out/.config \
             -d CONFIG_KNOX_KAP \
             -d CONFIG_SECURITY_SAMSUNG_KNOX \
@@ -79,15 +90,14 @@ jobs:
 
           make $MAKE_ARGS olddefconfig
 
-          # 3. Compile
-          # Neutron Clang suportă optimizări avansate, dar folosim KCFLAGS pentru siguranță
+          # 7. Compilare Finală
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -Wno-error -Wno-unused-command-line-argument"
 
-      - name: Upload
+      - name: Upload Artifacts
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-Neutron-A15
+          name: S10Lite-Neutron-A15-Fixed
           path: |
             out/arch/arm64/boot/Image.gz-dtb
             out/arch/arm64/boot/dtbo.img
