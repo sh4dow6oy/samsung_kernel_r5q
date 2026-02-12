@@ -1,4 +1,4 @@
-name: Build Roynas R5Q - A15 BPF UAPI Fix
+name: Build Roynas R5Q - A15 BPF Nuclear Fix
 on:
   workflow_dispatch:
 
@@ -16,52 +16,64 @@ jobs:
       - name: Install Dependencies
         run: sudo apt-get update && sudo apt-get install -y bc build-essential flex bison lz4 libssl-dev libelf-dev ccache python3 wget zstd zip git
 
-      - name: BPF Deep Integration & UAPI Fix
+      - name: BPF Nuclear Patching
         run: |
           git config --global user.email "bot@example.com"
           git config --global user.name "Kernel Bot"
           git remote add lineage https://github.com/LineageOS/android_kernel_google_msm-4.14.git
           git fetch lineage lineage-23.0
           
-          # Importăm tot ce ține de BPF, inclusiv UAPI (interfața de utilizator)
+          # Importăm fișierele necesare
           git checkout lineage/lineage-23.0 -f -- \
             include/linux/bpf.h \
             include/linux/filter.h \
             include/uapi/linux/bpf.h \
-            include/linux/bpf_types.h \
             net/core/filter.c
           
-          # --- FIX STRUCT BPF_SPIN_LOCK ---
-          # Îl definim manual în bpf.h pentru a evita "incomplete type"
-          sed -i '/struct bpf_map;/a struct bpf_spin_lock { u32 val; };' include/linux/bpf.h
-          
-          # --- FIX FLAG-URI LIPSĂ ---
-          # Dacă flag-urile RDONLY/WRONLY nu sunt găsite, le injectăm manual
-          sed -i '1i #define BPF_F_RDONLY_PROG (1U << 7)\n#define BPF_F_WRONLY_PROG (1U << 8)' include/linux/bpf.h
-
-          # --- BYPASS BPF STATS (Python script din pasul anterior) ---
+          # --- NUCLEAR FIX: Ștergem funcțiile care folosesc bpf_spin_lock ---
+          # Acestea nu sunt necesare pentru boot-ul Android 15, dar blochează compilarea
           python3 -c '
           import os
-          path = "include/linux/filter.h"
-          if os.path.exists(path):
-              with open(path, "r") as f: content = f.read()
-              import re
-              simple_bpf_run = """#define BPF_PROG_RUN(prog, ctx) ({ \\
-              uint32_t _ret; \\
-              preempt_disable(); \\
-              _ret = (*(prog)->bpf_func)(ctx, (prog)->insnsi); \\
-              preempt_enable(); \\
-              _ret; })"""
-              content = re.sub(r"#define BPF_PROG_RUN\(prog, ctx\).*?preempt_enable\(\); \\.*?_ret; \}\)", simple_bpf_run, content, flags=re.DOTALL)
-              with open(path, "w") as f: f.write(content)
+          path = "include/linux/bpf.h"
+          with open(path, "r") as f: lines = f.readlines()
+          
+          new_lines = []
+          skip = False
+          for line in lines:
+              if "static inline void copy_map_value_locked" in line or "static inline void bpf_obj_memcpy" in line:
+                  skip = True
+              if skip and line.strip() == "}":
+                  skip = False
+                  continue
+              if not skip:
+                  new_lines.append(line)
+          
+          with open(path, "w") as f: f.writelines(new_lines)
           '
 
-          # Alte fix-uri necesare pentru sk_buff
+          # --- FIX FLAG-URI LIPSĂ ---
+          # Forțăm definirea lor înainte de orice alt include
+          sed -i "1i #ifndef BPF_F_RDONLY_PROG\n#define BPF_F_RDONLY_PROG (1U << 7)\n#endif" include/linux/bpf.h
+          sed -i "1i #ifndef BPF_F_WRONLY_PROG\n#define BPF_F_WRONLY_PROG (1U << 8)\n#endif" include/linux/bpf.h
+          sed -i "1i struct bpf_spin_lock { u32 val; };" include/linux/bpf.h
+
+          # --- BYPASS BPF STATS ---
+          python3 -c "
+          import os, re
+          path = \"include/linux/filter.h\"
+          if os.path.exists(path):
+              with open(path, \"r\") as f: content = f.read()
+              simple_bpf_run = \"#define BPF_PROG_RUN(prog, ctx) ({ uint32_t _ret; preempt_disable(); _ret = (*(prog)->bpf_func)(ctx, (prog)->insnsi); preempt_enable(); _ret; })\"
+              content = re.sub(r\"#define BPF_PROG_RUN\(prog, ctx\).*?preempt_enable\(\); \\.*?_ret; \}\)\", simple_bpf_run, content, flags=re.DOTALL)
+              with open(path, \"w\") as f: f.write(content)
+          "
+
+          # Fix sk_buff meta_data
           sed -i '/cb->data_meta = skb->data - skb_metadata_len(skb);/d' include/linux/filter.h
           sed -i 's/return skb_metadata_len(skb);/return 0;/g' include/linux/filter.h
           
           git add .
-          git commit -m "Fix BPF UAPI and spinlock structures" || echo "No changes"
+          git commit -m "Nuclear BPF compatibility fix" || echo "No changes"
 
       - name: Setup Toolchain & Build
         run: |
@@ -84,16 +96,16 @@ jobs:
           
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -Wno-error -Wno-implicit-function-declaration -Wno-incompatible-pointer-types"
 
-      - name: Upload
+      - name: Package
         if: always()
         run: |
           if [ -f out/arch/arm64/boot/Image.gz ]; then
             git clone https://github.com/osm0sis/AnyKernel3.git
             cp out/arch/arm64/boot/Image.gz AnyKernel3/
-            cd AnyKernel3 && zip -r9 ../Kernel-R5Q-A15-Fixed-UAPI.zip *
+            cd AnyKernel3 && zip -r9 ../Kernel-R5Q-A15-Nuclear.zip *
           fi
       - name: Publish
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-S10Lite-A15-Fixed
+          name: Kernel-S10Lite-A15-Nuclear
           path: "*.zip"
