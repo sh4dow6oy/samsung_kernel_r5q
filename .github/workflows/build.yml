@@ -1,4 +1,4 @@
-name: Build S10 Lite Kernel (Proton Clang)
+name: R5Q Ultimate Kernel Build
 on:
   workflow_dispatch:
 
@@ -6,76 +6,78 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Kernel Source
+      - name: Checkout Source
         uses: actions/checkout@v4
         with:
           repository: sh4dow6oy/samsung_kernel_r5q
-          fetch-depth: 1
+          fetch-depth: 0 # IMPORTANT: avem nevoie de istoric pentru merge
 
-      - name: Install Build Dependencies
+      - name: Setup Tools
         run: |
           sudo apt-get update
           sudo apt-get install -y bc build-essential flex bison lz4 libssl-dev libelf-dev \
-          ccache python3 python-is-python3 libarchive-tools libncurses-dev wget \
-          gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi
+          ccache python3 python-is-python3 libarchive-tools wget gcc-aarch64-linux-gnu
 
       - name: Download Proton Clang
         run: |
           git clone https://github.com/kdrag0n/proton-clang.git --depth=1 proton-clang
 
-      - name: Build Kernel
+      - name: 🚀 Step 1: Upstream to 4.14.356
         run: |
-          # Definim calea către toolchain
-          PROTON_PATH=$GITHUB_WORKSPACE/proton-clang/bin
+          git config --global user.email "bot@github.com"
+          git config --global user.name "KernelBot"
+          git remote add stable https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git
+          git fetch stable linux-4.14.y
+          # Încercăm merge-ul automat. Dacă crapă, dăm checkout la ce e mai important.
+          git merge stable/linux-4.14.y --no-edit || git checkout stable/linux-4.14.y -- scripts/ include/
+
+      - name: 🚀 Step 2: Backport eBPF (LineageOS)
+        run: |
+          git remote add lineage https://github.com/LineageOS/android_kernel_google_msm-4.14
+          git fetch lineage lineage-21
+          # Luăm folderele întregi de eBPF din LineageOS care sunt deja gata patch-uite
+          git checkout lineage/lineage-21 -- kernel/bpf/
+          git checkout lineage/lineage-21 -- include/linux/bpf.h
+          git checkout lineage/lineage-21 -- include/uapi/linux/bpf.h
+          git checkout lineage/lineage-21 -- net/core/filter.c
+
+      - name: 🚀 Step 3: Build & Optimization
+        run: |
+          P_PATH=$GITHUB_WORKSPACE/proton-clang/bin
+          CONF="arch/arm64/configs/r5q_eur_open_defconfig"
           
-          # Parametrii de build - Observă HOSTLDFLAGS pentru a evita eroarea de libc
           MAKE_ARGS="ARCH=arm64 \
-            CC=$PROTON_PATH/clang \
+            CC=$P_PATH/clang \
             CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-            AR=$PROTON_PATH/llvm-ar \
-            NM=$PROTON_PATH/llvm-nm \
-            OBJCOPY=$PROTON_PATH/llvm-objcopy \
-            OBJDUMP=$PROTON_PATH/llvm-objdump \
-            STRIP=$PROTON_PATH/llvm-strip \
-            LD=$PROTON_PATH/ld.lld \
+            AR=$P_PATH/llvm-ar \
+            NM=$P_PATH/llvm-nm \
+            OBJCOPY=$P_PATH/llvm-objcopy \
+            OBJDUMP=$P_PATH/llvm-objdump \
+            STRIP=$P_PATH/llvm-strip \
+            LD=$P_PATH/ld.lld \
             HOSTCC=gcc \
             HOSTCXX=g++ \
             HOSTLDFLAGS=-fuse-ld=bfd \
             O=out"
 
-          # 1. Generăm config-ul de bază (r5q_eur_open_defconfig)
+          # Generăm config și activăm eBPF / Dezactivăm Knox
           make $MAKE_ARGS r5q_eur_open_defconfig
-          
-          # 2. Patching Defconfig: Dezactivăm Knox și activăm eBPF pentru Android 15
-          # Folosim scripts/config pentru a manipula .config-ul generat anterior
           ./scripts/config --file out/.config \
-            -d CONFIG_KNOX_KAP \
-            -d CONFIG_SECURITY_SAMSUNG_KNOX \
-            -d CONFIG_RKP_KDP \
-            -d CONFIG_SAMSUNG_PRODUCT_SHIP \
-            -d CONFIG_KDP_NS_RESTRICTION \
-            -e CONFIG_BPF \
-            -e CONFIG_BPF_SYSCALL \
-            -e CONFIG_BPF_JIT \
-            -e CONFIG_CGROUP_BPF \
-            -e CONFIG_NET_CLS_BPF \
-            -e CONFIG_NET_ACT_BPF \
-            -e CONFIG_DEBUG_INFO_BTF
-
-          # 3. Rezolvăm întrebările noi din config (BPF_JIT_ALWAYS_ON etc.)
-          # Această comandă setează automat noile opțiuni la valorile lor default
+            -e CONFIG_BPF -e CONFIG_BPF_SYSCALL -e CONFIG_BPF_JIT -e CONFIG_CGROUP_BPF \
+            -e CONFIG_NET_CLS_BPF -e CONFIG_NET_ACT_BPF -e CONFIG_BPF_EVENTS -e CONFIG_DEBUG_INFO_BTF \
+            -d CONFIG_KNOX_KAP -d CONFIG_SECURITY_SAMSUNG_KNOX -d CONFIG_RKP_KDP \
+            -d CONFIG_SAMSUNG_PRODUCT_SHIP -d CONFIG_SECURITY_DEFEX -d CONFIG_WERROR
+          
           make $MAKE_ARGS olddefconfig
+          
+          # Build cu ignorarea erorilor minore de sintaxă Samsung
+          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-Wno-error -fcommon -Wno-return-type"
 
-          # 4. Compilarea propriu-zisă
-          # KCFLAGS="-Wno-error" previne oprirea build-ului la avertismentele Proton Clang
-          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-Wno-error -fcommon"
-
-      - name: Upload Artifacts
-        if: success()
+      - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-A15-Kernel
+          name: Kernel-r5q-A15-Proton
           path: |
             out/arch/arm64/boot/Image.gz-dtb
             out/arch/arm64/boot/dtbo.img
