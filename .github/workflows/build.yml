@@ -1,11 +1,10 @@
-name: Build Roynas R5Q - Neutron A15
+name: Build Roynas R5Q - Ravindu Toolchain
 on:
   workflow_dispatch:
 
 jobs:
   build:
-    # Schimbăm pe 24.04 pentru a avea GLIBC 2.38+ necesar pentru Neutron
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-22.04
     steps:
       - name: Checkout Source
         uses: actions/checkout@v4
@@ -18,55 +17,51 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y bc build-essential flex bison lz4 libssl-dev libelf-dev \
-          ccache python3 libarchive-tools wget libtinfo6 zstd
+          ccache python3 python-is-python3 libarchive-tools wget libtinfo5
 
-      - name: Setup Neutron Clang
+      - name: Setup Toolchains
         run: |
-          mkdir neutron
-          # Versiunea ta de Neutron (10032024)
-          wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
-          tar -I zstd -xf neutron-clang-10032024.tar.zst -C neutron
-          rm neutron-clang-10032024.tar.zst
-
-      - name: Setup GCC Prebuilts (Firefly)
-        run: |
-          git clone https://github.com/Firefly-rk-linux/prebuilts-gcc-linux-x86-aarch64-gcc-arm-10.3-2021.07-x86_64-aarch64-none-linux-gnu.git --depth=1 gcc64
-          git clone https://github.com/Firefly-rk-linux/prebuilts-gcc-linux-x86-arm-gcc-arm-10.3-2021.07-x86_64-arm-none-linux-gnueabihf.git --depth=1 gcc32
+          # 1. Descarcă și dezarhivează Clang (Google CFP)
+          mkdir clang
+          wget -q https://github.com/ravindu644/Android-Kernel-Tutorials/releases/download/toolchains/clang-4639204-cfp-jopp.tar.gz
+          tar -xf clang-4639204-cfp-jopp.tar.gz -C clang
+          
+          # 2. Descarcă și dezarhivează GCC (AOSP 9.0 logic)
+          mkdir gcc
+          wget -q https://github.com/ravindu644/Android-Kernel-Tutorials/releases/download/toolchains/gcc-cfp-jopp-only.tar.gz
+          tar -xf gcc-cfp-jopp-only.tar.gz -C gcc
 
       - name: Build Kernel
         run: |
-          TOOLCHAIN_DIR=$GITHUB_WORKSPACE/neutron/bin
-          GCC64_DIR=$GITHUB_WORKSPACE/gcc64/bin
-          GCC32_DIR=$GITHUB_WORKSPACE/gcc32/bin
+          # Setăm calea către binare (Clang și GCC împreună)
+          CLANG_PATH=$GITHUB_WORKSPACE/clang/bin
+          GCC_PATH=$GITHUB_WORKSPACE/gcc/bin
+          export PATH="$CLANG_PATH:$GCC_PATH:$PATH"
 
-          # Symlinks necesare pentru wrapper-ul Samsung
-          ln -s ${GCC64_DIR}/aarch64-none-linux-gnu-gcc ${GCC64_DIR}/aarch64-linux-gnu-gcc
-          ln -s ${GCC32_DIR}/arm-none-linux-gnueabihf-gcc ${GCC32_DIR}/arm-linux-gnueabi-gcc
-
-          # Cleanup Polly & KernelSU
+          # Fix Kconfig & Cleanup (Nuclear Fix adaptat)
           find . -type f \( -name "Makefile*" -o -name "*.mk" -o -name "Kconfig*" \) -exec sed -i 's/-polly-loopfusion-greedy=1//g' {} +
           find . -type f \( -name "Makefile*" -o -name "*.mk" -o -name "Kconfig*" \) -exec sed -i 's/-mllvm -polly//g' {} +
           sed -i '/kernelsu/d' drivers/android/Kconfig
           sed -i '/kernelsu/d' drivers/android/Makefile
+          
+          # Dezactivăm wrapper-ul Samsung care forțează anumite versiuni
           sed -i 's/ifneq ($(wildcard $(srctree)\/scripts\/gcc-wrapper.py),)/ifeq (0,1)/g' Makefile
 
+          # Definim argumentele exact ca în build.sh-ul indicat
+          # Folosim aarch64-linux-gnu- conform cerințelor de wrapper Samsung
           MAKE_ARGS="ARCH=arm64 \
-            CC=${TOOLCHAIN_DIR}/clang \
-            LD=${TOOLCHAIN_DIR}/ld.lld \
-            AR=${TOOLCHAIN_DIR}/llvm-ar \
-            NM=${TOOLCHAIN_DIR}/llvm-nm \
-            OBJCOPY=${TOOLCHAIN_DIR}/llvm-objcopy \
-            OBJDUMP=${TOOLCHAIN_DIR}/llvm-objdump \
-            STRIP=${TOOLCHAIN_DIR}/llvm-strip \
-            CROSS_COMPILE=${GCC64_DIR}/aarch64-none-linux-gnu- \
-            CROSS_COMPILE_ARM32=${GCC32_DIR}/arm-none-linux-gnueabihf- \
+            CC=clang \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             HOSTCC=gcc \
             HOSTCXX=g++ \
             O=out"
 
-          # Config & Patch
+          # 1. Config
           make $MAKE_ARGS r5q_defconfig
           
+          # 2. Patch .config (Android 15 eBPF)
           ./scripts/config --file out/.config \
             -d CONFIG_KNOX_KAP \
             -d CONFIG_SECURITY_SAMSUNG_KNOX \
@@ -79,13 +74,16 @@ jobs:
             -e CONFIG_CGROUP_BPF -e CONFIG_NET_CLS_BPF -e CONFIG_NET_ACT_BPF
 
           make $MAKE_ARGS olddefconfig
+
+          # 3. Compilare
+          # Adăugăm flag-ul -fno-stack-protector dacă apar erori de linkare pe 4.14
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -Wno-error -Wno-unused-command-line-argument"
 
       - name: Upload Artifacts
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-Neutron-A15-Success
+          name: S10Lite-Ravindu-Kernel
           path: |
             out/arch/arm64/boot/Image.gz-dtb
             out/arch/arm64/boot/dtbo.img
