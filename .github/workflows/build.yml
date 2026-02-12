@@ -36,22 +36,20 @@ jobs:
           
           export PATH="$CLANG_BIN:$GCC_BIN:$PATH"
 
-          # 2. Fix Linker (Mapping gnu -> android)
+          # 2. Fix Linker
           ln -sf "$GOLD_LD" "$GCC_BIN/aarch64-linux-gnu-ld.gold"
           ln -sf "$GOLD_LD" "$GCC_BIN/aarch64-linux-gnu-ld"
 
           # 3. NUCLEAR CLEANUP & KERNELSU REMOVAL
-          # Eliminăm complet referințele KernelSU din ierarhia de build
           sed -i '/kernelsu/d' drivers/android/Kconfig || true
           sed -i '/kernelsu/d' drivers/android/Makefile || true
           rm -rf drivers/kernelsu
 
-          # Patch-uri Ravindu Style (VDSO + Compiler Fixes)
+          # Patch-uri Ravindu Style
           sed -i 's/-static//g' arch/arm64/kernel/vdso/Makefile || true
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-run-dce//g' {} +
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-run-inliner//g' {} +
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-vectorizer=stripmine//g' {} +
-          find . -type f -name "Makefile*" -exec sed -i 's/--thinlto-cache-dir=.thinlto-cache//g' {} +
           
           # Dezactivăm wrapper-ul Samsung
           sed -i 's/ifneq ($(wildcard $(srctree)\/scripts\/gcc-wrapper.py),)/ifeq (0,1)/g' Makefile
@@ -70,18 +68,21 @@ jobs:
           # 5. Build Sequence
           make $MAKE_ARGS r5q_defconfig
           
-          # Dezactivăm KernelSU din .config + alte fix-uri de securitate Samsung
+          # 6. FIX CRITIC: Dezactivăm Stack Protector Strong care blochează build-ul
           ./scripts/config --file out/.config \
-            -d CONFIG_ASSIST_KSU \
-            -d CONFIG_KSU \
+            -d CONFIG_CC_STACKPROTECTOR_STRONG \
+            -d CONFIG_CC_STACKPROTECTOR \
+            -e CONFIG_CC_STACKPROTECTOR_NONE \
+            -d CONFIG_ASSIST_KSU -d CONFIG_KSU \
             -d CONFIG_LTO -d CONFIG_LTO_CLANG -e CONFIG_LTO_NONE \
             -d CONFIG_SHADOW_CALL_STACK -d CONFIG_KNOX_KAP -d CONFIG_SECURITY_SAMSUNG_KNOX \
             -d CONFIG_RKP_KDP -d CONFIG_SAMSUNG_PRODUCT_SHIP -d CONFIG_SECURITY_DEFEX
 
           make $MAKE_ARGS olddefconfig
           
-          # Compilare finală
-          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -Wno-error -Wno-unknown-warning-option -Wno-unused-command-line-argument"
+          # 7. Compilare
+          # Adăugăm -fno-stack-protector în KCFLAGS ca măsură de ultimă instanță
+          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -fno-stack-protector -Wno-error -Wno-unknown-warning-option -Wno-unused-command-line-argument"
 
       - name: Upload Artifacts
         if: success()
