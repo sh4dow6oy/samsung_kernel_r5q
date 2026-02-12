@@ -21,7 +21,6 @@ jobs:
 
       - name: Setup Toolchains
         run: |
-          # Download Clang & GCC Toolchains
           mkdir clang gcc-cfp
           wget -q https://github.com/ravindu644/Android-Kernel-Tutorials/releases/download/toolchains/clang-4639204-cfp-jopp.tar.gz
           tar -xf clang-4639204-cfp-jopp.tar.gz -C clang
@@ -30,38 +29,33 @@ jobs:
 
       - name: Build Kernel
         run: |
-          # 1. Identificăm dinamic locațiile binarelor (Smart Discovery)
+          # 1. Identificăm dinamic locațiile binarelor
           CLANG_BIN=$(find $GITHUB_WORKSPACE/clang -name clang -type f -printf '%h\n' | head -n 1)
           GCC_BIN=$(find $GITHUB_WORKSPACE/gcc-cfp -name "aarch64-linux-android-gcc" -type f -printf '%h\n' | head -n 1)
           GOLD_LD=$(find $GITHUB_WORKSPACE/gcc-cfp -name "ld.gold" -type f -printf '%p\n' | head -n 1)
           
-          echo "Clang found in: $CLANG_BIN"
-          echo "GCC found in: $GCC_BIN"
-          echo "Gold LD found at: $GOLD_LD"
-
-          # 2. Exportăm PATH-ul
           export PATH="$CLANG_BIN:$GCC_BIN:$PATH"
 
-          # 3. FIX: Creăm link-urile simbolice pentru ld.gold (cerință Samsung)
+          # 2. FIX Linker - Creăm symlink-urile necesare
           ln -sf "$GOLD_LD" "$GCC_BIN/aarch64-linux-gnu-ld.gold"
           ln -sf "$GOLD_LD" "$GCC_BIN/aarch64-linux-gnu-ld"
           ln -sf "$GOLD_LD" "$GCC_BIN/aarch64-linux-android-ld.gold"
 
-          # 4. NUCLEAR CLEANUP - Eliminăm flag-urile incompatibile raportate anterior
-          # Eliminăm: -run-dce, -run-inliner, -vectorizer, -polly
+          # 3. NUCLEAR CLEANUP - Eliminăm flag-urile problematice și LTO
           find . -type f \( -name "Makefile*" -o -name "*.mk" -o -name "Kconfig*" \) -exec sed -i 's/-run-dce//g' {} +
           find . -type f \( -name "Makefile*" -o -name "*.mk" -o -name "Kconfig*" \) -exec sed -i 's/-run-inliner//g' {} +
           find . -type f \( -name "Makefile*" -o -name "*.mk" -o -name "Kconfig*" \) -exec sed -i 's/-vectorizer=stripmine//g' {} +
           find . -type f \( -name "Makefile*" -o -name "*.mk" -o -name "Kconfig*" \) -exec sed -i 's/-mllvm -polly//g' {} +
           
-          # Eliminăm KernelSU din configurare pentru a evita erorile de fișier lipsă
+          # Dezactivăm forțarea LTO în Makefile-urile secundare
+          find . -type f -name "Makefile*" -exec sed -i 's/CONFIG_LTO_CLANG/CONFIG_LTO_NONE/g' {} +
+          find . -type f -name "Makefile*" -exec sed -i 's/--thinlto-cache-dir=.thinlto-cache//g' {} +
+
           sed -i '/kernelsu/d' drivers/android/Kconfig
           sed -i '/kernelsu/d' drivers/android/Makefile
-          
-          # Dezactivăm wrapper-ul Samsung
           sed -i 's/ifneq ($(wildcard $(srctree)\/scripts\/gcc-wrapper.py),)/ifeq (0,1)/g' Makefile
 
-          # 5. Argumente Build (Logica Ravindu)
+          # 4. Argumente Build
           MAKE_ARGS="ARCH=arm64 \
             CC=clang \
             CLANG_TRIPLE=aarch64-linux-android- \
@@ -72,18 +66,21 @@ jobs:
             HOSTCXX=g++ \
             O=out"
 
-          # 6. Generare Config
+          # 5. Generare Config
           make $MAKE_ARGS r5q_defconfig
           
-          # 7. Patch .config pentru Android 15 & Fix Shadow Call Stack
-          # Am adăugat -d CONFIG_SHADOW_CALL_STACK pentru că toolchain-ul tău nu îl suportă
+          # 6. Patch .config - DEZACTIVĂM LTO și Shadow Call Stack
           ./scripts/config --file out/.config \
+            -d CONFIG_LTO \
+            -d CONFIG_LTO_CLANG \
+            -d CONFIG_THINLTO \
+            -e CONFIG_LTO_NONE \
+            -d CONFIG_SHADOW_CALL_STACK \
             -d CONFIG_KNOX_KAP \
             -d CONFIG_SECURITY_SAMSUNG_KNOX \
             -d CONFIG_RKP_KDP \
             -d CONFIG_SAMSUNG_PRODUCT_SHIP \
             -d CONFIG_SECURITY_DEFEX \
-            -d CONFIG_SHADOW_CALL_STACK \
             -d CONFIG_CC_STACKPROTECTOR_STRONG \
             -e CONFIG_CC_STACKPROTECTOR_NONE \
             -e CONFIG_BPF -e CONFIG_BPF_SYSCALL -e CONFIG_BPF_JIT \
@@ -91,14 +88,14 @@ jobs:
 
           make $MAKE_ARGS olddefconfig
 
-          # 8. Compilare (KCFLAGS curăță avertismentele rămase)
+          # 7. Compilare
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -Wno-error -Wno-unknown-warning-option -Wno-unused-command-line-argument"
 
       - name: Upload Artifacts
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-Ravindu-Kernel-Final
+          name: S10Lite-Ravindu-NoLTO
           path: |
             out/arch/arm64/boot/Image.gz-dtb
             out/arch/arm64/boot/dtbo.img
