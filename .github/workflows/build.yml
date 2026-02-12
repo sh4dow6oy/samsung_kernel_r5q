@@ -1,4 +1,4 @@
-name: Build Roynas R5Q - A15 BPF Sixteen Sockptr
+name: Build Roynas R5Q - A15 BPF Surgical
 on:
   workflow_dispatch:
 
@@ -16,55 +16,61 @@ jobs:
       - name: Install Dependencies
         run: sudo apt-get update && sudo apt-get install -y bc build-essential flex bison lz4 libssl-dev libelf-dev ccache python3 wget zstd zip git
 
-      - name: Clean and Port BPF from Sixteen
+      - name: Surgical BPF Backport
         run: |
           git config --global user.email "bot@example.com"
           git config --global user.name "Kernel Bot"
           
-          # Curățare totală înainte de import
-          rm -rf kernel/bpf/
-          rm -f include/linux/bpf.h include/linux/bpf_types.h include/linux/filter.h
-          rm -f include/uapi/linux/bpf.h include/uapi/linux/bpf_common.h
-          rm -f net/core/filter.c
-
+          # 1. Resetăm kernel/bpf la starea originală Samsung (Esențial pentru a evita redefinirile)
+          git checkout HEAD -- kernel/bpf/
+          
+          # 2. Aduce doar antetele și filtrul de rețea de la Sixteen
           git remote add sixteen https://github.com/pascua28/android_kernel_samsung_sm8250.git
           git fetch sixteen sixteen
-          
           git checkout sixteen/sixteen -f -- \
-            kernel/bpf/ \
             include/linux/bpf.h \
-            include/linux/bpf_types.h \
             include/linux/filter.h \
             include/uapi/linux/bpf.h \
-            include/uapi/linux/bpf_common.h \
             net/core/filter.c
 
-          # --- FIX: CREARE LINUX/SOCKPTR.H (Lipsește în kernel 4.14 vechi) ---
+          # 3. Creăm sockptr.h (necesar pentru noul filter.c)
           cat <<EOF > include/linux/sockptr.h
           #ifndef _LINUX_SOCKPTR_H
           #define _LINUX_SOCKPTR_H
           #include <linux/slab.h>
           #include <linux/uaccess.h>
-          typedef struct {
-              union {
-                  void *kernel;
-                  void __user *user;
-              };
-              bool is_kernel;
-          } sockptr_t;
+          typedef struct { union { void *kernel; void __user *user; }; bool is_kernel; } sockptr_t;
           static inline bool sockptr_is_kernel(sockptr_t s) { return s.is_kernel; }
           static inline sockptr_t KERNEL_SOCKPTR(void *p) { return (sockptr_t){ .kernel = p, .is_kernel = true }; }
           static inline sockptr_t USER_SOCKPTR(void __user *p) { return (sockptr_t){ .user = p, .is_kernel = false }; }
           static inline bool sockptr_is_null(sockptr_t s) { return !s.kernel; }
+          static inline int copy_from_sockptr(void *dst, sockptr_t src, size_t size) {
+              if (src.is_kernel) { memcpy(dst, src.kernel, size); return 0; }
+              return copy_from_user(dst, src.user, size);
+          }
           #endif
           EOF
 
-          # Patch critic pentru sk_buff (Samsung r5q are o structură sk_buff ușor diferită)
-          sed -i '/cb->data_meta = skb->data - skb_metadata_len(skb);/d' include/linux/filter.h
-          sed -i 's/return skb_metadata_len(skb);/return 0;/g' include/linux/filter.h
-          
+          # 4. Patch pentru BPF_PROG_RUN_ARRAY (Redefinim macro-ul lipsă pentru compatibilitate)
+          sed -i '/#define BPF_PROG_RUN/a #define BPF_PROG_RUN_ARRAY(array, ctx, func) ({ \\
+            struct bpf_prog_array_item *_item; \\
+            struct bpf_prog *_prog; \\
+            struct bpf_prog_array *_array = rcu_dereference(array); \\
+            u32 _ret = 1; \\
+            if (_array) { \\
+                _item = &_array->items[0]; \\
+                while ((_prog = READ_ONCE(_item->prog))) { \\
+                    _ret &= func(_prog, ctx); \\
+                    _item++; \\
+                } \\
+            } \\
+            _ret; })' include/linux/filter.h
+
+          # 5. Fix pentru struct bpf_prog (Să nu se bată cu versiunea Samsung)
+          sed -i 's/void bpf_prog_free_rcu/void __bpf_prog_free_rcu/g' include/linux/filter.h || true
+
           git add .
-          git commit -m "Port BPF from Sixteen + Manual Sockptr" || echo "No changes"
+          git commit -m "Surgical BPF port for Android 15 compatibility" || echo "No changes"
 
       - name: Setup Toolchain & Build
         run: |
@@ -73,11 +79,10 @@ jobs:
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           
-          # Fix Samsung standard
+          # Fix Samsung Kconfig
           sed -i '/kernelsu\/Kconfig/d' drivers/android/Kconfig || true
           sed -i '/kernelsu/d' drivers/android/Makefile || true
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
-          [ -f arch/arm64/kernel/vdso/Makefile ] && sed -i 's/$(LDFLAGS)/$(filter-out -static,$(LDFLAGS))/g' arch/arm64/kernel/vdso/Makefile
 
           MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
 
@@ -93,11 +98,5 @@ jobs:
           if [ -f out/arch/arm64/boot/Image.gz ]; then
             git clone https://github.com/osm0sis/AnyKernel3.git
             cp out/arch/arm64/boot/Image.gz AnyKernel3/
-            cd AnyKernel3 && zip -r9 ../Kernel-R5Q-A15-Sixteen-Sockptr.zip *
+            cd AnyKernel3 && zip -r9 ../Kernel-R5Q-A15-Surgical.zip *
           fi
-
-      - name: Publish
-        uses: actions/upload-artifact@v4
-        with:
-          name: Kernel-S10Lite-A15-Sockptr
-          path: "*.zip"
