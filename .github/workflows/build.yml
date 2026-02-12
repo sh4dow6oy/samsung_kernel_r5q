@@ -4,7 +4,7 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
       - name: Checkout Source
         uses: actions/checkout@v4
@@ -18,7 +18,10 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y bc build-essential flex bison lz4 libssl-dev libelf-dev \
           ccache python3 python-is-python3 libarchive-tools wget gcc-aarch64-linux-gnu \
-          gcc-arm-linux-gnueabi libtinfo5 # Adăugat libtinfo5 pentru Clang
+          gcc-arm-linux-gnueabi
+          # Instalare manuală libtinfo5 (esențial pentru Proton Clang pe Ubuntu modern)
+          wget http://azure.archive.ubuntu.com/ubuntu/pool/universe/n/ncurses/libtinfo5_6.3-2ubuntu0.1_amd64.deb
+          sudo dpkg -i libtinfo5_6.3-2ubuntu0.1_amd64.deb
 
       - name: Setup Proton Clang
         run: |
@@ -26,14 +29,12 @@ jobs:
 
       - name: Build Kernel
         run: |
-          # 1. Pregătire mediu și fix Kconfig
           P_PATH=$GITHUB_WORKSPACE/proton-clang/bin
-          export PATH="$P_PATH:$PATH" # Adăugăm Clang în PATH-ul global al shell-ului
+          export PATH="$P_PATH:$PATH"
           
+          # Fix Kconfig pentru KernelSU missing
           sed -i '/kernelsu/d' drivers/android/Kconfig
 
-          # 2. Definire argumente
-          # Am adăugat LLVM=1 și LLVM_IAS=1 pentru a forța folosirea toolchain-ului integrat
           MAKE_ARGS="ARCH=arm64 \
             CC=clang \
             CROSS_COMPILE=aarch64-linux-gnu- \
@@ -49,10 +50,10 @@ jobs:
             HOSTLDFLAGS=-fuse-ld=bfd \
             O=out"
 
-          # 3. Configurare
+          # 1. Generare Config
           make $MAKE_ARGS r5q_defconfig
 
-          # 4. Patching .config (Android 15 + Fix Stack Protector)
+          # 2. Patch .config pentru Android 15 & Stabilitate
           ./scripts/config --file out/.config \
             -d CONFIG_KNOX_KAP \
             -d CONFIG_SECURITY_SAMSUNG_KNOX \
@@ -66,7 +67,9 @@ jobs:
 
           make $MAKE_ARGS olddefconfig
 
-          # 5. Compilare
+          # 3. Compilare
+          # Verificăm dacă clang funcționează înainte de pornire
+          clang --version
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-Wno-error -fcommon"
 
       - name: Upload Artifacts
