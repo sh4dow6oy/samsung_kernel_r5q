@@ -1,4 +1,4 @@
-name: Build Roynas R5Q - Ravindu Toolchain
+name: Build Roynas R5Q - Ravindu Style
 on:
   workflow_dispatch:
 
@@ -21,34 +21,33 @@ jobs:
 
       - name: Setup Toolchains
         run: |
-          # 1. Descarcă și dezarhivează Clang (Google CFP)
+          # Clang 4639204 (Google CFP)
           mkdir clang
           wget -q https://github.com/ravindu644/Android-Kernel-Tutorials/releases/download/toolchains/clang-4639204-cfp-jopp.tar.gz
           tar -xf clang-4639204-cfp-jopp.tar.gz -C clang
           
-          # 2. Descarcă și dezarhivează GCC (AOSP 9.0 logic)
+          # GCC (AOSP 9.0 logic)
           mkdir gcc
           wget -q https://github.com/ravindu644/Android-Kernel-Tutorials/releases/download/toolchains/gcc-cfp-jopp-only.tar.gz
           tar -xf gcc-cfp-jopp-only.tar.gz -C gcc
 
       - name: Build Kernel
         run: |
-          # Setăm calea către binare (Clang și GCC împreună)
-          CLANG_PATH=$GITHUB_WORKSPACE/clang/bin
-          GCC_PATH=$GITHUB_WORKSPACE/gcc/bin
-          export PATH="$CLANG_PATH:$GCC_PATH:$PATH"
+          # Setăm PATH-ul exact ca în build.sh-ul indicat
+          CLANG_BIN=$GITHUB_WORKSPACE/clang/bin
+          GCC_BIN=$GITHUB_WORKSPACE/gcc/bin
+          export PATH="$CLANG_BIN:$GCC_BIN:$PATH"
 
-          # Fix Kconfig & Cleanup (Nuclear Fix adaptat)
+          # Fix Kconfig & Cleanup (Necesar pentru a evita erorile Polly pe care le-am avut)
           find . -type f \( -name "Makefile*" -o -name "*.mk" -o -name "Kconfig*" \) -exec sed -i 's/-polly-loopfusion-greedy=1//g' {} +
           find . -type f \( -name "Makefile*" -o -name "*.mk" -o -name "Kconfig*" \) -exec sed -i 's/-mllvm -polly//g' {} +
           sed -i '/kernelsu/d' drivers/android/Kconfig
           sed -i '/kernelsu/d' drivers/android/Makefile
           
-          # Dezactivăm wrapper-ul Samsung care forțează anumite versiuni
+          # Dezactivăm wrapper-ul Samsung (linia 60 din build.sh evită wrapper-ul prin setarea directă a CC)
           sed -i 's/ifneq ($(wildcard $(srctree)\/scripts\/gcc-wrapper.py),)/ifeq (0,1)/g' Makefile
 
-          # Definim argumentele exact ca în build.sh-ul indicat
-          # Folosim aarch64-linux-gnu- conform cerințelor de wrapper Samsung
+          # Argumente extrase direct din build.sh-ul lui Ravindu
           MAKE_ARGS="ARCH=arm64 \
             CC=clang \
             CLANG_TRIPLE=aarch64-linux-gnu- \
@@ -61,7 +60,7 @@ jobs:
           # 1. Config
           make $MAKE_ARGS r5q_defconfig
           
-          # 2. Patch .config (Android 15 eBPF)
+          # 2. Patch .config pentru Android 15 (eBPF + Dezactivare Knox)
           ./scripts/config --file out/.config \
             -d CONFIG_KNOX_KAP \
             -d CONFIG_SECURITY_SAMSUNG_KNOX \
@@ -76,14 +75,14 @@ jobs:
           make $MAKE_ARGS olddefconfig
 
           # 3. Compilare
-          # Adăugăm flag-ul -fno-stack-protector dacă apar erori de linkare pe 4.14
+          # -fcommon este necesar pentru a preveni erorile de definiții multiple (comun în kernel 4.14)
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -Wno-error -Wno-unused-command-line-argument"
 
       - name: Upload Artifacts
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-Ravindu-Kernel
+          name: S10Lite-Ravindu-Success
           path: |
             out/arch/arm64/boot/Image.gz-dtb
             out/arch/arm64/boot/dtbo.img
