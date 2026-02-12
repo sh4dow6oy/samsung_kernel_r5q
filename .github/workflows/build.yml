@@ -4,7 +4,6 @@ on:
 
 jobs:
   build:
-    # Mutăm pe Ubuntu 24.04 pentru a avea GLIBC_2.38 necesar pentru Neutron
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout Source
@@ -18,7 +17,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y bc build-essential flex bison lz4 libssl-dev libelf-dev \
-          ccache python3 python-is-python3 libarchive-tools wget zstd libtinfo6
+          ccache python3 python-is-python3 libarchive-tools wget zstd libtinfo6 zip
 
       - name: Setup Neutron Clang
         run: |
@@ -30,7 +29,7 @@ jobs:
         run: |
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           
-          # 1. NUCLEAR CLEANUP
+          # 1. NUCLEAR CLEANUP (Prevenim Error 1)
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm//g' {} +
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-polly[^ ]*//g' {} +
@@ -47,7 +46,7 @@ jobs:
           rm -rf drivers/kernelsu
           sed -i 's/ifneq ($(wildcard $(srctree)\/scripts\/gcc-wrapper.py),)/ifeq (0,1)/g' Makefile
 
-          # 4. Argumente Build (Neutron Style)
+          # 4. Argumente Build
           MAKE_ARGS="ARCH=arm64 \
             LLVM=1 \
             LLVM_IAS=1 \
@@ -62,25 +61,46 @@ jobs:
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             O=out"
 
-          # 5. Build Sequence
+          # 5. Configurare
           make $MAKE_ARGS r5q_defconfig
-          
           ./scripts/config --file out/.config \
             -d CONFIG_LTO -d CONFIG_LTO_CLANG -e CONFIG_LTO_NONE \
             -d CONFIG_CC_STACKPROTECTOR_STRONG -e CONFIG_CC_STACKPROTECTOR_NONE \
             -d CONFIG_SHADOW_CALL_STACK -d CONFIG_KNOX_KAP -d CONFIG_SECURITY_SAMSUNG_KNOX \
             -d CONFIG_ASSIST_KSU -d CONFIG_KSU
-
           make $MAKE_ARGS olddefconfig
           
           # 6. Compilare
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -Wno-error -Wno-unknown-warning-option -Wno-unused-command-line-argument"
 
-      - name: Upload Artifacts
-        if: success()
+      - name: Package with AnyKernel3
+        run: |
+          # Identificăm fișierele generate
+          IMAGE="$GITHUB_WORKSPACE/out/arch/arm64/boot/Image.gz-dtb"
+          if [ ! -f "$IMAGE" ]; then
+            IMAGE="$GITHUB_WORKSPACE/out/arch/arm64/boot/Image.gz"
+          fi
+          DTBO="$GITHUB_WORKSPACE/out/arch/arm64/boot/dtbo.img"
+
+          # Clonăm AnyKernel3 pentru ambalare
+          git clone https://github.com/osm0sis/AnyKernel3.git
+          rm -rf AnyKernel3/.git
+          
+          # Copiem kernelul și DTBO în folderul AnyKernel
+          cp $IMAGE AnyKernel3/Image.gz
+          [ -f "$DTBO" ] && cp $DTBO AnyKernel3/dtbo.img
+
+          # Configurăm anykernel.sh pentru S10 Lite (r5q)
+          sed -i 's/device.name1=maguro/device.name1=r5q/g' AnyKernel3/anykernel.sh
+          sed -i 's/device.name2=toroplus/device.name2=SM-G770F/g' AnyKernel3/anykernel.sh
+          sed -i 's/device.name3=toro/device.name3=r5q/g' AnyKernel3/anykernel.sh
+          
+          # Creăm arhiva ZIP finală
+          cd AnyKernel3
+          zip -r9 ../Kernel-S10Lite-R5Q-Neutron.zip *
+
+      - name: Upload Flashable Kernel
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-Neutron-Clean
-          path: |
-            out/arch/arm64/boot/Image.gz-dtb
-            out/arch/arm64/boot/dtbo.img
+          name: Kernel-S10Lite-R5Q
+          path: Kernel-S10Lite-R5Q-Neutron.zip
