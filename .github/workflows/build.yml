@@ -1,4 +1,4 @@
-name: Build Roynas R5Q - Ravindu Final Fixed
+name: Build Roynas R5Q - Neutron Toolchain
 on:
   workflow_dispatch:
 
@@ -19,83 +19,69 @@ jobs:
           sudo apt-get install -y bc build-essential flex bison lz4 libssl-dev libelf-dev \
           ccache python3 python-is-python3 libarchive-tools wget libtinfo5
 
-      - name: Setup Toolchains
+      - name: Setup Neutron Clang
         run: |
-          mkdir clang gcc
-          wget -q https://github.com/ravindu644/Android-Kernel-Tutorials/releases/download/toolchains/clang-4639204-cfp-jopp.tar.gz
-          tar -xf clang-4639204-cfp-jopp.tar.gz -C clang
-          wget -q https://github.com/ravindu644/Android-Kernel-Tutorials/releases/download/toolchains/gcc-cfp-jopp-only.tar.gz
-          tar -xf gcc-cfp-jopp-only.tar.gz -C gcc
+          mkdir clang
+          # Descarcăm Neutron Clang (unul dintre cele mai performante compilatoare pentru Android)
+          curl -LSs "https://raw.githubusercontent.com/Neutron-Builds/lisp-wrapper/main/install.sh" | bash
+          # Scriptul de sus instalează Neutron în folderul curent
 
       - name: Build Kernel
         run: |
-          # 1. Localizare binare
-          CLANG_BIN=$(find $GITHUB_WORKSPACE/clang -name clang -type f -printf '%h\n' | head -n 1)
-          GCC_BIN=$(find $GITHUB_WORKSPACE/gcc -name "aarch64-linux-android-gcc" -type f -printf '%h\n' | head -n 1)
-          GOLD_LD=$(find $GITHUB_WORKSPACE/gcc -name "ld.gold" -type f -printf '%p\n' | head -n 1)
+          export PATH="$GITHUB_WORKSPACE/neutron-clang/bin:$PATH"
           
-          export PATH="$CLANG_BIN:$GCC_BIN:$PATH"
-
-          # 2. Fix Linker (Mapare gnu -> android)
-          ln -sf "$GOLD_LD" "$GCC_BIN/aarch64-linux-gnu-ld.gold"
-          ln -sf "$GOLD_LD" "$GCC_BIN/aarch64-linux-gnu-ld"
-
-          # 3. NUCLEAR CLEANUP - Rezolvăm conflictul -shared vs -static
-          # Pasul A: Curățăm flag-urile LLVM/Polly care pot injecta mizerii
+          # 1. NUCLEAR CLEANUP (Rezolvăm cauza erorilor anterioare)
+          # Ștergem orice urmă de Polly care a blocat build-ul trecut
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm//g' {} +
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-polly[^ ]*//g' {} +
           
-          # Pasul B: FIX CRITIC VDSO (Eroarea ta actuală)
-          # Forțăm Makefile-ul VDSO să elimine orice instanță de -static
-          # și să nu folosească LTO care ar putea declanșa linking static.
+          # FIX VDSO -shared vs -static (Eroarea fatală de linker)
           if [ -f arch/arm64/kernel/vdso/Makefile ]; then
             sed -i 's/-static//g' arch/arm64/kernel/vdso/Makefile
-            sed -i 's/$(disable-lto)//g' arch/arm64/kernel/vdso/Makefile
-            # Adăugăm un hack să filtrăm LDFLAGS pentru VDSO
             sed -i 's/$(LDFLAGS)/$(filter-out -static,$(LDFLAGS))/g' arch/arm64/kernel/vdso/Makefile
           fi
 
-          # Pasul C: Cleanup Samsung & KernelSU
+          # Dezactivăm KernelSU și wrapper-ul Samsung
           sed -i '/kernelsu/d' drivers/android/Kconfig || true
           sed -i '/kernelsu/d' drivers/android/Makefile || true
           rm -rf drivers/kernelsu
           sed -i 's/ifneq ($(wildcard $(srctree)\/scripts\/gcc-wrapper.py),)/ifeq (0,1)/g' Makefile
 
-          # 4. Argumente Build
+          # 2. Argumente Build (Neutron nu are nevoie de GCC extern pentru majoritatea task-urilor)
           MAKE_ARGS="ARCH=arm64 \
             CC=clang \
-            CLANG_TRIPLE=aarch64-linux-android- \
-            CROSS_COMPILE=aarch64-linux-android- \
-            CROSS_COMPILE_ARM32=arm-linux-androideabi- \
-            LD=aarch64-linux-android-ld.gold \
-            HOSTCC=gcc \
-            HOSTCXX=g++ \
+            LD=ld.lld \
+            AR=llvm-ar \
+            NM=llvm-nm \
+            OBJCOPY=llvm-objcopy \
+            OBJDUMP=llvm-objdump \
+            STRIP=llvm-strip \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             O=out"
 
-          # 5. Configurare
+          # 3. Build Sequence
           make $MAKE_ARGS r5q_defconfig
           
-          # Patch .config pentru a dezactiva tot ce forțează LTO sau Stack Protection incompatibil
+          # Patch .config pentru Android 15 & stabilitate
           ./scripts/config --file out/.config \
-            -d CONFIG_CC_STACKPROTECTOR_STRONG \
-            -d CONFIG_CC_STACKPROTECTOR \
-            -e CONFIG_CC_STACKPROTECTOR_NONE \
             -d CONFIG_LTO -d CONFIG_LTO_CLANG -e CONFIG_LTO_NONE \
+            -d CONFIG_CC_STACKPROTECTOR_STRONG -e CONFIG_CC_STACKPROTECTOR_NONE \
             -d CONFIG_SHADOW_CALL_STACK -d CONFIG_KNOX_KAP -d CONFIG_SECURITY_SAMSUNG_KNOX \
+            -d CONFIG_RKP_KDP -d CONFIG_SAMSUNG_PRODUCT_SHIP -d CONFIG_SECURITY_DEFEX \
             -d CONFIG_ASSIST_KSU -d CONFIG_KSU
 
           make $MAKE_ARGS olddefconfig
           
-          # 6. Compilare Finală
-          # Adăugăm -fno-lto și dezactivăm stack protector global pentru a preveni injecția de -static
-          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -fno-lto -fno-stack-protector -Wno-error -Wno-unknown-warning-option -Wno-unused-command-line-argument"
+          # 4. Compilare (Neutron este foarte rapid)
+          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -Wno-error -Wno-unknown-warning-option -Wno-unused-command-line-argument"
 
       - name: Upload Artifacts
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-Ravindu-Final-Fixed
+          name: S10Lite-Neutron-Kernel
           path: |
             out/arch/arm64/boot/Image.gz-dtb
             out/arch/arm64/boot/dtbo.img
