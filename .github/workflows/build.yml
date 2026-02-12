@@ -18,7 +18,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y bc build-essential flex bison lz4 libssl-dev libelf-dev \
           ccache python3 python-is-python3 libarchive-tools wget gcc-aarch64-linux-gnu \
-          gcc-arm-linux-gnueabi pahole
+          gcc-arm-linux-gnueabi
 
       - name: Setup Proton Clang
         run: |
@@ -28,6 +28,11 @@ jobs:
         run: |
           P_PATH=$GITHUB_WORKSPACE/proton-clang/bin
           
+          # FIX: Eliminăm referința către KernelSU care blochează configurarea
+          # Această comandă caută linia care conține 'kernelsu' în Kconfig și o șterge
+          sed -i '/kernelsu/d' drivers/android/Kconfig
+
+          # Definire argumente de compilare (Proton Toolchain + LLVM)
           MAKE_ARGS="ARCH=arm64 \
             CC=$P_PATH/clang \
             CROSS_COMPILE=aarch64-linux-gnu- \
@@ -43,29 +48,32 @@ jobs:
             HOSTLDFLAGS=-fuse-ld=bfd \
             O=out"
 
-          # 1. Config
+          # 1. Generare fișier .config folosind defconfig-ul R5Q
           make $MAKE_ARGS r5q_defconfig
 
-          # 2. Android 15 specific tweaks
+          # 2. Patching .config pentru Android 15 și eliminare Knox
           ./scripts/config --file out/.config \
             -d CONFIG_KNOX_KAP \
             -d CONFIG_SECURITY_SAMSUNG_KNOX \
             -d CONFIG_RKP_KDP \
             -d CONFIG_SAMSUNG_PRODUCT_SHIP \
+            -d CONFIG_SECURITY_DEFEX \
             -e CONFIG_BPF -e CONFIG_BPF_SYSCALL -e CONFIG_BPF_JIT \
             -e CONFIG_CGROUP_BPF -e CONFIG_NET_CLS_BPF -e CONFIG_NET_ACT_BPF \
-            -e CONFIG_DEBUG_INFO_BTF
+            -d CONFIG_DEBUG_INFO_BTF
 
+          # 3. Aplicare automată a opțiunilor noi din kernelul 4.14.334
           make $MAKE_ARGS olddefconfig
 
-          # 3. Compile
+          # 4. Compilarea propriu-zisă a kernelului
+          # Folosim -fcommon pentru compatibilitate și ignorăm warning-urile tratate ca erori
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-Wno-error -fcommon"
 
       - name: Upload Artifacts
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-Roynas-A15
+          name: S10Lite-Roynas-R5Q-A15
           path: |
             out/arch/arm64/boot/Image.gz-dtb
             out/arch/arm64/boot/dtbo.img
