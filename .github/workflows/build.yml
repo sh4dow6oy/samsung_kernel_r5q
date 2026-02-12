@@ -1,4 +1,4 @@
-name: Build Roynas R5Q with Polly
+name: Build Roynas R5Q - ZyC Clang 15
 on:
   workflow_dispatch:
 
@@ -20,26 +20,27 @@ jobs:
           ccache python3 python-is-python3 libarchive-tools wget gcc-aarch64-linux-gnu \
           gcc-arm-linux-gnueabi libtinfo5
 
-      - name: Setup ZyC Clang (Polly Enabled)
+      - name: Setup ZyC Clang 15
         run: |
-          # Descărcăm ZyC Clang - un toolchain renumit pentru optimizările Polly
           mkdir zyc-clang
           cd zyc-clang
-          wget https://github.com/ZyCromerZ/Clang/releases/download/14.0.6-20220902/Clang-14.0.6-20220902.tar.gz
-          tar -xf Clang-*.tar.gz
-          rm Clang-*.tar.gz
+          # Folosim link-ul furnizat de tine
+          wget https://github.com/ZyCromerZ/Clang/releases/download/15.0.7-20260208-release/Clang-15.0.7-20260208.tar.gz
+          tar -xf Clang-15.0.7-20260208.tar.gz
+          rm Clang-15.0.7-20260208.tar.gz
 
       - name: Build Kernel
         run: |
-          # Setăm căile către noul toolchain
           Z_PATH=$GITHUB_WORKSPACE/zyc-clang/bin
           export PATH="$Z_PATH:$PATH"
           
           # Fix Kconfig (KernelSU missing)
           sed -i '/kernelsu/d' drivers/android/Kconfig
+          
+          # În cazul în care Polly dă eroare de sintaxă, forțăm redenumirea flag-ului conform sugestiei Clang
+          # Acest pas asigură că build-ul nu se oprește la eroarea 'Did you mean --polly-opt-fusion=1?'
+          find . -name "Makefile*" -o -name "*.mk" | xargs sed -i 's/-polly-loopfusion-greedy=1/--polly-opt-fusion=1/g'
 
-          # Argumente de compilare pentru ZyC
-          # Adăugăm LLVM=1 pentru a folosi întreg setul de unelte LLVM (ar, nm, lld)
           MAKE_ARGS="ARCH=arm64 \
             CC=clang \
             LD=ld.lld \
@@ -57,12 +58,13 @@ jobs:
           # 1. Config
           make $MAKE_ARGS r5q_defconfig
 
-          # 2. Patch .config (Android 15 + eBPF)
+          # 2. Patch .config (Android 15 Compatibility)
           ./scripts/config --file out/.config \
             -d CONFIG_KNOX_KAP \
             -d CONFIG_SECURITY_SAMSUNG_KNOX \
             -d CONFIG_RKP_KDP \
             -d CONFIG_SAMSUNG_PRODUCT_SHIP \
+            -d CONFIG_SECURITY_DEFEX \
             -d CONFIG_CC_STACKPROTECTOR_STRONG \
             -e CONFIG_CC_STACKPROTECTOR_NONE \
             -e CONFIG_BPF -e CONFIG_BPF_SYSCALL -e CONFIG_BPF_JIT \
@@ -70,16 +72,16 @@ jobs:
 
           make $MAKE_ARGS olddefconfig
 
-          # 3. Compilare cu Polly
-          # ZyC recunoaște flag-urile Polly fără erori
+          # 3. Compilare
           clang --version
-          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-Wno-error -fcommon"
+          # Folosim KCFLAGS pentru a ignora warning-urile și a forța compatibilitatea tipurilor de date
+          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-Wno-error -fcommon -Wno-implicit-function-declaration"
 
       - name: Upload Artifacts
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-Polly-Kernel
+          name: S10Lite-R5Q-ZyC15-A15
           path: |
             out/arch/arm64/boot/Image.gz-dtb
             out/arch/arm64/boot/dtbo.img
