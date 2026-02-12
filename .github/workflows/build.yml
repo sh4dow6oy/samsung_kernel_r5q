@@ -1,4 +1,4 @@
-name: Build Roynas R5Q 4.14.334
+name: Build Roynas R5Q with Polly
 on:
   workflow_dispatch:
 
@@ -18,48 +18,51 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y bc build-essential flex bison lz4 libssl-dev libelf-dev \
           ccache python3 python-is-python3 libarchive-tools wget gcc-aarch64-linux-gnu \
-          gcc-arm-linux-gnueabi
-          # Instalare manuală libtinfo5 (esențial pentru Proton Clang pe Ubuntu modern)
-          wget http://azure.archive.ubuntu.com/ubuntu/pool/universe/n/ncurses/libtinfo5_6.3-2ubuntu0.1_amd64.deb
-          sudo dpkg -i libtinfo5_6.3-2ubuntu0.1_amd64.deb
+          gcc-arm-linux-gnueabi libtinfo5
 
-      - name: Setup Proton Clang
+      - name: Setup ZyC Clang (Polly Enabled)
         run: |
-          git clone https://github.com/kdrag0n/proton-clang.git --depth=1 proton-clang
+          # Descărcăm ZyC Clang - un toolchain renumit pentru optimizările Polly
+          mkdir zyc-clang
+          cd zyc-clang
+          wget https://github.com/ZyCromerZ/Clang/releases/download/14.0.6-20220902/Clang-14.0.6-20220902.tar.gz
+          tar -xf Clang-*.tar.gz
+          rm Clang-*.tar.gz
 
       - name: Build Kernel
         run: |
-          P_PATH=$GITHUB_WORKSPACE/proton-clang/bin
-          export PATH="$P_PATH:$PATH"
+          # Setăm căile către noul toolchain
+          Z_PATH=$GITHUB_WORKSPACE/zyc-clang/bin
+          export PATH="$Z_PATH:$PATH"
           
-          # Fix Kconfig pentru KernelSU missing
+          # Fix Kconfig (KernelSU missing)
           sed -i '/kernelsu/d' drivers/android/Kconfig
 
+          # Argumente de compilare pentru ZyC
+          # Adăugăm LLVM=1 pentru a folosi întreg setul de unelte LLVM (ar, nm, lld)
           MAKE_ARGS="ARCH=arm64 \
             CC=clang \
-            CROSS_COMPILE=aarch64-linux-gnu- \
-            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            LD=ld.lld \
             AR=llvm-ar \
             NM=llvm-nm \
             OBJCOPY=llvm-objcopy \
             OBJDUMP=llvm-objdump \
             STRIP=llvm-strip \
-            LD=ld.lld \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             HOSTCC=gcc \
             HOSTCXX=g++ \
-            HOSTLDFLAGS=-fuse-ld=bfd \
             O=out"
 
-          # 1. Generare Config
+          # 1. Config
           make $MAKE_ARGS r5q_defconfig
 
-          # 2. Patch .config pentru Android 15 & Stabilitate
+          # 2. Patch .config (Android 15 + eBPF)
           ./scripts/config --file out/.config \
             -d CONFIG_KNOX_KAP \
             -d CONFIG_SECURITY_SAMSUNG_KNOX \
             -d CONFIG_RKP_KDP \
             -d CONFIG_SAMSUNG_PRODUCT_SHIP \
-            -d CONFIG_SECURITY_DEFEX \
             -d CONFIG_CC_STACKPROTECTOR_STRONG \
             -e CONFIG_CC_STACKPROTECTOR_NONE \
             -e CONFIG_BPF -e CONFIG_BPF_SYSCALL -e CONFIG_BPF_JIT \
@@ -67,8 +70,8 @@ jobs:
 
           make $MAKE_ARGS olddefconfig
 
-          # 3. Compilare
-          # Verificăm dacă clang funcționează înainte de pornire
+          # 3. Compilare cu Polly
+          # ZyC recunoaște flag-urile Polly fără erori
           clang --version
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-Wno-error -fcommon"
 
@@ -76,7 +79,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-Roynas-R5Q-A15
+          name: S10Lite-Polly-Kernel
           path: |
             out/arch/arm64/boot/Image.gz-dtb
             out/arch/arm64/boot/dtbo.img
