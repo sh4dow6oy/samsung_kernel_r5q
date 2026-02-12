@@ -1,4 +1,4 @@
-name: Build Roynas R5Q - Neutron Final
+name: Build Roynas R5Q - Stable Neutron
 on:
   workflow_dispatch:
 
@@ -24,7 +24,6 @@ jobs:
           mkdir neutron
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C neutron
-          rm neutron-clang-10032024.tar.zst
 
       - name: Setup GCC Prebuilts (Firefly)
         run: |
@@ -33,50 +32,45 @@ jobs:
 
       - name: Build Kernel
         run: |
-          # 1. PATH setup
-          N_PATH=$GITHUB_WORKSPACE/neutron/bin
-          G64_PATH=$GITHUB_WORKSPACE/gcc64/bin
-          G32_PATH=$GITHUB_WORKSPACE/gcc32/bin
-          export PATH="$N_PATH:$G64_PATH:$G32_PATH:$PATH"
+          # Definim căile fără să poluăm PATH-ul global imediat
+          TOOLCHAIN_DIR=$GITHUB_WORKSPACE/neutron/bin
+          GCC64_DIR=$GITHUB_WORKSPACE/gcc64/bin
+          GCC32_DIR=$GITHUB_WORKSPACE/gcc32/bin
 
-          # 2. Fix GCC Wrapper (Symlinks) - Esențial pentru sursele Samsung
-          ln -s $G64_PATH/aarch64-none-linux-gnu-gcc $G64_PATH/aarch64-linux-gnu-gcc
-          ln -s $G32_PATH/arm-none-linux-gnueabihf-gcc $G32_PATH/arm-linux-gnueabi-gcc
+          # Creăm symlink-urile necesare în folderul GCC64
+          ln -s ${GCC64_DIR}/aarch64-none-linux-gnu-gcc ${GCC64_DIR}/aarch64-linux-gnu-gcc
+          ln -s ${GCC32_DIR}/arm-none-linux-gnueabihf-gcc ${GCC32_DIR}/arm-linux-gnueabi-gcc
 
-          # 3. Nuclear Cleanup (Polly/DCE/Inliner)
-          # Curățăm orice flag care ar putea supăra Neutron Clang
-          grep -rl "polly-loopfusion-greedy" . | xargs sed -i 's/-polly-loopfusion-greedy=1//g' || true
-          grep -rl "polly-opt-fusion" . | xargs sed -i 's/-polly-opt-fusion=1//g' || true
-          grep -rl "run-dce" . | xargs sed -i 's/-run-dce//g' || true
-          grep -rl "run-inliner" . | xargs sed -i 's/-run-inliner//g' || true
-          grep -rl "vectorizer=stripmine" . | xargs sed -i 's/-vectorizer=stripmine//g' || true
+          # Nuclear Cleanup - folosim find pentru a evita eroarea "no input files"
+          find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-polly-loopfusion-greedy=1//g' {} +
+          find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm -polly//g' {} +
+          find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-vectorizer=stripmine//g' {} +
           
-          # Dezactivăm forțat wrapper-ul Samsung în Makefile-ul principal
+          # Dezactivăm wrapper-ul Samsung
           sed -i 's/ifneq ($(wildcard $(srctree)\/scripts\/gcc-wrapper.py),)/ifeq (0,1)/g' Makefile
 
-          # 4. KernelSU Fix
-          sed -i '/kernelsu/d' drivers/android/Kconfig
-
-          # 5. Build Arguments
+          # Pregătire argumente
+          # NOTĂ: Nu adăugăm Neutron în PATH-ul sistemului pentru a nu strica HOSTCC (gcc de Ubuntu)
+          # Îl pasăm direct prin variabila CC
+          
           MAKE_ARGS="ARCH=arm64 \
-            CC=clang \
-            CROSS_COMPILE=aarch64-none-linux-gnu- \
-            CROSS_COMPILE_ARM32=arm-none-linux-gnueabihf- \
-            AR=llvm-ar \
-            NM=llvm-nm \
-            OBJCOPY=llvm-objcopy \
-            OBJDUMP=llvm-objdump \
-            STRIP=llvm-strip \
-            LD=ld.lld \
-            LLVM=1 \
-            LLVM_IAS=1 \
+            CC=${TOOLCHAIN_DIR}/clang \
+            LD=${TOOLCHAIN_DIR}/ld.lld \
+            AR=${TOOLCHAIN_DIR}/llvm-ar \
+            NM=${TOOLCHAIN_DIR}/llvm-nm \
+            OBJCOPY=${TOOLCHAIN_DIR}/llvm-objcopy \
+            OBJDUMP=${TOOLCHAIN_DIR}/llvm-objdump \
+            STRIP=${TOOLCHAIN_DIR}/llvm-strip \
+            CROSS_COMPILE=${GCC64_DIR}/aarch64-none-linux-gnu- \
+            CROSS_COMPILE_ARM32=${GCC32_DIR}/arm-none-linux-gnueabihf- \
             HOSTCC=gcc \
             HOSTCXX=g++ \
             O=out"
 
-          # 6. Config & Patch
+          # 1. Config
           make $MAKE_ARGS r5q_defconfig
           
+          # 2. Patch .config
           ./scripts/config --file out/.config \
             -d CONFIG_KNOX_KAP \
             -d CONFIG_SECURITY_SAMSUNG_KNOX \
@@ -90,14 +84,14 @@ jobs:
 
           make $MAKE_ARGS olddefconfig
 
-          # 7. Compilare Finală
+          # 3. Compilare - Scoatem LLVM_IAS momentan pentru stabilitate pe 4.14
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -Wno-error -Wno-unused-command-line-argument"
 
       - name: Upload Artifacts
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-Neutron-A15-Fixed
+          name: S10Lite-Neutron-Stable
           path: |
             out/arch/arm64/boot/Image.gz-dtb
             out/arch/arm64/boot/dtbo.img
