@@ -1,10 +1,11 @@
-name: Build Roynas R5Q - Neutron Stable
+name: Build Roynas R5Q - Neutron A15
 on:
   workflow_dispatch:
 
 jobs:
   build:
-    runs-on: ubuntu-22.04
+    # Schimbăm pe 24.04 pentru a avea GLIBC 2.38+ necesar pentru Neutron
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout Source
         uses: actions/checkout@v4
@@ -17,13 +18,15 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y bc build-essential flex bison lz4 libssl-dev libelf-dev \
-          ccache python3 python-is-python3 libarchive-tools wget libtinfo5 zstd
+          ccache python3 libarchive-tools wget libtinfo6 zstd
 
       - name: Setup Neutron Clang
         run: |
           mkdir neutron
+          # Versiunea ta de Neutron (10032024)
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C neutron
+          rm neutron-clang-10032024.tar.zst
 
       - name: Setup GCC Prebuilts (Firefly)
         run: |
@@ -32,31 +35,21 @@ jobs:
 
       - name: Build Kernel
         run: |
-          # 1. Definim căile către binare
           TOOLCHAIN_DIR=$GITHUB_WORKSPACE/neutron/bin
           GCC64_DIR=$GITHUB_WORKSPACE/gcc64/bin
           GCC32_DIR=$GITHUB_WORKSPACE/gcc32/bin
 
-          # 2. Creăm symlink-urile pentru a mulțumi scripturile Samsung
+          # Symlinks necesare pentru wrapper-ul Samsung
           ln -s ${GCC64_DIR}/aarch64-none-linux-gnu-gcc ${GCC64_DIR}/aarch64-linux-gnu-gcc
           ln -s ${GCC32_DIR}/arm-none-linux-gnueabihf-gcc ${GCC32_DIR}/arm-linux-gnueabi-gcc
 
-          # 3. Curățare Polly & KernelSU (Nuclear Fix)
-          # Eliminăm orice referință la flag-urile Polly care nu sunt suportate
+          # Cleanup Polly & KernelSU
           find . -type f \( -name "Makefile*" -o -name "*.mk" -o -name "Kconfig*" \) -exec sed -i 's/-polly-loopfusion-greedy=1//g' {} +
           find . -type f \( -name "Makefile*" -o -name "*.mk" -o -name "Kconfig*" \) -exec sed -i 's/-mllvm -polly//g' {} +
-          find . -type f \( -name "Makefile*" -o -name "*.mk" -o -name "Kconfig*" \) -exec sed -i 's/-vectorizer=stripmine//g' {} +
-
-          # Rezolvăm eroarea "can't open drivers/android/kernelsu/Kconfig"
-          # Ștergem linia care încearcă să încarce KernelSU
           sed -i '/kernelsu/d' drivers/android/Kconfig
           sed -i '/kernelsu/d' drivers/android/Makefile
-
-          # Dezactivăm wrapper-ul Samsung care forțează anumite versiuni de GCC
           sed -i 's/ifneq ($(wildcard $(srctree)\/scripts\/gcc-wrapper.py),)/ifeq (0,1)/g' Makefile
 
-          # 4. Definire argumente Make
-          # Folosim căile absolute pentru a evita conflictele de HOSTCC/Segmentation Fault
           MAKE_ARGS="ARCH=arm64 \
             CC=${TOOLCHAIN_DIR}/clang \
             LD=${TOOLCHAIN_DIR}/ld.lld \
@@ -71,10 +64,9 @@ jobs:
             HOSTCXX=g++ \
             O=out"
 
-          # 5. Configurație Kernel
+          # Config & Patch
           make $MAKE_ARGS r5q_defconfig
           
-          # 6. Optimizări pentru Android 15 & Dezactivare Knox
           ./scripts/config --file out/.config \
             -d CONFIG_KNOX_KAP \
             -d CONFIG_SECURITY_SAMSUNG_KNOX \
@@ -87,15 +79,13 @@ jobs:
             -e CONFIG_CGROUP_BPF -e CONFIG_NET_CLS_BPF -e CONFIG_NET_ACT_BPF
 
           make $MAKE_ARGS olddefconfig
-
-          # 7. Compilare (Fără LLVM_IAS pentru a evita erorile de asamblare pe 4.14)
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -Wno-error -Wno-unused-command-line-argument"
 
       - name: Upload Artifacts
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-Neutron-Stable-Build
+          name: S10Lite-Neutron-A15-Success
           path: |
             out/arch/arm64/boot/Image.gz-dtb
             out/arch/arm64/boot/dtbo.img
