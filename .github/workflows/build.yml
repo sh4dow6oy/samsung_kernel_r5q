@@ -1,4 +1,4 @@
-name: Build Roynas R5Q - Firefly GCC 10
+name: Build Roynas R5Q - Final Cleanup
 on:
   workflow_dispatch:
 
@@ -6,7 +6,7 @@ jobs:
   build:
     runs-on: ubuntu-22.04
     steps:
-      - name: Checkout Kernel Source
+      - name: Checkout Source
         uses: actions/checkout@v4
         with:
           repository: Roynas-Android-Playground/kernel_samsung_r3q
@@ -21,29 +21,29 @@ jobs:
 
       - name: Setup Toolchains
         run: |
-          # 1. Proton Clang
           git clone https://github.com/kdrag0n/proton-clang.git --depth=1 proton-clang
-          
-          # 2. Firefly GCC 10.3 (AArch64)
           git clone https://github.com/Firefly-rk-linux/prebuilts-gcc-linux-x86-aarch64-gcc-arm-10.3-2021.07-x86_64-aarch64-none-linux-gnu.git --depth=1 gcc64
-          
-          # 3. GCC 32-bit (Necesar pentru compatibilitate vDSO/arm32)
           git clone https://github.com/Firefly-rk-linux/prebuilts-gcc-linux-x86-arm-gcc-arm-10.3-2021.07-x86_64-arm-none-linux-gnueabihf.git --depth=1 gcc32
 
       - name: Build Kernel
         run: |
-          # Setăm căile
           P_PATH=$GITHUB_WORKSPACE/proton-clang/bin
           G64_PATH=$GITHUB_WORKSPACE/gcc64/bin
           G32_PATH=$GITHUB_WORKSPACE/gcc32/bin
-          
           export PATH="$P_PATH:$G64_PATH:$G32_PATH:$PATH"
-          
-          # Fix Kconfig
-          sed -i '/kernelsu/d' drivers/android/Kconfig
 
-          # Argumente de compilare
-          # Folosim prefixele specifice pentru Firefly GCC
+          # --- NUCLEAR CLEANUP START ---
+          # Eliminăm flag-urile Polly care cauzează crash-ul în scripts/mod
+          # Căutăm în TOATE fișierele din repo, nu doar în Makefile-uri
+          grep -rl "polly-loopfusion-greedy" . | xargs sed -i 's/-polly-loopfusion-greedy=1//g' || true
+          grep -rl "polly-opt-fusion" . | xargs sed -i 's/-polly-opt-fusion=1//g' || true
+          grep -rl "run-dce" . | xargs sed -i 's/-run-dce//g' || true
+          grep -rl "run-inliner" . | xargs sed -i 's/-run-inliner//g' || true
+          
+          # Fix Kconfig pentru KernelSU
+          sed -i '/kernelsu/d' drivers/android/Kconfig
+          # --- NUCLEAR CLEANUP END ---
+
           MAKE_ARGS="ARCH=arm64 \
             CC=clang \
             CROSS_COMPILE=aarch64-none-linux-gnu- \
@@ -61,7 +61,7 @@ jobs:
           # 1. Config
           make $MAKE_ARGS r5q_defconfig
 
-          # 2. Patch .config (Android 15)
+          # 2. Patch .config
           ./scripts/config --file out/.config \
             -d CONFIG_KNOX_KAP \
             -d CONFIG_SECURITY_SAMSUNG_KNOX \
@@ -75,16 +75,15 @@ jobs:
 
           make $MAKE_ARGS olddefconfig
 
-          # 3. Compilare
-          # Proton Clang va gestiona flag-urile de optimizare (Polly, DCE, etc.)
-          # Firefly GCC va asigura asamblarea corectă
-          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -Wno-error"
+          # 3. Compile
+          # Adăugăm flag-uri pentru a ignora orice alte optimizări LLVM necunoscute
+          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -Wno-error -Wno-unused-command-line-argument -Wno-unknown-warning-option"
 
       - name: Upload
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-Firefly-Kernel
+          name: S10Lite-Final-Kernel
           path: |
             out/arch/arm64/boot/Image.gz-dtb
             out/arch/arm64/boot/dtbo.img
