@@ -1,4 +1,4 @@
-name: Build Roynas R5Q - Neutron Clang + A15 BPF 5.10
+name: Build Roynas R5Q - Neutron Clang + Android 15 BPF Minimal
 on:
   workflow_dispatch:
 
@@ -20,8 +20,7 @@ jobs:
           sudo apt-get install -y \
             bc build-essential flex bison lz4 libssl-dev libelf-dev \
             ccache python3 python-is-python3 libarchive-tools wget zstd \
-            libtinfo6 zip rsync \
-            gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi git
+            libtinfo6 zip rsync gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi git
 
       - name: Setup Neutron Clang
         run: |
@@ -29,28 +28,15 @@ jobs:
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
 
-      # 🔹 Clone BPF 5.10 reference local
-      - name: Clone BPF 5.10 Reference
-        run: |
-          git clone --depth=1 -b bpf-5.10 https://github.com/pascua28/android_kernel_samsung_sm7150.git bpf510
-
-      # 🔹 Import safe BPF subsystem
-      - name: Import Minimal BPF Components
-        run: |
-          # Headers
-          rsync -av bpf510/include/uapi/linux/bpf.h include/uapi/linux/
-          rsync -av bpf510/include/linux/bpf*.h include/linux/
-          # Kernel subsystem (exclude .o)
-          rsync -av --exclude='*.o' bpf510/kernel/bpf/ kernel/bpf/
-
+      # 🔹 Build Kernel
       - name: Build Kernel
         run: |
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           export KBUILD_BUILD_USER=Roynas
           export KBUILD_BUILD_HOST=GitHub
-          export KBUILD_COMPILER_STRING="Neutron Clang A15-BPF5.10"
+          export KBUILD_COMPILER_STRING="Neutron Clang A15-BPF-Minimal"
 
-          # 1. Remove dangerous polly flags
+          # 1. Remove polly flags
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) \
             -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
 
@@ -70,33 +56,19 @@ jobs:
 
           make $MAKE_ARGS r5q_defconfig
 
-          # 5. Android 15 BPF required config
+          # 5. BPF minimal for Android 15
           ./scripts/config --file out/.config \
             -e CONFIG_BPF \
             -e CONFIG_BPF_SYSCALL \
             -e CONFIG_BPF_JIT \
             -e CONFIG_HAVE_EBPF_JIT \
-            -e CONFIG_BPF_EVENTS \
             -e CONFIG_CGROUP_BPF \
             -e CONFIG_NET_CLS_BPF \
-            -e CONFIG_NET_ACT_BPF \
-            -e CONFIG_KPROBE_EVENTS \
-            -e CONFIG_UPROBE_EVENTS \
-            -e CONFIG_FTRACE \
-            -e CONFIG_FUNCTION_TRACER \
-            -e CONFIG_DYNAMIC_FTRACE \
-            -e CONFIG_CGROUPS \
-            -e CONFIG_CGROUP_FREEZER \
-            -e CONFIG_CGROUP_SCHED \
-            -e CONFIG_NAMESPACES \
-            -e CONFIG_USER_NS \
-            -d CONFIG_LTO \
-            -e CONFIG_LTO_NONE \
-            -d CONFIG_KSU \
-            -d CONFIG_ASSIST_KSU
+            -e CONFIG_NET_ACT_BPF
 
           make $MAKE_ARGS olddefconfig
 
+          # 6. Compile
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-Wno-error"
 
       - name: Package with AnyKernel3
@@ -118,10 +90,10 @@ jobs:
           sed -i 's/^device.name3=.*/device.name3=r5q/' AnyKernel3/anykernel.sh
 
           cd AnyKernel3
-          zip -r9 ../Kernel-S10Lite-R5Q-A15-BPF510.zip *
+          zip -r9 ../Kernel-S10Lite-R5Q-A15-BPF-Minimal.zip *
 
       - name: Upload Flashable Kernel
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-S10Lite-R5Q-A15-BPF510
-          path: Kernel-S10Lite-R5Q-A15-BPF510.zip
+          name: Kernel-S10Lite-R5Q-A15-BPF-Minimal
+          path: Kernel-S10Lite-R5Q-A15-BPF-Minimal.zip
