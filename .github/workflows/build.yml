@@ -1,4 +1,4 @@
-name: Build sh4dow6oy Kernel - OpenELA 4.14.356 (Final SCSI Fix)
+name: Build sh4dow6oy Kernel - OpenELA 4.14.356 (Surgical SCSI Fix)
 
 on:
   workflow_dispatch:
@@ -14,7 +14,6 @@ jobs:
           ref: master
 
       - name: Install Dependencies
-          # Adăugăm rsync pentru un merge mai inteligent
         run: |
           sudo apt-get update
           sudo apt-get install -y bc build-essential flex bison lz4 libssl-dev libelf-dev \
@@ -27,29 +26,28 @@ jobs:
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
 
-      - name: Smart Merge & SCSI Header Fix
+      - name: Smart Merge & Surgical Fixes
         run: |
           wget -q https://github.com/openela/kernel-lts/archive/refs/tags/v4.14.356-openela-rc1.tar.gz -O openela.tar.gz
           mkdir openela_src
           tar -xzf openela.tar.gz -C openela_src --strip-components=1
           
-          # [FIX KernelSU]
+          # 1. KernelSU Fix
           sed -i '/kernelsu/d' drivers/android/Kconfig
           
-          # [MERGE] Aplicăm OpenELA peste tot codul de bază
+          # 2. Merge OpenELA
           rsync -av openela_src/ .
           
-          # [RESTORE CRITICAL SAMSUNG] Revenim la hardware-ul original Samsung
-          # Acesta este pasul care ne asigură că avem r5q dts și drivere specifice
+          # 3. Restore Samsung DTS & Headers Critical
           git checkout HEAD -- arch/arm64/boot/dts
-          git checkout HEAD -- drivers/video/fbdev/msm
-          git checkout HEAD -- include/scsi/scsi.h
-          git checkout HEAD -- include/scsi/scsi_ioctl.h
+          git checkout HEAD -- include/uapi/scsi/scsi_ioctl.h || echo "File not in UAPI"
           
-          # [NUCLEAR FIX SCSI] Dacă restabilirea headerelor nu ajută, dezactivăm bucata de cod problematică
-          # deoarece SCSI_IOCTL este rar folosit în boot-ul de Android modern
-          sed -i 's/case SCSI_IOCTL_GET_IDLUN:/#if 0\ncase SCSI_IOCTL_GET_IDLUN:/' drivers/scsi/scsi_ioctl.c
-          sed -i 's/case SCSI_IOCTL_GET_PCI:/case SCSI_IOCTL_GET_PCI:\n#endif/' drivers/scsi/scsi_ioctl.c
+          # 4. SURGICAL FIX for SCSI_IOCTL (Eliminăm cazurile care crapă)
+          # În loc de sed-uri complicate, folosim o metodă mai sigură de a ignora liniile cu erori
+          sed -i 's/case SCSI_IOCTL_GET_IDLUN:/case 0x5382: \/\/ SCSI_IOCTL_GET_IDLUN/g' drivers/scsi/scsi_ioctl.c
+          sed -i 's/case SCSI_IOCTL_GET_BUS_NUMBER:/case 0x5386: \/\/ SCSI_IOCTL_GET_BUS_NUMBER/g' drivers/scsi/scsi_ioctl.c
+          sed -i 's/case SCSI_IOCTL_PROBE_HOST:/case 0x5385: \/\/ SCSI_IOCTL_PROBE_HOST/g' drivers/scsi/scsi_ioctl.c
+          sed -i 's/case SCSI_IOCTL_GET_PCI:/case 0x5387: \/\/ SCSI_IOCTL_GET_PCI/g' drivers/scsi/scsi_ioctl.c
           
           # Fix Nuclear Symbol
           echo 'void dma_contiguous_early_fixup(void *res_cma) { }' > drivers/base/samsung_stub.c
@@ -61,6 +59,7 @@ jobs:
           export KBUILD_BUILD_USER="sh4dow6oy"
           export KBUILD_BUILD_HOST="OpenELA-Build"
           
+          # Fix-uri mediu build
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm//g' {} +
           [ -f arch/arm64/kernel/vdso/Makefile ] && sed -i 's/-static//g' arch/arm64/kernel/vdso/Makefile
@@ -88,19 +87,19 @@ jobs:
             -e CONFIG_BUILD_ARM64_DTB_IMAGE \
             -e CONFIG_DTC \
             -d CONFIG_LTO -d CONFIG_LTO_CLANG -e CONFIG_LTO_NONE \
-            -d CONFIG_WERROR
+            -d CONFIG_WERROR \
+            -d CONFIG_SECURITY_DEFEX
           
           make $MAKE_ARGS olddefconfig
-          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fno-common -Wno-error -Wno-implicit-function-declaration -Wno-int-conversion"
+          # Adăugăm flag-ul -Wno-error=implicit-function-declaration pentru a trece peste restul avertismentelor
+          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fno-common -Wno-error -Wno-implicit-function-declaration -Wno-int-conversion -Wno-unused-variable"
           
-          # Generare DTBs (S10 Lite are nevoie de ele)
           make $MAKE_ARGS dtbs
           make $MAKE_ARGS dtbo.img || echo "DTBO manual step"
 
       - name: AnyKernel3 Packaging
         run: |
           IMAGE=$(find out/arch/arm64/boot -name "Image.gz-dtb" -o -name "Image.gz" | head -n 1)
-          # Căutăm orice fișier DTBO generat
           DTBO_FINAL=$(find out -name "dtbo.img" -o -name "dtbo" | head -n 1)
 
           git clone https://github.com/osm0sis/AnyKernel3.git
