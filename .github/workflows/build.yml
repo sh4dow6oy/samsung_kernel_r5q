@@ -1,4 +1,4 @@
-name: Build Roynas R5Q - OpenELA 4.14.356 RC1 (Final Logic Fix)
+name: Build Roynas R5Q - OpenELA 4.14.356 RC1 (Linker Fix)
 
 on:
   workflow_dispatch:
@@ -35,11 +35,15 @@ jobs:
           cp -rf openela_tmp/* .
           rm -rf openela_tmp openela.tar.gz
           
-          # --- FIX DEFINITIV DMA ---
-          # Curățăm orice tentativă anterioară de redefinire
-          sed -i '/dma_contiguous_early_fixup/d' include/linux/dma-contiguous.h || true
-          # Injectăm stub-ul într-un mod care nu intră în conflict (după header guards)
-          sed -i '2i static inline void dma_contiguous_early_fixup(void *res_cma) { }' include/linux/dma-contiguous.h
+          # --- THE NUCLEAR OPTION: FIX DMA SYMBOL ---
+          # 1. Ștergem orice mizerie am făcut în headere anterior
+          git checkout include/linux/dma-contiguous.h || true
+          
+          # 2. Cream un fișier C mic care să definească funcția global pentru linker
+          echo 'void dma_contiguous_early_fixup(void *res_cma) { }' > drivers/base/samsung_stub.c
+          
+          # 3. Îl adăugăm în Makefile-ul de la drivers/base pentru a fi compilat
+          echo 'obj-y += samsung_stub.o' >> drivers/base/Makefile
           
           # Fix COMMON symbols
           sed -i 's/KBUILD_CFLAGS   += $(call cc-option,-fno-delete-null-pointer-checks,)/KBUILD_CFLAGS   += $(call cc-option,-fno-delete-null-pointer-checks,)\nKBUILD_CFLAGS   += -fno-common/g' Makefile
@@ -90,11 +94,8 @@ jobs:
 
       - name: Package with AnyKernel3
         run: |
-          if [ -f out/arch/arm64/boot/Image.gz-dtb ]; then
-            IMAGE="out/arch/arm64/boot/Image.gz-dtb"
-          else
-            IMAGE="out/arch/arm64/boot/Image.gz"
-          fi
+          IMAGE="out/arch/arm64/boot/Image.gz"
+          [ -f out/arch/arm64/boot/Image.gz-dtb ] && IMAGE="out/arch/arm64/boot/Image.gz-dtb"
           
           git clone https://github.com/osm0sis/AnyKernel3.git
           cp $IMAGE AnyKernel3/Image.gz
