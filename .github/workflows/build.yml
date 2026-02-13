@@ -1,4 +1,4 @@
-name: Build Roynas R5Q - Neutron Clang + Android 15 BPF Minimal
+name: Build Roynas R5Q - Neutron Clang + Android 15 BPF ExtremeXT
 on:
   workflow_dispatch:
 
@@ -28,15 +28,26 @@ jobs:
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
 
-      # 🔹 Build Kernel
+      # 🔹 Clone ExtremeXT kernel for BPF
+      - name: Clone ExtremeXT Kernel BPF Reference
+        run: |
+          git clone --depth=1 https://github.com/ExtremeXT/android_kernel_samsung_exynos9820.git xtremext
+
+      # 🔹 Copy BPF subsystem and headers
+      - name: Import ExtremeXT BPF Components
+        run: |
+          rsync -av xtremext/include/uapi/linux/bpf.h include/uapi/linux/
+          rsync -av xtremext/include/linux/bpf*.h include/linux/
+          rsync -av --exclude='*.o' xtremext/kernel/bpf/ kernel/bpf/
+
       - name: Build Kernel
         run: |
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           export KBUILD_BUILD_USER=Roynas
           export KBUILD_BUILD_HOST=GitHub
-          export KBUILD_COMPILER_STRING="Neutron Clang A15-BPF-Minimal"
+          export KBUILD_COMPILER_STRING="Neutron Clang A15-BPF-XTREMXT"
 
-          # 1. Remove polly flags
+          # 1. Remove dangerous polly flags
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) \
             -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
 
@@ -56,7 +67,7 @@ jobs:
 
           make $MAKE_ARGS r5q_defconfig
 
-          # 5. BPF minimal for Android 15
+          # 5. Enable BPF minimal from ExtremeXT for Android 15
           ./scripts/config --file out/.config \
             -e CONFIG_BPF \
             -e CONFIG_BPF_SYSCALL \
@@ -90,10 +101,10 @@ jobs:
           sed -i 's/^device.name3=.*/device.name3=r5q/' AnyKernel3/anykernel.sh
 
           cd AnyKernel3
-          zip -r9 ../Kernel-S10Lite-R5Q-A15-BPF-Minimal.zip *
+          zip -r9 ../Kernel-S10Lite-R5Q-A15-BPF-XTREMXT.zip *
 
       - name: Upload Flashable Kernel
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-S10Lite-R5Q-A15-BPF-Minimal
-          path: Kernel-S10Lite-R5Q-A15-BPF-Minimal.zip
+          name: Kernel-S10Lite-R5Q-A15-BPF-XTREMXT
+          path: Kernel-S10Lite-R5Q-A15-BPF-XTREMXT.zip
