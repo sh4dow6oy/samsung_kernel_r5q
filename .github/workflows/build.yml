@@ -1,4 +1,4 @@
-name: Build sh4dow6oy Kernel - R5Q (eBPF & Net Core Sync)
+name: Build sh4dow6oy Kernel - R5Q (Full A15 Fix)
 
 on:
   workflow_dispatch:
@@ -27,7 +27,7 @@ jobs:
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
 
-      - name: Surgical Net & BPF Import
+      - name: Full eBPF & Compat Sync
         run: |
           git config user.email "sh4dow6oy@build.com"
           git config user.name "sh4dow6oy"
@@ -35,30 +35,30 @@ jobs:
           git remote add lineage https://github.com/LineageOS/android_kernel_google_msm-4.14.git
           git fetch lineage lineage-20
           
-          # 1. BPF Core
+          # 1. Nucleul BPF și Networking
           git checkout lineage/lineage-20 -- kernel/bpf/
-          
-          # 2. Net Core & Filter (Piesele lipsă care au dat eroarea sk_filter_charge_back)
           git checkout lineage/lineage-20 -- net/core/filter.c
           git checkout lineage/lineage-20 -- net/core/sock.c
-          git checkout lineage/lineage-20 -- include/net/sock.h
-          git checkout lineage/lineage-20 -- include/linux/filter.h
+          git checkout lineage/lineage-20 -- net/netfilter/
           
-          # 3. Arhitectura JIT
+          # 2. [FIX PENTRU EROAREA TA] - Înlocuim fișierul corupt cu cel din Lineage
+          # Acesta are deja suportul corect pentru IOCTL și nu are erori de sintaxă
+          git checkout lineage/lineage-20 -- fs/compat_ioctl.c
+          
+          # 3. Arhitectura JIT și Headere
           git checkout lineage/lineage-20 -- arch/arm64/net/
-          
-          # 4. Headere UAPI și Linux BPF
+          git checkout lineage/lineage-20 -- include/linux/filter.h
           git checkout lineage/lineage-20 -- include/linux/bpf.h
           git checkout lineage/lineage-20 -- include/linux/bpf_types.h
+          git checkout lineage/lineage-20 -- include/net/sock.h
           git checkout lineage/lineage-20 -- include/uapi/linux/bpf.h
           git checkout lineage/lineage-20 -- include/uapi/linux/filter.h
 
-          # 5. Fix pentru conflicte IOCTL (Să nu uităm de ele)
+          # 4. Fix-uri minime necesare pentru restul driverelor Samsung
+          # Eliminăm sed-ul problematic pe fs/compat_ioctl.c
           sed -i 's/case SCSI_IOCTL_GET_IDLUN:/case 0x5382:/g' drivers/scsi/scsi_ioctl.c || true
-          sed -i '1515,1525c\return 0;' fs/compat_ioctl.c || true
-          sed -i '1630,1640c\return 0;' fs/compat_ioctl.c || true
 
-      - name: Build Kernel Core
+      - name: Build Kernel (SM8150 / R5Q)
         run: |
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
@@ -67,22 +67,16 @@ jobs:
           
           # Configurații Android 15
           ./scripts/config --file out/.config \
-            -e CONFIG_BPF \
-            -e CONFIG_BPF_SYSCALL \
-            -e CONFIG_BPF_JIT \
-            -e CONFIG_HAVE_EBPF_JIT \
-            -e CONFIG_NETFILTER_XT_MATCH_BPF \
-            -e CONFIG_CGROUP_BPF \
-            -e CONFIG_PSI \
-            -e CONFIG_MEMBARRIER \
-            -d CONFIG_WERROR \
-            -d CONFIG_LTO -d CONFIG_LTO_CLANG -e CONFIG_LTO_NONE
+            -e CONFIG_BPF -e CONFIG_BPF_SYSCALL -e CONFIG_BPF_JIT \
+            -e CONFIG_HAVE_EBPF_JIT -e CONFIG_NETFILTER_XT_MATCH_BPF \
+            -e CONFIG_CGROUP_BPF -e CONFIG_PSI -e CONFIG_MEMBARRIER \
+            -d CONFIG_WERROR -d CONFIG_LTO -d CONFIG_LTO_CLANG -e CONFIG_LTO_NONE
             
           make $MAKE_ARGS olddefconfig
-          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-Wno-error -fcommon -Wno-implicit-function-declaration -Wno-sizeof-array-argument"
+          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-Wno-error -fcommon -Wno-implicit-function-declaration"
           make $MAKE_ARGS dtbs
 
-      - name: Package
+      - name: Assemble
         run: |
           DTB_FILE=$(find out/arch/arm64/boot/dts -name "sm8150-r5q*.dtb" | head -n 1)
           if [ -n "$DTB_FILE" ]; then
@@ -94,15 +88,15 @@ jobs:
           [ -n "$DTBOS" ] && [ -n "$MKDTBOIMG" ] && python3 $MKDTBOIMG create out/dtbo.img $DTBOS
           
           git clone https://github.com/osm0sis/AnyKernel3.git
-          [ -f out/arch/arm64/boot/Image.gz-dtb ] && cp out/arch/arm64/boot/Image.gz-dtb AnyKernel3/Image.gz
+          cp out/arch/arm64/boot/Image.gz-dtb AnyKernel3/Image.gz || cp out/arch/arm64/boot/Image.gz AnyKernel3/Image.gz
           [ -f out/dtbo.img ] && cp out/dtbo.img AnyKernel3/dtbo.img
           
           sed -i 's/device.name1=maguro/device.name1=r5q/g' AnyKernel3/anykernel.sh
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' AnyKernel3/anykernel.sh
-          cd AnyKernel3 && zip -r9 ../sh4dow6oy-R5Q-A15-NETFIX.zip *
+          cd AnyKernel3 && zip -r9 ../sh4dow6oy-R5Q-A15-PRO.zip *
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-A15-NetFix
-          path: sh4dow6oy-R5Q-A15-NETFIX.zip
+          name: Kernel-A15-Ultimate
+          path: sh4dow6oy-R5Q-A15-PRO.zip
