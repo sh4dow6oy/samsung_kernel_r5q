@@ -1,4 +1,4 @@
-name: Build Roynas R5Q - OpenELA 4.14.356 RC1 (Syntax Fixed)
+name: Build Roynas R5Q - OpenELA 4.14.356 RC1 (Final Stub Fix)
 
 on:
   workflow_dispatch:
@@ -35,12 +35,12 @@ jobs:
           cp -rf openela_tmp/* .
           rm -rf openela_tmp openela.tar.gz
           
-          # --- FIX SINTAXĂ DMA (REMEDIU EROARE LINIA 174) ---
-          # În loc să ștergem linia, o comentăm sau înlocuim apelul cu un comentariu valid C
-          # Asta previne lăsarea parantezelor orfane în pr_info sau funcții.
-          sed -i 's/dma_contiguous_early_fixup/\/\/ dma_fix/g' drivers/base/dma-contiguous.c
+          # --- FIX DEFINITIV PENTRU DMA_CONTIGUOUS_EARLY_FIXUP ---
+          # În loc să ștergem apelurile, definim un "stub" (funcție goală) în header
+          # Asta previne erorile de sintaxă la compilare și erorile de linker la final.
+          echo "static inline void dma_contiguous_early_fixup(void *res_cma) { }" >> include/linux/dma-contiguous.h
           
-          # Fix pentru COMMON symbols (fără avertismente infinite)
+          # Fix pentru avertismentele "COMMON symbol"
           sed -i 's/KBUILD_CFLAGS   += $(call cc-option,-fno-delete-null-pointer-checks,)/KBUILD_CFLAGS   += $(call cc-option,-fno-delete-null-pointer-checks,)\nKBUILD_CFLAGS   += -fno-common/g' Makefile
 
       - name: Build Kernel
@@ -49,16 +49,16 @@ jobs:
           export KBUILD_BUILD_USER="Roynas"
           export KBUILD_BUILD_HOST="Android-Playground"
           
-          # Cleanup flag-uri incompatibile
+          # Eliminăm flag-urile Polly incompatibile
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm//g' {} +
           
-          # VDSO static fix
+          # Fix VDSO static linking
           if [ -f arch/arm64/kernel/vdso/Makefile ]; then
             sed -i 's/-static//g' arch/arm64/kernel/vdso/Makefile
           fi
 
-          # Samsung & Python 3.12 fix
+          # Fix scripturi Samsung pentru Python 3.12
           sed -i 's/ifneq ($(wildcard $(srctree)\/scripts\/gcc-wrapper.py),)/ifeq (0,1)/g' Makefile
 
           MAKE_ARGS="ARCH=arm64 \
@@ -77,6 +77,7 @@ jobs:
 
           make $MAKE_ARGS r5q_defconfig
           
+          # Ajustări config
           ./scripts/config --file out/.config \
             -d CONFIG_LTO -d CONFIG_LTO_CLANG -e CONFIG_LTO_NONE \
             -d CONFIG_KNOX_KAP -d CONFIG_SECURITY_SAMSUNG_KNOX \
@@ -84,8 +85,8 @@ jobs:
           
           make $MAKE_ARGS olddefconfig
 
-          # Build propriu-zis
-          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fno-common -Wno-error -Wno-implicit-function-declaration -Wno-int-conversion"
+          # Compilare cu flag-uri de relaxare
+          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fno-common -Wno-error -Wno-implicit-function-declaration -Wno-int-conversion -Wno-unused-command-line-argument"
 
       - name: Package with AnyKernel3
         run: |
