@@ -45,8 +45,8 @@ jobs:
         run: |
           # Fix bpf_jit_blinding_enabled calls
           find kernel/bpf/ -type f -name "*.c" -exec sed -i 's/bpf_jit_blinding_enabled()/bpf_jit_blinding_enabled(prog)/g' {} +
-          # Add any other similar 4.14 fixes if needed (example placeholders)
-          # sed -i 's/old_func()/old_func(prog)/g' kernel/bpf/*.c
+          # Remove lines referencing expected_attach_type (not present in 4.14)
+          sed -i '/expected_attach_type/d' kernel/bpf/syscall.c
 
       - name: Build Kernel
         run: |
@@ -119,10 +119,10 @@ jobs:
           sed -i 's/^device.name3=.*/device.name3=r5q/' AnyKernel3/anykernel.sh
 
           cd AnyKernel3
-          zip -r9 ../Kernel-S10Lite-R5Q-OneUI7-BPF-XTREMXT-Patched.zip *
+          zip -r9 ../Kernel-S10Lite-R5Q-OneUI7-BPF-XTREMXT-Final.zip *
 
       - name: Upload Flashable Kernel
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-S10Lite-R5Q-OneUI7-BPF-XTREMXT-Patched
-          path: Kernel-S10Lite-R5Q-OneUI7-BPF-XTREMXT-Patched.zip
+          name: Kernel-S10Lite-R5Q-OneUI7-BPF-XTREMXT-Final
+          path: Kernel-S10Lite-R5Q-OneUI7-BPF-XTREMXT-Final.zip
