@@ -1,4 +1,4 @@
-name: Build Roynas R5Q - Neutron Clang + A15 BPF
+name: Build Roynas R5Q - Neutron Clang + A15 BPF 5.10
 on:
   workflow_dispatch:
 
@@ -29,34 +29,39 @@ jobs:
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
 
-      - name: Add ExtremeXT Remote (BPF Source)
+      # 🔥 Add SM7150 BPF 5.10 reference
+      - name: Add BPF 5.10 Remote
         run: |
-          git remote add ext https://github.com/ExtremeXT/android_kernel_samsung_exynos9820.git
-          git fetch ext --depth=1
+          git remote add bpf510 https://github.com/pascua28/android_kernel_samsung_sm7150.git
+          git fetch bpf510 bpf-5.10 --depth=1
 
-      - name: Import Minimal BPF Headers
+      # 🔥 Import SAFE BPF core only
+      - name: Import Minimal BPF 5.10 Components
         run: |
-          rsync -av ext:include/uapi/linux/bpf.h include/uapi/linux/ || true
-          rsync -av ext:include/linux/bpf*.h include/linux/ || true
-          rsync -av ext:kernel/bpf/ kernel/bpf/ || true
+          # Headers
+          rsync -av bpf510:include/uapi/linux/bpf.h include/uapi/linux/ || true
+          rsync -av bpf510:include/linux/bpf*.h include/linux/ || true
+
+          # Core BPF subsystem (fără net/core!)
+          rsync -av --exclude='*.o' bpf510:kernel/bpf/ kernel/bpf/ || true
 
       - name: Build Kernel
         run: |
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           export KBUILD_BUILD_USER=Roynas
           export KBUILD_BUILD_HOST=GitHub
-          export KBUILD_COMPILER_STRING="Neutron Clang A15-BPF"
+          export KBUILD_COMPILER_STRING="Neutron Clang A15-BPF5.10"
 
-          # 1. Remove broken polly flags only
+          # 1. Remove only broken polly flags
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) \
             -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
 
-          # 2. Fix VDSO -static issue
+          # 2. Fix VDSO -static
           if [ -f arch/arm64/kernel/vdso/Makefile ]; then
             sed -i 's/\b-static\b//g' arch/arm64/kernel/vdso/Makefile
           fi
 
-          # 3. SAFE KernelSU cleanup (no folder delete)
+          # 3. KernelSU safe disable (no folder delete)
           sed -i '/kernelsu/d' drivers/android/Kconfig || true
           sed -i '/kernelsu/d' drivers/android/Makefile || true
 
@@ -67,16 +72,16 @@ jobs:
 
           make $MAKE_ARGS r5q_defconfig
 
-          # 5. Android 15 BPF Required Config
+          # 🔥 Android 15 Required BPF Config
           ./scripts/config --file out/.config \
             -e CONFIG_BPF \
             -e CONFIG_BPF_SYSCALL \
             -e CONFIG_BPF_JIT \
             -e CONFIG_HAVE_EBPF_JIT \
+            -e CONFIG_BPF_EVENTS \
             -e CONFIG_CGROUP_BPF \
             -e CONFIG_NET_CLS_BPF \
             -e CONFIG_NET_ACT_BPF \
-            -e CONFIG_BPF_EVENTS \
             -e CONFIG_KPROBE_EVENTS \
             -e CONFIG_UPROBE_EVENTS \
             -e CONFIG_FTRACE \
@@ -115,10 +120,10 @@ jobs:
           sed -i 's/^device.name3=.*/device.name3=r5q/' AnyKernel3/anykernel.sh
 
           cd AnyKernel3
-          zip -r9 ../Kernel-S10Lite-R5Q-A15-BPF.zip *
+          zip -r9 ../Kernel-S10Lite-R5Q-A15-BPF510.zip *
 
       - name: Upload Flashable Kernel
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-S10Lite-R5Q-A15-BPF
-          path: Kernel-S10Lite-R5Q-A15-BPF.zip
+          name: Kernel-S10Lite-R5Q-A15-BPF510
+          path: Kernel-S10Lite-R5Q-A15-BPF510.zip
