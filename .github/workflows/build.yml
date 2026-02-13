@@ -1,4 +1,4 @@
-name: Build sh4dow6oy Kernel - OpenELA 4.14.356 (Manual DTS Mapping)
+name: Build sh4dow6oy Kernel - OpenELA 4.14.356 (Samsung-First Logic)
 
 on:
   workflow_dispatch:
@@ -7,12 +7,11 @@ jobs:
   build:
     runs-on: ubuntu-24.04
     steps:
-      - name: Checkout Samsung Source
+      - name: Checkout Samsung Source (The Base)
         uses: actions/checkout@v4
         with:
           repository: Roynas-Android-Playground/kernel_samsung_r3q
           ref: master
-          path: samsung_src
 
       - name: Install Dependencies
         run: |
@@ -27,28 +26,20 @@ jobs:
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
 
-      - name: Merge and Map Hardware
+      - name: Smart Inject OpenELA
         run: |
           wget -q https://github.com/openela/kernel-lts/archive/refs/tags/v4.14.356-openela-rc1.tar.gz -O openela.tar.gz
           mkdir openela_src
           tar -xzf openela.tar.gz -C openela_src --strip-components=1
           
-          # Salvăm folderul DTS original Samsung înainte de suprascriere
-          mkdir -p hardware_backup
-          cp -rf samsung_src/arch/arm64/boot/dts/* hardware_backup/
+          # NU folosim cp -rf direct peste tot, ci protejăm folderele critice Samsung
+          # Copiem doar codul de kernel, fără a atinge arch/arm64/boot/dts sau driverele techpack
+          find openela_src -maxdepth 1 -not -name "arch" -not -name "drivers" -exec cp -rf {} . \;
+          cp -rf openela_src/arch/arm64/kernel arch/arm64/
+          cp -rf openela_src/arch/arm64/mm arch/arm64/
+          # Adăugăm restul dar protejăm vendor/qcom
+          rsync -av --ignore-existing openela_src/arch/arm64/boot/dts/ arch/arm64/boot/dts/
           
-          # Aplicăm OpenELA
-          cp -rf openela_src/* samsung_src/
-          
-          # Restaurăm hardware-ul Samsung în calea standard qcom
-          # Dacă sursa ta are vendor/qcom, le mutăm direct în qcom pentru OpenELA
-          if [ -d "hardware_backup/vendor/qcom" ]; then
-            cp -rf hardware_backup/vendor/qcom/* samsung_src/arch/arm64/boot/dts/qcom/
-          else
-            cp -rf hardware_backup/* samsung_src/arch/arm64/boot/dts/qcom/
-          fi
-
-          cd samsung_src
           # Fix Nuclear Symbol
           echo 'void dma_contiguous_early_fixup(void *res_cma) { }' > drivers/base/samsung_stub.c
           echo 'obj-y += samsung_stub.o' >> drivers/base/Makefile
@@ -58,12 +49,11 @@ jobs:
 
       - name: Build Kernel
         run: |
-          cd samsung_src
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           export KBUILD_BUILD_USER="sh4dow6oy"
           export KBUILD_BUILD_HOST="OpenELA-Build"
           
-          # Fix-uri mediu build
+          # Fix-uri specifice Clang
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm//g' {} +
           [ -f arch/arm64/kernel/vdso/Makefile ] && sed -i 's/-static//g' arch/arm64/kernel/vdso/Makefile
@@ -97,21 +87,15 @@ jobs:
           make $MAKE_ARGS olddefconfig
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fno-common -Wno-error -Wno-implicit-function-declaration -Wno-int-conversion"
           
-          # Forțăm compilarea tuturor DTB-urilor din noul folder qcom
+          # Compilăm tot ce înseamnă DTB/DTBO
           make $MAKE_ARGS dtbs
-          
-          # Generăm DTBO dacă scriptul există
-          MKDTBOIMG=$(find scripts -name "mkdtboimg.py" | head -n 1)
-          ALL_DTBOS=$(find out/arch/arm64/boot/dts -name "*.dtbo")
-          if [ -n "$ALL_DTBOS" ] && [ -n "$MKDTBOIMG" ]; then
-            python3 $MKDTBOIMG create out/dtbo.img $ALL_DTBOS
-          fi
+          make $MAKE_ARGS dtbo.img || echo "No manual dtbo target"
 
-      - name: Package with AnyKernel3
+      - name: AnyKernel3 Packaging
         run: |
-          cd samsung_src
+          # Identificăm fișierele indiferent de unde au fost scoase
           IMAGE=$(find out/arch/arm64/boot -name "Image.gz-dtb" -o -name "Image.gz" | head -n 1)
-          DTBO_FINAL=$(find out -name "dtbo.img" | head -n 1)
+          DTBO_FINAL=$(find out -name "dtbo.img" -o -name "dtbo" | head -n 1)
 
           git clone https://github.com/osm0sis/AnyKernel3.git
           rm -rf AnyKernel3/.git
@@ -119,17 +103,19 @@ jobs:
           cp "$IMAGE" AnyKernel3/Image.gz
           if [ -f "$DTBO_FINAL" ]; then
             cp "$DTBO_FINAL" AnyKernel3/dtbo.img
-            echo "SUCCESS: DTBO integrat."
+            echo "SUCCESS: DTBO ($DTBO_FINAL) adăugat în ZIP!"
+          else
+            echo "ULTIMATUM: DTBO nu a fost găsit. Listăm folderele pentru investigație finală:"
+            find out/arch/arm64/boot/dts -name "*.dtb" -o -name "*.dtbo"
           fi
 
           sed -i 's/device.name1=maguro/device.name1=r5q/g' AnyKernel3/anykernel.sh
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' AnyKernel3/anykernel.sh
           
-          cd AnyKernel3
-          zip -r9 ../../sh4dow6oy-Kernel-R5Q-OpenELA.zip *
+          cd AnyKernel3 && zip -r9 ../sh4dow6oy-Kernel-R5Q-Final.zip *
 
       - name: Upload Artifact
-        uses: actions/upload-artifact@v4
+        uses: upload-artifact@v4
         with:
-          name: sh4dow6oy-Kernel-Complete
-          path: sh4dow6oy-Kernel-R5Q-OpenELA.zip
+          name: sh4dow6oy-Kernel-Final
+          path: sh4dow6oy-Kernel-R5Q-Final.zip
