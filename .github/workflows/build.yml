@@ -1,10 +1,11 @@
-name: Build Roynas R5Q - Neutron Clang Final
+name: Build Roynas R5Q - Neutron Clang + OneUI 7 BPF Patched
 on:
   workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-24.04
+
     steps:
       - name: Checkout Source
         uses: actions/checkout@v4
@@ -17,52 +18,57 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y bc build-essential flex bison lz4 libssl-dev libelf-dev \
-          ccache python3 python-is-python3 libarchive-tools wget zstd libtinfo6 zip
+          ccache python3 python-is-python3 libarchive-tools wget zstd libtinfo6 zip rsync git
+
       - name: Setup Neutron Clang
         run: |
           mkdir clang
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
+
+      # 🔹 Patch BPF 4.14
+      - name: Patch BPF minimal for 4.14
+        run: |
+          # Fix bpf_jit_blinding_enabled calls
+          find kernel/bpf/ -type f -name "*.c" -exec sed -i 's/bpf_jit_blinding_enabled()/bpf_jit_blinding_enabled(prog)/g' {} +
+          # Remove expected_attach_type references
+          sed -i '/expected_attach_type/d' kernel/bpf/syscall.c
+
       - name: Build Kernel
         run: |
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
-          
-          # 1. NUCLEAR CLEANUP (Prevenim Error 1)
-          find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
-          find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm//g' {} +
-          find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-polly[^ ]*//g' {} +
-          
-          # 2. VDSO FIX (Anti -static)
+
+          # Nuclear cleanup
+          find . -type f \( -name "Makefile*" -o -name "*.mk" \) \
+            -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
+          find . -type f \( -name "Makefile*" -o -name "*.mk" \) \
+            -exec sed -i 's/-mllvm//g' {} +
+          find . -type f \( -name "Makefile*" -o -name "*.mk" \) \
+            -exec sed -i 's/-polly[^ ]*//g' {} +
+
+          # VDSO fix
           if [ -f arch/arm64/kernel/vdso/Makefile ]; then
             sed -i 's/-static//g' arch/arm64/kernel/vdso/Makefile
             sed -i 's/$(LDFLAGS)/$(filter-out -static,$(LDFLAGS))/g' arch/arm64/kernel/vdso/Makefile
           fi
-          # 3. KERNELSU & SAMSUNG CLEANUP
+
+          # KernelSU cleanup
           sed -i '/kernelsu/d' drivers/android/Kconfig || true
           sed -i '/kernelsu/d' drivers/android/Makefile || true
           rm -rf drivers/kernelsu
           sed -i 's/ifneq ($(wildcard $(srctree)\/scripts\/gcc-wrapper.py),)/ifeq (0,1)/g' Makefile
-          # 4. Argumente Build
-          MAKE_ARGS="ARCH=arm64 \
-            LLVM=1 \
-            LLVM_IAS=1 \
-            CC=clang \
-            LD=ld.lld \
-            AR=llvm-ar \
-            NM=llvm-nm \
-            OBJCOPY=llvm-objcopy \
-            OBJDUMP=llvm-objdump \
-            STRIP=llvm-strip \
-            CROSS_COMPILE=aarch64-linux-gnu- \
-            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-            O=out"
-          # 5. Configurare
+
+          # Build args
+          MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
+
           make $MAKE_ARGS r5q_defconfig
+
+          # Enable BPF + OneUI7 features
           ./scripts/config --file out/.config \
             -d CONFIG_LTO -d CONFIG_LTO_CLANG -e CONFIG_LTO_NONE \
             -d CONFIG_CC_STACKPROTECTOR_STRONG -e CONFIG_CC_STACKPROTECTOR_NONE \
             -d CONFIG_SHADOW_CALL_STACK -d CONFIG_KNOX_KAP -d CONFIG_SECURITY_SAMSUNG_KNOX \
-            -d CONFIG_ASSIST_KSU -d CONFIG_KSU
+            -d CONFIG_ASSIST_KSU -d CONFIG_KSU \
             -e CONFIG_BPF \
             -e CONFIG_BPF_SYSCALL \
             -e CONFIG_BPF_JIT \
@@ -80,33 +86,30 @@ jobs:
             -e CONFIG_CGROUP_FREEZER \
             -e CONFIG_CGROUP_SCHED \
             -e CONFIG_USER_NS
+
           make $MAKE_ARGS olddefconfig
-          
-          # 6. Compilare
+
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -Wno-error -Wno-unknown-warning-option -Wno-unused-command-line-argument"
+
       - name: Package with AnyKernel3
         run: |
-          # Identificăm fișierele generate
           IMAGE="$GITHUB_WORKSPACE/out/arch/arm64/boot/Image.gz-dtb"
-          if [ ! -f "$IMAGE" ]; then
-            IMAGE="$GITHUB_WORKSPACE/out/arch/arm64/boot/Image.gz"
-          fi
+          [ ! -f "$IMAGE" ] && IMAGE="$GITHUB_WORKSPACE/out/arch/arm64/boot/Image.gz"
           DTBO="$GITHUB_WORKSPACE/out/arch/arm64/boot/dtbo.img"
-          # Clonăm AnyKernel3 pentru ambalare
+
           git clone https://github.com/osm0sis/AnyKernel3.git
           rm -rf AnyKernel3/.git
-          
-          # Copiem kernelul și DTBO în folderul AnyKernel
+
           cp $IMAGE AnyKernel3/Image.gz
           [ -f "$DTBO" ] && cp $DTBO AnyKernel3/dtbo.img
-          # Configurăm anykernel.sh pentru S10 Lite (r5q)
-          sed -i 's/device.name1=maguro/device.name1=r5q/g' AnyKernel3/anykernel.sh
-          sed -i 's/device.name2=toroplus/device.name2=SM-G770F/g' AnyKernel3/anykernel.sh
-          sed -i 's/device.name3=toro/device.name3=r5q/g' AnyKernel3/anykernel.sh
-          
-          # Creăm arhiva ZIP finală
+
+          sed -i 's/^device.name1=.*/device.name1=r5q/' AnyKernel3/anykernel.sh
+          sed -i 's/^device.name2=.*/device.name2=SM-G770F/' AnyKernel3/anykernel.sh
+          sed -i 's/^device.name3=.*/device.name3=r5q/' AnyKernel3/anykernel.sh
+
           cd AnyKernel3
           zip -r9 ../Kernel-S10Lite-R5Q-Neutron.zip *
+
       - name: Upload Flashable Kernel
         uses: actions/upload-artifact@v4
         with:
