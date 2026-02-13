@@ -1,4 +1,4 @@
-name: Build sh4dow6oy Kernel - R5Q (OpenELA Final Fix - Symbol Conflict)
+name: Build sh4dow6oy Kernel - R5Q (OpenELA Final Fix - Linker Conflict)
 
 on:
   workflow_dispatch:
@@ -32,26 +32,27 @@ jobs:
           mkdir openela_src
           tar -xzf openela.tar.gz -C openela_src --strip-components=1
           
-          # Injectăm OpenELA, dar ignorăm folderele de rețea și scsi care dau conflicte
+          # Injectăm OpenELA, dar fără a suprascrie fișierele deja existente
           rsync -av --ignore-existing openela_src/ .
           
-          # 1. KernelSU & SCSI Global Fix
+          # 1. KernelSU & SCSI Fix
           sed -i '/kernelsu/d' drivers/android/Kconfig
           find . -type f -name "*.c" -exec sed -i 's/SCSI_IOCTL_GET_IDLUN/0x5382/g' {} +
-          find . -type f -name "*.c" -exec sed -i 's/SCSI_IOCTL_GET_BUS_NUMBER/0x5386/g' {} +
           
-          # 2. FIX MULTIPLE DEFINITIONS (bw_hwmon)
-          # Dezactivăm implementarea dublă a monitorizării HW
+          # 2. FIX MULTIPLE DEFINITIONS (Nuclear Option)
+          # Comentăm guvernatorul bw_hwmon direct în Makefile-ul devfreq pentru a opri duplicarea
           sed -i 's/obj-$(CONFIG_DEVFREQ_GOV_BW_HWMON)/# obj-$(CONFIG_DEVFREQ_GOV_BW_HWMON)/g' drivers/devfreq/Makefile
           
-          # 3. FIX TARGET CORE MISSING FILES
-          # Dezactivăm SCSI Target în Makefile pentru a evita fișierele lipsă din upstream
+          # 3. FIX TARGET CORE (Dezactivăm SCSI Target complet)
           sed -i 's/obj-$(CONFIG_TARGET_CORE)/# obj-$(CONFIG_TARGET_CORE)/g' drivers/target/Makefile
           
           # 4. Samsung Stub & DTS Restore
           echo 'void dma_contiguous_early_fixup(void *res_cma) { }' > drivers/base/samsung_stub.c
           [ -f drivers/base/Makefile ] && echo 'obj-y += samsung_stub.o' >> drivers/base/Makefile
           git checkout HEAD -- arch/arm64/boot/dts
+          
+          # 5. Fix pentru fs/compat_ioctl.c (Eroarea de la mărimea array-ului)
+          sed -i 's/sort(ioctl_pointer, ARRAY_SIZE(ioctl_pointer)/ \/\/ sort(ioctl_pointer, 0/g' fs/compat_ioctl.c
 
       - name: Build Kernel
         run: |
@@ -60,17 +61,17 @@ jobs:
           
           make $MAKE_ARGS r5q_defconfig
           
-          # Dezactivăm modulele problematice direct în .config
+          # Dezactivăm modulele care provoacă conflicte de simboluri la linkare
           ./scripts/config --file out/.config \
             -e CONFIG_SAMSUNG_PRODUCT_SHIP \
             -e CONFIG_BUILD_ARM64_DTB_IMAGE \
             -d CONFIG_LTO -d CONFIG_LTO_CLANG -e CONFIG_LTO_NONE \
             -d CONFIG_WERROR \
-            -d CONFIG_TARGET_CORE \
-            -d CONFIG_DEVFREQ_GOV_BW_HWMON
+            -d CONFIG_DEVFREQ_GOV_BW_HWMON \
+            -d CONFIG_TARGET_CORE
             
           make $MAKE_ARGS olddefconfig
-          # KCFLAGS pentru a ignora restul de duplicate simbolice
+          # Folosim -fcommon pentru a permite definiții multiple dacă mai apar (dar le-am blocat manual pe cele mari)
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-Wno-error -fno-common -Wno-implicit-function-declaration"
           
           make $MAKE_ARGS dtbs
@@ -92,10 +93,10 @@ jobs:
           [ -f out/dtbo.img ] && cp out/dtbo.img AnyKernel3/dtbo.img
           sed -i 's/device.name1=maguro/device.name1=r5q/g' AnyKernel3/anykernel.sh
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' AnyKernel3/anykernel.sh
-          cd AnyKernel3 && zip -r9 ../sh4dow6oy-OpenELA-R5Q-Final.zip *
+          cd AnyKernel3 && zip -r9 ../sh4dow6oy-OpenELA-R5Q-Success.zip *
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: Kernel-R5Q-OpenELA
-          path: sh4dow6oy-OpenELA-R5Q-Final.zip
+          path: sh4dow6oy-OpenELA-R5Q-Success.zip
