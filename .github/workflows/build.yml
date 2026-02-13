@@ -1,4 +1,4 @@
-name: Build Roynas R5Q - Neutron Clang LineageOS 23
+name: Build Roynas R5Q - Proton Clang Full BPF
 on:
   workflow_dispatch:
 
@@ -20,17 +20,11 @@ jobs:
           sudo apt-get install -y bc build-essential flex bison lz4 libssl-dev libelf-dev \
           ccache python3 python-is-python3 libarchive-tools wget zstd libtinfo6 zip rsync git
 
-      - name: Setup Neutron Clang
+      - name: Setup Proton Clang
         run: |
           mkdir clang
-          wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
-          tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
-
-      - name: Disable VDSO debug build
-        run: |
-          if [ -f arch/arm64/kernel/vdso/Makefile ]; then
-            sed -i 's/arch\/arm64\/kernel\/vdso\/v.*\.dbg//g' arch/arm64/kernel/vdso/Makefile
-          fi
+          wget -q https://github.com/kdrag0n/proton-clang/releases/download/20240111/proton-clang-15.0.7-20240111.tar.xz
+          tar -xf proton-clang-15.0.7-20240111.tar.xz -C clang
 
       - name: Build Kernel
         run: |
@@ -44,7 +38,7 @@ jobs:
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) \
             -exec sed -i 's/-polly[^ ]*//g' {} +
 
-          # KernelSU cleanup
+          # KernelSU cleanup (optional)
           sed -i '/kernelsu/d' drivers/android/Kconfig || true
           sed -i '/kernelsu/d' drivers/android/Makefile || true
           rm -rf drivers/kernelsu
@@ -52,8 +46,29 @@ jobs:
 
           MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
 
+          # Configurare default + full BPF inclus
           make $MAKE_ARGS r5q_defconfig
+          ./scripts/config --file out/.config \
+            -e CONFIG_BPF \
+            -e CONFIG_BPF_SYSCALL \
+            -e CONFIG_BPF_JIT \
+            -e CONFIG_HAVE_EBPF_JIT \
+            -e CONFIG_CGROUP_BPF \
+            -e CONFIG_NET_CLS_BPF \
+            -e CONFIG_NET_ACT_BPF \
+            -e CONFIG_FTRACE \
+            -e CONFIG_FUNCTION_TRACER \
+            -e CONFIG_DYNAMIC_FTRACE \
+            -e CONFIG_UPROBE_EVENTS \
+            -e CONFIG_KPROBE_EVENTS \
+            -e CONFIG_NAMESPACES \
+            -e CONFIG_CGROUPS \
+            -e CONFIG_CGROUP_FREEZER \
+            -e CONFIG_CGROUP_SCHED \
+            -e CONFIG_USER_NS
           make $MAKE_ARGS olddefconfig
+
+          # Compilare
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -Wno-error -Wno-unknown-warning-option -Wno-unused-command-line-argument"
 
       - name: Package with AnyKernel3
@@ -73,10 +88,10 @@ jobs:
           sed -i 's/^device.name3=.*/device.name3=r5q/' AnyKernel3/anykernel.sh
 
           cd AnyKernel3
-          zip -r9 ../Kernel-S10Lite-R5Q-Neutron.zip *
+          zip -r9 ../Kernel-S10Lite-R5Q-ProtonClang.zip *
 
       - name: Upload Flashable Kernel
         uses: actions/upload-artifact@v4
         with:
           name: Kernel-S10Lite-R5Q
-          path: Kernel-S10Lite-R5Q-Neutron.zip
+          path: Kernel-S10Lite-R5Q-ProtonClang.zip
