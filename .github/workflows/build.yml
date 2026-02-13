@@ -1,7 +1,4 @@
-## Build sh4dow6oy Kernel - R5Q (OpenELA Release Fix)
----
-
-name: Build sh4dow6oy Kernel - R5Q (OpenELA v4.14.356)
+name: Build sh4dow6oy Kernel - R5Q (OpenELA v4.14.356 - Final SCSI Shield)
 
 on:
   workflow_dispatch:
@@ -26,32 +23,34 @@ jobs:
       - name: Setup Neutron Clang
         run: |
           mkdir -p clang
-          # Folosim o versiune stabilă de Neutron Clang
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
 
-      - name: Inject OpenELA Upstream (Tarball Method)
+      - name: Inject OpenELA & Global SCSI Fix
         run: |
-          # Descarcă ultima versiune stabilă marcată (v4.14.356)
           wget -q https://github.com/openela/kernel-lts/archive/refs/tags/v4.14.356-openela-rc1.tar.gz -O openela.tar.gz
           mkdir openela_src
           tar -xzf openela.tar.gz -C openela_src --strip-components=1
           
-          # Injectăm codul OpenELA peste Samsung, dar protejăm folderele vitale
-          # Folosim rsync pentru a nu șterge fișierele unice Samsung (ca DTS-urile)
           rsync -av --ignore-existing openela_src/ .
           
-          # [REPARĂM CODUL]
-          # 1. Eliminăm referința KernelSU care dădea eroare
-          sed -i '/kernelsu/d' drivers/android/Kconfig || echo "KernelSU already removed"
+          # [FIX KernelSU]
+          sed -i '/kernelsu/d' drivers/android/Kconfig || echo "KernelSU removed"
           
-          # 2. Surgical Fix pentru SCSI (Hex Mapping)
+          # [FIX SCSI - Drivers]
           sed -i 's/case SCSI_IOCTL_GET_IDLUN:/case 0x5382:/g' drivers/scsi/scsi_ioctl.c
           sed -i 's/case SCSI_IOCTL_GET_BUS_NUMBER:/case 0x5386:/g' drivers/scsi/scsi_ioctl.c
           sed -i 's/case SCSI_IOCTL_PROBE_HOST:/case 0x5385:/g' drivers/scsi/scsi_ioctl.c
           sed -i 's/case SCSI_IOCTL_GET_PCI:/case 0x5387:/g' drivers/scsi/scsi_ioctl.c
           
-          # 3. Adăugăm stub-ul Samsung pentru a evita eroarea dma_contiguous
+          # [FIX SCSI - File System Compat]
+          # Înlocuim macro-ul COMPATIBLE_IOCTL cu valorile brute pentru a evita erorile de compilare
+          sed -i 's/COMPATIBLE_IOCTL(SCSI_IOCTL_GET_IDLUN)/COMPATIBLE_IOCTL(0x5382)/g' fs/compat_ioctl.c
+          sed -i 's/COMPATIBLE_IOCTL(SCSI_IOCTL_GET_BUS_NUMBER)/COMPATIBLE_IOCTL(0x5386)/g' fs/compat_ioctl.c
+          sed -i 's/COMPATIBLE_IOCTL(SCSI_IOCTL_PROBE_HOST)/COMPATIBLE_IOCTL(0x5385)/g' fs/compat_ioctl.c
+          sed -i 's/COMPATIBLE_IOCTL(SCSI_IOCTL_GET_PCI)/COMPATIBLE_IOCTL(0x5387)/g' fs/compat_ioctl.c
+          
+          # [FIX Samsung Stub]
           echo 'void dma_contiguous_early_fixup(void *res_cma) { }' > drivers/base/samsung_stub.c
           if ! grep -q "samsung_stub.o" drivers/base/Makefile; then
             echo 'obj-y += samsung_stub.o' >> drivers/base/Makefile
@@ -60,15 +59,9 @@ jobs:
       - name: Build Kernel
         run: |
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
-          export KBUILD_BUILD_USER="sh4dow6oy"
-          export KBUILD_BUILD_HOST="OpenELA-Stable"
-          
           MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
           
-          # Generăm config-ul pentru S10 Lite (r5q)
           make $MAKE_ARGS r5q_defconfig
-          
-          # Optimizări și activare suport hardware
           ./scripts/config --file out/.config \
             -e CONFIG_SAMSUNG_PRODUCT_SHIP \
             -e CONFIG_BUILD_ARM64_DTB_IMAGE \
@@ -77,53 +70,36 @@ jobs:
             -d CONFIG_WERROR
             
           make $MAKE_ARGS olddefconfig
-          
-          # Compilarea propriu-zisă
-          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-Wno-error -fno-common -Wno-implicit-function-declaration"
-          
-          # Compilăm Device Tree-urile
+          # Adăugăm flag-ul pentru a ignora erorile de tip "incomplete type" în fs/compat_ioctl.c
+          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-Wno-error -fno-common -Wno-implicit-function-declaration -Wno-sizeof-array-argument"
           make $MAKE_ARGS dtbs
 
-      - name: Manual Hardware Assembly (Image.gz-dtb & DTBO)
+      - name: Hardware Assembly
         run: |
-          # 1. Creăm Image.gz-dtb (Lipim hardware-ul de kernel)
           DTB_FILE=$(find out/arch/arm64/boot/dts -name "sm8150-r5q*.dtb" | head -n 1)
           if [ -n "$DTB_FILE" ]; then
             cat out/arch/arm64/boot/Image.gz "$DTB_FILE" > out/arch/arm64/boot/Image.gz-dtb
-            echo "SUCCESS: Image.gz-dtb creat manual."
           fi
           
-          # 2. Generăm DTBO.img folosind scriptul original Samsung
           MKDTBOIMG=$(find . -name "mkdtboimg.py" | head -n 1)
           DTBOS=$(find out/arch/arm64/boot/dts -name "*.dtbo")
           if [ -n "$DTBOS" ] && [ -n "$MKDTBOIMG" ]; then
             python3 $MKDTBOIMG create out/dtbo.img $DTBOS
-            echo "SUCCESS: DTBO.img creat manual."
           fi
 
       - name: AnyKernel3 Packaging
         run: |
           git clone https://github.com/osm0sis/AnyKernel3.git
-          rm -rf AnyKernel3/.git
-          
-          # Alegem imaginea care are hardware-ul inclus
-          if [ -f out/arch/arm64/boot/Image.gz-dtb ]; then
-            cp out/arch/arm64/boot/Image.gz-dtb AnyKernel3/Image.gz
-          else
-            cp out/arch/arm64/boot/Image.gz AnyKernel3/Image.gz
-          fi
-          
-          # Punem DTBO-ul dacă a fost generat
+          [ -f out/arch/arm64/boot/Image.gz-dtb ] && cp out/arch/arm64/boot/Image.gz-dtb AnyKernel3/Image.gz || cp out/arch/arm64/boot/Image.gz AnyKernel3/Image.gz
           [ -f out/dtbo.img ] && cp out/dtbo.img AnyKernel3/dtbo.img
           
-          # Setăm numele dispozitivului în scriptul de flash
           sed -i 's/device.name1=maguro/device.name1=r5q/g' AnyKernel3/anykernel.sh
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' AnyKernel3/anykernel.sh
           
           cd AnyKernel3 && zip -r9 ../sh4dow6oy-OpenELA-R5Q-Final.zip *
 
-      - name: Upload Artifact
+      - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-OpenELA-R5Q-Final
+          name: Kernel-R5Q-Final
           path: sh4dow6oy-OpenELA-R5Q-Final.zip
