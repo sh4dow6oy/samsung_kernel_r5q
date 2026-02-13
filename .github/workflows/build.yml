@@ -1,4 +1,4 @@
-name: Build Roynas R5Q - OpenELA 4.14.356 RC1 (Linker Fix)
+name: Build sh4dow6oy Kernel - OpenELA 4.14.356 RC1
 
 on:
   workflow_dispatch:
@@ -35,26 +35,20 @@ jobs:
           cp -rf openela_tmp/* .
           rm -rf openela_tmp openela.tar.gz
           
-          # --- THE NUCLEAR OPTION: FIX DMA SYMBOL ---
-          # 1. Ștergem orice mizerie am făcut în headere anterior
-          git checkout include/linux/dma-contiguous.h || true
-          
-          # 2. Cream un fișier C mic care să definească funcția global pentru linker
+          # Fix DMA Symbol (Nuclear Option)
           echo 'void dma_contiguous_early_fixup(void *res_cma) { }' > drivers/base/samsung_stub.c
-          
-          # 3. Îl adăugăm în Makefile-ul de la drivers/base pentru a fi compilat
           echo 'obj-y += samsung_stub.o' >> drivers/base/Makefile
           
-          # Fix COMMON symbols
+          # Fix COMMON symbols & Reducere spam logging
           sed -i 's/KBUILD_CFLAGS   += $(call cc-option,-fno-delete-null-pointer-checks,)/KBUILD_CFLAGS   += $(call cc-option,-fno-delete-null-pointer-checks,)\nKBUILD_CFLAGS   += -fno-common/g' Makefile
 
       - name: Build Kernel
         run: |
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
-          export KBUILD_BUILD_USER="Roynas"
-          export KBUILD_BUILD_HOST="Android-Playground"
+          export KBUILD_BUILD_USER="sh4dow6oy"
+          export KBUILD_BUILD_HOST="OpenELA-Build"
           
-          # Cleanup flag-uri incompatibile
+          # Cleanup flag-uri incompatibile Polly
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm//g' {} +
           
@@ -63,7 +57,7 @@ jobs:
             sed -i 's/-static//g' arch/arm64/kernel/vdso/Makefile
           fi
 
-          # Fix Python 3.12
+          # Fix Samsung scripts for Python 3.12
           sed -i 's/ifneq ($(wildcard $(srctree)\/scripts\/gcc-wrapper.py),)/ifeq (0,1)/g' Makefile
 
           MAKE_ARGS="ARCH=arm64 \
@@ -80,32 +74,54 @@ jobs:
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             O=out"
 
+          # Configurare r5q
           make $MAKE_ARGS r5q_defconfig
           
+          # Personalizare nume kernel si activare DTBO
           ./scripts/config --file out/.config \
+            --set-str CONFIG_LOCALVERSION "-sh4dow6oy" \
+            -e CONFIG_BUILD_ARM64_DTB_IMAGE \
             -d CONFIG_LTO -d CONFIG_LTO_CLANG -e CONFIG_LTO_NONE \
             -d CONFIG_KNOX_KAP -d CONFIG_SECURITY_SAMSUNG_KNOX \
             -d CONFIG_WERROR
           
           make $MAKE_ARGS olddefconfig
 
-          # Compilare
+          # Compilare Kernel + DTBO
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fno-common -Wno-error -Wno-implicit-function-declaration -Wno-int-conversion -Wno-unused-command-line-argument"
+          make $MAKE_ARGS dtbo.img || echo "DTBO manual build check"
 
       - name: Package with AnyKernel3
         run: |
-          IMAGE="out/arch/arm64/boot/Image.gz"
-          [ -f out/arch/arm64/boot/Image.gz-dtb ] && IMAGE="out/arch/arm64/boot/Image.gz-dtb"
+          # Imagine Kernel
+          if [ -f out/arch/arm64/boot/Image.gz-dtb ]; then
+            IMAGE="out/arch/arm64/boot/Image.gz-dtb"
+          else
+            IMAGE="out/arch/arm64/boot/Image.gz"
+          fi
           
-          git clone https://github.com/osm0sis/AnyKernel3.git
-          cp $IMAGE AnyKernel3/Image.gz
-          [ -f out/arch/arm64/boot/dtbo.img ] && cp out/arch/arm64/boot/dtbo.img AnyKernel3/dtbo.img
+          # Imagine DTBO
+          DTBO_PATH="out/arch/arm64/boot/dtbo.img"
+          [ ! -f "$DTBO_PATH" ] && DTBO_PATH="out/dtbo.img"
 
+          git clone https://github.com/osm0sis/AnyKernel3.git
+          rm -rf AnyKernel3/.git
+
+          cp $IMAGE AnyKernel3/Image.gz
+          if [ -f "$DTBO_PATH" ]; then
+            cp $DTBO_PATH AnyKernel3/dtbo.img
+            echo "DTBO integrat cu succes."
+          fi
+
+          # Configurare AnyKernel pentru r5q
           sed -i 's/device.name1=maguro/device.name1=r5q/g' AnyKernel3/anykernel.sh
-          cd AnyKernel3 && zip -r9 ../Kernel-R5Q-OpenELA.zip *
+          sed -i 's/device.name2=toroplus/device.name2=SM-G770F/g' AnyKernel3/anykernel.sh
+          
+          cd AnyKernel3
+          zip -r9 ../sh4dow6oy-Kernel-R5Q-OpenELA.zip *
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-R5Q-OpenELA
-          path: Kernel-R5Q-OpenELA.zip
+          name: sh4dow6oy-Kernel-OpenELA
+          path: sh4dow6oy-Kernel-R5Q-OpenELA.zip
