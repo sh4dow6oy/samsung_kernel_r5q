@@ -22,9 +22,15 @@ jobs:
 
       - name: Setup Proton Clang
         run: |
-          mkdir clang
-          wget -q https://github.com/kdrag0n/proton-clang/releases/download/20240111/proton-clang-15.0.7-20240111.tar.xz
-          tar -xf proton-clang-15.0.7-20240111.tar.xz -C clang
+          mkdir -p clang
+          wget --show-progress -O proton-clang.tar.xz \
+            https://github.com/kdrag0n/proton-clang/releases/download/20240111/proton-clang-15.0.7-20240111.tar.xz
+          if [ -f proton-clang.tar.xz ]; then
+            tar -xf proton-clang.tar.xz -C clang
+          else
+            echo "Error: Proton Clang archive missing!"
+            exit 1
+          fi
 
       - name: Build Kernel
         run: |
@@ -38,7 +44,7 @@ jobs:
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) \
             -exec sed -i 's/-polly[^ ]*//g' {} +
 
-          # KernelSU cleanup (optional)
+          # KernelSU cleanup
           sed -i '/kernelsu/d' drivers/android/Kconfig || true
           sed -i '/kernelsu/d' drivers/android/Makefile || true
           rm -rf drivers/kernelsu
