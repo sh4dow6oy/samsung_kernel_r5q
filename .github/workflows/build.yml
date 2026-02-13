@@ -1,4 +1,4 @@
-name: Build sh4dow6oy Kernel - OpenELA 4.14.356 (Hardware Restore Fix)
+name: Build sh4dow6oy Kernel - OpenELA 4.14.356 (Manual DTS Mapping)
 
 on:
   workflow_dispatch:
@@ -27,22 +27,28 @@ jobs:
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
 
-      - name: Merge OpenELA with Samsung Hardware
+      - name: Merge and Map Hardware
         run: |
-          # Descărcăm OpenELA într-un folder separat
           wget -q https://github.com/openela/kernel-lts/archive/refs/tags/v4.14.356-openela-rc1.tar.gz -O openela.tar.gz
           mkdir openela_src
           tar -xzf openela.tar.gz -C openela_src --strip-components=1
           
-          # 1. Copiem OpenELA ca bază
+          # Salvăm folderul DTS original Samsung înainte de suprascriere
+          mkdir -p hardware_backup
+          cp -rf samsung_src/arch/arm64/boot/dts/* hardware_backup/
+          
+          # Aplicăm OpenELA
           cp -rf openela_src/* samsung_src/
           
+          # Restaurăm hardware-ul Samsung în calea standard qcom
+          # Dacă sursa ta are vendor/qcom, le mutăm direct în qcom pentru OpenELA
+          if [ -d "hardware_backup/vendor/qcom" ]; then
+            cp -rf hardware_backup/vendor/qcom/* samsung_src/arch/arm64/boot/dts/qcom/
+          else
+            cp -rf hardware_backup/* samsung_src/arch/arm64/boot/dts/qcom/
+          fi
+
           cd samsung_src
-          # 2. RESTAURĂM FOLDERELE HARDWARE SAMSUNG (Esențial pentru DTBO)
-          # Re-aducem dts-urile și driverele techpack care au fost suprascrise
-          git checkout HEAD -- arch/arm64/boot/dts
-          git checkout HEAD -- drivers/video/fbdev/msm
-          
           # Fix Nuclear Symbol
           echo 'void dma_contiguous_early_fixup(void *res_cma) { }' > drivers/base/samsung_stub.c
           echo 'obj-y += samsung_stub.o' >> drivers/base/Makefile
@@ -79,7 +85,6 @@ jobs:
 
           make $MAKE_ARGS r5q_defconfig
           
-          # FORȚĂM CONFIGURAȚIILE DE DTBO
           ./scripts/config --file out/.config \
             --set-str CONFIG_LOCALVERSION "-sh4dow6oy" \
             -e CONFIG_SAMSUNG_PRODUCT_SHIP \
@@ -91,8 +96,16 @@ jobs:
           
           make $MAKE_ARGS olddefconfig
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fno-common -Wno-error -Wno-implicit-function-declaration -Wno-int-conversion"
+          
+          # Forțăm compilarea tuturor DTB-urilor din noul folder qcom
           make $MAKE_ARGS dtbs
-          make $MAKE_ARGS dtbo.img || echo "Target dtbo.img failed"
+          
+          # Generăm DTBO dacă scriptul există
+          MKDTBOIMG=$(find scripts -name "mkdtboimg.py" | head -n 1)
+          ALL_DTBOS=$(find out/arch/arm64/boot/dts -name "*.dtbo")
+          if [ -n "$ALL_DTBOS" ] && [ -n "$MKDTBOIMG" ]; then
+            python3 $MKDTBOIMG create out/dtbo.img $ALL_DTBOS
+          fi
 
       - name: Package with AnyKernel3
         run: |
@@ -106,10 +119,7 @@ jobs:
           cp "$IMAGE" AnyKernel3/Image.gz
           if [ -f "$DTBO_FINAL" ]; then
             cp "$DTBO_FINAL" AnyKernel3/dtbo.img
-            echo "SUCCESS: DTBO integrat în zip."
-          else
-            echo "CRITICAL: DTBO tot nu s-a generat. Verificăm folderele de DTS:"
-            ls -R out/arch/arm64/boot/dts/vendor/qcom/ || ls -R out/arch/arm64/boot/dts/qcom/ || echo "Nimic în dts"
+            echo "SUCCESS: DTBO integrat."
           fi
 
           sed -i 's/device.name1=maguro/device.name1=r5q/g' AnyKernel3/anykernel.sh
@@ -121,5 +131,5 @@ jobs:
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: sh4dow6oy-Kernel-Final
+          name: sh4dow6oy-Kernel-Complete
           path: sh4dow6oy-Kernel-R5Q-OpenELA.zip
