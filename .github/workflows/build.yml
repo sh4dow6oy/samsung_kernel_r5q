@@ -1,4 +1,4 @@
-name: Build sh4dow6oy Kernel - OpenELA 4.14.356 RC1
+name: Build sh4dow6oy Kernel - OpenELA 4.14.356 RC1 (Full Fixes)
 
 on:
   workflow_dispatch:
@@ -35,11 +35,11 @@ jobs:
           cp -rf openela_tmp/* .
           rm -rf openela_tmp openela.tar.gz
           
-          # Fix DMA Symbol (Nuclear Option)
+          # [FIX 1] THE NUCLEAR OPTION: Stub pentru simbolul DMA lipsă
           echo 'void dma_contiguous_early_fixup(void *res_cma) { }' > drivers/base/samsung_stub.c
           echo 'obj-y += samsung_stub.o' >> drivers/base/Makefile
           
-          # Fix COMMON symbols & Reducere spam logging
+          # [FIX 2] COMMON SYMBOLS: Curățăm log-ul și stabilizăm linker-ul
           sed -i 's/KBUILD_CFLAGS   += $(call cc-option,-fno-delete-null-pointer-checks,)/KBUILD_CFLAGS   += $(call cc-option,-fno-delete-null-pointer-checks,)\nKBUILD_CFLAGS   += -fno-common/g' Makefile
 
       - name: Build Kernel
@@ -48,16 +48,16 @@ jobs:
           export KBUILD_BUILD_USER="sh4dow6oy"
           export KBUILD_BUILD_HOST="OpenELA-Build"
           
-          # Cleanup flag-uri incompatibile Polly
+          # [FIX 3] POLLY/LLVM FIX: Eliminăm flag-urile incompatibile cu Clang modern
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm//g' {} +
           
-          # Fix VDSO
+          # [FIX 4] VDSO FIX: Rezolvăm eroarea de linkare pe Ubuntu 24.04
           if [ -f arch/arm64/kernel/vdso/Makefile ]; then
             sed -i 's/-static//g' arch/arm64/kernel/vdso/Makefile
           fi
 
-          # Fix Samsung scripts for Python 3.12
+          # [FIX 5] PYTHON 3.12 FIX: Dezactivăm wrapper-ul vechi Samsung
           sed -i 's/ifneq ($(wildcard $(srctree)\/scripts\/gcc-wrapper.py),)/ifeq (0,1)/g' Makefile
 
           MAKE_ARGS="ARCH=arm64 \
@@ -74,53 +74,53 @@ jobs:
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             O=out"
 
-          # Configurare r5q
+          # Configurare sursă
           make $MAKE_ARGS r5q_defconfig
           
-          # Personalizare nume kernel si activare DTBO
+          # [FIX 6] CONFIG & DTBO: Activăm generarea DTBO și personalizăm numele
           ./scripts/config --file out/.config \
             --set-str CONFIG_LOCALVERSION "-sh4dow6oy" \
             -e CONFIG_BUILD_ARM64_DTB_IMAGE \
+            -e CONFIG_DTC \
             -d CONFIG_LTO -d CONFIG_LTO_CLANG -e CONFIG_LTO_NONE \
             -d CONFIG_KNOX_KAP -d CONFIG_SECURITY_SAMSUNG_KNOX \
             -d CONFIG_WERROR
           
           make $MAKE_ARGS olddefconfig
 
-          # Compilare Kernel + DTBO
+          # Compilare Kernel și DTBS (forțăm crearea fișierelor de device tree)
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fno-common -Wno-error -Wno-implicit-function-declaration -Wno-int-conversion -Wno-unused-command-line-argument"
-          make $MAKE_ARGS dtbo.img || echo "DTBO manual build check"
+          make $MAKE_ARGS dtbs || echo "DTBS failed, trying manual dtbo"
+          make $MAKE_ARGS dtbo.img || echo "Standalone DTBO not supported, checking folders"
 
       - name: Package with AnyKernel3
         run: |
-          # Imagine Kernel
-          if [ -f out/arch/arm64/boot/Image.gz-dtb ]; then
-            IMAGE="out/arch/arm64/boot/Image.gz-dtb"
-          else
-            IMAGE="out/arch/arm64/boot/Image.gz"
-          fi
+          # Detectare Kernel Image
+          IMAGE=$(find out/arch/arm64/boot -name "Image.gz-dtb" -o -name "Image.gz" | head -n 1)
           
-          # Imagine DTBO
-          DTBO_PATH="out/arch/arm64/boot/dtbo.img"
-          [ ! -f "$DTBO_PATH" ] && DTBO_PATH="out/dtbo.img"
+          # [FIX 7] AGGRESSIVE DTBO SEARCH: Căutăm dtbo.img oriunde în folderul de output
+          DTBO_FIND=$(find out -name "dtbo.img" | head -n 1)
 
           git clone https://github.com/osm0sis/AnyKernel3.git
           rm -rf AnyKernel3/.git
 
-          cp $IMAGE AnyKernel3/Image.gz
-          if [ -f "$DTBO_PATH" ]; then
-            cp $DTBO_PATH AnyKernel3/dtbo.img
-            echo "DTBO integrat cu succes."
+          cp "$IMAGE" AnyKernel3/Image.gz
+          
+          if [ -n "$DTBO_FIND" ] && [ -f "$DTBO_FIND" ]; then
+            cp "$DTBO_FIND" AnyKernel3/dtbo.img
+            echo "SUCCESS: DTBO găsit la $DTBO_FIND"
+          else
+            echo "WARNING: DTBO nu a fost găsit. Kernel-ul s-ar putea să nu booteze dacă e necesar!"
           fi
 
-          # Configurare AnyKernel pentru r5q
+          # Configurare AnyKernel pentru S10 Lite (r5q)
           sed -i 's/device.name1=maguro/device.name1=r5q/g' AnyKernel3/anykernel.sh
           sed -i 's/device.name2=toroplus/device.name2=SM-G770F/g' AnyKernel3/anykernel.sh
           
           cd AnyKernel3
           zip -r9 ../sh4dow6oy-Kernel-R5Q-OpenELA.zip *
 
-      - name: Upload Artifact
+      - name: Upload Flashable Kernel
         uses: actions/upload-artifact@v4
         with:
           name: sh4dow6oy-Kernel-OpenELA
