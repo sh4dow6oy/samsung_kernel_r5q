@@ -115,7 +115,7 @@ jobs:
           cd AnyKernel3 && zip -r9 ../sh4dow6oy-Kernel-R5Q-Final.zip *
 
       - name: Upload Artifact
-        uses: upload-artifact@v4
+        uses: actions/upload-artifact@v4
         with:
           name: sh4dow6oy-Kernel-Final
           path: sh4dow6oy-Kernel-R5Q-Final.zip
