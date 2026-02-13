@@ -1,4 +1,4 @@
-name: Build sh4dow6oy Kernel - OpenELA 4.14.356 RC1 (Full Fixes)
+name: Build sh4dow6oy Kernel - OpenELA 4.14.356 RC1 (DTBO Manual Fix)
 
 on:
   workflow_dispatch:
@@ -19,7 +19,9 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y bc build-essential flex bison lz4 libssl-dev libelf-dev \
           ccache python3 python-is-python3 libarchive-tools wget zstd libtinfo6 zip \
-          gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi
+          gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi python3-pip
+          # Instalăm mkdtboimg dacă nu există în scripturi
+          pip3 install --user dtc
 
       - name: Setup Neutron Clang
         run: |
@@ -35,11 +37,11 @@ jobs:
           cp -rf openela_tmp/* .
           rm -rf openela_tmp openela.tar.gz
           
-          # [FIX 1] THE NUCLEAR OPTION: Stub pentru simbolul DMA lipsă
+          # [FIX] Nuclear Symbol Fix
           echo 'void dma_contiguous_early_fixup(void *res_cma) { }' > drivers/base/samsung_stub.c
           echo 'obj-y += samsung_stub.o' >> drivers/base/Makefile
           
-          # [FIX 2] COMMON SYMBOLS: Curățăm log-ul și stabilizăm linker-ul
+          # [FIX] Common Symbol Fix
           sed -i 's/KBUILD_CFLAGS   += $(call cc-option,-fno-delete-null-pointer-checks,)/KBUILD_CFLAGS   += $(call cc-option,-fno-delete-null-pointer-checks,)\nKBUILD_CFLAGS   += -fno-common/g' Makefile
 
       - name: Build Kernel
@@ -48,16 +50,10 @@ jobs:
           export KBUILD_BUILD_USER="sh4dow6oy"
           export KBUILD_BUILD_HOST="OpenELA-Build"
           
-          # [FIX 3] POLLY/LLVM FIX: Eliminăm flag-urile incompatibile cu Clang modern
+          # Fix-uri de compatibilitate
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm//g' {} +
-          
-          # [FIX 4] VDSO FIX: Rezolvăm eroarea de linkare pe Ubuntu 24.04
-          if [ -f arch/arm64/kernel/vdso/Makefile ]; then
-            sed -i 's/-static//g' arch/arm64/kernel/vdso/Makefile
-          fi
-
-          # [FIX 5] PYTHON 3.12 FIX: Dezactivăm wrapper-ul vechi Samsung
+          [ -f arch/arm64/kernel/vdso/Makefile ] && sed -i 's/-static//g' arch/arm64/kernel/vdso/Makefile
           sed -i 's/ifneq ($(wildcard $(srctree)\/scripts\/gcc-wrapper.py),)/ifeq (0,1)/g' Makefile
 
           MAKE_ARGS="ARCH=arm64 \
@@ -74,46 +70,53 @@ jobs:
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             O=out"
 
-          # Configurare sursă
           make $MAKE_ARGS r5q_defconfig
           
-          # [FIX 6] CONFIG & DTBO: Activăm generarea DTBO și personalizăm numele
+          # Activare DTBO forțată
           ./scripts/config --file out/.config \
             --set-str CONFIG_LOCALVERSION "-sh4dow6oy" \
             -e CONFIG_BUILD_ARM64_DTB_IMAGE \
             -e CONFIG_DTC \
+            -e CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE \
             -d CONFIG_LTO -d CONFIG_LTO_CLANG -e CONFIG_LTO_NONE \
             -d CONFIG_KNOX_KAP -d CONFIG_SECURITY_SAMSUNG_KNOX \
             -d CONFIG_WERROR
           
           make $MAKE_ARGS olddefconfig
 
-          # Compilare Kernel și DTBS (forțăm crearea fișierelor de device tree)
+          # Compilare
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fno-common -Wno-error -Wno-implicit-function-declaration -Wno-int-conversion -Wno-unused-command-line-argument"
-          make $MAKE_ARGS dtbs || echo "DTBS failed, trying manual dtbo"
-          make $MAKE_ARGS dtbo.img || echo "Standalone DTBO not supported, checking folders"
+          make $MAKE_ARGS dtbs
+
+      - name: Manual DTBO Merge
+        run: |
+          # Verificăm dacă există utilitarul mkdtboimg în sursă (Samsung îl are de obicei)
+          MKDTBOIMG=$(find scripts -name "mkdtboimg.py" | head -n 1)
+          # Găsim toate fișierele .dtbo generate
+          DTBO_FILES=$(find out/arch/arm64/boot/dts -name "*.dtbo")
+          
+          if [ -n "$DTBO_FILES" ] && [ -n "$MKDTBOIMG" ]; then
+            echo "Combinăm fișierele DTBO..."
+            python3 $MKDTBOIMG create out/dtbo.img $DTBO_FILES
+            echo "SUCCESS: out/dtbo.img creat manual."
+          else
+            echo "Nu s-au găsit fragmente .dtbo sau scriptul de merge."
+          fi
 
       - name: Package with AnyKernel3
         run: |
-          # Detectare Kernel Image
           IMAGE=$(find out/arch/arm64/boot -name "Image.gz-dtb" -o -name "Image.gz" | head -n 1)
-          
-          # [FIX 7] AGGRESSIVE DTBO SEARCH: Căutăm dtbo.img oriunde în folderul de output
-          DTBO_FIND=$(find out -name "dtbo.img" | head -n 1)
+          DTBO_FINAL=$(find out -name "dtbo.img" | head -n 1)
 
           git clone https://github.com/osm0sis/AnyKernel3.git
           rm -rf AnyKernel3/.git
 
           cp "$IMAGE" AnyKernel3/Image.gz
-          
-          if [ -n "$DTBO_FIND" ] && [ -f "$DTBO_FIND" ]; then
-            cp "$DTBO_FIND" AnyKernel3/dtbo.img
-            echo "SUCCESS: DTBO găsit la $DTBO_FIND"
-          else
-            echo "WARNING: DTBO nu a fost găsit. Kernel-ul s-ar putea să nu booteze dacă e necesar!"
+          if [ -f "$DTBO_FINAL" ]; then
+            cp "$DTBO_FINAL" AnyKernel3/dtbo.img
+            echo "DTBO inclus în ZIP."
           fi
 
-          # Configurare AnyKernel pentru S10 Lite (r5q)
           sed -i 's/device.name1=maguro/device.name1=r5q/g' AnyKernel3/anykernel.sh
           sed -i 's/device.name2=toroplus/device.name2=SM-G770F/g' AnyKernel3/anykernel.sh
           
