@@ -1,4 +1,4 @@
-name: Build Roynas R5Q - OpenELA 4.14.356 RC1 (Ubuntu 24.04)
+name: Build Roynas R5Q - OpenELA 4.14.356 RC1 (U24 Fixed)
 
 on:
   workflow_dispatch:
@@ -23,44 +23,48 @@ jobs:
 
       - name: Setup Neutron Clang
         run: |
-          mkdir clang
-          # Descarcă Neutron Clang
+          mkdir -p clang
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
 
       - name: Inject OpenELA 4.14.356 RC1
         run: |
-          wget -q https://github.com/openela/kernel-lts/archive/refs/tags/v4.14.356-openela-rc1.tar.gz
-          # Suprascriem sursa Samsung cu kernel-ul LTS OpenELA
-          tar -xzf v4.14.356-openela-rc1.tar.gz --strip-components=1
-          echo "OpenELA 4.14.356-rc1 injectat."
+          wget -q https://github.com/openela/kernel-lts/archive/refs/tags/v4.14.356-openela-rc1.tar.gz -O openela.tar.gz
+          # Extragem peste sursa Samsung, forțând suprascrierea
+          # Folosim rsync sau cp după extracție pentru a ne asigura că nu pierdem fișierele .config sau driverele Samsung
+          mkdir openela_tmp
+          tar -xzf openela.tar.gz -C openela_tmp --strip-components=1
+          cp -rf openela_tmp/* .
+          rm -rf openela_tmp openela.tar.gz
+          echo "OpenELA 4.14.356-rc1 injectat corect."
 
       - name: Build Kernel
         run: |
-          # Setăm calea către toolchain-ul Neutron
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           export KBUILD_BUILD_USER="Roynas"
           export KBUILD_BUILD_HOST="Android-Playground"
           
-          # 1. CLEANUP EXTREM (Neutron tinde să forțeze Polly în Makefiles)
+          # Fix pentru Python 3.12 (Ubuntu 24.04) - Samsung scripts fix
+          if [ -f scripts/gcc-wrapper.py ]; then
+            chmod +x scripts/gcc-wrapper.py
+          fi
+          
+          # 1. CLEANUP EXTREM (Neutron + Polly Fix)
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm//g' {} +
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-polly[^ ]*//g' {} +
           
-          # 2. FIX VDSO (Ubuntu 24.04 + modern LLVM urăsc link-ul static aici)
+          # 2. VDSO FIX (Anti-static for Ubuntu 24.04)
           if [ -f arch/arm64/kernel/vdso/Makefile ]; then
             sed -i 's/-static//g' arch/arm64/kernel/vdso/Makefile
-            sed -i 's/$(LDFLAGS)/$(filter-out -static,$(LDFLAGS))/g' arch/arm64/kernel/vdso/Makefile
           fi
 
-          # 3. ELIMINARE KERNELSU & SAMSUNG BLOAT (Evităm conflicte de definiții)
+          # 3. KERNELSU & SAMSUNG CLEANUP
           sed -i '/kernelsu/d' drivers/android/Kconfig || true
           sed -i '/kernelsu/d' drivers/android/Makefile || true
-          rm -rf drivers/kernelsu
-          # Fix pentru wrapper-ul de python Samsung care e incompatibil cu Python 3.12 din Ubuntu 24
-          sed -i 's/ifneq ($(wildcard $(srctree)\/scripts\/gcc-wrapper.py),)/ifeq (0,1)/g' Makefile
+          rm -rf drivers/kernelsu || true
 
-          # 4. ARGUMENTE BUILD
+          # 4. Argumente Build
           MAKE_ARGS="ARCH=arm64 \
             LLVM=1 \
             LLVM_IAS=1 \
@@ -75,10 +79,15 @@ jobs:
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             O=out"
 
-          # 5. CONFIGURARE
+          # 5. Configurare - Verificăm dacă defconfig-ul există
+          if [ ! -f arch/arm64/configs/r5q_defconfig ]; then
+            echo "EROARE: arch/arm64/configs/r5q_defconfig nu a fost găsit!"
+            ls arch/arm64/configs/
+            exit 1
+          fi
+
           make $MAKE_ARGS r5q_defconfig
           
-          # Ajustări obligatorii pentru Upstream pe r5q
           ./scripts/config --file out/.config \
             -d CONFIG_LTO -d CONFIG_LTO_CLANG -e CONFIG_LTO_NONE \
             -d CONFIG_CC_STACKPROTECTOR_STRONG -e CONFIG_CC_STACKPROTECTOR_NONE \
@@ -89,33 +98,31 @@ jobs:
           
           make $MAKE_ARGS olddefconfig
 
-          # 6. COMPILARE (Ubuntu 24.04 e rapid, folosim nproc complet)
-          # KCFLAGS conțin fixuri pentru "stpcpy" și alte funcții care crapă cu LLVM 18+
-          make -j$(nproc --all) $MAKE_ARGS \
-            KCFLAGS="-fcommon -fno-builtin-stpcpy -Wno-error -Wno-unknown-warning-option -Wno-unused-command-line-argument -Wno-implicit-function-declaration -Wno-int-conversion"
+          # 6. Compilare
+          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -fno-builtin-stpcpy -Wno-error -Wno-unknown-warning-option -Wno-unused-command-line-argument -Wno-implicit-function-declaration -Wno-int-conversion"
 
       - name: Package with AnyKernel3
         run: |
-          IMAGE="out/arch/arm64/boot/Image.gz"
-          [ -f out/arch/arm64/boot/Image.gz-dtb ] && IMAGE="out/arch/arm64/boot/Image.gz-dtb"
-          DTBO="out/arch/arm64/boot/dtbo.img"
-
+          # Verificăm unde a fost scos fișierul Image.gz
+          if [ -f out/arch/arm64/boot/Image.gz-dtb ]; then
+            IMAGE="out/arch/arm64/boot/Image.gz-dtb"
+          elif [ -f out/arch/arm64/boot/Image.gz ]; then
+            IMAGE="out/arch/arm64/boot/Image.gz"
+          else
+            echo "EROARE: Kernelul nu s-a compilat corect. Image.gz negăsit."
+            exit 1
+          fi
+          
           git clone https://github.com/osm0sis/AnyKernel3.git
-          rm -rf AnyKernel3/.git
-
           cp $IMAGE AnyKernel3/Image.gz
-          [ -f "$DTBO" ] && cp $DTBO AnyKernel3/dtbo.img
+          [ -f out/arch/arm64/boot/dtbo.img ] && cp out/arch/arm64/boot/dtbo.img AnyKernel3/dtbo.img
 
-          # Config r5q
+          # Config AnyKernel
           sed -i 's/device.name1=maguro/device.name1=r5q/g' AnyKernel3/anykernel.sh
-          sed -i 's/device.name2=toroplus/device.name2=SM-G770F/g' AnyKernel3/anykernel.sh
-          sed -i 's/device.name3=toro/device.name3=r5q/g' AnyKernel3/anykernel.sh
+          cd AnyKernel3 && zip -r9 ../Kernel-R5Q-OpenELA.zip *
 
-          cd AnyKernel3
-          zip -r9 ../Kernel-R5Q-OpenELA-U24.zip *
-
-      - name: Upload Build
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-S10Lite-OpenELA
-          path: Kernel-R5Q-OpenELA-U24.zip
+          name: Kernel-R5Q-OpenELA
+          path: Kernel-R5Q-OpenELA.zip
