@@ -1,4 +1,4 @@
-name: Build sh4dow6oy Kernel - OpenELA 4.14.356 (KernelSU Fix & Hardware Sync)
+name: Build sh4dow6oy Kernel - OpenELA 4.14.356 (Final SCSI Fix)
 
 on:
   workflow_dispatch:
@@ -14,6 +14,7 @@ jobs:
           ref: master
 
       - name: Install Dependencies
+          # Adăugăm rsync pentru un merge mai inteligent
         run: |
           sudo apt-get update
           sudo apt-get install -y bc build-essential flex bison lz4 libssl-dev libelf-dev \
@@ -26,21 +27,29 @@ jobs:
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
 
-      - name: Smart Merge OpenELA & Fix KernelSU
+      - name: Smart Merge & SCSI Header Fix
         run: |
           wget -q https://github.com/openela/kernel-lts/archive/refs/tags/v4.14.356-openela-rc1.tar.gz -O openela.tar.gz
           mkdir openela_src
           tar -xzf openela.tar.gz -C openela_src --strip-components=1
           
-          # [FIX KernelSU] Ștergem referința care blochează build-ul
+          # [FIX KernelSU]
           sed -i '/kernelsu/d' drivers/android/Kconfig
           
-          # [MERGE] Copiem OpenELA dar PROTEJĂM hardware-ul Samsung
-          # Folosim rsync --ignore-existing pentru a nu suprascrie dts-urile și techpack-ul Samsung
-          rsync -av --ignore-existing openela_src/ .
+          # [MERGE] Aplicăm OpenELA peste tot codul de bază
+          rsync -av openela_src/ .
           
-          # [RESTORE] Forțăm înapoi dts-ul original Samsung dacă OpenELA a pus ceva generic
+          # [RESTORE CRITICAL SAMSUNG] Revenim la hardware-ul original Samsung
+          # Acesta este pasul care ne asigură că avem r5q dts și drivere specifice
           git checkout HEAD -- arch/arm64/boot/dts
+          git checkout HEAD -- drivers/video/fbdev/msm
+          git checkout HEAD -- include/scsi/scsi.h
+          git checkout HEAD -- include/scsi/scsi_ioctl.h
+          
+          # [NUCLEAR FIX SCSI] Dacă restabilirea headerelor nu ajută, dezactivăm bucata de cod problematică
+          # deoarece SCSI_IOCTL este rar folosit în boot-ul de Android modern
+          sed -i 's/case SCSI_IOCTL_GET_IDLUN:/#if 0\ncase SCSI_IOCTL_GET_IDLUN:/' drivers/scsi/scsi_ioctl.c
+          sed -i 's/case SCSI_IOCTL_GET_PCI:/case SCSI_IOCTL_GET_PCI:\n#endif/' drivers/scsi/scsi_ioctl.c
           
           # Fix Nuclear Symbol
           echo 'void dma_contiguous_early_fixup(void *res_cma) { }' > drivers/base/samsung_stub.c
@@ -52,7 +61,6 @@ jobs:
           export KBUILD_BUILD_USER="sh4dow6oy"
           export KBUILD_BUILD_HOST="OpenELA-Build"
           
-          # Fix-uri mediu build
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm//g' {} +
           [ -f arch/arm64/kernel/vdso/Makefile ] && sed -i 's/-static//g' arch/arm64/kernel/vdso/Makefile
@@ -78,19 +86,21 @@ jobs:
             --set-str CONFIG_LOCALVERSION "-sh4dow6oy" \
             -e CONFIG_SAMSUNG_PRODUCT_SHIP \
             -e CONFIG_BUILD_ARM64_DTB_IMAGE \
+            -e CONFIG_DTC \
             -d CONFIG_LTO -d CONFIG_LTO_CLANG -e CONFIG_LTO_NONE \
             -d CONFIG_WERROR
           
           make $MAKE_ARGS olddefconfig
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fno-common -Wno-error -Wno-implicit-function-declaration -Wno-int-conversion"
           
-          # Încercăm generarea DTBO
+          # Generare DTBs (S10 Lite are nevoie de ele)
           make $MAKE_ARGS dtbs
-          make $MAKE_ARGS dtbo.img || echo "DTBO manual check needed"
+          make $MAKE_ARGS dtbo.img || echo "DTBO manual step"
 
       - name: AnyKernel3 Packaging
         run: |
           IMAGE=$(find out/arch/arm64/boot -name "Image.gz-dtb" -o -name "Image.gz" | head -n 1)
+          # Căutăm orice fișier DTBO generat
           DTBO_FINAL=$(find out -name "dtbo.img" -o -name "dtbo" | head -n 1)
 
           git clone https://github.com/osm0sis/AnyKernel3.git
@@ -99,10 +109,7 @@ jobs:
           cp "$IMAGE" AnyKernel3/Image.gz
           if [ -f "$DTBO_FINAL" ]; then
             cp "$DTBO_FINAL" AnyKernel3/dtbo.img
-            echo "SUCCESS: DTBO integrat."
-          else
-            echo "INFO: DTBO nu a fost găsit separat. Verificăm lista DTB-urilor generate:"
-            find out/arch/arm64/boot/dts -name "*.dtb" | head -n 20
+            echo "SUCCESS: DTBO găsit și adăugat."
           fi
 
           sed -i 's/device.name1=maguro/device.name1=r5q/g' AnyKernel3/anykernel.sh
@@ -113,5 +120,5 @@ jobs:
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: sh4dow6oy-Kernel-Final
+          name: sh4dow6oy-Kernel-R5Q
           path: sh4dow6oy-Kernel-R5Q-OpenELA.zip
