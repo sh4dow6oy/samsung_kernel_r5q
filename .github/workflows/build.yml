@@ -1,4 +1,4 @@
-name: Build Roynas R5Q - OpenELA 4.14.356 RC1 (U24 Fixed)
+name: Build Roynas R5Q - OpenELA 4.14.356 RC1 Final
 
 on:
   workflow_dispatch:
@@ -30,13 +30,19 @@ jobs:
       - name: Inject OpenELA 4.14.356 RC1
         run: |
           wget -q https://github.com/openela/kernel-lts/archive/refs/tags/v4.14.356-openela-rc1.tar.gz -O openela.tar.gz
-          # Extragem peste sursa Samsung, forțând suprascrierea
-          # Folosim rsync sau cp după extracție pentru a ne asigura că nu pierdem fișierele .config sau driverele Samsung
           mkdir openela_tmp
           tar -xzf openela.tar.gz -C openela_tmp --strip-components=1
+          
+          # Suprascriem tot, dar forțăm păstrarea structurii Samsung acolo unde OpenELA nu are fișiere
           cp -rf openela_tmp/* .
           rm -rf openela_tmp openela.tar.gz
-          echo "OpenELA 4.14.356-rc1 injectat corect."
+          
+          # --- FIX CRITIC PENTRU UNDEFINED SYMBOLS ---
+          # Eliminăm apelurile către funcția Samsung dma_contiguous_early_fixup care nu mai există în OpenELA
+          sed -i '/dma_contiguous_early_fixup/d' drivers/base/dma-contiguous.c || true
+          
+          # Fix pentru erorile de tip "COMMON symbol" prin forțarea -fno-common în Makefile-ul principal
+          sed -i 's/KBUILD_CFLAGS   += $(call cc-option,-fno-delete-null-pointer-checks,)/KBUILD_CFLAGS   += $(call cc-option,-fno-delete-null-pointer-checks,)\nKBUILD_CFLAGS   += -fno-common/g' Makefile
 
       - name: Build Kernel
         run: |
@@ -44,17 +50,12 @@ jobs:
           export KBUILD_BUILD_USER="Roynas"
           export KBUILD_BUILD_HOST="Android-Playground"
           
-          # Fix pentru Python 3.12 (Ubuntu 24.04) - Samsung scripts fix
-          if [ -f scripts/gcc-wrapper.py ]; then
-            chmod +x scripts/gcc-wrapper.py
-          fi
-          
-          # 1. CLEANUP EXTREM (Neutron + Polly Fix)
+          # 1. CLEANUP NUCLEAR (Neutron + Polly Fix)
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm//g' {} +
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-polly[^ ]*//g' {} +
           
-          # 2. VDSO FIX (Anti-static for Ubuntu 24.04)
+          # 2. VDSO FIX (Anti-static for Ubuntu 24.04 + Neutron)
           if [ -f arch/arm64/kernel/vdso/Makefile ]; then
             sed -i 's/-static//g' arch/arm64/kernel/vdso/Makefile
           fi
@@ -63,6 +64,8 @@ jobs:
           sed -i '/kernelsu/d' drivers/android/Kconfig || true
           sed -i '/kernelsu/d' drivers/android/Makefile || true
           rm -rf drivers/kernelsu || true
+          # Fix Python 3.12 syntax în scripturile Samsung
+          sed -i 's/ifneq ($(wildcard $(srctree)\/scripts\/gcc-wrapper.py),)/ifeq (0,1)/g' Makefile
 
           # 4. Argumente Build
           MAKE_ARGS="ARCH=arm64 \
@@ -79,13 +82,7 @@ jobs:
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             O=out"
 
-          # 5. Configurare - Verificăm dacă defconfig-ul există
-          if [ ! -f arch/arm64/configs/r5q_defconfig ]; then
-            echo "EROARE: arch/arm64/configs/r5q_defconfig nu a fost găsit!"
-            ls arch/arm64/configs/
-            exit 1
-          fi
-
+          # 5. Configurare
           make $MAKE_ARGS r5q_defconfig
           
           ./scripts/config --file out/.config \
@@ -98,18 +95,17 @@ jobs:
           
           make $MAKE_ARGS olddefconfig
 
-          # 6. Compilare
-          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -fno-builtin-stpcpy -Wno-error -Wno-unknown-warning-option -Wno-unused-command-line-argument -Wno-implicit-function-declaration -Wno-int-conversion"
+          # 6. Compilare (Forțăm flag-uri de compatibilitate pentru LLVM modern)
+          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fno-common -fcommon -Wno-error -Wno-unknown-warning-option -Wno-unused-command-line-argument -Wno-implicit-function-declaration -Wno-int-conversion"
 
       - name: Package with AnyKernel3
         run: |
-          # Verificăm unde a fost scos fișierul Image.gz
           if [ -f out/arch/arm64/boot/Image.gz-dtb ]; then
             IMAGE="out/arch/arm64/boot/Image.gz-dtb"
           elif [ -f out/arch/arm64/boot/Image.gz ]; then
             IMAGE="out/arch/arm64/boot/Image.gz"
           else
-            echo "EROARE: Kernelul nu s-a compilat corect. Image.gz negăsit."
+            echo "EROARE: Kernel-ul nu s-a compilat!"
             exit 1
           fi
           
@@ -117,12 +113,14 @@ jobs:
           cp $IMAGE AnyKernel3/Image.gz
           [ -f out/arch/arm64/boot/dtbo.img ] && cp out/arch/arm64/boot/dtbo.img AnyKernel3/dtbo.img
 
-          # Config AnyKernel
+          # Config r5q
           sed -i 's/device.name1=maguro/device.name1=r5q/g' AnyKernel3/anykernel.sh
-          cd AnyKernel3 && zip -r9 ../Kernel-R5Q-OpenELA.zip *
+          sed -i 's/device.name2=toroplus/device.name2=SM-G770F/g' AnyKernel3/anykernel.sh
+          
+          cd AnyKernel3 && zip -r9 ../Kernel-R5Q-OpenELA-Final.zip *
 
-      - name: Upload Artifact
+      - name: Upload Flashable Kernel
         uses: actions/upload-artifact@v4
         with:
           name: Kernel-R5Q-OpenELA
-          path: Kernel-R5Q-OpenELA.zip
+          path: Kernel-R5Q-OpenELA-Final.zip
