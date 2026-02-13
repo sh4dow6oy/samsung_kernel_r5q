@@ -1,24 +1,27 @@
-name: Build Roynas R5Q - Neutron Clang + BPF A15
+name: Build Roynas R5Q - Neutron Clang + A15 BPF
 on:
   workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-24.04
+
     steps:
       - name: Checkout Source
         uses: actions/checkout@v4
         with:
           repository: Roynas-Android-Playground/kernel_samsung_r3q
           ref: master
-          fetch-depth: 0   # IMPORTANT pentru cherry-pick
+          fetch-depth: 0
 
       - name: Install Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y bc build-essential flex bison lz4 libssl-dev libelf-dev \
-          ccache python3 python-is-python3 libarchive-tools wget zstd libtinfo6 zip \
-          gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi rsync
+          sudo apt-get install -y \
+            bc build-essential flex bison lz4 libssl-dev libelf-dev \
+            ccache python3 python-is-python3 libarchive-tools wget zstd \
+            libtinfo6 zip rsync \
+            gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi
 
       - name: Setup Neutron Clang
         run: |
@@ -26,24 +29,16 @@ jobs:
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
 
-      # 🔥 CLONĂM EXTREMEXT PENTRU BPF
-      - name: Add ExtremeXT Remote
+      - name: Add ExtremeXT Remote (BPF Source)
         run: |
           git remote add ext https://github.com/ExtremeXT/android_kernel_samsung_exynos9820.git
-          git fetch ext
+          git fetch ext --depth=1
 
-      # 🔥 IMPORT MINIMAL BPF (SAFE ZONE)
-      - name: Import BPF Core
+      - name: Import Minimal BPF Headers
         run: |
-          mkdir bpf_import
-
-          # Copiem doar componentele esențiale BPF
-          rsync -av ext:kernel/bpf/ kernel/bpf/ || true
-          rsync -av ext:include/uapi/linux/bpf.h include/uapi/linux/bpf.h || true
+          rsync -av ext:include/uapi/linux/bpf.h include/uapi/linux/ || true
           rsync -av ext:include/linux/bpf*.h include/linux/ || true
-
-          # Asigurăm Kconfig activ
-          grep -q "config BPF" kernel/bpf/Kconfig || true
+          rsync -av ext:kernel/bpf/ kernel/bpf/ || true
 
       - name: Build Kernel
         run: |
@@ -52,22 +47,27 @@ jobs:
           export KBUILD_BUILD_HOST=GitHub
           export KBUILD_COMPILER_STRING="Neutron Clang A15-BPF"
 
-          # 1. Cleanup flags periculos
-          find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
+          # 1. Remove broken polly flags only
+          find . -type f \( -name "Makefile*" -o -name "*.mk" \) \
+            -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
 
-          # 2. VDSO static fix
+          # 2. Fix VDSO -static issue
           if [ -f arch/arm64/kernel/vdso/Makefile ]; then
             sed -i 's/\b-static\b//g' arch/arm64/kernel/vdso/Makefile
           fi
 
-          # 3. Dezactivăm wrapper gcc
+          # 3. SAFE KernelSU cleanup (no folder delete)
+          sed -i '/kernelsu/d' drivers/android/Kconfig || true
+          sed -i '/kernelsu/d' drivers/android/Makefile || true
+
+          # 4. Disable gcc wrapper
           sed -i 's/ifneq ($(wildcard $(srctree)\/scripts\/gcc-wrapper.py),)/ifeq (0,1)/g' Makefile
 
           MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 O=out"
 
           make $MAKE_ARGS r5q_defconfig
 
-          # 🔥 CONFIG ANDROID 15 BPF REQUIRED
+          # 5. Android 15 BPF Required Config
           ./scripts/config --file out/.config \
             -e CONFIG_BPF \
             -e CONFIG_BPF_SYSCALL \
@@ -88,7 +88,9 @@ jobs:
             -e CONFIG_NAMESPACES \
             -e CONFIG_USER_NS \
             -d CONFIG_LTO \
-            -e CONFIG_LTO_NONE
+            -e CONFIG_LTO_NONE \
+            -d CONFIG_KSU \
+            -d CONFIG_ASSIST_KSU
 
           make $MAKE_ARGS olddefconfig
 
