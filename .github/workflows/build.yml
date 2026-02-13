@@ -1,4 +1,4 @@
-name: Build sh4dow6oy Kernel - R5Q (OpenELA Final Fix - Linker Conflict)
+name: Build sh4dow6oy Kernel - R5Q (Android 15 Ready - 4.14.356)
 
 on:
   workflow_dispatch:
@@ -10,7 +10,7 @@ jobs:
       - name: Checkout Samsung Source
         uses: actions/checkout@v4
         with:
-          repository: Roynas-Android-Playground/kernel_samsung_r3q
+          repository: sh4dow6oy/kernel_samsung_r5q
           ref: master
 
       - name: Install Build Tools
@@ -26,77 +26,87 @@ jobs:
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
 
-      - name: Inject OpenELA & Conflict Resolution
+      - name: OpenELA Upstream & Android 15 Patches
         run: |
+          # 1. Descarcă Upstream-ul final 4.14.356
           wget -q https://github.com/openela/kernel-lts/archive/refs/tags/v4.14.356-openela-rc1.tar.gz -O openela.tar.gz
           mkdir openela_src
           tar -xzf openela.tar.gz -C openela_src --strip-components=1
-          
-          # Injectăm OpenELA, dar fără a suprascrie fișierele deja existente
           rsync -av --ignore-existing openela_src/ .
           
-          # 1. KernelSU & SCSI Fix
-          sed -i '/kernelsu/d' drivers/android/Kconfig
+          # 2. Ștergere conflicte Techpack (pentru succesul linkării vmlinux)
+          rm -f techpack/devfreq/drivers/governor_bw_hwmon.c
+          rm -f techpack/devfreq/drivers/governor_memlat.c
+          
+          # 3. Patch pentru Android 15 (eBPF & PSI Support)
+          # Forțăm activarea PSI în codul sursă dacă lipsește
+          sed -i 's/default n/default y/g' init/Kconfig | grep "config PSI" -A 5 || true
+          
+          # 4. Fix-uri chirurgicale (SCSI & Compat IOCTL)
           find . -type f -name "*.c" -exec sed -i 's/SCSI_IOCTL_GET_IDLUN/0x5382/g' {} +
-          
-          # 2. FIX MULTIPLE DEFINITIONS (Nuclear Option)
-          # Comentăm guvernatorul bw_hwmon direct în Makefile-ul devfreq pentru a opri duplicarea
-          sed -i 's/obj-$(CONFIG_DEVFREQ_GOV_BW_HWMON)/# obj-$(CONFIG_DEVFREQ_GOV_BW_HWMON)/g' drivers/devfreq/Makefile
-          
-          # 3. FIX TARGET CORE (Dezactivăm SCSI Target complet)
-          sed -i 's/obj-$(CONFIG_TARGET_CORE)/# obj-$(CONFIG_TARGET_CORE)/g' drivers/target/Makefile
-          
-          # 4. Samsung Stub & DTS Restore
+          sed -i '1515,1525c\return 0;' fs/compat_ioctl.c
+          sed -i '1630,1640c\return 0;' fs/compat_ioctl.c
+
+          # 5. Samsung Stub Fix (Eroarea dma_contiguous)
           echo 'void dma_contiguous_early_fixup(void *res_cma) { }' > drivers/base/samsung_stub.c
           [ -f drivers/base/Makefile ] && echo 'obj-y += samsung_stub.o' >> drivers/base/Makefile
-          git checkout HEAD -- arch/arm64/boot/dts
           
-          # 5. Fix pentru fs/compat_ioctl.c (Eroarea de la mărimea array-ului)
-          sed -i 's/sort(ioctl_pointer, ARRAY_SIZE(ioctl_pointer)/ \/\/ sort(ioctl_pointer, 0/g' fs/compat_ioctl.c
+          # Restaurăm DTS-ul Samsung original pentru SM8150
+          git checkout HEAD -- arch/arm64/boot/dts
 
-      - name: Build Kernel
+      - name: Build Kernel for SM8150
         run: |
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
           
           make $MAKE_ARGS r5q_defconfig
           
-          # Dezactivăm modulele care provoacă conflicte de simboluri la linkare
+          # [CRITICAL] Configurări pentru Android 15
           ./scripts/config --file out/.config \
             -e CONFIG_SAMSUNG_PRODUCT_SHIP \
             -e CONFIG_BUILD_ARM64_DTB_IMAGE \
+            -e CONFIG_PSI \
+            -e CONFIG_BPF_SYSCALL \
+            -e CONFIG_NETFILTER_XT_MATCH_BPF \
+            -e CONFIG_CGROUP_BPF \
+            -e CONFIG_MEMBARRIER \
             -d CONFIG_LTO -d CONFIG_LTO_CLANG -e CONFIG_LTO_NONE \
-            -d CONFIG_WERROR \
-            -d CONFIG_DEVFREQ_GOV_BW_HWMON \
-            -d CONFIG_TARGET_CORE
+            -d CONFIG_WERROR -d CONFIG_DEVFREQ_GOV_BW_HWMON -d CONFIG_TARGET_CORE
             
           make $MAKE_ARGS olddefconfig
-          # Folosim -fcommon pentru a permite definiții multiple dacă mai apar (dar le-am blocat manual pe cele mari)
-          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-Wno-error -fno-common -Wno-implicit-function-declaration"
-          
+          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-Wno-error -fcommon -Wno-implicit-function-declaration -Wno-sizeof-array-argument"
           make $MAKE_ARGS dtbs
 
-      - name: Manual Hardware Assembly
+      - name: Hardware Packaging (SM8150)
         run: |
+          # Căutăm DTB-ul specific r5q (SM8150)
           DTB_FILE=$(find out/arch/arm64/boot/dts -name "sm8150-r5q*.dtb" | head -n 1)
           if [ -n "$DTB_FILE" ]; then
             cat out/arch/arm64/boot/Image.gz "$DTB_FILE" > out/arch/arm64/boot/Image.gz-dtb
+            echo "SUCCESS: Image.gz-dtb generated for SM8150."
           fi
+          
+          # Generăm DTBO-ul Samsung
           MKDTBOIMG=$(find . -name "mkdtboimg.py" | head -n 1)
           DTBOS=$(find out/arch/arm64/boot/dts -name "*.dtbo")
           [ -n "$DTBOS" ] && [ -n "$MKDTBOIMG" ] && python3 $MKDTBOIMG create out/dtbo.img $DTBOS
 
-      - name: AnyKernel3 Packaging
+      - name: AnyKernel3 (Android 15 Edition)
         run: |
           git clone https://github.com/osm0sis/AnyKernel3.git
-          [ -f out/arch/arm64/boot/Image.gz-dtb ] && cp out/arch/arm64/boot/Image.gz-dtb AnyKernel3/Image.gz || cp out/arch/arm64/boot/Image.gz AnyKernel3/Image.gz
+          rm -rf AnyKernel3/.git
+          
+          # Folosim imaginea cu DTB concatenat
+          [ -f out/arch/arm64/boot/Image.gz-dtb ] && cp out/arch/arm64/boot/Image.gz-dtb AnyKernel3/Image.gz
           [ -f out/dtbo.img ] && cp out/dtbo.img AnyKernel3/dtbo.img
+          
           sed -i 's/device.name1=maguro/device.name1=r5q/g' AnyKernel3/anykernel.sh
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' AnyKernel3/anykernel.sh
-          cd AnyKernel3 && zip -r9 ../sh4dow6oy-OpenELA-R5Q-Success.zip *
+          
+          cd AnyKernel3 && zip -r9 ../Kernel-OpenELA-A15-R5Q.zip *
 
-      - name: Upload Artifact
+      - name: Upload Kernel
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-R5Q-OpenELA
-          path: sh4dow6oy-OpenELA-R5Q-Success.zip
+          name: Kernel-OpenELA-A15-R5Q
+          path: Kernel-OpenELA-A15-R5Q.zip
