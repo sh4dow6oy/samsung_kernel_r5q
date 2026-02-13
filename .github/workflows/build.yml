@@ -1,4 +1,4 @@
-name: Build sh4dow6oy Kernel - R5Q (eBPF Cherry-Pick for A15)
+name: Build sh4dow6oy Kernel - R5Q (eBPF Fix - Arguments Mismatch)
 
 on:
   workflow_dispatch:
@@ -12,7 +12,7 @@ jobs:
         with:
           repository: sh4dow6oy/kernel_samsung_r5q
           ref: master
-          fetch-depth: 0 # Avem nevoie de istoric pentru cherry-pick
+          fetch-depth: 0
 
       - name: Install Build Tools
         run: |
@@ -27,24 +27,24 @@ jobs:
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
 
-      - name: Cherry-Pick BPF from LineageOS
+      - name: Import BPF & Fix Headers
         run: |
           git config user.email "sh4dow6oy@build.com"
           git config user.name "sh4dow6oy"
           
-          # Adăugăm sursa LineageOS ca remote
           git remote add lineage https://github.com/LineageOS/android_kernel_google_msm-4.14.git
           git fetch lineage lineage-20
           
-          # [STRATEGIE] În loc de cherry-pick individual la sute de commit-uri,
-          # preluăm direct modificările pe subsistemele BPF și Netfilter care sunt vitale pentru Android 15.
+          # Importăm subsistemele BPF
           git checkout lineage/lineage-20 -- kernel/bpf/
           git checkout lineage/lineage-20 -- net/netfilter/
-          git checkout lineage/lineage-20 -- include/linux/bpf.h
-          git checkout lineage/lineage-20 -- include/uapi/linux/bpf.h
           
-          # Fix pentru erorile de compilare comune după importul BPF
-          sed -i 's/case SCSI_IOCTL_GET_IDLUN:/case 0x5382:/g' drivers/scsi/scsi_ioctl.c || true
+          # [CRITICAL] Importăm headerele care definesc funcțiile BPF (Fix pentru eroarea de argumente)
+          git checkout lineage/lineage-20 -- include/linux/filter.h
+          git checkout lineage/lineage-20 -- include/linux/bpf.h
+          git checkout lineage/lineage-20 -- include/linux/bpf_types.h
+          git checkout lineage/lineage-20 -- include/uapi/linux/bpf.h
+          git checkout lineage/lineage-20 -- include/uapi/linux/filter.h
 
       - name: Build Kernel (SM8150 / R5Q)
         run: |
@@ -53,7 +53,7 @@ jobs:
           
           make $MAKE_ARGS r5q_defconfig
           
-          # ACTIVARE SUPORT ANDROID 15
+          # Activăm suportul eBPF necesar pentru Android 15
           ./scripts/config --file out/.config \
             -e CONFIG_BPF \
             -e CONFIG_BPF_SYSCALL \
@@ -64,22 +64,20 @@ jobs:
             -e CONFIG_NET_ACT_BPF \
             -e CONFIG_CGROUP_BPF \
             -e CONFIG_PSI \
-            -e CONFIG_MEMBARRIER \
             -d CONFIG_WERROR
             
           make $MAKE_ARGS olddefconfig
-          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-Wno-error -fcommon"
+          # Adăugăm -fcommon pentru a evita eventuale definiții duplicate între kernel core și BPF importat
+          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-Wno-error -fcommon -Wno-implicit-function-declaration"
           make $MAKE_ARGS dtbs
 
       - name: Assemble Flashable Zip
         run: |
-          # Concatenare DTB pentru SM8150
           DTB_FILE=$(find out/arch/arm64/boot/dts -name "sm8150-r5q*.dtb" | head -n 1)
           if [ -n "$DTB_FILE" ]; then
             cat out/arch/arm64/boot/Image.gz "$DTB_FILE" > out/arch/arm64/boot/Image.gz-dtb
           fi
           
-          # DTBO
           MKDTBOIMG=$(find . -name "mkdtboimg.py" | head -n 1)
           DTBOS=$(find out/arch/arm64/boot/dts -name "*.dtbo")
           [ -n "$DTBOS" ] && [ -n "$MKDTBOIMG" ] && python3 $MKDTBOIMG create out/dtbo.img $DTBOS
@@ -90,10 +88,10 @@ jobs:
           
           sed -i 's/device.name1=maguro/device.name1=r5q/g' AnyKernel3/anykernel.sh
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' AnyKernel3/anykernel.sh
-          cd AnyKernel3 && zip -r9 ../sh4dow6oy-BPF-A15-R5Q.zip *
+          cd AnyKernel3 && zip -r9 ../Kernel-A15-BPF-Final.zip *
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
           name: Kernel-A15-BPF
-          path: sh4dow6oy-BPF-A15-R5Q.zip
+          path: Kernel-A15-BPF-Final.zip
