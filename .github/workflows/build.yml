@@ -21,7 +21,7 @@ jobs:
             bc build-essential flex bison lz4 libssl-dev libelf-dev \
             ccache python3 python-is-python3 libarchive-tools wget zstd \
             libtinfo6 zip rsync \
-            gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi
+            gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi git
 
       - name: Setup Neutron Clang
         run: |
@@ -29,21 +29,19 @@ jobs:
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
 
-      # 🔥 Add SM7150 BPF 5.10 reference
-      - name: Add BPF 5.10 Remote
+      # 🔹 Clone BPF 5.10 reference local
+      - name: Clone BPF 5.10 Reference
         run: |
-          git remote add bpf510 https://github.com/pascua28/android_kernel_samsung_sm7150.git
-          git fetch bpf510 bpf-5.10 --depth=1
+          git clone --depth=1 -b bpf-5.10 https://github.com/pascua28/android_kernel_samsung_sm7150.git bpf510
 
-      # 🔥 Import SAFE BPF core only
-      - name: Import Minimal BPF 5.10 Components
+      # 🔹 Import safe BPF subsystem
+      - name: Import Minimal BPF Components
         run: |
           # Headers
-          rsync -av bpf510:include/uapi/linux/bpf.h include/uapi/linux/ || true
-          rsync -av bpf510:include/linux/bpf*.h include/linux/ || true
-
-          # Core BPF subsystem (fără net/core!)
-          rsync -av --exclude='*.o' bpf510:kernel/bpf/ kernel/bpf/ || true
+          rsync -av bpf510/include/uapi/linux/bpf.h include/uapi/linux/
+          rsync -av bpf510/include/linux/bpf*.h include/linux/
+          # Kernel subsystem (exclude .o)
+          rsync -av --exclude='*.o' bpf510/kernel/bpf/ kernel/bpf/
 
       - name: Build Kernel
         run: |
@@ -52,7 +50,7 @@ jobs:
           export KBUILD_BUILD_HOST=GitHub
           export KBUILD_COMPILER_STRING="Neutron Clang A15-BPF5.10"
 
-          # 1. Remove only broken polly flags
+          # 1. Remove dangerous polly flags
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) \
             -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
 
@@ -61,7 +59,7 @@ jobs:
             sed -i 's/\b-static\b//g' arch/arm64/kernel/vdso/Makefile
           fi
 
-          # 3. KernelSU safe disable (no folder delete)
+          # 3. KernelSU safe disable
           sed -i '/kernelsu/d' drivers/android/Kconfig || true
           sed -i '/kernelsu/d' drivers/android/Makefile || true
 
@@ -72,7 +70,7 @@ jobs:
 
           make $MAKE_ARGS r5q_defconfig
 
-          # 🔥 Android 15 Required BPF Config
+          # 5. Android 15 BPF required config
           ./scripts/config --file out/.config \
             -e CONFIG_BPF \
             -e CONFIG_BPF_SYSCALL \
