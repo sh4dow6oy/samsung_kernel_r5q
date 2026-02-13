@@ -7,6 +7,17 @@ jobs:
     runs-on: ubuntu-22.04
 
     steps:
+      - name: Free Disk Space (The Heavy Cleanup)
+        run: |
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf "/usr/local/share/boost"
+          sudo rm -rf /etc/apt/sources.list.d/*
+          sudo docker image prune -a -f
+          sudo apt-get clean
+          df -h # Afișează spațiul rămas pentru verificare
+
       - name: Checkout Source
         uses: actions/checkout@v4
         with:
@@ -18,7 +29,7 @@ jobs:
       - name: Install Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y bc bison flex libssl-dev libelf-dev dwarves make python3 lz4 rsync libncurses5-dev git build-essential ccache wget zip
+          sudo apt-get install -y bc bison flex libssl-dev libelf-dev dwarves make python3 lz4 rsync libncurses5-dev git build-essential wget zip
 
       - name: Setup Proton Clang
         run: |
@@ -31,20 +42,13 @@ jobs:
           export LD_LIBRARY_PATH="$GITHUB_WORKSPACE/toolchain/proton-clang/lib:$LD_LIBRARY_PATH"
           export PATH="$TC_PATH:$PATH"
           
-          # 1. Pregătire structură build
           mkdir -p out
-
-          # 2. NUCLEAR FIX pentru Defconfig:
-          # Copiem manual fișierul direct în folderul de output sub numele .config
-          # Aceasta sare peste pasul "make r5q_defconfig" care dădea eroare.
           cp arch/arm64/configs/r5q_defconfig out/.config
-          echo "Defconfig injectat manual în out/.config"
 
-          # 3. Cleanup Makefile-uri
+          # Patch Makefile
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
           sed -i 's/ifneq ($(wildcard $(srctree)\/scripts\/gcc-wrapper.py),)/ifeq (0,1)/g' Makefile
 
-          # 4. Argumente Build
           MAKE_ARGS="ARCH=arm64 \
             O=out \
             CC=clang \
@@ -61,27 +65,24 @@ jobs:
             HOSTCC=gcc \
             HOSTCXX=g++"
 
-          # 5. Aplicăm setările eBPF peste .config-ul injectat
+          # Config eBPF
           ./scripts/config --file out/.config \
             -e CONFIG_BPF \
             -e CONFIG_BPF_SYSCALL \
             -e CONFIG_BPF_JIT \
             -e CONFIG_HAVE_EBPF_JIT \
             -e CONFIG_CGROUP_BPF \
-            -e CONFIG_NET_CLS_BPF \
-            -e CONFIG_NET_ACT_BPF \
             -d CONFIG_SECURITY_SAMSUNG_RKP
             
-          # Validăm configurația (echivalentul la make defconfig dar folosind .config existent)
           make $MAKE_ARGS olddefconfig
 
-          # 6. Compilare
+          # Compilare
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -Wno-error -Wno-everything"
 
       - name: Package with AnyKernel3
+        if: success()
         run: |
           cd kernel
-          # Verificare existență imagine (Image.gz-dtb este standardul pe S10 Lite)
           [ -f "out/arch/arm64/boot/Image.gz-dtb" ] && IMG="out/arch/arm64/boot/Image.gz-dtb" || IMG="out/arch/arm64/boot/Image.gz"
           
           git clone https://github.com/osm0sis/AnyKernel3.git
@@ -95,6 +96,7 @@ jobs:
           zip -r9 ../Kernel-S10Lite-R5Q-BPF.zip *
 
       - name: Upload Artifact
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: Kernel-S10Lite-R5Q
