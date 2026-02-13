@@ -4,7 +4,6 @@ on:
 
 jobs:
   build:
-    # Folosim 22.04 pentru stabilitatea bibliotecilor glibc cerute de Proton Clang
     runs-on: ubuntu-22.04
 
     steps:
@@ -28,16 +27,24 @@ jobs:
       - name: Build Kernel
         run: |
           cd kernel
-          # 1. Path si Environment
           TC_PATH="$GITHUB_WORKSPACE/toolchain/proton-clang/bin"
           export LD_LIBRARY_PATH="$GITHUB_WORKSPACE/toolchain/proton-clang/lib:$LD_LIBRARY_PATH"
+          export PATH="$TC_PATH:$PATH"
           
-          # 2. Cleanup flag-uri si scripturi problematice
+          # 1. Pregătire structură build
+          mkdir -p out
+
+          # 2. NUCLEAR FIX pentru Defconfig:
+          # Copiem manual fișierul direct în folderul de output sub numele .config
+          # Aceasta sare peste pasul "make r5q_defconfig" care dădea eroare.
+          cp arch/arm64/configs/r5q_defconfig out/.config
+          echo "Defconfig injectat manual în out/.config"
+
+          # 3. Cleanup Makefile-uri
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
           sed -i 's/ifneq ($(wildcard $(srctree)\/scripts\/gcc-wrapper.py),)/ifeq (0,1)/g' Makefile
 
-          # 3. Argumente de Build
-          # Folosim HOSTCC=gcc pentru a compila scripturile interne (fixdep) cu compilatorul sistemului
+          # 4. Argumente Build
           MAKE_ARGS="ARCH=arm64 \
             O=out \
             CC=clang \
@@ -54,13 +61,7 @@ jobs:
             HOSTCC=gcc \
             HOSTCXX=g++"
 
-          # Adaugam toolchain-ul in PATH doar pentru acest pas
-          export PATH="$TC_PATH:$PATH"
-
-          # 4. Configurare
-          make $MAKE_ARGS r5q_defconfig
-          
-          # Injectare configuratie eBPF Android 15
+          # 5. Aplicăm setările eBPF peste .config-ul injectat
           ./scripts/config --file out/.config \
             -e CONFIG_BPF \
             -e CONFIG_BPF_SYSCALL \
@@ -69,41 +70,32 @@ jobs:
             -e CONFIG_CGROUP_BPF \
             -e CONFIG_NET_CLS_BPF \
             -e CONFIG_NET_ACT_BPF \
-            -e CONFIG_NAMESPACES \
-            -e CONFIG_USER_NS \
-            -d CONFIG_SECURITY_SAMSUNG_RKP \
-            -d CONFIG_SECURITY_SAMSUNG_PROCA
+            -d CONFIG_SECURITY_SAMSUNG_RKP
             
+          # Validăm configurația (echivalentul la make defconfig dar folosind .config existent)
           make $MAKE_ARGS olddefconfig
 
-          # 5. Compilare
-          # -fcommon rezolva erorile de tip "multiple definition"
+          # 6. Compilare
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -Wno-error -Wno-everything"
 
       - name: Package with AnyKernel3
         run: |
           cd kernel
-          # Identificare imagine
-          if [ -f "out/arch/arm64/boot/Image.gz-dtb" ]; then
-            IMAGE="out/arch/arm64/boot/Image.gz-dtb"
-          else
-            IMAGE="out/arch/arm64/boot/Image.gz"
-          fi
+          # Verificare existență imagine (Image.gz-dtb este standardul pe S10 Lite)
+          [ -f "out/arch/arm64/boot/Image.gz-dtb" ] && IMG="out/arch/arm64/boot/Image.gz-dtb" || IMG="out/arch/arm64/boot/Image.gz"
           
-          DTBO="out/arch/arm64/boot/dtbo.img"
-
           git clone https://github.com/osm0sis/AnyKernel3.git
-          cp $IMAGE AnyKernel3/Image.gz
-          [ -f "$DTBO" ] && cp $DTBO AnyKernel3/dtbo.img
+          cp $IMG AnyKernel3/Image.gz
+          [ -f "out/arch/arm64/boot/dtbo.img" ] && cp out/arch/arm64/boot/dtbo.img AnyKernel3/dtbo.img
 
           sed -i 's/^device.name1=.*/device.name1=r5q/' AnyKernel3/anykernel.sh
           sed -i 's/^device.name2=.*/device.name2=SM-G770F/' AnyKernel3/anykernel.sh
           
           cd AnyKernel3
-          zip -r9 ../Kernel-S10Lite-R5Q-ProtonClang.zip *
+          zip -r9 ../Kernel-S10Lite-R5Q-BPF.zip *
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: Kernel-S10Lite-R5Q
-          path: Kernel-S10Lite-R5Q-ProtonClang.zip
+          path: Kernel-S10Lite-R5Q-BPF.zip
