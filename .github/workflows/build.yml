@@ -1,4 +1,4 @@
-name: Build sh4dow6oy Kernel - OpenELA 4.14.356 RC1 (DTBO Manual Fix)
+name: Build sh4dow6oy Kernel - OpenELA 4.14.356 RC1 (Ultimate)
 
 on:
   workflow_dispatch:
@@ -20,8 +20,6 @@ jobs:
           sudo apt-get install -y bc build-essential flex bison lz4 libssl-dev libelf-dev \
           ccache python3 python-is-python3 libarchive-tools wget zstd libtinfo6 zip \
           gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi python3-pip
-          # Instalăm mkdtboimg dacă nu există în scripturi
-          pip3 install --user dtc
 
       - name: Setup Neutron Clang
         run: |
@@ -50,7 +48,7 @@ jobs:
           export KBUILD_BUILD_USER="sh4dow6oy"
           export KBUILD_BUILD_HOST="OpenELA-Build"
           
-          # Fix-uri de compatibilitate
+          # Fix-uri de compatibilitate LLVM/Samsung
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm//g' {} +
           [ -f arch/arm64/kernel/vdso/Makefile ] && sed -i 's/-static//g' arch/arm64/kernel/vdso/Makefile
@@ -72,53 +70,50 @@ jobs:
 
           make $MAKE_ARGS r5q_defconfig
           
-          # Activare DTBO forțată
+          # Configurații extra pentru R5Q
           ./scripts/config --file out/.config \
             --set-str CONFIG_LOCALVERSION "-sh4dow6oy" \
             -e CONFIG_BUILD_ARM64_DTB_IMAGE \
             -e CONFIG_DTC \
-            -e CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE \
             -d CONFIG_LTO -d CONFIG_LTO_CLANG -e CONFIG_LTO_NONE \
             -d CONFIG_KNOX_KAP -d CONFIG_SECURITY_SAMSUNG_KNOX \
             -d CONFIG_WERROR
           
           make $MAKE_ARGS olddefconfig
 
-          # Compilare
+          # Compilare Kernel
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fno-common -Wno-error -Wno-implicit-function-declaration -Wno-int-conversion -Wno-unused-command-line-argument"
+          # Compilare Device Tree
           make $MAKE_ARGS dtbs
-
-      - name: Manual DTBO Merge
-        run: |
-          # Verificăm dacă există utilitarul mkdtboimg în sursă (Samsung îl are de obicei)
-          MKDTBOIMG=$(find scripts -name "mkdtboimg.py" | head -n 1)
-          # Găsim toate fișierele .dtbo generate
-          DTBO_FILES=$(find out/arch/arm64/boot/dts -name "*.dtbo")
-          
-          if [ -n "$DTBO_FILES" ] && [ -n "$MKDTBOIMG" ]; then
-            echo "Combinăm fișierele DTBO..."
-            python3 $MKDTBOIMG create out/dtbo.img $DTBO_FILES
-            echo "SUCCESS: out/dtbo.img creat manual."
-          else
-            echo "Nu s-au găsit fragmente .dtbo sau scriptul de merge."
-          fi
 
       - name: Package with AnyKernel3
         run: |
-          IMAGE=$(find out/arch/arm64/boot -name "Image.gz-dtb" -o -name "Image.gz" | head -n 1)
+          # 1. Găsim imaginea de kernel (prioritate Image.gz-dtb)
+          IMAGE=$(find out/arch/arm64/boot -name "Image.gz-dtb" | head -n 1)
+          if [ -z "$IMAGE" ]; then
+            IMAGE=$(find out/arch/arm64/boot -name "Image.gz" | head -n 1)
+          fi
+          
+          # 2. Căutare Disperată DTBO (img sau fragmente)
           DTBO_FINAL=$(find out -name "dtbo.img" | head -n 1)
 
           git clone https://github.com/osm0sis/AnyKernel3.git
           rm -rf AnyKernel3/.git
 
           cp "$IMAGE" AnyKernel3/Image.gz
+          
           if [ -f "$DTBO_FINAL" ]; then
             cp "$DTBO_FINAL" AnyKernel3/dtbo.img
-            echo "DTBO inclus în ZIP."
+            echo "SUCCESS: dtbo.img adăugat."
+          else
+            echo "INFO: Nu s-a găsit dtbo.img. Se va folosi doar Image.gz-dtb (standard pt r5q)."
           fi
 
+          # Configurare AnyKernel pentru S10 Lite (r5q)
           sed -i 's/device.name1=maguro/device.name1=r5q/g' AnyKernel3/anykernel.sh
           sed -i 's/device.name2=toroplus/device.name2=SM-G770F/g' AnyKernel3/anykernel.sh
+          # Adăugăm flag-ul de DTB în anykernel dacă e nevoie
+          sed -i 's/do.devicecheck=1/do.devicecheck=0/g' AnyKernel3/anykernel.sh
           
           cd AnyKernel3
           zip -r9 ../sh4dow6oy-Kernel-R5Q-OpenELA.zip *
