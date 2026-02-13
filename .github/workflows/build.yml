@@ -1,4 +1,4 @@
-name: Build Roynas R5Q - A15 BPF Clean Surgical
+name: Build Roynas R5Q - Neutron Clang + BPF A15
 on:
   workflow_dispatch:
 
@@ -11,115 +11,112 @@ jobs:
         with:
           repository: Roynas-Android-Playground/kernel_samsung_r3q
           ref: master
-          fetch-depth: 0
+          fetch-depth: 0   # IMPORTANT pentru cherry-pick
 
       - name: Install Dependencies
-        run: sudo apt-get update && sudo apt-get install -y bc build-essential flex bison lz4 libssl-dev libelf-dev ccache python3 wget zstd zip git
-
-      - name: Surgical BPF Backport & Header Cleanup
         run: |
-          git config --global user.email "bot@example.com"
-          git config --global user.name "Kernel Bot"
-          
-          # 1. Resetăm kernel/bpf la Samsung original
-          git checkout HEAD -- kernel/bpf/
-          
-          # 2. Importăm doar fișierele necesare de la Sixteen
-          git remote add sixteen https://github.com/pascua28/android_kernel_samsung_sm8250.git
-          git fetch sixteen sixteen
-          git checkout sixteen/sixteen -f -- \
-            include/linux/bpf.h \
-            include/linux/filter.h \
-            include/uapi/linux/bpf.h \
-            net/core/filter.c
+          sudo apt-get update
+          sudo apt-get install -y bc build-essential flex bison lz4 libssl-dev libelf-dev \
+          ccache python3 python-is-python3 libarchive-tools wget zstd libtinfo6 zip \
+          gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi rsync
 
-          # 3. Creăm sockptr.h
-          cat <<EOF > include/linux/sockptr.h
-          #ifndef _LINUX_SOCKPTR_H
-          #define _LINUX_SOCKPTR_H
-          #include <linux/slab.h>
-          #include <linux/uaccess.h>
-          typedef struct { union { void *kernel; void __user *user; }; bool is_kernel; } sockptr_t;
-          static inline bool sockptr_is_kernel(sockptr_t s) { return s.is_kernel; }
-          static inline sockptr_t KERNEL_SOCKPTR(void *p) { return (sockptr_t){ .kernel = p, .is_kernel = true }; }
-          static inline sockptr_t USER_SOCKPTR(void __user *p) { return (sockptr_t){ .user = p, .is_kernel = false }; }
-          static inline int copy_from_sockptr(void *dst, sockptr_t src, size_t size) {
-              if (src.is_kernel) { memcpy(dst, src.kernel, size); return 0; }
-              return copy_from_user(dst, src.user, size);
-          }
-          #endif
-          EOF
-
-          # 4. PYTHON HEADER CLEANUP (Rezolvă bpf_stats_enabled_key și bpf_prog_stats)
-          python3 -c '
-          import os, re
-          
-          def cleanup_header(file_path):
-              if not os.path.exists(file_path): return
-              with open(file_path, "r") as f: lines = f.readlines()
-              new_lines = []
-              for line in lines:
-                  # Eliminăm declarația externă care cauzează eroarea
-                  if "extern struct static_key_false bpf_stats_enabled_key;" in line: continue
-                  # Comentăm apelurile de stats care folosesc cheia inexistentă
-                  if "static_branch_unlikely(&bpf_stats_enabled_key)" in line:
-                      new_lines.append("if (false) {\n")
-                      continue
-                  new_lines.append(line)
-              with open(file_path, "w") as f: f.writelines(new_lines)
-
-          cleanup_header("include/linux/filter.h")
-          cleanup_header("include/linux/bpf.h")
-          '
-
-          # 5. Patch pentru BPF_PROG_RUN_ARRAY simplificat (fără statistici)
-          sed -i "/#define BPF_PROG_RUN/a #define BPF_PROG_RUN_ARRAY(array, ctx, func) ({ \\
-            struct bpf_prog_array_item *_item; \\
-            struct bpf_prog *_prog; \\
-            struct bpf_prog_array *_array = rcu_dereference(array); \\
-            u32 _ret = 1; \\
-            if (_array) { \\
-                _item = &_array->items[0]; \\
-                while ((_prog = READ_ONCE(_item->prog))) { \\
-                    _ret &= func(_prog, ctx); \\
-                    _item++; \\
-                } \\
-            } \\
-            _ret; })" include/linux/filter.h
-
-          git add .
-          git commit -m "Fix BPF stats and surgical backport" || echo "No changes"
-
-      - name: Setup Toolchain & Build
+      - name: Setup Neutron Clang
         run: |
           mkdir clang
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
-          export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
-          
-          # Fix Samsung Kconfig
-          sed -i "/kernelsu\/Kconfig/d" drivers/android/Kconfig || true
-          sed -i "/kernelsu/d" drivers/android/Makefile || true
-          find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i "s/-mllvm -polly[^ ]*//g" {} +
 
-          MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
+      # 🔥 CLONĂM EXTREMEXT PENTRU BPF
+      - name: Add ExtremeXT Remote
+        run: |
+          git remote add ext https://github.com/ExtremeXT/android_kernel_samsung_exynos9820.git
+          git fetch ext
+
+      # 🔥 IMPORT MINIMAL BPF (SAFE ZONE)
+      - name: Import BPF Core
+        run: |
+          mkdir bpf_import
+
+          # Copiem doar componentele esențiale BPF
+          rsync -av ext:kernel/bpf/ kernel/bpf/ || true
+          rsync -av ext:include/uapi/linux/bpf.h include/uapi/linux/bpf.h || true
+          rsync -av ext:include/linux/bpf*.h include/linux/ || true
+
+          # Asigurăm Kconfig activ
+          grep -q "config BPF" kernel/bpf/Kconfig || true
+
+      - name: Build Kernel
+        run: |
+          export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
+          export KBUILD_BUILD_USER=Roynas
+          export KBUILD_BUILD_HOST=GitHub
+          export KBUILD_COMPILER_STRING="Neutron Clang A15-BPF"
+
+          # 1. Cleanup flags periculos
+          find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
+
+          # 2. VDSO static fix
+          if [ -f arch/arm64/kernel/vdso/Makefile ]; then
+            sed -i 's/\b-static\b//g' arch/arm64/kernel/vdso/Makefile
+          fi
+
+          # 3. Dezactivăm wrapper gcc
+          sed -i 's/ifneq ($(wildcard $(srctree)\/scripts\/gcc-wrapper.py),)/ifeq (0,1)/g' Makefile
+
+          MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 O=out"
 
           make $MAKE_ARGS r5q_defconfig
-          ./scripts/config --file out/.config -e CONFIG_BPF -e CONFIG_BPF_SYSCALL -e CONFIG_BPF_JIT -e CONFIG_CGROUP_BPF -d CONFIG_LTO_CLANG -e CONFIG_LTO_NONE -d CONFIG_WERROR
-          make $MAKE_ARGS olddefconfig
-          
-          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -Wno-error -Wno-implicit-function-declaration -Wno-incompatible-pointer-types -Wno-format -Wno-int-conversion"
 
-      - name: Package
-        if: always()
+          # 🔥 CONFIG ANDROID 15 BPF REQUIRED
+          ./scripts/config --file out/.config \
+            -e CONFIG_BPF \
+            -e CONFIG_BPF_SYSCALL \
+            -e CONFIG_BPF_JIT \
+            -e CONFIG_HAVE_EBPF_JIT \
+            -e CONFIG_CGROUP_BPF \
+            -e CONFIG_NET_CLS_BPF \
+            -e CONFIG_NET_ACT_BPF \
+            -e CONFIG_BPF_EVENTS \
+            -e CONFIG_KPROBE_EVENTS \
+            -e CONFIG_UPROBE_EVENTS \
+            -e CONFIG_FTRACE \
+            -e CONFIG_FUNCTION_TRACER \
+            -e CONFIG_DYNAMIC_FTRACE \
+            -e CONFIG_CGROUPS \
+            -e CONFIG_CGROUP_FREEZER \
+            -e CONFIG_CGROUP_SCHED \
+            -e CONFIG_NAMESPACES \
+            -e CONFIG_USER_NS \
+            -d CONFIG_LTO \
+            -e CONFIG_LTO_NONE
+
+          make $MAKE_ARGS olddefconfig
+
+          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-Wno-error"
+
+      - name: Package with AnyKernel3
         run: |
-          if [ -f out/arch/arm64/boot/Image.gz ]; then
-            git clone https://github.com/osm0sis/AnyKernel3.git
-            cp out/arch/arm64/boot/Image.gz AnyKernel3/
-            cd AnyKernel3 && zip -r9 ../Kernel-R5Q-A15-Surgical-v2.zip *
+          IMAGE="$GITHUB_WORKSPACE/out/arch/arm64/boot/Image.gz-dtb"
+          if [ ! -f "$IMAGE" ]; then
+            IMAGE="$GITHUB_WORKSPACE/out/arch/arm64/boot/Image.gz"
           fi
-      - name: Upload
+          DTBO="$GITHUB_WORKSPACE/out/arch/arm64/boot/dtbo.img"
+
+          git clone https://github.com/osm0sis/AnyKernel3.git
+          rm -rf AnyKernel3/.git
+
+          cp $IMAGE AnyKernel3/Image.gz
+          [ -f "$DTBO" ] && cp $DTBO AnyKernel3/dtbo.img
+
+          sed -i 's/^device.name1=.*/device.name1=r5q/' AnyKernel3/anykernel.sh
+          sed -i 's/^device.name2=.*/device.name2=SM-G770F/' AnyKernel3/anykernel.sh
+          sed -i 's/^device.name3=.*/device.name3=r5q/' AnyKernel3/anykernel.sh
+
+          cd AnyKernel3
+          zip -r9 ../Kernel-S10Lite-R5Q-A15-BPF.zip *
+
+      - name: Upload Flashable Kernel
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-S10Lite-A15-Final
-          path: "*.zip"
+          name: Kernel-S10Lite-R5Q-A15-BPF
+          path: Kernel-S10Lite-R5Q-A15-BPF.zip
