@@ -26,10 +26,10 @@ jobs:
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
 
-      - name: Fix VDSO - remove unsupported flag
+      - name: Disable VDSO debug build
         run: |
           if [ -f arch/arm64/kernel/vdso/Makefile ]; then
-            sed -i 's/-import-instr-limit=[0-9]\+//g' arch/arm64/kernel/vdso/Makefile
+            sed -i 's/arch\/arm64\/kernel\/vdso\/v.*\.dbg//g' arch/arm64/kernel/vdso/Makefile
           fi
 
       - name: Build Kernel
@@ -44,7 +44,6 @@ jobs:
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) \
             -exec sed -i 's/-polly[^ ]*//g' {} +
 
-          # VDSO fix already applied
           # KernelSU cleanup
           sed -i '/kernelsu/d' drivers/android/Kconfig || true
           sed -i '/kernelsu/d' drivers/android/Makefile || true
