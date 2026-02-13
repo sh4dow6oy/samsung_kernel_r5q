@@ -4,7 +4,8 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-24.04
+    # Folosim 22.04 pentru stabilitatea bibliotecilor glibc cerute de Proton Clang
+    runs-on: ubuntu-22.04
 
     steps:
       - name: Checkout Source
@@ -12,6 +13,7 @@ jobs:
         with:
           repository: sh4dow6oy/android_kernel_qcom_sm8150_419
           ref: master
+          path: kernel
           fetch-depth: 1
 
       - name: Install Dependencies
@@ -19,33 +21,46 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y bc bison flex libssl-dev libelf-dev dwarves make python3 lz4 rsync libncurses5-dev git build-essential ccache wget zip
 
-      - name: Setup Proton Clang from Git
+      - name: Setup Proton Clang
         run: |
           git clone --depth=1 https://github.com/kdrag0n/proton-clang.git toolchain/proton-clang
-          export PATH="$GITHUB_WORKSPACE/toolchain/proton-clang/bin:$PATH"
 
       - name: Build Kernel
         run: |
-          export PATH="$GITHUB_WORKSPACE/toolchain/proton-clang/bin:$PATH"
-
-          # Nuclear cleanup
-          find . -type f \( -name "Makefile*" -o -name "*.mk" \) \
-            -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
-          find . -type f \( -name "Makefile*" -o -name "*.mk" \) \
-            -exec sed -i 's/-mllvm//g' {} +
-          find . -type f \( -name "Makefile*" -o -name "*.mk" \) \
-            -exec sed -i 's/-polly[^ ]*//g' {} +
-
-          # KernelSU cleanup
-          sed -i '/kernelsu/d' drivers/android/Kconfig || true
-          sed -i '/kernelsu/d' drivers/android/Makefile || true
-          rm -rf drivers/kernelsu
+          cd kernel
+          # 1. Path si Environment
+          TC_PATH="$GITHUB_WORKSPACE/toolchain/proton-clang/bin"
+          export LD_LIBRARY_PATH="$GITHUB_WORKSPACE/toolchain/proton-clang/lib:$LD_LIBRARY_PATH"
+          
+          # 2. Cleanup flag-uri si scripturi problematice
+          find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
           sed -i 's/ifneq ($(wildcard $(srctree)\/scripts\/gcc-wrapper.py),)/ifeq (0,1)/g' Makefile
 
-          MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
+          # 3. Argumente de Build
+          # Folosim HOSTCC=gcc pentru a compila scripturile interne (fixdep) cu compilatorul sistemului
+          MAKE_ARGS="ARCH=arm64 \
+            O=out \
+            CC=clang \
+            LD=ld.lld \
+            AR=llvm-ar \
+            NM=llvm-nm \
+            OBJCOPY=llvm-objcopy \
+            OBJDUMP=llvm-objdump \
+            STRIP=llvm-strip \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            LLVM=1 \
+            LLVM_IAS=1 \
+            HOSTCC=gcc \
+            HOSTCXX=g++"
 
-          # Configurare r5q + full BPF
+          # Adaugam toolchain-ul in PATH doar pentru acest pas
+          export PATH="$TC_PATH:$PATH"
+
+          # 4. Configurare
           make $MAKE_ARGS r5q_defconfig
+          
+          # Injectare configuratie eBPF Android 15
           ./scripts/config --file out/.config \
             -e CONFIG_BPF \
             -e CONFIG_BPF_SYSCALL \
@@ -54,41 +69,40 @@ jobs:
             -e CONFIG_CGROUP_BPF \
             -e CONFIG_NET_CLS_BPF \
             -e CONFIG_NET_ACT_BPF \
-            -e CONFIG_FTRACE \
-            -e CONFIG_FUNCTION_TRACER \
-            -e CONFIG_DYNAMIC_FTRACE \
-            -e CONFIG_UPROBE_EVENTS \
-            -e CONFIG_KPROBE_EVENTS \
             -e CONFIG_NAMESPACES \
-            -e CONFIG_CGROUPS \
-            -e CONFIG_CGROUP_FREEZER \
-            -e CONFIG_CGROUP_SCHED \
-            -e CONFIG_USER_NS
+            -e CONFIG_USER_NS \
+            -d CONFIG_SECURITY_SAMSUNG_RKP \
+            -d CONFIG_SECURITY_SAMSUNG_PROCA
+            
           make $MAKE_ARGS olddefconfig
 
-          # Compilare
-          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -Wno-error -Wno-unknown-warning-option -Wno-unused-command-line-argument"
+          # 5. Compilare
+          # -fcommon rezolva erorile de tip "multiple definition"
+          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -Wno-error -Wno-everything"
 
       - name: Package with AnyKernel3
         run: |
-          IMAGE="$GITHUB_WORKSPACE/out/arch/arm64/boot/Image.gz-dtb"
-          [ ! -f "$IMAGE" ] && IMAGE="$GITHUB_WORKSPACE/out/arch/arm64/boot/Image.gz"
-          DTBO="$GITHUB_WORKSPACE/out/arch/arm64/boot/dtbo.img"
+          cd kernel
+          # Identificare imagine
+          if [ -f "out/arch/arm64/boot/Image.gz-dtb" ]; then
+            IMAGE="out/arch/arm64/boot/Image.gz-dtb"
+          else
+            IMAGE="out/arch/arm64/boot/Image.gz"
+          fi
+          
+          DTBO="out/arch/arm64/boot/dtbo.img"
 
           git clone https://github.com/osm0sis/AnyKernel3.git
-          rm -rf AnyKernel3/.git
-
           cp $IMAGE AnyKernel3/Image.gz
           [ -f "$DTBO" ] && cp $DTBO AnyKernel3/dtbo.img
 
           sed -i 's/^device.name1=.*/device.name1=r5q/' AnyKernel3/anykernel.sh
           sed -i 's/^device.name2=.*/device.name2=SM-G770F/' AnyKernel3/anykernel.sh
-          sed -i 's/^device.name3=.*/device.name3=r5q/' AnyKernel3/anykernel.sh
-
+          
           cd AnyKernel3
           zip -r9 ../Kernel-S10Lite-R5Q-ProtonClang.zip *
 
-      - name: Upload Flashable Kernel
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: Kernel-S10Lite-R5Q
