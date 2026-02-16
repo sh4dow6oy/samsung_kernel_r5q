@@ -1,4 +1,4 @@
-name: Build sh4dow6oy Kernel - R5Q (Targeted A15 Hybrid)
+name: Build sh4dow6oy Kernel - R5Q (Deep Clean eBPF)
 
 on:
   workflow_dispatch:
@@ -27,7 +27,7 @@ jobs:
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
 
-      - name: Surgical eBPF & PSI Import
+      - name: Deep Surgical Sync
         run: |
           git config user.email "sh4dow6oy@build.com"
           git config user.name "sh4dow6oy"
@@ -35,26 +35,27 @@ jobs:
           git remote add lineage https://github.com/LineageOS/android_kernel_google_msm-4.14.git
           git fetch lineage lineage-20
           
-          # Ștergem folderele vechi care vor fi înlocuite
+          # 1. Ștergere agresivă pentru a evita "redefinition"
           rm -rf net/ kernel/bpf/
+          rm -f include/linux/filter.h include/linux/bpf.h include/linux/bpf_types.h
+          rm -f include/uapi/linux/filter.h include/uapi/linux/bpf.h include/uapi/linux/bpf_common.h
           
-          # 1. Importăm codul executabil complet (Networking & BPF)
+          # 2. Import corect din LineageOS 20
           git checkout lineage/lineage-20 -- net/
           git checkout lineage/lineage-20 -- kernel/bpf/
           git checkout lineage/lineage-20 -- arch/arm64/net/
           git checkout lineage/lineage-20 -- fs/compat_ioctl.c
-
-          # 2. Importăm headerele (Fără calea problematică uapi/linux/psi)
-          git checkout lineage/lineage-20 -- include/linux/bpf*
+          git checkout lineage/lineage-20 -- include/linux/filter.h
+          git checkout lineage/lineage-20 -- include/linux/bpf.h
+          git checkout lineage/lineage-20 -- include/linux/bpf_types.h
           git checkout lineage/lineage-20 -- include/linux/psi.h
           git checkout lineage/lineage-20 -- include/linux/psi_types.h
-          git checkout lineage/lineage-20 -- include/linux/filter.h
           git checkout lineage/lineage-20 -- include/net/
+          git checkout lineage/lineage-20 -- include/uapi/linux/filter.h
           git checkout lineage/lineage-20 -- include/uapi/linux/bpf.h
           git checkout lineage/lineage-20 -- include/uapi/linux/bpf_common.h
-          git checkout lineage/lineage-20 -- include/uapi/linux/filter.h
           
-          # 3. Spoofing Versiune la 5.4 pentru conformitate Android 15
+          # 3. Spoofing Versiune 5.4
           sed -i 's/VERSION = 4/VERSION = 5/g' Makefile
           sed -i 's/PATCHLEVEL = 14/PATCHLEVEL = 4/g' Makefile
 
@@ -65,7 +66,6 @@ jobs:
           
           make $MAKE_ARGS r5q_defconfig
           
-          # Forțăm activarea PSI și eBPF Stack
           ./scripts/config --file out/.config \
             -e CONFIG_BPF -e CONFIG_BPF_SYSCALL -e CONFIG_BPF_JIT \
             -e CONFIG_BPF_JIT_ALWAYS_ON -e CONFIG_HAVE_EBPF_JIT \
@@ -76,8 +76,8 @@ jobs:
             
           make $MAKE_ARGS olddefconfig
           
-          # Compilare cu flag-uri relaxate pentru transplant
-          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-Wno-error -fcommon -Wno-implicit-function-declaration -Wno-incompatible-pointer-types"
+          # Adăugăm flag-ul de ignorare a conflictelor de pointeri care apare des la transplantul Net
+          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-Wno-error -fcommon -Wno-implicit-function-declaration -Wno-incompatible-pointer-types -Wno-pointer-sign"
           make $MAKE_ARGS dtbs
 
       - name: Assemble
@@ -87,10 +87,10 @@ jobs:
           
           git clone https://github.com/osm0sis/AnyKernel3.git
           cp out/arch/arm64/boot/Image.gz-dtb AnyKernel3/Image.gz || cp out/arch/arm64/boot/Image.gz AnyKernel3/Image.gz
-          cd AnyKernel3 && zip -r9 ../sh4dow6oy-R5Q-A15-HYBRID-FINAL.zip *
+          cd AnyKernel3 && zip -r9 ../sh4dow6oy-R5Q-A15-DEEP-CLEAN.zip *
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-A15-Hybrid-Final
-          path: sh4dow6oy-R5Q-A15-HYBRID-FINAL.zip
+          name: Kernel-A15-DeepClean
+          path: sh4dow6oy-R5Q-A15-DEEP-CLEAN.zip
