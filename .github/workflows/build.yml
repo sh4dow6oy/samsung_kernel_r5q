@@ -1,4 +1,4 @@
-name: Build R5Q - LineageOS 23 Native Hybrid V4
+name: Build R5Q - LineageOS 23 Native Hybrid V5
 
 on:
   workflow_dispatch:
@@ -7,14 +7,14 @@ jobs:
   build:
     runs-on: ubuntu-24.04
     steps:
-      - name: Checkout LineageOS Kernel (Base for Android 15)
+      - name: Checkout LineageOS Kernel
         uses: actions/checkout@v4
         with:
           repository: LineageOS/android_kernel_google_msm-4.14
           ref: lineage-21
           path: kernel
 
-      - name: Checkout Mainey R5Q (Hardware Source)
+      - name: Checkout Mainey R5Q
         uses: actions/checkout@v4
         with:
           repository: mainey/android_kernel_samsung_r5q
@@ -36,32 +36,36 @@ jobs:
 
       - name: Injected Hardware & Source Patches
         run: |
-          # 1. Injectăm Device Tree-ul Samsung R5Q
+          # 1. Injectăm Device Tree
           mkdir -p kernel/arch/arm64/boot/dts/samsung
           cp -r samsung/arch/arm64/boot/dts/samsung/* kernel/arch/arm64/boot/dts/samsung/
-          
-          # 2. Rescriem Makefile-ul DTS pentru a compila DOAR folderul samsung
           echo 'obj-y += samsung/' > kernel/arch/arm64/boot/dts/Makefile
           
-          # 3. Copiem DEFCONFIG-ul EUR OPEN specific S20 FE
+          # 2. Config EUR Open
           cp samsung/arch/arm64/configs/r5q_eur_open_defconfig kernel/arch/arm64/configs/r5q_eur_open_defconfig
           
-          # 4. [FIX MMC] Reparam eroarea 'undeclared label out' in sdio.c
-          # Inseram eticheta 'out:' inainte de finalul functiei problematice
-          sed -i '/return 0;/i out:' kernel/drivers/mmc/core/sdio.c
+          # 3. [FIX SDIO] Adaugam eticheta 'out:' doar unde e nevoie (linia ~1086)
+          # Folosim numarul liniei pentru precizie maxima
+          sed -i '1085i out:' kernel/drivers/mmc/core/sdio.c
+
+          # 4. [FIX SDHCI] Restabilim semnatura functiei sdhci_cmd_irq pentru compatibilitate
+          sed -i 's/sdhci_cmd_irq(struct sdhci_host \*host, u32 intmask)/sdhci_cmd_irq(struct sdhci_host \*host, u32 intmask, u32 \*intmask_p)/g' kernel/drivers/mmc/host/sdhci.c
           
-          # 5. [FIX GPIO] Eliminăm referința la gpio_dump (Samsung custom)
+          # 5. [FIX SDHCI DMA] Definim variabilele lipsa pentru log-urile de eroare
+          sed -i '/unsigned long long)dma,/i \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ dma_addr_t dma = 0;' kernel/drivers/mmc/host/sdhci.c
+
+          # 6. [FIX GPIO] Eliminăm referința la gpio_dump
           sed -i '/if (chip->gpio_dump) {/,/}/d' kernel/drivers/gpio/gpiolib.c
           
-          # 6. [FIX DM-BOW] Rezolvam redefinirea SECTOR_SIZE
+          # 7. [FIX DM-BOW] Redefinire SECTOR_SIZE
           sed -i 's/#define SECTOR_SIZE 512/#ifndef SECTOR_SIZE\n#define SECTOR_SIZE 512\n#endif/' kernel/drivers/md/dm-bow.c
 
-          # 7. Kernel Spoofing la 5.4 pentru Android 15
+          # 8. Kernel Spoofing la 5.4
           cd kernel
           sed -i 's/VERSION = 4/VERSION = 5/g' Makefile
           sed -i 's/PATCHLEVEL = 14/PATCHLEVEL = 4/g' Makefile
 
-      - name: Build Kernel (The Hybrid Solution)
+      - name: Build Kernel
         run: |
           cd kernel
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
@@ -69,44 +73,27 @@ jobs:
           
           make $MAKE_ARGS r5q_eur_open_defconfig
           
-          # [FIX CONFIG] Activăm cerințele Android 15 și eliminăm conflictele Scheduler
           ./scripts/config --file out/.config \
-            -d CONFIG_SCHED_WALT \
-            -d CONFIG_SCHED_CORE_CTL \
-            -d CONFIG_MSM_CORE_CTL \
+            -d CONFIG_SCHED_WALT -d CONFIG_SCHED_CORE_CTL -d CONFIG_MSM_CORE_CTL \
             -e CONFIG_BPF -e CONFIG_BPF_SYSCALL -e CONFIG_BPF_JIT \
             -e CONFIG_PSI -e CONFIG_CGROUP_BPF -e CONFIG_NETFILTER_XT_MATCH_BPF \
             -d CONFIG_WERROR -e CONFIG_LTO_NONE -d CONFIG_LTO_CLANG
             
           make $MAKE_ARGS olddefconfig
-          
-          # Compilăm Image.gz și DTB-urile
           make -j$(nproc --all) $MAKE_ARGS Image.gz dtbs KCFLAGS="-Wno-error -fcommon -Wno-implicit-function-declaration -Wno-incompatible-pointer-types"
 
       - name: Assemble Final Package
         run: |
           cd kernel
-          # Căutăm DTB-ul injectat pentru modelul EUR
           DTB_FILE=$(find out/arch/arm64/boot/dts/samsung -name "*r5q*eur*.dtb" | head -n 1)
-          if [ -z "$DTB_FILE" ]; then
-            DTB_FILE=$(find out/arch/arm64/boot/dts/samsung -name "sm8150-r5q*.dtb" | head -n 1)
-          fi
-          
-          # Combinăm Kernel-ul cu DTB-ul
           cat out/arch/arm64/boot/Image.gz "$DTB_FILE" > out/arch/arm64/boot/Image.gz-dtb
-          
-          # Setup AnyKernel3
           git clone https://github.com/osm0sis/AnyKernel3.git
           cp out/arch/arm64/boot/Image.gz-dtb AnyKernel3/Image.gz
-          
-          # Configurare ID dispozitiv
           sed -i 's/device.name1=maguro/device.name1=r5q/g' AnyKernel3/anykernel.sh
-          sed -i 's/device.name2=toroplus/device.name2=r5qxx/g' AnyKernel3/anykernel.sh
-          
-          cd AnyKernel3 && zip -r9 ../R5Q-A15-V4-FIXED.zip *
+          cd AnyKernel3 && zip -r9 ../R5Q-A15-V5-FINAL.zip *
 
-      - name: Upload Kernel
+      - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-R5Q-V4-Final
-          path: R5Q-A15-V4-FIXED.zip
+          name: Kernel-R5Q-V5-Final
+          path: R5Q-A15-V5-FINAL.zip
