@@ -1,4 +1,4 @@
-name: Build sh4dow6oy Kernel - R5Q (BPF & PSI Final Sync)
+name: Build sh4dow6oy Kernel - R5Q (Targeted A15 Hybrid)
 
 on:
   workflow_dispatch:
@@ -27,7 +27,7 @@ jobs:
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
 
-      - name: Surgical Sync (Fixed Pathspecs)
+      - name: Surgical eBPF & PSI Import
         run: |
           git config user.email "sh4dow6oy@build.com"
           git config user.name "sh4dow6oy"
@@ -35,34 +35,37 @@ jobs:
           git remote add lineage https://github.com/LineageOS/android_kernel_google_msm-4.14.git
           git fetch lineage lineage-20
           
-          # 1. Înlocuim codul executabil afectat
+          # Ștergem folderele vechi care vor fi înlocuite
           rm -rf net/ kernel/bpf/
+          
+          # 1. Importăm codul executabil complet (Networking & BPF)
           git checkout lineage/lineage-20 -- net/
           git checkout lineage/lineage-20 -- kernel/bpf/
           git checkout lineage/lineage-20 -- arch/arm64/net/
           git checkout lineage/lineage-20 -- fs/compat_ioctl.c
 
-          # 2. [FIX] Importăm doar fișierele de include care există sigur
-          # Am eliminat include/uapi/linux/psi* care dădea eroare
+          # 2. Importăm headerele (Fără calea problematică uapi/linux/psi)
           git checkout lineage/lineage-20 -- include/linux/bpf*
-          git checkout lineage/lineage-20 -- include/linux/psi*
+          git checkout lineage/lineage-20 -- include/linux/psi.h
+          git checkout lineage/lineage-20 -- include/linux/psi_types.h
           git checkout lineage/lineage-20 -- include/linux/filter.h
           git checkout lineage/lineage-20 -- include/net/
-          git checkout lineage/lineage-20 -- include/uapi/linux/bpf*
+          git checkout lineage/lineage-20 -- include/uapi/linux/bpf.h
+          git checkout lineage/lineage-20 -- include/uapi/linux/bpf_common.h
           git checkout lineage/lineage-20 -- include/uapi/linux/filter.h
           
-          # 3. Spoofing Versiune la 5.4 pentru Android 15
+          # 3. Spoofing Versiune la 5.4 pentru conformitate Android 15
           sed -i 's/VERSION = 4/VERSION = 5/g' Makefile
           sed -i 's/PATCHLEVEL = 14/PATCHLEVEL = 4/g' Makefile
 
-      - name: Build Kernel (SM8150)
+      - name: Build Kernel Core
         run: |
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
           
           make $MAKE_ARGS r5q_defconfig
           
-          # Activăm PSI și BPF (Esențial pentru managerul de resurse Android 15)
+          # Forțăm activarea PSI și eBPF Stack
           ./scripts/config --file out/.config \
             -e CONFIG_BPF -e CONFIG_BPF_SYSCALL -e CONFIG_BPF_JIT \
             -e CONFIG_BPF_JIT_ALWAYS_ON -e CONFIG_HAVE_EBPF_JIT \
@@ -73,7 +76,7 @@ jobs:
             
           make $MAKE_ARGS olddefconfig
           
-          # KCFLAGS relaxate pentru a ignora discrepanțele minore de transplant
+          # Compilare cu flag-uri relaxate pentru transplant
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-Wno-error -fcommon -Wno-implicit-function-declaration -Wno-incompatible-pointer-types"
           make $MAKE_ARGS dtbs
 
@@ -82,20 +85,12 @@ jobs:
           DTB_FILE=$(find out/arch/arm64/boot/dts -name "sm8150-r5q*.dtb" | head -n 1)
           [ -n "$DTB_FILE" ] && cat out/arch/arm64/boot/Image.gz "$DTB_FILE" > out/arch/arm64/boot/Image.gz-dtb
           
-          MKDTBOIMG=$(find . -name "mkdtboimg.py" | head -n 1)
-          DTBOS=$(find out/arch/arm64/boot/dts -name "*.dtbo")
-          [ -n "$DTBOS" ] && [ -n "$MKDTBOIMG" ] && python3 $MKDTBOIMG create out/dtbo.img $DTBOS
-          
           git clone https://github.com/osm0sis/AnyKernel3.git
           cp out/arch/arm64/boot/Image.gz-dtb AnyKernel3/Image.gz || cp out/arch/arm64/boot/Image.gz AnyKernel3/Image.gz
-          [ -f out/dtbo.img ] && cp out/dtbo.img AnyKernel3/dtbo.img
-          
-          sed -i 's/device.name1=maguro/device.name1=r5q/g' AnyKernel3/anykernel.sh
-          sed -i 's/do.devicecheck=1/do.devicecheck=0/g' AnyKernel3/anykernel.sh
-          cd AnyKernel3 && zip -r9 ../sh4dow6oy-R5Q-A15-HYBRID-V2.zip *
+          cd AnyKernel3 && zip -r9 ../sh4dow6oy-R5Q-A15-HYBRID-FINAL.zip *
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-A15-Hybrid-V2
-          path: sh4dow6oy-R5Q-A15-HYBRID-V2.zip
+          name: Kernel-A15-Hybrid-Final
+          path: sh4dow6oy-R5Q-A15-HYBRID-FINAL.zip
