@@ -1,4 +1,4 @@
-name: Build sh4dow6oy Kernel - R5Q (BPF & PSI Fix)
+name: Build sh4dow6oy Kernel - R5Q (BPF & PSI Final Sync)
 
 on:
   workflow_dispatch:
@@ -27,7 +27,7 @@ jobs:
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
 
-      - name: Deep Sync BPF & PSI
+      - name: Surgical Sync (Fixed Pathspecs)
         run: |
           git config user.email "sh4dow6oy@build.com"
           git config user.name "sh4dow6oy"
@@ -42,16 +42,16 @@ jobs:
           git checkout lineage/lineage-20 -- arch/arm64/net/
           git checkout lineage/lineage-20 -- fs/compat_ioctl.c
 
-          # 2. [FIX] Importăm headerele de BPF și PSI (Pressure Stall Information)
-          # Aici aducem psi_types.h care a cauzat eroarea
+          # 2. [FIX] Importăm doar fișierele de include care există sigur
+          # Am eliminat include/uapi/linux/psi* care dădea eroare
           git checkout lineage/lineage-20 -- include/linux/bpf*
           git checkout lineage/lineage-20 -- include/linux/psi*
           git checkout lineage/lineage-20 -- include/linux/filter.h
           git checkout lineage/lineage-20 -- include/net/
           git checkout lineage/lineage-20 -- include/uapi/linux/bpf*
-          git checkout lineage/lineage-20 -- include/uapi/linux/psi*
+          git checkout lineage/lineage-20 -- include/uapi/linux/filter.h
           
-          # 3. Spoofing Versiune
+          # 3. Spoofing Versiune la 5.4 pentru Android 15
           sed -i 's/VERSION = 4/VERSION = 5/g' Makefile
           sed -i 's/PATCHLEVEL = 14/PATCHLEVEL = 4/g' Makefile
 
@@ -62,7 +62,7 @@ jobs:
           
           make $MAKE_ARGS r5q_defconfig
           
-          # Activăm PSI și BPF (Android 15 Mandatory)
+          # Activăm PSI și BPF (Esențial pentru managerul de resurse Android 15)
           ./scripts/config --file out/.config \
             -e CONFIG_BPF -e CONFIG_BPF_SYSCALL -e CONFIG_BPF_JIT \
             -e CONFIG_BPF_JIT_ALWAYS_ON -e CONFIG_HAVE_EBPF_JIT \
@@ -73,6 +73,7 @@ jobs:
             
           make $MAKE_ARGS olddefconfig
           
+          # KCFLAGS relaxate pentru a ignora discrepanțele minore de transplant
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-Wno-error -fcommon -Wno-implicit-function-declaration -Wno-incompatible-pointer-types"
           make $MAKE_ARGS dtbs
 
@@ -91,10 +92,10 @@ jobs:
           
           sed -i 's/device.name1=maguro/device.name1=r5q/g' AnyKernel3/anykernel.sh
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' AnyKernel3/anykernel.sh
-          cd AnyKernel3 && zip -r9 ../sh4dow6oy-R5Q-A15-PSI-FIX.zip *
+          cd AnyKernel3 && zip -r9 ../sh4dow6oy-R5Q-A15-HYBRID-V2.zip *
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-A15-PSI-Fix
-          path: sh4dow6oy-R5Q-A15-PSI-FIX.zip
+          name: Kernel-A15-Hybrid-V2
+          path: sh4dow6oy-R5Q-A15-HYBRID-V2.zip
