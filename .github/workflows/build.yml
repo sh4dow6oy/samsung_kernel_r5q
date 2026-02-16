@@ -1,4 +1,4 @@
-name: Build sh4dow6oy Kernel - R5Q (PSI Structure Fix)
+name: Build sh4dow6oy Kernel - R5Q (ADSP & Net Fix)
 
 on:
   workflow_dispatch:
@@ -27,37 +27,33 @@ jobs:
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
 
-      - name: Deep PSI & Scheduler Sync
+      - name: Deep Sync & Driver Patching
         run: |
           git config user.email "sh4dow6oy@build.com"
           git config user.name "sh4dow6oy"
-          
           git remote add lineage https://github.com/LineageOS/android_kernel_google_msm-4.14.git
           git fetch lineage lineage-20
           
-          # 1. Curățare zone de conflict (Networking & BPF)
+          # 1. Înlocuim inima rețelei și BPF
           rm -rf net/ kernel/bpf/
-          
-          # 2. Import Cod Executabil
           git checkout lineage/lineage-20 -- net/
           git checkout lineage/lineage-20 -- kernel/bpf/
           git checkout lineage/lineage-20 -- arch/arm64/net/
           git checkout lineage/lineage-20 -- fs/compat_ioctl.c
           
-          # 3. [IMPORT NOU] Sincronizăm schedulerul și PSI pentru a repara "pending_event"
-          git checkout lineage/lineage-20 -- kernel/sched/psi.c
-          git checkout lineage/lineage-20 -- include/linux/psi.h
-          git checkout lineage/lineage-20 -- include/linux/psi_types.h
-          git checkout lineage/lineage-20 -- include/linux/sched/
-          
-          # 4. Import restul headerelor necesare pentru BPF
+          # 2. Sincronizăm headerele esențiale
           git checkout lineage/lineage-20 -- include/linux/bpf*
           git checkout lineage/lineage-20 -- include/linux/filter.h
+          git checkout lineage/lineage-20 -- include/linux/psi*
           git checkout lineage/lineage-20 -- include/net/
           git checkout lineage/lineage-20 -- include/uapi/linux/bpf*
           git checkout lineage/lineage-20 -- include/uapi/linux/filter.h
 
-          # 5. Spoofing Versiune 5.4
+          # 3. [FIX ADSP FACTORY] Adaptăm apelul la noua definiție a macro-ului Samsung
+          # Eliminăm primul argument '0' care nu mai este acceptat
+          sed -i 's/sec_device_create(0, data,/sec_device_create(data,/g' drivers/adsp_factory/adsp_factory.c
+          
+          # 4. Spoofing Versiune 5.4
           sed -i 's/VERSION = 4/VERSION = 5/g' Makefile
           sed -i 's/PATCHLEVEL = 14/PATCHLEVEL = 4/g' Makefile
 
@@ -71,27 +67,23 @@ jobs:
           ./scripts/config --file out/.config \
             -e CONFIG_BPF -e CONFIG_BPF_SYSCALL -e CONFIG_BPF_JIT \
             -e CONFIG_BPF_JIT_ALWAYS_ON -e CONFIG_HAVE_EBPF_JIT \
-            -e CONFIG_PSI -e CONFIG_PSI_FOP_SENSITIVE \
-            -e CONFIG_NETFILTER_XT_MATCH_BPF -e CONFIG_CGROUP_BPF \
+            -e CONFIG_PSI -e CONFIG_NETFILTER_XT_MATCH_BPF -e CONFIG_CGROUP_BPF \
             -d CONFIG_WERROR -d CONFIG_LTO -d CONFIG_LTO_CLANG -e CONFIG_LTO_NONE
             
           make $MAKE_ARGS olddefconfig
-          
-          # KCFLAGS pentru ignorarea conflictelor de tipuri rămase
-          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-Wno-error -fcommon -Wno-implicit-function-declaration -Wno-incompatible-pointer-types -Wno-typedef-redefinition"
+          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-Wno-error -fcommon -Wno-implicit-function-declaration -Wno-incompatible-pointer-types -Wno-typedef-redefinition -Wno-pointer-sign"
           make $MAKE_ARGS dtbs
 
       - name: Assemble
         run: |
           DTB_FILE=$(find out/arch/arm64/boot/dts -name "sm8150-r5q*.dtb" | head -n 1)
           [ -n "$DTB_FILE" ] && cat out/arch/arm64/boot/Image.gz "$DTB_FILE" > out/arch/arm64/boot/Image.gz-dtb
-          
           git clone https://github.com/osm0sis/AnyKernel3.git
           cp out/arch/arm64/boot/Image.gz-dtb AnyKernel3/Image.gz || cp out/arch/arm64/boot/Image.gz AnyKernel3/Image.gz
-          cd AnyKernel3 && zip -r9 ../sh4dow6oy-R5Q-A15-PSI-STRUCT-FIX.zip *
+          cd AnyKernel3 && zip -r9 ../sh4dow6oy-R5Q-A15-ADSP-FIXED.zip *
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-A15-PSI-Struct-Fix
-          path: sh4dow6oy-R5Q-A15-PSI-STRUCT-FIX.zip
+          name: Kernel-A15-ADSP-Fixed
+          path: sh4dow6oy-R5Q-A15-ADSP-FIXED.zip
