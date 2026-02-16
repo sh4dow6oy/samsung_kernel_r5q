@@ -1,4 +1,4 @@
-name: Build R5Q - LineageOS 23 Native Hybrid
+name: Build R5Q - LineageOS 23 Native Hybrid V2
 
 on:
   workflow_dispatch:
@@ -60,10 +60,12 @@ jobs:
           # Generăm configurația bazată pe R5Q EUR
           make $MAKE_ARGS r5q_eur_open_defconfig
           
-          # [FIX CRITIC] Dezactivăm WALT (Samsung) pentru a folosi Scheduler-ul Lineage
-          # Activăm eBPF, PSI și CGROUP pentru Android 15
+          # [FIX CRITIC V2] Eliminăm conflictele de Scheduler și Core Control
+          # Dezactivăm WALT și CORE_CTL pentru a lăsa Lineage să gestioneze CPU-ul
           ./scripts/config --file out/.config \
             -d CONFIG_SCHED_WALT \
+            -d CONFIG_SCHED_CORE_CTL \
+            -d CONFIG_MSM_CORE_CTL \
             -e CONFIG_BPF -e CONFIG_BPF_SYSCALL -e CONFIG_BPF_JIT \
             -e CONFIG_PSI -e CONFIG_CGROUP_BPF -e CONFIG_NETFILTER_XT_MATCH_BPF \
             -d CONFIG_WERROR -e CONFIG_LTO_NONE -d CONFIG_LTO_CLANG
@@ -71,33 +73,33 @@ jobs:
           make $MAKE_ARGS olddefconfig
           
           # Compilăm Image.gz și DTB-urile
-          # Ignorăm erorile minore de tip pointer cauzate de mix-ul de surse
+          # -fcommon și dezactivarea implicit-function-declaration ajută la mixul de headere
           make -j$(nproc --all) $MAKE_ARGS Image.gz dtbs KCFLAGS="-Wno-error -fcommon -Wno-implicit-function-declaration -Wno-incompatible-pointer-types"
 
       - name: Assemble Final Package
         run: |
           cd kernel
-          # Identificăm DTB-ul pentru modelul EUR
+          # Identificăm DTB-ul corect pentru EUR
           DTB_FILE=$(find out/arch/arm64/boot/dts/samsung -name "*r5q*eur*.dtb" | head -n 1)
           if [ -z "$DTB_FILE" ]; then
             DTB_FILE=$(find out/arch/arm64/boot/dts/samsung -name "sm8150-r5q*.dtb" | head -n 1)
           fi
           
-          # Creăm binarul combinat Image.gz-dtb
+          # Creăm Image.gz-dtb
           cat out/arch/arm64/boot/Image.gz "$DTB_FILE" > out/arch/arm64/boot/Image.gz-dtb
           
-          # Pregătim AnyKernel3 pentru flash
+          # Pregătim AnyKernel3
           git clone https://github.com/osm0sis/AnyKernel3.git
           cp out/arch/arm64/boot/Image.gz-dtb AnyKernel3/Image.gz
           
-          # Setăm numele corect al device-ului
+          # Ajustăm anykernel.sh pentru R5Q
           sed -i 's/device.name1=maguro/device.name1=r5q/g' AnyKernel3/anykernel.sh
           sed -i 's/device.name2=toroplus/device.name2=r5qxx/g' AnyKernel3/anykernel.sh
           
-          cd AnyKernel3 && zip -r9 ../R5Q-A15-NATIVE-HYBRID.zip *
+          cd AnyKernel3 && zip -r9 ../R5Q-A15-L23-HYBRID.zip *
 
       - name: Upload Kernel
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-R5Q-L23-Hybrid
-          path: R5Q-A15-NATIVE-HYBRID.zip
+          name: Kernel-R5Q-L23-Final
+          path: R5Q-A15-L23-HYBRID.zip
