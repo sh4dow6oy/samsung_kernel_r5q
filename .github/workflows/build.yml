@@ -1,4 +1,4 @@
-name: Build R5Q - LineageOS 23 Native Hybrid V7
+name: Build R5Q - LineageOS 23 Native Hybrid V8
 
 on:
   workflow_dispatch:
@@ -44,16 +44,14 @@ jobs:
           # 2. Config EUR Open
           cp samsung/arch/arm64/configs/r5q_eur_open_defconfig kernel/arch/arm64/configs/r5q_eur_open_defconfig
           
-          # 3. [FIX SDIO] Reparam eroarea 'out' doar la linia necesara
+          # 3. [FIX SDIO] Reparam eroarea 'out' la linia 1085
           sed -i '1085i out:' kernel/drivers/mmc/core/sdio.c
           
-          # 4. [FIX SDHCI] Redefinim macro-ul sa fie COMPLET GOL pentru a evita erorile de sintaxa ';'
-          # Aceasta este varianta cea mai sigura care ignora orice apel SDHCI_DUMP
-          sed -i 's/#define SDHCI_DUMP(f, x...)/#define SDHCI_DUMP(f, x...)/g' kernel/drivers/mmc/host/sdhci.c
-          # Fortam stergerea definitiei vechi si punem una goala
-          sed -i '/#define SDHCI_DUMP(f, x...)/c\#define SDHCI_DUMP(f, x...)' kernel/drivers/mmc/host/sdhci.c
+          # 4. [FIX SDHCI - NUCLEAR] Ștergem toate liniile care apelează SDHCI_DUMP
+          # Aceasta este singura cale sigură de a nu mai avea erori de variabile nedeclarate (dma, intmask_p)
+          sed -i '/SDHCI_DUMP/d' kernel/drivers/mmc/host/sdhci.c
           
-          # 5. [FIX SDHCI SIGNATURE] Compatibilitate argumente
+          # 5. [FIX SDHCI SIGNATURE] Compatibilitate argumente pentru driverele Samsung
           sed -i 's/sdhci_cmd_irq(struct sdhci_host \*host, u32 intmask)/sdhci_cmd_irq(struct sdhci_host \*host, u32 intmask, u32 \*intmask_p)/g' kernel/drivers/mmc/host/sdhci.c
 
           # 6. [FIX GPIO] Samsung dump removal
@@ -82,20 +80,25 @@ jobs:
             -d CONFIG_WERROR -e CONFIG_LTO_NONE -d CONFIG_LTO_CLANG
             
           make $MAKE_ARGS olddefconfig
-          make -j$(nproc --all) $MAKE_ARGS Image.gz dtbs KCFLAGS="-Wno-error -fcommon -Wno-implicit-function-declaration -Wno-incompatible-pointer-types"
+          # Adăugăm -w pentru a suprima toate avertizările și a preveni blocajele
+          make -j$(nproc --all) $MAKE_ARGS Image.gz dtbs KCFLAGS="-w -fcommon -Wno-implicit-function-declaration -Wno-incompatible-pointer-types"
 
       - name: Assemble Final Package
         run: |
           cd kernel
           DTB_FILE=$(find out/arch/arm64/boot/dts/samsung -name "*r5q*eur*.dtb" | head -n 1)
+          if [ -z "$DTB_FILE" ]; then
+            DTB_FILE=$(find out/arch/arm64/boot/dts/samsung -name "sm8150-r5q*.dtb" | head -n 1)
+          fi
+          
           cat out/arch/arm64/boot/Image.gz "$DTB_FILE" > out/arch/arm64/boot/Image.gz-dtb
           git clone https://github.com/osm0sis/AnyKernel3.git
           cp out/arch/arm64/boot/Image.gz-dtb AnyKernel3/Image.gz
           sed -i 's/device.name1=maguro/device.name1=r5q/g' AnyKernel3/anykernel.sh
-          cd AnyKernel3 && zip -r9 ../R5Q-A15-V7-FINAL.zip *
+          cd AnyKernel3 && zip -r9 ../R5Q-A15-V8-FINAL.zip *
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-R5Q-V7-Final
-          path: R5Q-A15-V7-FINAL.zip
+          name: Kernel-R5Q-V8-Final
+          path: R5Q-A15-V8-FINAL.zip
