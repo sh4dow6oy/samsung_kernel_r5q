@@ -1,4 +1,4 @@
-name: Build sh4dow6oy Kernel - R5Q (ADSP & Net Fix)
+name: Build sh4dow6oy Kernel - R5Q (NetOps & ADSP Fix)
 
 on:
   workflow_dispatch:
@@ -27,7 +27,7 @@ jobs:
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
 
-      - name: Deep Sync & Driver Patching
+      - name: Deep Sync & Multi-Driver Patching
         run: |
           git config user.email "sh4dow6oy@build.com"
           git config user.name "sh4dow6oy"
@@ -49,11 +49,14 @@ jobs:
           git checkout lineage/lineage-20 -- include/uapi/linux/bpf*
           git checkout lineage/lineage-20 -- include/uapi/linux/filter.h
 
-          # 3. [FIX ADSP FACTORY] Adaptăm apelul la noua definiție a macro-ului Samsung
-          # Eliminăm primul argument '0' care nu mai este acceptat
+          # 3. [FIX ADSP] Reparăm macro-ul Samsung (din eroarea trecută)
           sed -i 's/sec_device_create(0, data,/sec_device_create(data,/g' drivers/adsp_factory/adsp_factory.c
           
-          # 4. Spoofing Versiune 5.4
+          # 4. [FIX NET OPS] Adaptăm driverul Ethernet Samsung la noul Network Stack
+          # Redenumim ndo_do_ioctl în ndo_eth_ioctl pentru compatibilitate
+          find drivers/net -type f -name "*.c" -exec sed -i 's/ndo_do_ioctl/ndo_eth_ioctl/g' {} +
+
+          # 5. Spoofing Versiune 5.4
           sed -i 's/VERSION = 4/VERSION = 5/g' Makefile
           sed -i 's/PATCHLEVEL = 14/PATCHLEVEL = 4/g' Makefile
 
@@ -71,7 +74,7 @@ jobs:
             -d CONFIG_WERROR -d CONFIG_LTO -d CONFIG_LTO_CLANG -e CONFIG_LTO_NONE
             
           make $MAKE_ARGS olddefconfig
-          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-Wno-error -fcommon -Wno-implicit-function-declaration -Wno-incompatible-pointer-types -Wno-typedef-redefinition -Wno-pointer-sign"
+          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-Wno-error -fcommon -Wno-implicit-function-declaration -Wno-incompatible-pointer-types -Wno-typedef-redefinition -Wno-pointer-sign -Wno-enum-conversion"
           make $MAKE_ARGS dtbs
 
       - name: Assemble
@@ -80,10 +83,10 @@ jobs:
           [ -n "$DTB_FILE" ] && cat out/arch/arm64/boot/Image.gz "$DTB_FILE" > out/arch/arm64/boot/Image.gz-dtb
           git clone https://github.com/osm0sis/AnyKernel3.git
           cp out/arch/arm64/boot/Image.gz-dtb AnyKernel3/Image.gz || cp out/arch/arm64/boot/Image.gz AnyKernel3/Image.gz
-          cd AnyKernel3 && zip -r9 ../sh4dow6oy-R5Q-A15-ADSP-FIXED.zip *
+          cd AnyKernel3 && zip -r9 ../sh4dow6oy-R5Q-A15-NETOPS-FIXED.zip *
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-A15-ADSP-Fixed
-          path: sh4dow6oy-R5Q-A15-ADSP-FIXED.zip
+          name: Kernel-A15-NetOps-Fixed
+          path: sh4dow6oy-R5Q-A15-NETOPS-FIXED.zip
