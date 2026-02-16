@@ -1,4 +1,4 @@
-name: Build R5Q - LineageOS 23 Native Hybrid V8
+name: Build R5Q - LineageOS 23 Native Hybrid V9
 
 on:
   workflow_dispatch:
@@ -44,17 +44,20 @@ jobs:
           # 2. Config EUR Open
           cp samsung/arch/arm64/configs/r5q_eur_open_defconfig kernel/arch/arm64/configs/r5q_eur_open_defconfig
           
-          # 3. [FIX SDIO] Reparam eroarea 'out' la linia 1085
+          # 3. [FIX SDIO] Reparam label-ul 'out'
           sed -i '1085i out:' kernel/drivers/mmc/core/sdio.c
           
-          # 4. [FIX SDHCI - NUCLEAR] Ștergem toate liniile care apelează SDHCI_DUMP
-          # Aceasta este singura cale sigură de a nu mai avea erori de variabile nedeclarate (dma, intmask_p)
-          sed -i '/SDHCI_DUMP/d' kernel/drivers/mmc/host/sdhci.c
+          # 4. [FIX SDHCI - REPARAȚIE TOTALĂ] 
+          # Ștergem definiția veche a SDHCI_DUMP și o înlocuim cu una care ignoră totul
+          # Apoi ștergem liniile care cauzează erori de sintaxă (cele care folosesc macro-ul pe mai multe rânduri)
+          sed -i 's/#define SDHCI_DUMP.*/#define SDHCI_DUMP(f, x...) do {} while(0)/' kernel/drivers/mmc/host/sdhci.c
+          # Ștergem apelurile multi-line de SDHCI_DUMP care lasă paranteze orfane
+          sed -i '/SDHCI_DUMP(/,/);/d' kernel/drivers/mmc/host/sdhci.c
           
-          # 5. [FIX SDHCI SIGNATURE] Compatibilitate argumente pentru driverele Samsung
+          # 5. [FIX SDHCI SIGNATURE] Revenim la 3 argumente pentru sdhci_cmd_irq
           sed -i 's/sdhci_cmd_irq(struct sdhci_host \*host, u32 intmask)/sdhci_cmd_irq(struct sdhci_host \*host, u32 intmask, u32 \*intmask_p)/g' kernel/drivers/mmc/host/sdhci.c
 
-          # 6. [FIX GPIO] Samsung dump removal
+          # 6. [FIX GPIO]
           sed -i '/if (chip->gpio_dump) {/,/}/d' kernel/drivers/gpio/gpiolib.c
           
           # 7. [FIX DM-BOW]
@@ -80,7 +83,7 @@ jobs:
             -d CONFIG_WERROR -e CONFIG_LTO_NONE -d CONFIG_LTO_CLANG
             
           make $MAKE_ARGS olddefconfig
-          # Adăugăm -w pentru a suprima toate avertizările și a preveni blocajele
+          # KCFLAGS="-w" va ignora toate avertismentele de tip strlcpy sau dma_mask
           make -j$(nproc --all) $MAKE_ARGS Image.gz dtbs KCFLAGS="-w -fcommon -Wno-implicit-function-declaration -Wno-incompatible-pointer-types"
 
       - name: Assemble Final Package
@@ -95,10 +98,10 @@ jobs:
           git clone https://github.com/osm0sis/AnyKernel3.git
           cp out/arch/arm64/boot/Image.gz-dtb AnyKernel3/Image.gz
           sed -i 's/device.name1=maguro/device.name1=r5q/g' AnyKernel3/anykernel.sh
-          cd AnyKernel3 && zip -r9 ../R5Q-A15-V8-FINAL.zip *
+          cd AnyKernel3 && zip -r9 ../R5Q-A15-V9-FINAL.zip *
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-R5Q-V8-Final
-          path: R5Q-A15-V8-FINAL.zip
+          name: Kernel-R5Q-V9-Final
+          path: R5Q-A15-V9-FINAL.zip
