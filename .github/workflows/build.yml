@@ -1,4 +1,4 @@
-name: Build sh4dow6oy Kernel - R5Q (Full Net Stack Import)
+name: Build sh4dow6oy Kernel - R5Q (Full Net Stack & Header Fix)
 
 on:
   workflow_dispatch:
@@ -27,7 +27,7 @@ jobs:
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
 
-      - name: Transplant Full Networking & BPF
+      - name: Transplant Full Networking & Essential Headers
         run: |
           git config user.email "sh4dow6oy@build.com"
           git config user.name "sh4dow6oy"
@@ -35,27 +35,25 @@ jobs:
           git remote add lineage https://github.com/LineageOS/android_kernel_google_msm-4.14.git
           git fetch lineage lineage-20
           
-          # Ștergem folderele vechi pentru a evita conflicte de tip "redefinition"
-          rm -rf net/ kernel/bpf/ include/net/ include/uapi/linux/netfilter* include/linux/bpf*
+          # Ștergem folderele care vor fi înlocuite complet pentru a evita conflicte de redefinire
+          rm -rf net/ kernel/bpf/
           
-          # IMPORT COMPLET SUBSISTEM RETEA (Core, Netfilter, Sched, BPF)
+          # 1. Importăm codul executabil
           git checkout lineage/lineage-20 -- net/
           git checkout lineage/lineage-20 -- kernel/bpf/
-          git checkout lineage/lineage-20 -- include/net/
+          git checkout lineage/lineage-20 -- arch/arm64/net/
+          git checkout lineage/lineage-20 -- fs/compat_ioctl.c
+
+          # 2. Importăm headerele critice (Fără a șterge tot include-ul)
+          # Aici aducem bpf-cgroup.h care lipsea anterior
+          git checkout lineage/lineage-20 -- include/linux/bpf*
           git checkout lineage/lineage-20 -- include/linux/filter.h
-          git checkout lineage/lineage-20 -- include/linux/bpf.h
-          git checkout lineage/lineage-20 -- include/linux/bpf_types.h
-          git checkout lineage/lineage-20 -- include/uapi/linux/bpf.h
+          git checkout lineage/lineage-20 -- include/net/
+          git checkout lineage/lineage-20 -- include/uapi/linux/bpf*
           git checkout lineage/lineage-20 -- include/uapi/linux/filter.h
           git checkout lineage/lineage-20 -- include/uapi/linux/netfilter/
           
-          # Importăm și partea de arhitectură pentru JIT-ul de rețea
-          git checkout lineage/lineage-20 -- arch/arm64/net/
-          
-          # Importăm compatibilitatea IOCTL (esențială pentru syscall-uri de rețea pe 32-bit)
-          git checkout lineage/lineage-20 -- fs/compat_ioctl.c
-          
-          # SPOOFER: Raportăm Kernel 5.4 pentru Android 15
+          # 3. SPOOFER: Raportăm Kernel 5.4 pentru Android 15
           sed -i 's/VERSION = 4/VERSION = 5/g' Makefile
           sed -i 's/PATCHLEVEL = 14/PATCHLEVEL = 4/g' Makefile
 
@@ -66,7 +64,7 @@ jobs:
           
           make $MAKE_ARGS r5q_defconfig
           
-          # ACTIVARE OPTIUNI RETEA ANDROID 15
+          # ACTIVARE OPTIUNI RETEA ANDROID 15 + JIT
           ./scripts/config --file out/.config \
             -e CONFIG_BPF -e CONFIG_BPF_SYSCALL -e CONFIG_BPF_JIT \
             -e CONFIG_BPF_JIT_ALWAYS_ON -e CONFIG_HAVE_EBPF_JIT \
@@ -77,11 +75,11 @@ jobs:
             
           make $MAKE_ARGS olddefconfig
           
-          # Folosim KCFLAGS relaxate pentru a permite transplantului să se așeze peste driverele Samsung
-          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-Wno-error -fcommon -Wno-implicit-function-declaration -Wno-incompatible-pointer-types -Wno-sometimes-uninitialized"
+          # KCFLAGS relaxate pentru transplant
+          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-Wno-error -fcommon -Wno-implicit-function-declaration -Wno-incompatible-pointer-types"
           make $MAKE_ARGS dtbs
 
-      - name: Assemble
+      - name: Assemble Flashable Zip
         run: |
           DTB_FILE=$(find out/arch/arm64/boot/dts -name "sm8150-r5q*.dtb" | head -n 1)
           if [ -n "$DTB_FILE" ]; then
@@ -98,10 +96,10 @@ jobs:
           
           sed -i 's/device.name1=maguro/device.name1=r5q/g' AnyKernel3/anykernel.sh
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' AnyKernel3/anykernel.sh
-          cd AnyKernel3 && zip -r9 ../sh4dow6oy-R5Q-A15-NET-FULL.zip *
+          cd AnyKernel3 && zip -r9 ../sh4dow6oy-R5Q-A15-HYBRID.zip *
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-A15-NetFull
-          path: sh4dow6oy-R5Q-A15-NET-FULL.zip
+          name: Kernel-A15-Hybrid
+          path: sh4dow6oy-R5Q-A15-HYBRID.zip
