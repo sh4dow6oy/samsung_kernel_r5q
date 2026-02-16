@@ -1,4 +1,4 @@
-name: Build sh4dow6oy Kernel - R5Q (Deep Clean eBPF)
+name: Build sh4dow6oy Kernel - R5Q (PSI Structure Fix)
 
 on:
   workflow_dispatch:
@@ -27,7 +27,7 @@ jobs:
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
 
-      - name: Deep Surgical Sync
+      - name: Deep PSI & Scheduler Sync
         run: |
           git config user.email "sh4dow6oy@build.com"
           git config user.name "sh4dow6oy"
@@ -35,31 +35,33 @@ jobs:
           git remote add lineage https://github.com/LineageOS/android_kernel_google_msm-4.14.git
           git fetch lineage lineage-20
           
-          # 1. Ștergere agresivă pentru a evita "redefinition"
+          # 1. Curățare zone de conflict (Networking & BPF)
           rm -rf net/ kernel/bpf/
-          rm -f include/linux/filter.h include/linux/bpf.h include/linux/bpf_types.h
-          rm -f include/uapi/linux/filter.h include/uapi/linux/bpf.h include/uapi/linux/bpf_common.h
           
-          # 2. Import corect din LineageOS 20
+          # 2. Import Cod Executabil
           git checkout lineage/lineage-20 -- net/
           git checkout lineage/lineage-20 -- kernel/bpf/
           git checkout lineage/lineage-20 -- arch/arm64/net/
           git checkout lineage/lineage-20 -- fs/compat_ioctl.c
-          git checkout lineage/lineage-20 -- include/linux/filter.h
-          git checkout lineage/lineage-20 -- include/linux/bpf.h
-          git checkout lineage/lineage-20 -- include/linux/bpf_types.h
+          
+          # 3. [IMPORT NOU] Sincronizăm schedulerul și PSI pentru a repara "pending_event"
+          git checkout lineage/lineage-20 -- kernel/sched/psi.c
           git checkout lineage/lineage-20 -- include/linux/psi.h
           git checkout lineage/lineage-20 -- include/linux/psi_types.h
-          git checkout lineage/lineage-20 -- include/net/
-          git checkout lineage/lineage-20 -- include/uapi/linux/filter.h
-          git checkout lineage/lineage-20 -- include/uapi/linux/bpf.h
-          git checkout lineage/lineage-20 -- include/uapi/linux/bpf_common.h
+          git checkout lineage/lineage-20 -- include/linux/sched/
           
-          # 3. Spoofing Versiune 5.4
+          # 4. Import restul headerelor necesare pentru BPF
+          git checkout lineage/lineage-20 -- include/linux/bpf*
+          git checkout lineage/lineage-20 -- include/linux/filter.h
+          git checkout lineage/lineage-20 -- include/net/
+          git checkout lineage/lineage-20 -- include/uapi/linux/bpf*
+          git checkout lineage/lineage-20 -- include/uapi/linux/filter.h
+
+          # 5. Spoofing Versiune 5.4
           sed -i 's/VERSION = 4/VERSION = 5/g' Makefile
           sed -i 's/PATCHLEVEL = 14/PATCHLEVEL = 4/g' Makefile
 
-      - name: Build Kernel Core
+      - name: Build Kernel
         run: |
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
@@ -70,14 +72,13 @@ jobs:
             -e CONFIG_BPF -e CONFIG_BPF_SYSCALL -e CONFIG_BPF_JIT \
             -e CONFIG_BPF_JIT_ALWAYS_ON -e CONFIG_HAVE_EBPF_JIT \
             -e CONFIG_PSI -e CONFIG_PSI_FOP_SENSITIVE \
-            -e CONFIG_NETFILTER_XT_MATCH_BPF -e CONFIG_BPF_STREAM_PARSER \
-            -e CONFIG_CGROUP_BPF -e CONFIG_MEMBARRIER \
+            -e CONFIG_NETFILTER_XT_MATCH_BPF -e CONFIG_CGROUP_BPF \
             -d CONFIG_WERROR -d CONFIG_LTO -d CONFIG_LTO_CLANG -e CONFIG_LTO_NONE
             
           make $MAKE_ARGS olddefconfig
           
-          # Adăugăm flag-ul de ignorare a conflictelor de pointeri care apare des la transplantul Net
-          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-Wno-error -fcommon -Wno-implicit-function-declaration -Wno-incompatible-pointer-types -Wno-pointer-sign"
+          # KCFLAGS pentru ignorarea conflictelor de tipuri rămase
+          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-Wno-error -fcommon -Wno-implicit-function-declaration -Wno-incompatible-pointer-types -Wno-typedef-redefinition"
           make $MAKE_ARGS dtbs
 
       - name: Assemble
@@ -87,10 +88,10 @@ jobs:
           
           git clone https://github.com/osm0sis/AnyKernel3.git
           cp out/arch/arm64/boot/Image.gz-dtb AnyKernel3/Image.gz || cp out/arch/arm64/boot/Image.gz AnyKernel3/Image.gz
-          cd AnyKernel3 && zip -r9 ../sh4dow6oy-R5Q-A15-DEEP-CLEAN.zip *
+          cd AnyKernel3 && zip -r9 ../sh4dow6oy-R5Q-A15-PSI-STRUCT-FIX.zip *
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-A15-DeepClean
-          path: sh4dow6oy-R5Q-A15-DEEP-CLEAN.zip
+          name: Kernel-A15-PSI-Struct-Fix
+          path: sh4dow6oy-R5Q-A15-PSI-STRUCT-FIX.zip
