@@ -1,4 +1,4 @@
-name: Build R5Q - LineageOS 23 Native Hybrid V2
+name: Build R5Q - LineageOS 23 Native Hybrid V3
 
 on:
   workflow_dispatch:
@@ -34,19 +34,24 @@ jobs:
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
 
-      - name: Injected Hardware Setup
+      - name: Injected Hardware & DTS Cleanup
         run: |
           # 1. Injectăm Device Tree-ul Samsung R5Q
           mkdir -p kernel/arch/arm64/boot/dts/samsung
           cp -r samsung/arch/arm64/boot/dts/samsung/* kernel/arch/arm64/boot/dts/samsung/
           
-          # 2. Activăm folderul samsung în sistemul de build al Lineage
-          echo 'obj-y += samsung/' >> kernel/arch/arm64/boot/dts/Makefile
+          # 2. Rescriem Makefile-ul DTS pentru a compila DOAR folderul samsung
+          # Aceasta elimină eroarea "android_q_fstab not found" din folderul qcom/
+          echo 'obj-y += samsung/' > kernel/arch/arm64/boot/dts/Makefile
           
           # 3. Copiem DEFCONFIG-ul EUR OPEN specific S20 FE
           cp samsung/arch/arm64/configs/r5q_eur_open_defconfig kernel/arch/arm64/configs/r5q_eur_open_defconfig
           
-          # 4. Kernel Spoofing la 5.4 (pentru a trece de verificarea Netd din Android 15)
+          # 4. [FIX GPIO] Eliminăm referința la gpio_dump (specifică Samsung) care lipsește în Lineage
+          # Folosim sed pentru a șterge blocul condițional care cauzează eroarea
+          sed -i '/if (chip->gpio_dump) {/,/}/d' kernel/drivers/gpio/gpiolib.c
+          
+          # 5. Kernel Spoofing la 5.4 pentru Android 15
           cd kernel
           sed -i 's/VERSION = 4/VERSION = 5/g' Makefile
           sed -i 's/PATCHLEVEL = 14/PATCHLEVEL = 4/g' Makefile
@@ -57,11 +62,10 @@ jobs:
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
           
-          # Generăm configurația bazată pe R5Q EUR
+          # Generăm configurația
           make $MAKE_ARGS r5q_eur_open_defconfig
           
-          # [FIX CRITIC V2] Eliminăm conflictele de Scheduler și Core Control
-          # Dezactivăm WALT și CORE_CTL pentru a lăsa Lineage să gestioneze CPU-ul
+          # [FIX CONFIG] Activăm cerințele Android 15 și eliminăm conflictele
           ./scripts/config --file out/.config \
             -d CONFIG_SCHED_WALT \
             -d CONFIG_SCHED_CORE_CTL \
@@ -73,33 +77,32 @@ jobs:
           make $MAKE_ARGS olddefconfig
           
           # Compilăm Image.gz și DTB-urile
-          # -fcommon și dezactivarea implicit-function-declaration ajută la mixul de headere
           make -j$(nproc --all) $MAKE_ARGS Image.gz dtbs KCFLAGS="-Wno-error -fcommon -Wno-implicit-function-declaration -Wno-incompatible-pointer-types"
 
       - name: Assemble Final Package
         run: |
           cd kernel
-          # Identificăm DTB-ul corect pentru EUR
+          # Căutăm DTB-ul generat în folderul samsung injectat
           DTB_FILE=$(find out/arch/arm64/boot/dts/samsung -name "*r5q*eur*.dtb" | head -n 1)
           if [ -z "$DTB_FILE" ]; then
             DTB_FILE=$(find out/arch/arm64/boot/dts/samsung -name "sm8150-r5q*.dtb" | head -n 1)
           fi
           
-          # Creăm Image.gz-dtb
+          # Îmbinăm Kernel-ul cu DTB-ul
           cat out/arch/arm64/boot/Image.gz "$DTB_FILE" > out/arch/arm64/boot/Image.gz-dtb
           
-          # Pregătim AnyKernel3
+          # Setup AnyKernel3
           git clone https://github.com/osm0sis/AnyKernel3.git
           cp out/arch/arm64/boot/Image.gz-dtb AnyKernel3/Image.gz
           
-          # Ajustăm anykernel.sh pentru R5Q
+          # Configurare pentru R5Q
           sed -i 's/device.name1=maguro/device.name1=r5q/g' AnyKernel3/anykernel.sh
           sed -i 's/device.name2=toroplus/device.name2=r5qxx/g' AnyKernel3/anykernel.sh
           
-          cd AnyKernel3 && zip -r9 ../R5Q-A15-L23-HYBRID.zip *
+          cd AnyKernel3 && zip -r9 ../R5Q-A15-V3-HYBRID.zip *
 
       - name: Upload Kernel
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-R5Q-L23-Final
-          path: R5Q-A15-L23-HYBRID.zip
+          name: Kernel-R5Q-V3-Final
+          path: R5Q-A15-V3-HYBRID.zip
