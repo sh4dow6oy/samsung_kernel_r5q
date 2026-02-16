@@ -1,4 +1,4 @@
-name: Build sh4dow6oy Kernel - R5Q (JIT & A15 Spoofer)
+name: Build sh4dow6oy Kernel - R5Q (Full Net Stack Import)
 
 on:
   workflow_dispatch:
@@ -27,7 +27,7 @@ jobs:
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
 
-      - name: Full eBPF Stack & Version Spoofer
+      - name: Transplant Full Networking & BPF
         run: |
           git config user.email "sh4dow6oy@build.com"
           git config user.name "sh4dow6oy"
@@ -35,49 +35,53 @@ jobs:
           git remote add lineage https://github.com/LineageOS/android_kernel_google_msm-4.14.git
           git fetch lineage lineage-20
           
-          # 1. Sincronizare totală BPF & JIT (Esențial pentru /proc/sys/net/core/bpf_jit_enable)
+          # Ștergem folderele vechi pentru a evita conflicte de tip "redefinition"
+          rm -rf net/ kernel/bpf/ include/net/ include/uapi/linux/netfilter* include/linux/bpf*
+          
+          # IMPORT COMPLET SUBSISTEM RETEA (Core, Netfilter, Sched, BPF)
+          git checkout lineage/lineage-20 -- net/
           git checkout lineage/lineage-20 -- kernel/bpf/
-          git checkout lineage/lineage-20 -- net/core/filter.c
-          git checkout lineage/lineage-20 -- net/core/sock.c
-          git checkout lineage/lineage-20 -- arch/arm64/net/
+          git checkout lineage/lineage-20 -- include/net/
           git checkout lineage/lineage-20 -- include/linux/filter.h
+          git checkout lineage/lineage-20 -- include/linux/bpf.h
+          git checkout lineage/lineage-20 -- include/linux/bpf_types.h
+          git checkout lineage/lineage-20 -- include/uapi/linux/bpf.h
+          git checkout lineage/lineage-20 -- include/uapi/linux/filter.h
+          git checkout lineage/lineage-20 -- include/uapi/linux/netfilter/
+          
+          # Importăm și partea de arhitectură pentru JIT-ul de rețea
+          git checkout lineage/lineage-20 -- arch/arm64/net/
+          
+          # Importăm compatibilitatea IOCTL (esențială pentru syscall-uri de rețea pe 32-bit)
           git checkout lineage/lineage-20 -- fs/compat_ioctl.c
           
-          # 2. [VERSION SPOOFER] Păcălim Android 15 că avem Kernel 5.4
-          # Acest lucru deblochează funcții în serviciile Google care altfel ar fi dezactivate pe 4.14
+          # SPOOFER: Raportăm Kernel 5.4 pentru Android 15
           sed -i 's/VERSION = 4/VERSION = 5/g' Makefile
           sed -i 's/PATCHLEVEL = 14/PATCHLEVEL = 4/g' Makefile
-          
-          # 3. Fix pentru conflicte SCSI legacy
-          sed -i 's/case SCSI_IOCTL_GET_IDLUN:/case 0x5382:/g' drivers/scsi/scsi_ioctl.c || true
 
-      - name: Build Kernel (SM8150 / R5Q)
+      - name: Build Kernel (SM8150)
         run: |
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
           
           make $MAKE_ARGS r5q_defconfig
           
-          # FORȚĂM ACTIVAREA JIT ȘI A OPTIUNILOR CARE LIPSEAU
+          # ACTIVARE OPTIUNI RETEA ANDROID 15
           ./scripts/config --file out/.config \
-            -e CONFIG_BPF \
-            -e CONFIG_BPF_SYSCALL \
-            -e CONFIG_BPF_JIT \
-            -e CONFIG_BPF_JIT_ALWAYS_ON \
-            -e CONFIG_HAVE_EBPF_JIT \
-            -e CONFIG_NETFILTER_XT_MATCH_BPF \
-            -e CONFIG_BPF_STREAM_PARSER \
-            -e CONFIG_CGROUP_BPF \
-            -e CONFIG_PSI \
-            -e CONFIG_MEMBARRIER \
-            -d CONFIG_WERROR \
-            -d CONFIG_LTO -d CONFIG_LTO_CLANG -e CONFIG_LTO_NONE
+            -e CONFIG_BPF -e CONFIG_BPF_SYSCALL -e CONFIG_BPF_JIT \
+            -e CONFIG_BPF_JIT_ALWAYS_ON -e CONFIG_HAVE_EBPF_JIT \
+            -e CONFIG_NETFILTER -e CONFIG_NETFILTER_ADVANCED \
+            -e CONFIG_NETFILTER_XT_MATCH_BPF -e CONFIG_BPF_STREAM_PARSER \
+            -e CONFIG_CGROUP_BPF -e CONFIG_PSI -e CONFIG_MEMBARRIER \
+            -d CONFIG_WERROR -d CONFIG_LTO -d CONFIG_LTO_CLANG -e CONFIG_LTO_NONE
             
           make $MAKE_ARGS olddefconfig
-          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-Wno-error -fcommon -Wno-implicit-function-declaration"
+          
+          # Folosim KCFLAGS relaxate pentru a permite transplantului să se așeze peste driverele Samsung
+          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-Wno-error -fcommon -Wno-implicit-function-declaration -Wno-incompatible-pointer-types -Wno-sometimes-uninitialized"
           make $MAKE_ARGS dtbs
 
-      - name: Assemble Flashable Zip
+      - name: Assemble
         run: |
           DTB_FILE=$(find out/arch/arm64/boot/dts -name "sm8150-r5q*.dtb" | head -n 1)
           if [ -n "$DTB_FILE" ]; then
@@ -94,10 +98,10 @@ jobs:
           
           sed -i 's/device.name1=maguro/device.name1=r5q/g' AnyKernel3/anykernel.sh
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' AnyKernel3/anykernel.sh
-          cd AnyKernel3 && zip -r9 ../Kernel-A15-R5Q-JIT-SPOOFED.zip *
+          cd AnyKernel3 && zip -r9 ../sh4dow6oy-R5Q-A15-NET-FULL.zip *
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-A15-JIT-Spoofed
-          path: Kernel-A15-R5Q-JIT-SPOOFED.zip
+          name: Kernel-A15-NetFull
+          path: sh4dow6oy-R5Q-A15-NET-FULL.zip
