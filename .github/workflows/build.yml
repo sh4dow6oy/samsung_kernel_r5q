@@ -1,4 +1,4 @@
-name: Build sh4dow6oy Kernel - R5Q (NetOps & ADSP Fix)
+name: Build R5Q - Native LineageOS 21 (EUR Open)
 
 on:
   workflow_dispatch:
@@ -7,12 +7,19 @@ jobs:
   build:
     runs-on: ubuntu-24.04
     steps:
-      - name: Checkout Your Samsung Source
+      - name: Checkout LineageOS 21 Kernel (Base)
         uses: actions/checkout@v4
         with:
-          repository: sh4dow6oy/kernel_samsung_r5q
-          ref: master
-          fetch-depth: 0
+          repository: LineageOS/android_kernel_google_msm-4.14
+          ref: lineage-21
+          path: kernel
+
+      - name: Checkout Mainey R5Q Source (For Hardware Drivers)
+        uses: actions/checkout@v4
+        with:
+          repository: mainey/android_kernel_samsung_r5q
+          ref: lineage-19.0
+          path: samsung
 
       - name: Install Build Tools
         run: |
@@ -27,66 +34,63 @@ jobs:
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
 
-      - name: Deep Sync & Multi-Driver Patching
+      - name: Inject Samsung R5Q EUR Hardware
         run: |
-          git config user.email "sh4dow6oy@build.com"
-          git config user.name "sh4dow6oy"
-          git remote add lineage https://github.com/LineageOS/android_kernel_google_msm-4.14.git
-          git fetch lineage lineage-20
+          # 1. Copiem Device Tree-ul Samsung (Esențial pentru hardware-ul r5q)
+          mkdir -p kernel/arch/arm64/boot/dts/samsung
+          cp -r samsung/arch/arm64/boot/dts/samsung/* kernel/arch/arm64/boot/dts/samsung/
           
-          # 1. Înlocuim inima rețelei și BPF
-          rm -rf net/ kernel/bpf/
-          git checkout lineage/lineage-20 -- net/
-          git checkout lineage/lineage-20 -- kernel/bpf/
-          git checkout lineage/lineage-20 -- arch/arm64/net/
-          git checkout lineage/lineage-20 -- fs/compat_ioctl.c
+          # 2. Copiem driverele proprietare Samsung (Senzori, Baterie, Soc)
+          rsync -a --ignore-existing samsung/drivers/soc/samsung/ kernel/drivers/soc/samsung/
+          rsync -a --ignore-existing samsung/drivers/sensors/ kernel/drivers/sensors/
+          rsync -a --ignore-existing samsung/drivers/battery_v2/ kernel/drivers/battery_v2/
           
-          # 2. Sincronizăm headerele esențiale
-          git checkout lineage/lineage-20 -- include/linux/bpf*
-          git checkout lineage/lineage-20 -- include/linux/filter.h
-          git checkout lineage/lineage-20 -- include/linux/psi*
-          git checkout lineage/lineage-20 -- include/net/
-          git checkout lineage/lineage-20 -- include/uapi/linux/bpf*
-          git checkout lineage/lineage-20 -- include/uapi/linux/filter.h
-
-          # 3. [FIX ADSP] Reparăm macro-ul Samsung (din eroarea trecută)
-          sed -i 's/sec_device_create(0, data,/sec_device_create(data,/g' drivers/adsp_factory/adsp_factory.c
+          # 3. Copiem config-ul EUR Open specific
+          cp samsung/arch/arm64/configs/r5q_eur_open_defconfig kernel/arch/arm64/configs/r5q_eur_open_defconfig
           
-          # 4. [FIX NET OPS] Adaptăm driverul Ethernet Samsung la noul Network Stack
-          # Redenumim ndo_do_ioctl în ndo_eth_ioctl pentru compatibilitate
-          find drivers/net -type f -name "*.c" -exec sed -i 's/ndo_do_ioctl/ndo_eth_ioctl/g' {} +
-
-          # 5. Spoofing Versiune 5.4
+          # 4. Ajustăm Makefile-ul pentru a "păcăli" Android 15 (Kernel 5.4 Spoof)
+          cd kernel
           sed -i 's/VERSION = 4/VERSION = 5/g' Makefile
           sed -i 's/PATCHLEVEL = 14/PATCHLEVEL = 4/g' Makefile
 
       - name: Build Kernel
         run: |
+          cd kernel
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
           
-          make $MAKE_ARGS r5q_defconfig
+          # Folosim config-ul EUR OPEN
+          make $MAKE_ARGS r5q_eur_open_defconfig
           
+          # Forțăm activarea eBPF și PSI pentru Android 15
           ./scripts/config --file out/.config \
             -e CONFIG_BPF -e CONFIG_BPF_SYSCALL -e CONFIG_BPF_JIT \
-            -e CONFIG_BPF_JIT_ALWAYS_ON -e CONFIG_HAVE_EBPF_JIT \
             -e CONFIG_PSI -e CONFIG_NETFILTER_XT_MATCH_BPF -e CONFIG_CGROUP_BPF \
-            -d CONFIG_WERROR -d CONFIG_LTO -d CONFIG_LTO_CLANG -e CONFIG_LTO_NONE
+            -d CONFIG_WERROR
             
           make $MAKE_ARGS olddefconfig
-          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-Wno-error -fcommon -Wno-implicit-function-declaration -Wno-incompatible-pointer-types -Wno-typedef-redefinition -Wno-pointer-sign -Wno-enum-conversion"
+          
+          # Compilăm cu flag-uri de toleranță pentru mix-ul de surse
+          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-Wno-error -fcommon -Wno-implicit-function-declaration"
           make $MAKE_ARGS dtbs
 
-      - name: Assemble
+      - name: Package
         run: |
-          DTB_FILE=$(find out/arch/arm64/boot/dts -name "sm8150-r5q*.dtb" | head -n 1)
-          [ -n "$DTB_FILE" ] && cat out/arch/arm64/boot/Image.gz "$DTB_FILE" > out/arch/arm64/boot/Image.gz-dtb
+          cd kernel
+          # Căutăm DTB-ul generat pentru EUR model
+          DTB_FILE=$(find out/arch/arm64/boot/dts/samsung -name "*r5q*eur*.dtb" | head -n 1)
+          [ -z "$DTB_FILE" ] && DTB_FILE=$(find out/arch/arm64/boot/dts/samsung -name "sm8150-r5q*.dtb" | head -n 1)
+          
+          cat out/arch/arm64/boot/Image.gz "$DTB_FILE" > out/arch/arm64/boot/Image.gz-dtb
+          
           git clone https://github.com/osm0sis/AnyKernel3.git
-          cp out/arch/arm64/boot/Image.gz-dtb AnyKernel3/Image.gz || cp out/arch/arm64/boot/Image.gz AnyKernel3/Image.gz
-          cd AnyKernel3 && zip -r9 ../sh4dow6oy-R5Q-A15-NETOPS-FIXED.zip *
+          cp out/arch/arm64/boot/Image.gz-dtb AnyKernel3/Image.gz
+          
+          sed -i 's/device.name1=maguro/device.name1=r5q/g' AnyKernel3/anykernel.sh
+          cd AnyKernel3 && zip -r9 ../R5Q-A15-EUR-LINEAGE-BASE.zip *
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-A15-NetOps-Fixed
-          path: sh4dow6oy-R5Q-A15-NETOPS-FIXED.zip
+          name: Kernel-R5Q-EUR-Native
+          path: R5Q-A15-EUR-LINEAGE-BASE.zip
