@@ -1,4 +1,4 @@
-name: Build R5Q - Native LineageOS 21 (EUR Open)
+name: Build R5Q - LineageOS 23 Base + DTS Injection
 
 on:
   workflow_dispatch:
@@ -7,14 +7,14 @@ jobs:
   build:
     runs-on: ubuntu-24.04
     steps:
-      - name: Checkout LineageOS 21 Kernel (Base)
+      - name: Checkout LineageOS Kernel (Base for A15)
         uses: actions/checkout@v4
         with:
           repository: LineageOS/android_kernel_google_msm-4.14
-          ref: lineage-21
+          ref: lineage-21 # Lineage 21 este baza pt Android 15 pe kernel 4.14
           path: kernel
 
-      - name: Checkout Mainey R5Q Source (For Hardware Drivers)
+      - name: Checkout Mainey R5Q (Hardware Source)
         uses: actions/checkout@v4
         with:
           repository: mainey/android_kernel_samsung_r5q
@@ -34,63 +34,57 @@ jobs:
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
 
-      - name: Inject Samsung R5Q EUR Hardware
+      - name: The Hardware Injection
         run: |
-          # 1. Copiem Device Tree-ul Samsung (Esențial pentru hardware-ul r5q)
+          # 1. Injectăm folderul de Device Tree Samsung
           mkdir -p kernel/arch/arm64/boot/dts/samsung
           cp -r samsung/arch/arm64/boot/dts/samsung/* kernel/arch/arm64/boot/dts/samsung/
           
-          # 2. Copiem driverele proprietare Samsung (Senzori, Baterie, Soc)
-          rsync -a --ignore-existing samsung/drivers/soc/samsung/ kernel/drivers/soc/samsung/
-          rsync -a --ignore-existing samsung/drivers/sensors/ kernel/drivers/sensors/
-          rsync -a --ignore-existing samsung/drivers/battery_v2/ kernel/drivers/battery_v2/
+          # 2. Injectăm fișierele de legătură (Kconfig/Makefile) pentru DTS
+          # Fără asta, compilatorul nu va "vedea" folderul samsung/
+          echo 'obj-y += samsung/' >> kernel/arch/arm64/boot/dts/Makefile
           
-          # 3. Copiem config-ul EUR Open specific
+          # 3. Copiem DEFCONFIG-ul EUR OPEN
           cp samsung/arch/arm64/configs/r5q_eur_open_defconfig kernel/arch/arm64/configs/r5q_eur_open_defconfig
           
-          # 4. Ajustăm Makefile-ul pentru a "păcăli" Android 15 (Kernel 5.4 Spoof)
+          # 4. Kernel Spoofing la 5.4 pentru Android 15
           cd kernel
           sed -i 's/VERSION = 4/VERSION = 5/g' Makefile
           sed -i 's/PATCHLEVEL = 14/PATCHLEVEL = 4/g' Makefile
 
-      - name: Build Kernel
+      - name: Build Kernel & DTB
         run: |
           cd kernel
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
           
-          # Folosim config-ul EUR OPEN
           make $MAKE_ARGS r5q_eur_open_defconfig
           
-          # Forțăm activarea eBPF și PSI pentru Android 15
+          # Activăm eBPF, PSI și CGROUP (esențiale pentru Lineage 23/Android 15)
           ./scripts/config --file out/.config \
             -e CONFIG_BPF -e CONFIG_BPF_SYSCALL -e CONFIG_BPF_JIT \
-            -e CONFIG_PSI -e CONFIG_NETFILTER_XT_MATCH_BPF -e CONFIG_CGROUP_BPF \
+            -e CONFIG_PSI -e CONFIG_CGROUP_BPF -e CONFIG_NETFILTER_XT_MATCH_BPF \
             -d CONFIG_WERROR
             
           make $MAKE_ARGS olddefconfig
           
-          # Compilăm cu flag-uri de toleranță pentru mix-ul de surse
-          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-Wno-error -fcommon -Wno-implicit-function-declaration"
-          make $MAKE_ARGS dtbs
+          # Compilăm DOAR Image.gz și DTB-urile (pentru a evita erorile din drivere Samsung lipsă)
+          make -j$(nproc --all) $MAKE_ARGS Image.gz dtbs KCFLAGS="-Wno-error"
 
-      - name: Package
+      - name: Package for R5Q
         run: |
           cd kernel
-          # Căutăm DTB-ul generat pentru EUR model
+          # Căutăm DTB-ul injectat
           DTB_FILE=$(find out/arch/arm64/boot/dts/samsung -name "*r5q*eur*.dtb" | head -n 1)
-          [ -z "$DTB_FILE" ] && DTB_FILE=$(find out/arch/arm64/boot/dts/samsung -name "sm8150-r5q*.dtb" | head -n 1)
-          
           cat out/arch/arm64/boot/Image.gz "$DTB_FILE" > out/arch/arm64/boot/Image.gz-dtb
           
           git clone https://github.com/osm0sis/AnyKernel3.git
           cp out/arch/arm64/boot/Image.gz-dtb AnyKernel3/Image.gz
-          
           sed -i 's/device.name1=maguro/device.name1=r5q/g' AnyKernel3/anykernel.sh
-          cd AnyKernel3 && zip -r9 ../R5Q-A15-EUR-LINEAGE-BASE.zip *
+          cd AnyKernel3 && zip -r9 ../R5Q-A15-L23-INJECTED.zip *
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-R5Q-EUR-Native
-          path: R5Q-A15-EUR-LINEAGE-BASE.zip
+          name: Kernel-R5Q-L23-Injected
+          path: R5Q-A15-L23-INJECTED.zip
