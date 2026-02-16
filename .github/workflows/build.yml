@@ -1,4 +1,4 @@
-name: Build R5Q - LineageOS 23 Native Hybrid V10
+name: Build R5Q - LineageOS 23 Native Hybrid V11
 
 on:
   workflow_dispatch:
@@ -44,20 +44,28 @@ jobs:
           # 2. Config EUR Open
           cp samsung/arch/arm64/configs/r5q_eur_open_defconfig kernel/arch/arm64/configs/r5q_eur_open_defconfig
           
-          # 3. [STRATEGIA NUCLEARĂ] Înlocuim driverul SDHCI Google cu cel Samsung
-          # Acest lucru rezolvă TOATE erorile de tip 'undeclared identifier' dintr-o singură mișcare
+          # 3. [FILE REPLACEMENT] Înlocuim driverele core MMC cu versiunile Samsung
           cp samsung/drivers/mmc/host/sdhci.c kernel/drivers/mmc/host/sdhci.c
           cp samsung/drivers/mmc/host/sdhci.h kernel/drivers/mmc/host/sdhci.h
           cp samsung/drivers/mmc/host/sdhci-pltfm.c kernel/drivers/mmc/host/sdhci-pltfm.c
           cp samsung/drivers/mmc/core/sdio.c kernel/drivers/mmc/core/sdio.c
+          
+          # 4. [FIX SDHCI-MSM CRYPTO] Eliminăm referințele ICE care blochează build-ul
+          # Comentăm liniile care folosesc is_crypto_en și structurile de crypto ops
+          sed -i '/is_crypto_en/d' kernel/drivers/mmc/host/sdhci-msm.c
+          sed -i '/crypto_engine_cfg/d' kernel/drivers/mmc/host/sdhci-msm.c
+          sed -i '/crypto_engine_cmdq_cfg/d' kernel/drivers/mmc/host/sdhci-msm.c
+          sed -i '/crypto_engine_cfg_end/d' kernel/drivers/mmc/host/sdhci-msm.c
+          sed -i '/crypto_cfg_reset/d' kernel/drivers/mmc/host/sdhci-msm.c
+          sed -i '/crypto_engine_reset/d' kernel/drivers/mmc/host/sdhci-msm.c
 
-          # 4. [FIX GPIO] Samsung dump removal
+          # 5. [FIX GPIO]
           sed -i '/if (chip->gpio_dump) {/,/}/d' kernel/drivers/gpio/gpiolib.c
           
-          # 5. [FIX DM-BOW]
+          # 6. [FIX DM-BOW]
           sed -i 's/#define SECTOR_SIZE 512/#ifndef SECTOR_SIZE\n#define SECTOR_SIZE 512\n#endif/' kernel/drivers/md/dm-bow.c
 
-          # 6. Kernel Spoofing la 5.4 pentru Android 15
+          # 7. Kernel Spoofing la 5.4
           cd kernel
           sed -i 's/VERSION = 4/VERSION = 5/g' Makefile
           sed -i 's/PATCHLEVEL = 14/PATCHLEVEL = 4/g' Makefile
@@ -74,10 +82,10 @@ jobs:
             -d CONFIG_SCHED_WALT -d CONFIG_SCHED_CORE_CTL -d CONFIG_MSM_CORE_CTL \
             -e CONFIG_BPF -e CONFIG_BPF_SYSCALL -e CONFIG_BPF_JIT \
             -e CONFIG_PSI -e CONFIG_CGROUP_BPF -e CONFIG_NETFILTER_XT_MATCH_BPF \
-            -d CONFIG_WERROR -e CONFIG_LTO_NONE -d CONFIG_LTO_CLANG
+            -d CONFIG_WERROR -e CONFIG_LTO_NONE -d CONFIG_LTO_CLANG \
+            -d CONFIG_MMC_SDHCI_MSM_ICE # Dezactivăm Inline Crypto Engine la nivel de config
             
           make $MAKE_ARGS olddefconfig
-          # Folosim -w pentru a trece peste orice avertisment de compatibilitate între fișierele Samsung și header-ele Google
           make -j$(nproc --all) $MAKE_ARGS Image.gz dtbs KCFLAGS="-w -fcommon -Wno-implicit-function-declaration -Wno-incompatible-pointer-types"
 
       - name: Assemble Final Package
@@ -92,10 +100,10 @@ jobs:
           git clone https://github.com/osm0sis/AnyKernel3.git
           cp out/arch/arm64/boot/Image.gz-dtb AnyKernel3/Image.gz
           sed -i 's/device.name1=maguro/device.name1=r5q/g' AnyKernel3/anykernel.sh
-          cd AnyKernel3 && zip -r9 ../R5Q-A15-V10-FINAL.zip *
+          cd AnyKernel3 && zip -r9 ../R5Q-A15-V11-FINAL.zip *
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-R5Q-V10-Final
-          path: R5Q-A15-V10-FINAL.zip
+          name: Kernel-R5Q-V11-Final
+          path: R5Q-A15-V11-FINAL.zip
