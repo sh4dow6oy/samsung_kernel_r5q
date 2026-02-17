@@ -1,4 +1,4 @@
-name: Build R5Q - BPF Sixteen Backport V47
+name: Build R5Q - BPF Lineage 23 Backport (v7)
 
 on:
   workflow_dispatch:
@@ -14,29 +14,38 @@ jobs:
           ref: master
           path: kernel
 
-      - name: Download BPF Backport (pascua28)
+      - name: Download BPF Backport (Lineage 23)
         run: |
-          git clone --depth 1 -b sixteen https://github.com/pascua28/android_kernel_samsung_sm7150 backport
+          # Clonăm branch-ul specific de Android 15
+          git clone --depth 1 -b bpf-lineage23 https://github.com/pascua28/android_kernel_samsung_sm7150 backport
           
-          # Injectare BPF modern v6
+          # 1. Injectare Cod Sursă (v7)
           rm -rf kernel/kernel/bpf kernel/net/core/filter.c
           cp -r backport/kernel/bpf kernel/kernel/
           cp backport/net/core/filter.c kernel/net/core/filter.c
-          # Copiem headerele în calea corectă (fără prefixul 'kernel/' dacă suntem deja acolo)
+          
+          # 2. Injectare Headere - Esențial pentru eliminarea erorilor anterioare
           cp -r backport/include/linux/bpf* kernel/include/linux/
+          cp -r backport/include/linux/btf* kernel/include/linux/
+          cp -r backport/include/uapi/linux/bpf* kernel/include/uapi/linux/
+          cp -r backport/include/uapi/linux/btf* kernel/include/uapi/linux/
 
-      - name: Fix Dependencies & Paths
+      - name: Fix Compatibility & Dependencies
         run: |
           cd kernel
-          # Eliminăm referințele KernelSU care lipsesc
+          # Definim __poll_t global pentru a evita eroarea "requires a specifier"
+          # Aceasta este diferența între un kernel 4.14 și 5.x
+          sed -i '1s/^/#include <linux\/types.h>\n#ifndef __poll_t\ntypedef unsigned int __poll_t;\n#endif\n/' include/linux/bpf.h
+          
+          # Reparăm referința la bpf_types.h care adesea lipsește în backport-uri
+          # (Acest fișier este generat de obicei, dar îl "dummy-uim" dacă e nevoie)
+          [ ! -f include/linux/bpf_types.h ] && touch include/linux/bpf_types.h
+          
+          # Eliminăm KSU (KernelSU) din config-ul Roynas
           sed -i '/kernelsu\/Kconfig/d' drivers/android/Kconfig
           sed -i '/kernelsu/d' drivers/android/Makefile
-          
-          # Fix pentru calea greșită din eroarea anterioară
-          mkdir -p include/linux
-          touch include/linux/bpf_types.h
 
-      - name: Install Build Tools
+      - name: Install Build Essentials
         run: |
           sudo apt-get update
           sudo apt-get install -y gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu bc libssl-dev python3 bison flex
@@ -47,47 +56,36 @@ jobs:
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
 
-      - name: Build Kernel
+      - name: Build Kernel (r5q)
         run: |
           cd kernel
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
-          
           MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- CLANG_TRIPLE=aarch64-linux-gnu- O=out"
           
-          # Generăm config folosind r5q_defconfig (S10 Lite)
-          # Dacă Roynas nu are r5q_defconfig, încearcă r3q_eur_open_defconfig
-          make $MAKE_ARGS r5q_defconfig || make $MAKE_ARGS r3q_eur_open_defconfig
+          make $MAKE_ARGS r5q_defconfig
           
-          # ACTIVARE BPF MODERN (Android 15)
           ./scripts/config --file out/.config \
             -e CONFIG_BPF -e CONFIG_BPF_SYSCALL -e CONFIG_BPF_JIT -e CONFIG_BPF_JIT_ALWAYS_ON \
             -e CONFIG_HAVE_EBPF_JIT -e CONFIG_NET_CLS_BPF -e CONFIG_NET_ACT_BPF \
-            -e CONFIG_BPF_EVENTS -e CONFIG_CGROUP_BPF \
-            -d CONFIG_SAMSUNG_RTIC -d CONFIG_SAMSUNG_RTIC_AMP \
-            -d CONFIG_CC_STACKPROTECTOR_STRONG -e CONFIG_CC_STACKPROTECTOR_NONE \
-            -d CONFIG_WERROR
+            -e CONFIG_BPF_EVENTS -e CONFIG_CGROUP_BPF -e CONFIG_BTF \
+            -d CONFIG_SAMSUNG_RTIC -d CONFIG_CC_STACKPROTECTOR_STRONG \
+            -e CONFIG_CC_STACKPROTECTOR_NONE -d CONFIG_WERROR
             
           make $MAKE_ARGS olddefconfig
           
-          # Compilăm cu -fcommon pentru a evita erorile de simboluri duplicate din backport
-          make -j$(nproc --all) $MAKE_ARGS Image.gz dtbs KCFLAGS="-w -fcommon"
+          # Compilăm. Adăugăm -D__poll_t ca flag de compilare de siguranță
+          make -j$(nproc --all) $MAKE_ARGS Image.gz dtbs KCFLAGS="-w -fcommon -D__poll_t=unsigned"
 
-      - name: Assemble AnyKernel3
+      - name: Assemble Zip
         run: |
           OUT="kernel/out/arch/arm64/boot"
-          IMAGE="$OUT/Image.gz"
           DTB=$(find $OUT/dts -name "*r5q*.dtb" -type f | head -n 1)
-          
           git clone https://github.com/osm0sis/AnyKernel3.git AK3
-          [ -f "$DTB" ] && cat "$IMAGE" "$DTB" > AK3/Image.gz || cp "$IMAGE" AK3/Image.gz
-          
-          cd AK3
-          sed -i 's/device.name1=maguro/device.name1=r5q/g' anykernel.sh
-          sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-          zip -r9 ../R5Q_BPF_Sixteen_V47.zip *
+          [ -f "$DTB" ] && cat "$OUT/Image.gz" "$DTB" > AK3/Image.gz || cp "$OUT/Image.gz" AK3/Image.gz
+          cd AK3 && zip -r9 ../S10Lite_Android15_BPF_V50.zip *
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-R5Q-V47
-          path: R5Q_BPF_Sixteen_V47.zip
+          name: Kernel-R5Q-Android15
+          path: S10Lite_Android15_BPF_V50.zip
