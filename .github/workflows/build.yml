@@ -1,4 +1,4 @@
-name: Build R5Q - Lumi BPF V26 (KPTI-OFF)
+name: Build R5Q - Lumi BPF V27 (Fixed DTBO)
 
 on:
   workflow_dispatch:
@@ -30,7 +30,6 @@ jobs:
       - name: Patch & Prepare
         run: |
           cd kernel
-          # Fix DM-BOW
           sed -i 's/#define SECTOR_SIZE 512/#ifndef SECTOR_SIZE\n#define SECTOR_SIZE 512\n#endif/' drivers/md/dm-bow.c
 
       - name: Build Kernel
@@ -41,29 +40,33 @@ jobs:
           
           make $MAKE_ARGS r5q_eur_open_defconfig
           
-          # Configurări BPF + Dezactivare KPTI
+          # Config BPF + KPTI OFF
           ./scripts/config --file out/.config \
             -d CONFIG_UNMAP_KERNEL_AT_EL0 \
-            -e CONFIG_BPF \
-            -e CONFIG_BPF_SYSCALL \
-            -e CONFIG_BPF_JIT \
-            -e CONFIG_BPF_JIT_ALWAYS_ON \
-            -e CONFIG_HAVE_EBPF_JIT \
-            -e CONFIG_NETFILTER_XT_MATCH_BPF \
-            -d CONFIG_WERROR \
-            -e CONFIG_LTO_NONE
+            -e CONFIG_BPF -e CONFIG_BPF_SYSCALL -e CONFIG_BPF_JIT -e CONFIG_BPF_JIT_ALWAYS_ON \
+            -e CONFIG_HAVE_EBPF_JIT -e CONFIG_NETFILTER_XT_MATCH_BPF \
+            -d CONFIG_WERROR -e CONFIG_LTO_NONE
             
           make $MAKE_ARGS olddefconfig
           
-          # Compilare Image.gz, DTBs și DTBO
-          make -j$(nproc --all) $MAKE_ARGS Image.gz dtbs dtbo.img KCFLAGS="-w -fcommon"
+          # Compilăm Image.gz și DTBs (fără a cere dtbo.img direct)
+          make -j$(nproc --all) $MAKE_ARGS Image.gz dtbs KCFLAGS="-w -fcommon"
+          
+          # Generăm manual DTBO.img folosind scriptul intern
+          # Căutăm toate fișierele .dtbo generate
+          find out/arch/arm64/boot/dts/samsung -name "*.dtbo" > dtbo_list.txt || true
+          if [ -s dtbo_list.txt ]; then
+            python3 scripts/mkdtboimg.py create out/arch/arm64/boot/dtbo.img $(cat dtbo_list.txt)
+          else
+            echo "Nu am găsit fișiere .dtbo, încercăm build standard pentru dtbs"
+          fi
 
       - name: Assemble AnyKernel3
         run: |
           OUT="kernel/out/arch/arm64/boot"
           IMAGE="$OUT/Image.gz"
           DTB=$(find $OUT/dts -name "*r5q*.dtb" -type f | head -n 1)
-          DTBO=$(find $OUT -name "dtbo.img" -type f | head -n 1)
+          DTBO="$OUT/dtbo.img"
 
           if [ ! -f "$IMAGE" ]; then
             echo "EROARE: Image.gz nu a fost generat!"
@@ -72,13 +75,14 @@ jobs:
 
           git clone https://github.com/osm0sis/AnyKernel3.git AK3
           
-          # Samsung Style: Image.gz + DTB
+          # Samsung legacy boot: Image.gz-dtb
           if [ -n "$DTB" ]; then
             cat "$IMAGE" "$DTB" > AK3/Image.gz
           else
             cp "$IMAGE" AK3/Image.gz
           fi
           
+          # Copiem DTBO dacă am reușit să-l generăm
           [ -f "$DTBO" ] && cp "$DTBO" AK3/dtbo.img
 
           cd AK3
@@ -86,10 +90,10 @@ jobs:
           sed -i 's/device.name2=toroplus/device.name2=SM-G770F/g' anykernel.sh
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
           
-          zip -r9 ../S10Lite_Lumi_BPF_V26_KPTI_OFF.zip *
+          zip -r9 ../S10Lite_Lumi_BPF_V27.zip *
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-Lumi-V26
-          path: S10Lite_Lumi_BPF_V26_KPTI_OFF.zip
+          name: S10Lite-Lumi-V27
+          path: S10Lite_Lumi_BPF_V27.zip
