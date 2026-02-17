@@ -1,4 +1,4 @@
-name: Build R5Q - Lumi BPF V36 (Assembler Fix)
+name: Build R5Q - Lumi BPF V37 (GNU Assembler Bridge)
 
 on:
   workflow_dispatch:
@@ -14,6 +14,11 @@ jobs:
           ref: rawr-bpf
           path: kernel
 
+      - name: Install GNU Cross-Binutils
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu gcc-arm-linux-gnueabi
+
       - name: Setup Toolchain (Neutron Clang)
         run: |
           mkdir -p clang
@@ -23,45 +28,34 @@ jobs:
       - name: Build Kernel
         run: |
           cd kernel
-          export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
+          export PATH="$GITHUB_WORKSPACE/clang/bin:/usr/bin:$PATH"
           
-          # Argumente de build complete pentru a evita asamblorul sistemului
+          # Folosim Clang pentru CC, dar GNU pentru restul (metoda hibridă)
           MAKE_ARGS="ARCH=arm64 \
-            LLVM=1 \
-            LLVM_IAS=1 \
             CC=clang \
-            LD=ld.lld \
-            AR=llvm-ar \
-            NM=llvm-nm \
-            OBJCOPY=llvm-objcopy \
-            OBJDUMP=llvm-objdump \
-            STRIP=llvm-strip \
-            OBJSIZE=llvm-size \
-            READELF=llvm-readelf \
-            HOSTCC=clang \
-            HOSTCXX=clang++ \
-            HOSTLD=ld.lld \
             CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            HOSTCC=gcc \
+            HOSTCXX=g++ \
             O=out"
           
           make $MAKE_ARGS r5q_eur_open_defconfig
           
-          # FIX BPF & DISABLE STACK PROTECTOR (pentru a trece de erorile de compilator vechi)
+          # ACTIVARE BPF & REPARARE STACK PROTECTOR
           ./scripts/config --file out/.config \
             -d CONFIG_CC_STACKPROTECTOR_STRONG \
             -e CONFIG_CC_STACKPROTECTOR_NONE \
             -e CONFIG_BPF -e CONFIG_BPF_SYSCALL -e CONFIG_BPF_JIT -e CONFIG_BPF_JIT_ALWAYS_ON \
             -e CONFIG_HAVE_EBPF_JIT -e CONFIG_NET_CLS_BPF -e CONFIG_NET_ACT_BPF \
             -d CONFIG_UNMAP_KERNEL_AT_EL0 -d CONFIG_WERROR -e CONFIG_LTO_NONE
-            
-          # Forțăm scrierea manuală a BPF JIT
+          
           echo "CONFIG_BPF_JIT=y" >> out/.config
           echo "CONFIG_BPF_JIT_ALWAYS_ON=y" >> out/.config
           
           make $MAKE_ARGS olddefconfig
           
-          # Compilare efectivă cu ignorarea avertismentelor de asamblor defect
+          # Compilăm. KCFLAGS ajută la evitarea conflictelor de securitate
           make -j$(nproc --all) $MAKE_ARGS Image.gz dtbs KCFLAGS="-w -fcommon -fno-stack-protector"
 
       - name: Assemble AnyKernel3
@@ -78,10 +72,10 @@ jobs:
           cd AK3
           sed -i 's/device.name1=maguro/device.name1=r5q/g' anykernel.sh
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-          zip -r9 ../S10Lite_V36_BPF_Ready.zip *
+          zip -r9 ../S10Lite_V37_BPF_Final.zip *
 
-      - name: Upload Artifact
+      - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-V36
-          path: S10Lite_V36_BPF_Ready.zip
+          name: S10Lite-V37
+          path: S10Lite_V37_BPF_Final.zip
