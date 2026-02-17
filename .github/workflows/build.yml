@@ -1,4 +1,4 @@
-name: Build R5Q - LineageOS 23 Native Hybrid V16-FINAL
+name: Build R5Q - S10 Lite A15 Final
 
 on:
   workflow_dispatch:
@@ -14,7 +14,7 @@ jobs:
           ref: lineage-21
           path: kernel
 
-      - name: Checkout Mainey R5Q
+      - name: Checkout Mainey R5Q (S10 Lite)
         uses: actions/checkout@v4
         with:
           repository: mainey/android_kernel_samsung_r5q
@@ -36,21 +36,21 @@ jobs:
 
       - name: Injected Hardware & Source Patches
         run: |
-          # 1. Injectăm Device Tree
+          # Injectăm Device Tree Samsung
           mkdir -p kernel/arch/arm64/boot/dts/samsung
           cp -r samsung/arch/arm64/boot/dts/samsung/* kernel/arch/arm64/boot/dts/samsung/
           echo 'obj-y += samsung/' > kernel/arch/arm64/boot/dts/Makefile
           
-          # 2. Config S20 FE
+          # Config S10 Lite
           cp samsung/arch/arm64/configs/r5q_eur_open_defconfig kernel/arch/arm64/configs/r5q_eur_open_defconfig
           
-          # 3. [MMC SWAP]
+          # Drivere MMC Samsung
           cp samsung/drivers/mmc/host/sdhci.c kernel/drivers/mmc/host/sdhci.c
           cp samsung/drivers/mmc/host/sdhci.h kernel/drivers/mmc/host/sdhci.h
           cp samsung/drivers/mmc/host/sdhci-pltfm.c kernel/drivers/mmc/host/sdhci-pltfm.c
           cp samsung/drivers/mmc/core/sdio.c kernel/drivers/mmc/core/sdio.c
           
-          # 4. [SDHCI MOCKING]
+          # Mocking SDHCI
           sed -i '/struct sdhci_host {/a \	bool is_crypto_en;' kernel/drivers/mmc/host/sdhci.h
           sed -i '/struct sdhci_ops {/a \	int (*crypto_engine_cfg)(struct sdhci_host *host, const void *key, unsigned int slot, unsigned int data_unit, bool is_hw_algo, bool is_write); \
           int (*crypto_engine_cmdq_cfg)(struct sdhci_host *host, const void *key, unsigned int slot, unsigned int data_unit, bool is_hw_algo, bool is_write); \
@@ -58,11 +58,11 @@ jobs:
           int (*crypto_cfg_reset)(struct sdhci_host *host, unsigned int slot); \
           int (*crypto_engine_reset)(struct sdhci_host *host);' kernel/drivers/mmc/host/sdhci.h
 
-          # 5. [GPIO FIX]
+          # GPIO Stub
           sed -i '/if (chip->gpio_dump) {/,/}/d' kernel/drivers/gpio/gpiolib.c
           echo 'struct seq_file; int msm_gpio_dump(struct seq_file *s) { return 0; }' >> kernel/drivers/gpio/gpiolib.c
 
-          # 6. [LINKER FIXES] PSCI, Timere Wi-Fi și Baterie
+          # Linker fixes
           echo "void arm64_update_smccc_conduit(unsigned int conduit) {}" >> kernel/arch/arm64/kernel/psci.c
           find kernel/drivers/staging/ -name "*.h" -o -name "*.c" | xargs sed -i 's/timer_setup_on_stack/timer_setup/g' || true
           
@@ -70,14 +70,13 @@ jobs:
           echo "int gbms_storage_register(void *data) { return 0; }" > kernel/drivers/power/supply/google/sm8150_bms.c
           echo "int gbms_gen_chg_flags(void *data) { return 0; }" >> kernel/drivers/power/supply/google/sm8150_bms.c
 
-          # 7. [SCHEDULER WALT FIX] Dezactivăm compilarea walt.c pentru a evita redefinirile
-          # Baza Google are deja suportul necesar în sched/core.c
+          # Scheduler Fix (Dezactivare WALT Qualcomm pentru a folosi Google PELT/WALT)
           sed -i 's/obj-y += walt.o/# obj-y += walt.o/' kernel/kernel/sched/Makefile
 
-          # 8. [DM-BOW FIX]
+          # DM-BOW Fix
           sed -i 's/#define SECTOR_SIZE 512/#ifndef SECTOR_SIZE\n#define SECTOR_SIZE 512\n#endif/' kernel/drivers/md/dm-bow.c
 
-          # 9. Kernel Spoofing
+          # Spoofing Kernel 5.4 pentru Android 15
           cd kernel
           sed -i 's/VERSION = 4/VERSION = 5/g' Makefile
           sed -i 's/PATCHLEVEL = 14/PATCHLEVEL = 4/g' Makefile
@@ -90,7 +89,6 @@ jobs:
           
           make $MAKE_ARGS r5q_eur_open_defconfig
           
-          # Dezactivăm SCHED_WALT din config pentru a folosi implementarea standard Google
           ./scripts/config --file out/.config \
             -d CONFIG_SCHED_WALT -d CONFIG_SCHED_CORE_CTL \
             -e CONFIG_BPF -e CONFIG_BPF_SYSCALL -e CONFIG_BPF_JIT -e CONFIG_BPF_JIT_ALWAYS_ON \
@@ -101,29 +99,33 @@ jobs:
           make $MAKE_ARGS olddefconfig
           make -j$(nproc --all) $MAKE_ARGS Image.gz dtbs KCFLAGS="-w -fcommon -Wno-implicit-function-declaration -Wno-incompatible-pointer-types"
 
-          - name: Assemble Final ZIP
-                  run: |
-                    cd kernel
-                    # Căutăm orice fișier .dtb care conține r5q în tot folderul out/arch/arm64/boot/dts
-                    DTB_FILE=$(find out/arch/arm64/boot/dts -name "*r5q*.dtb" | head -n 1)
-                    
-                    # Verificăm dacă l-am găsit, altfel luăm primul sm8150 disponibil
-                    if [ -z "$DTB_FILE" ]; then
-                      DTB_FILE=$(find out/arch/arm64/boot/dts -name "sm8150*.dtb" | head -n 1)
-                    fi
-                    
-                    echo "Folosim DTB: $DTB_FILE"
-                    
-                    # Combinăm Imaginea cu Device Tree-ul (Image.gz-dtb este cerut de bootloader-ul Samsung)
-                    cat out/arch/arm64/boot/Image.gz "$DTB_FILE" > out/arch/arm64/boot/Image.gz-dtb
-                    
-                    # Pregătim AnyKernel3
-                    git clone https://github.com/osm0sis/AnyKernel3.git
-                    cp out/arch/arm64/boot/Image.gz-dtb AnyKernel3/Image.gz
-                    
-                    # Configurăm AnyKernel pentru R5Q
-                    sed -i 's/device.name1=maguro/device.name1=r5q/g' AnyKernel3/anykernel.sh
-                    sed -i 's/device.name2=toroplus/device.name2=r5qq/g' AnyKernel3/anykernel.sh
-                    sed -i 's/do.devicecheck=1/do.devicecheck=0/g' AnyKernel3/anykernel.sh
-                    
-                    cd AnyKernel3 && zip -r9 ../R5Q-A15-V17-FINAL.zip *
+      - name: Assemble AnyKernel3
+        run: |
+          cd kernel
+          # Căutare DTB pentru r5q (S10 Lite)
+          DTB_PATH=$(find out/arch/arm64/boot/dts -name "*r5q*.dtb" | head -n 1)
+          if [ -z "$DTB_PATH" ]; then
+             DTB_PATH=$(find out/arch/arm64/boot/dts -name "sm8150-samsung*.dtb" | head -n 1)
+          fi
+          echo "DTB gasit: $DTB_PATH"
+          
+          # Creare Image.gz-dtb
+          cat out/arch/arm64/boot/Image.gz "$DTB_PATH" > Image.gz-dtb
+          
+          # Setup AnyKernel3
+          git clone https://github.com/osm0sis/AnyKernel3.git
+          cp Image.gz-dtb AnyKernel3/Image.gz
+          
+          # Config AnyKernel
+          sed -i 's/device.name1=maguro/device.name1=r5q/g' AnyKernel3/anykernel.sh
+          sed -i 's/device.name2=toroplus/device.name2=SM-G770F/g' AnyKernel3/anykernel.sh
+          sed -i 's/do.devicecheck=1/do.devicecheck=0/g' AnyKernel3/anykernel.sh
+          
+          cd AnyKernel3
+          zip -r9 ../S10Lite_A15_V18.zip *
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: S10Lite-Kernel-Final
+          path: S10Lite_A15_V18.zip
