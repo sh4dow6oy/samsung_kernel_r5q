@@ -1,4 +1,4 @@
-name: Build R5Q - BPF Lineage 23 (Final Fix)
+name: Build R5Q - BPF Lineage 23 V52 (Assembly Fix)
 
 on:
   workflow_dispatch:
@@ -23,27 +23,31 @@ jobs:
           cp -r backport/kernel/bpf kernel/kernel/
           cp backport/net/core/filter.c kernel/net/core/filter.c
           
-          # Injectare Headere (Folosim -f pentru a suprascrie tot)
+          # Injectare Headere agresivă
           cp -f backport/include/linux/bpf* kernel/include/linux/
           cp -f backport/include/linux/btf* kernel/include/linux/
           mkdir -p kernel/include/uapi/linux
           cp -f backport/include/uapi/linux/bpf* kernel/include/uapi/linux/
           cp -f backport/include/uapi/linux/btf* kernel/include/uapi/linux/
 
-      - name: Fix Header Conflicts (Manual Patching)
+      - name: Fix Compatibility (Assembly Guarded)
         run: |
           cd kernel
-          # Rezolvăm eroarea cu 'enum bpf_link_type' prin includerea uapi direct
+          # Forțăm includerea UAPI în header-ul de BPF
           sed -i '1s/^/#include <uapi\/linux\/bpf.h>\n/' include/linux/bpf.h
           
-          # Definim tipurile lipsă pentru kernel 4.14
-          echo -e "#ifndef __poll_t\ntypedef unsigned int __poll_t;\n#endif" >> include/linux/types.h
+          # FIX CRITIC: Adăugăm __poll_t DOAR pentru codul C, protejând asamblorul
+          # Folosim __ASSEMBLY__ ca gardă
+          echo -e "\n#ifndef __ASSEMBLY__\n#ifndef __poll_t\ntypedef unsigned int __poll_t;\n#endif\n#endif" >> include/linux/types.h
           
-          # Eliminăm KSU și referințele Samsung care blochează build-ul
+          # Eliminăm KSU
           sed -i '/kernelsu\/Kconfig/d' drivers/android/Kconfig
           sed -i '/kernelsu/d' drivers/android/Makefile
+          
+          # Header dummy pentru bpf_types
+          [ ! -f include/linux/bpf_types.h ] && echo "/* dummy */" > include/linux/bpf_types.h
 
-      - name: Install Tools
+      - name: Install Tools & Setup Clang
         run: |
           sudo apt-get update
           sudo apt-get install -y gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu bc libssl-dev python3 bison flex
@@ -59,7 +63,6 @@ jobs:
           
           make $MAKE_ARGS r5q_defconfig
           
-          # Activăm BPF și dezactivăm Samsung Security (RTIC)
           ./scripts/config --file out/.config \
             -e CONFIG_BPF -e CONFIG_BPF_SYSCALL -e CONFIG_BPF_JIT -e CONFIG_BPF_JIT_ALWAYS_ON \
             -e CONFIG_HAVE_EBPF_JIT -e CONFIG_NET_CLS_BPF -e CONFIG_NET_ACT_BPF \
@@ -69,7 +72,7 @@ jobs:
             
           make $MAKE_ARGS olddefconfig
           
-          # Compilăm cu extra flag-uri pentru a ignora warning-urile de redefinire
+          # Compilăm cu -fcommon. Am scos -D__poll_t din KCFLAGS pentru că îl gestionăm acum în types.h
           make -j$(nproc --all) $MAKE_ARGS Image.gz dtbs KCFLAGS="-w -fcommon"
 
       - name: Assemble
@@ -78,10 +81,10 @@ jobs:
           DTB=$(find $OUT/dts -name "*r5q*.dtb" -type f | head -n 1)
           git clone https://github.com/osm0sis/AnyKernel3.git AK3
           [ -f "$DTB" ] && cat "$OUT/Image.gz" "$DTB" > AK3/Image.gz || cp "$OUT/Image.gz" AK3/Image.gz
-          cd AK3 && zip -r9 ../R5Q_A15_BPF_V51.zip *
+          cd AK3 && zip -r9 ../R5Q_A15_BPF_V52.zip *
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-V51
-          path: R5Q_A15_BPF_V51.zip
+          name: Kernel-V52
+          path: R5Q_A15_BPF_V52.zip
