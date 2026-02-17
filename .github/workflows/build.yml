@@ -1,4 +1,4 @@
-name: Build R5Q - Lumi BPF V40 (RTIC & JIT Fix)
+name: Build R5Q - Lumi BPF V41 (JIT & Linker Fix)
 
 on:
   workflow_dispatch:
@@ -14,26 +14,24 @@ jobs:
           ref: rawr-bpf
           path: kernel
 
-      - name: Install Toolchain & Deps
+      - name: Install Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu bc
+          sudo apt-get install -y gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu bc libssl-dev
+
+      - name: Setup Toolchain (Neutron Clang)
+        run: |
           mkdir -p clang
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
 
-      - name: Fix Assembler Path
-        run: |
-          mkdir -p $GITHUB_WORKSPACE/bin-fix
-          ln -s /usr/bin/aarch64-linux-gnu-as $GITHUB_WORKSPACE/bin-fix/as
-          echo "$GITHUB_WORKSPACE/bin-fix" >> $GITHUB_PATH
-
       - name: Build Kernel
         run: |
           cd kernel
-          export PATH="$GITHUB_WORKSPACE/clang/bin:$GITHUB_WORKSPACE/bin-fix:$PATH"
+          # Curățăm PATH-ul: Neutron Clang primul, apoi restul sistemului neatins
+          export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           
-          # Folosim LLVM linker (ld.lld) pentru a evita erorile de relocare ale bfd
+          # Folosim LLVM complet pentru target, dar lăsăm HOSTCC implicit pentru utilitarele de build
           MAKE_ARGS="ARCH=arm64 \
             LLVM=1 \
             LLVM_IAS=1 \
@@ -41,25 +39,26 @@ jobs:
             LD=ld.lld \
             CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
             O=out"
           
           make $MAKE_ARGS r5q_eur_open_defconfig
           
-          # DEZACTIVARE RTIC & ACTIVARE BPF JIT
+          # FORȚARE BPF JIT & ELIMINARE RTIC (pentru a evita eroarea de SELinux)
           ./scripts/config --file out/.config \
-            -d CONFIG_SAMSUNG_RTIC \
-            -d CONFIG_SAMSUNG_RTIC_AMP \
             -e CONFIG_BPF -e CONFIG_BPF_SYSCALL -e CONFIG_BPF_JIT -e CONFIG_BPF_JIT_ALWAYS_ON \
             -e CONFIG_HAVE_EBPF_JIT -e CONFIG_NET_ACT_BPF -e CONFIG_NET_CLS_BPF \
+            -d CONFIG_SAMSUNG_RTIC -d CONFIG_SAMSUNG_RTIC_AMP \
             -d CONFIG_CC_STACKPROTECTOR_STRONG -e CONFIG_CC_STACKPROTECTOR_NONE \
-            -d CONFIG_UNMAP_KERNEL_AT_EL0 -d CONFIG_WERROR
+            -d CONFIG_WERROR
             
           make $MAKE_ARGS olddefconfig
           
-          # Compilăm cu flag-uri pentru a repara relocările SELinux
-          # -mcmodel=large ajută la erorile de tip "relocation truncated"
-          make -j$(nproc --all) $MAKE_ARGS Image.gz dtbs \
-            KCFLAGS="-w -fcommon -fno-stack-protector -mcmodel=large"
+          # Verificăm dacă JIT a rămas activ
+          grep "CONFIG_BPF_JIT" out/.config
+          
+          # Compilăm. mcmodel=large repară eroarea de "relocation truncated" din SELinux
+          make -j$(nproc --all) $MAKE_ARGS Image.gz dtbs KCFLAGS="-w -fcommon -mcmodel=large"
 
       - name: Assemble AnyKernel3
         run: |
@@ -71,10 +70,10 @@ jobs:
           cd AK3
           sed -i 's/device.name1=maguro/device.name1=r5q/g' anykernel.sh
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-          zip -r9 ../S10Lite_V40_JIT_NoRTIC.zip *
+          zip -r9 ../S10Lite_V41_Final_JIT.zip *
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-V40
-          path: S10Lite_V40_JIT_NoRTIC.zip
+          name: S10Lite-V41
+          path: S10Lite_V41_Final_JIT.zip
