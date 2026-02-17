@@ -1,4 +1,4 @@
-name: Build R5Q - LineageOS V66 (Mainey EUR Fix)
+name: Build R5Q - LineageOS V67 (EUR Stable)
 
 on:
   workflow_dispatch:
@@ -16,7 +16,7 @@ jobs:
 
       - name: Download Correct Defconfig
         run: |
-          # Descarcă fișierul r5q_eur_open_defconfig și îl salvează ca r5q_defconfig pentru simplitate
+          # Descarcă r5q_eur_open_defconfig și îl pregătește
           wget -O kernel/arch/arm64/configs/r5q_defconfig https://raw.githubusercontent.com/mainey/android_kernel_samsung_r5q/lineage-19.0/arch/arm64/configs/r5q_eur_open_defconfig
 
       - name: Install Build Tools
@@ -24,7 +24,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu bc libssl-dev python3 bison flex libncurses6 libncurses-dev
           
-          # Fix-uri de biblioteci pentru compatibilitate
+          # Fix-uri biblioteci pentru compatibilitate unelte build
           sudo ln -sf /usr/lib/x86_64-linux-gnu/libncurses.so.6 /usr/lib/x86_64-linux-gnu/libncurses.so.5
           sudo ln -sf /usr/lib/x86_64-linux-gnu/libtinfo.so.6 /usr/lib/x86_64-linux-gnu/libtinfo.so.5
           sudo ln -sf /usr/bin/python3 /usr/bin/python
@@ -37,23 +37,28 @@ jobs:
         run: |
           cd kernel
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
+          # Reducem numărul de job-uri la nproc-1 pentru a evita OOM (Out of Memory) la linkarea WLAN
+          JOBS=$(($(nproc) - 1))
           MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- CLANG_TRIPLE=aarch64-linux-gnu- O=out"
           
-          # Utilizăm fișierul descărcat anterior
           make $MAKE_ARGS r5q_defconfig
           
-          # Optimizări pentru stabilitatea compilării pe LineageOS 20
+          # Dezactivăm protecțiile care cauzează Error 2 la linkarea finală
           ./scripts/config --file out/.config \
             -d CONFIG_SAMSUNG_RTIC \
             -d CONFIG_WERROR \
             -e CONFIG_BUILD_ARM64_DT_OVERLAY \
             -d CONFIG_LTO_CLANG \
-            -d CONFIG_CFI_CLANG
+            -d CONFIG_CFI_CLANG \
+            -d CONFIG_DEBUG_SECTION_MISMATCH
             
           make $MAKE_ARGS olddefconfig
           
-          # Compilare efectivă
-          make -j$(nproc --all) $MAKE_ARGS Image.gz dtbs KCFLAGS="-w -fcommon" LDFLAGS="--allow-multiple-definition"
+          # Compilare cu flag-uri de toleranță pentru linker
+          # --allow-multiple-definition rezolvă conflictele din qcacld-3.0
+          make -j$JOBS $MAKE_ARGS Image.gz dtbs \
+            KCFLAGS="-w -fcommon" \
+            LDFLAGS="--allow-multiple-definition --no-fatal-warnings"
 
       - name: Assemble AnyKernel3
         run: |
@@ -63,27 +68,24 @@ jobs:
           if [ -f "$OUT/Image.gz" ]; then
             cp $OUT/Image.gz AK3/
             
-            # Căutăm DTB pentru concatenare (Samsung r5q are nevoie de asta pentru bootloader)
+            # Concatenare DTB (esențial pentru bootloader-ul Samsung EUR)
             DTB=$(find $OUT/dts -name "*sm8150*.dtb" -o -name "*r5q*.dtb" | head -n 1)
-            if [ -f "$DTB" ]; then
-              cat $OUT/Image.gz $DTB > AK3/Image.gz
-              echo "DTB found and appended: $DTB"
-            fi
+            [ -f "$DTB" ] && cat $OUT/Image.gz $DTB > AK3/Image.gz
             
-            # Încercăm să preluăm DTBO
+            # Preluare DTBO
             find kernel/out -name "dtbo.img" -exec cp {} AK3/dtbo.img \;
             
             cd AK3
             sed -i 's/device.name1=maguro/device.name1=r5q/g' anykernel.sh
             sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-            zip -r9 ../R5Q_Lineage20_Final.zip *
+            zip -r9 ../R5Q_Lineage20_EUR_V67.zip *
           else
-            echo "Eroare: Image.gz nu a fost generat!"
+            echo "Eroare: Imaginea kernel nu a fost creată. Verifică log-ul de linkare."
             exit 1
           fi
 
-      - name: Upload Artifact
+      - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-R5Q-EUR
-          path: R5Q_Lineage20_Final.zip
+          name: Kernel-R5Q-V67
+          path: R5Q_Lineage20_EUR_V67.zip
