@@ -1,4 +1,4 @@
-name: Build R5Q - S10 Lite A15 Final V23
+name: Build R5Q - S10 Lite A15 Final V24
 
 on:
   workflow_dispatch:
@@ -36,38 +36,29 @@ jobs:
 
       - name: Injected Hardware & Source Patches
         run: |
-          # 1. Device Tree Inject
+          # 1. Injectăm Device Tree Samsung (Esențial pentru hardware-ul r5q)
           mkdir -p kernel/arch/arm64/boot/dts/samsung
           cp -r samsung/arch/arm64/boot/dts/samsung/* kernel/arch/arm64/boot/dts/samsung/
           echo 'obj-y += samsung/' > kernel/arch/arm64/boot/dts/Makefile
           
-          # 2. Config & MMC Drivers
+          # 2. Configurația specifică r5q
           cp samsung/arch/arm64/configs/r5q_eur_open_defconfig kernel/arch/arm64/configs/r5q_eur_open_defconfig
-          cp samsung/drivers/mmc/host/sdhci.c kernel/drivers/mmc/host/sdhci.c
-          cp samsung/drivers/mmc/host/sdhci.h kernel/drivers/mmc/host/sdhci.h
-          cp samsung/drivers/mmc/host/sdhci-pltfm.c kernel/drivers/mmc/host/sdhci-pltfm.c
-          cp samsung/drivers/mmc/core/sdio.c kernel/drivers/mmc/core/sdio.c
-          
-          # 3. SDHCI & GPIO Fixes
-          sed -i '/struct sdhci_host {/a \	bool is_crypto_en;' kernel/drivers/mmc/host/sdhci.h
-          sed -i '/struct sdhci_ops {/a \	int (*crypto_engine_cfg)(struct sdhci_host *host, const void *key, unsigned int slot, unsigned int data_unit, bool is_hw_algo, bool is_write);' kernel/drivers/mmc/host/sdhci.h
+
+          # 3. [GPIO FIX] Eliminăm msm_gpio_dump care cauzează erori de linker
           sed -i '/if (chip->gpio_dump) {/,/}/d' kernel/drivers/gpio/gpiolib.c
           echo 'struct seq_file; int msm_gpio_dump(struct seq_file *s) { return 0; }' >> kernel/drivers/gpio/gpiolib.c
 
-          # 4. Linker & Wi-Fi Fixes
+          # 4. Linker Fixes pentru Wi-Fi și PSCI
           echo "void arm64_update_smccc_conduit(unsigned int conduit) {}" >> kernel/arch/arm64/kernel/psci.c
           find kernel/drivers/staging/ -name "*.h" -o -name "*.c" | xargs sed -i 's/timer_setup_on_stack/timer_setup/g' || true
           
-          # 5. Sched & BMS Stubs
+          # 5. [SCHEDULER] Folosim managementul de procese Google (eliminăm conflictele WALT)
           sed -i 's/obj-y += walt.o/# obj-y += walt.o/' kernel/kernel/sched/Makefile
-          mkdir -p kernel/drivers/power/supply/google/
-          echo "int gbms_storage_register(void *data) { return 0; }" > kernel/drivers/power/supply/google/sm8150_bms.c
-          echo "int gbms_gen_chg_flags(void *data) { return 0; }" >> kernel/drivers/power/supply/google/sm8150_bms.c
-
-          # 6. [NEW] Fix Coresight Dummy (Eliminăm eroarea de pointer function)
+          
+          # 6. [CORESIGHT FIX] Dezactivăm driverul de debug care genera erori de pointeri
           sed -i 's/obj-$(CONFIG_CORESIGHT_DUMMY) += coresight-dummy.o/# coresight-dummy disabled/' kernel/drivers/hwtracing/coresight/Makefile
 
-          # 7. Kernel Spoofing & DM-BOW
+          # 7. DM-BOW & Kernel Spoofing (Forțăm kernel 5.4 pentru compatibilitate A15)
           sed -i 's/#define SECTOR_SIZE 512/#ifndef SECTOR_SIZE\n#define SECTOR_SIZE 512\n#endif/' kernel/drivers/md/dm-bow.c
           cd kernel
           sed -i 's/VERSION = 4/VERSION = 5/g' Makefile
@@ -80,17 +71,22 @@ jobs:
           MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
           
           make $MAKE_ARGS r5q_eur_open_defconfig
+          
+          # Ajustăm configurația pentru stabilitate maximă
           ./scripts/config --file out/.config \
-            -e CONFIG_BUILD_ARM64_DTBO_IMG -d CONFIG_SCHED_WALT -d CONFIG_SCHED_CORE_CTL \
-            -e CONFIG_BPF -e CONFIG_BPF_SYSCALL -e CONFIG_BPF_JIT -e CONFIG_BPF_JIT_ALWAYS_ON \
-            -e CONFIG_CGROUP_BPF -e CONFIG_NETFILTER_XT_MATCH_BPF -e CONFIG_BPF_EVENTS \
+            -e CONFIG_BUILD_ARM64_DTBO_IMG \
+            -d CONFIG_SCHED_WALT -d CONFIG_SCHED_CORE_CTL \
+            -e CONFIG_BPF -e CONFIG_BPF_SYSCALL -e CONFIG_BPF_JIT \
             -d CONFIG_WERROR -e CONFIG_LTO_NONE -d CONFIG_GOOGLE_BMS \
-            -d CONFIG_CORESIGHT_DUMMY
+            -d CONFIG_CORESIGHT_DUMMY -d CONFIG_MMC_SDHCI_MSM_ICE
+            
           make $MAKE_ARGS olddefconfig
           
-          # Compilare controlată
+          # Compilăm Image.gz și DTBs (Device Tree Blobs)
           make -j$(nproc) $MAKE_ARGS Image.gz dtbs KCFLAGS="-w -fcommon"
-          make -j4 $MAKE_ARGS dtbo.img KCFLAGS="-w -fcommon" || echo "DTBO skipped"
+          
+          # Compilăm separat DTBO (Overlay)
+          make -j4 $MAKE_ARGS dtbo.img KCFLAGS="-w -fcommon" || echo "DTBO build skipped"
 
       - name: Assemble AnyKernel3
         run: |
@@ -100,22 +96,31 @@ jobs:
           DTBO=$(find $OUT -name "dtbo.img" -type f | head -n 1)
 
           if [ ! -f "$IMAGE" ]; then
-            echo "ERROR: Image.gz missing!"
+            echo "EROARE: Image.gz nu a fost generat!"
             exit 1
           fi
 
           git clone https://github.com/osm0sis/AnyKernel3.git AK3
-          [ -n "$DTB" ] && cat "$IMAGE" "$DTB" > AK3/Image.gz || cp "$IMAGE" AK3/Image.gz
+          
+          # Samsung cere ca DTB-ul să fie concatenat cu kernelul (Image.gz-dtb)
+          if [ -n "$DTB" ]; then
+            echo "Concatenăm Image cu DTB: $DTB"
+            cat "$IMAGE" "$DTB" > AK3/Image.gz
+          else
+            cp "$IMAGE" AK3/Image.gz
+          fi
+          
+          # Adăugăm DTBO dacă a fost generat
           [ -f "$DTBO" ] && cp "$DTBO" AK3/dtbo.img
 
           cd AK3
           sed -i 's/device.name1=maguro/device.name1=r5q/g' anykernel.sh
           sed -i 's/device.name2=toroplus/device.name2=SM-G770F/g' anykernel.sh
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-          zip -r9 ../S10Lite_A15_V23.zip *
+          zip -r9 ../S10Lite_A15_V24.zip *
 
-      - name: Upload
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-Kernel-V23
-          path: S10Lite_A15_V23.zip
+          name: S10Lite-Kernel-Final-V24
+          path: S10Lite_A15_V24.zip
