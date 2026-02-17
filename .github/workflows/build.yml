@@ -1,4 +1,4 @@
-name: Build R5Q - LineageOS 23 Native Hybrid V15-FINAL
+name: Build R5Q - LineageOS 23 Native Hybrid V16-FINAL
 
 on:
   workflow_dispatch:
@@ -7,14 +7,14 @@ jobs:
   build:
     runs-on: ubuntu-24.04
     steps:
-      - name: Checkout LineageOS Kernel (Base for Android 15)
+      - name: Checkout LineageOS Kernel
         uses: actions/checkout@v4
         with:
           repository: LineageOS/android_kernel_google_msm-4.14
           ref: lineage-21
           path: kernel
 
-      - name: Checkout Mainey R5Q (Hardware Source)
+      - name: Checkout Mainey R5Q
         uses: actions/checkout@v4
         with:
           repository: mainey/android_kernel_samsung_r5q
@@ -28,7 +28,7 @@ jobs:
           ccache python3 python-is-python3 libarchive-tools wget zstd libtinfo6 zip \
           gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi device-tree-compiler rsync git
 
-      - name: Setup Toolchain (Neutron Clang)
+      - name: Setup Toolchain
         run: |
           mkdir -p clang
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
@@ -36,21 +36,21 @@ jobs:
 
       - name: Injected Hardware & Source Patches
         run: |
-          # 1. Injectăm Device Tree Samsung
+          # 1. Injectăm Device Tree
           mkdir -p kernel/arch/arm64/boot/dts/samsung
           cp -r samsung/arch/arm64/boot/dts/samsung/* kernel/arch/arm64/boot/dts/samsung/
           echo 'obj-y += samsung/' > kernel/arch/arm64/boot/dts/Makefile
           
-          # 2. Configurație S20 FE
+          # 2. Config S20 FE
           cp samsung/arch/arm64/configs/r5q_eur_open_defconfig kernel/arch/arm64/configs/r5q_eur_open_defconfig
           
-          # 3. [MMC SWAP] Drivere Samsung Core
+          # 3. [MMC SWAP]
           cp samsung/drivers/mmc/host/sdhci.c kernel/drivers/mmc/host/sdhci.c
           cp samsung/drivers/mmc/host/sdhci.h kernel/drivers/mmc/host/sdhci.h
           cp samsung/drivers/mmc/host/sdhci-pltfm.c kernel/drivers/mmc/host/sdhci-pltfm.c
           cp samsung/drivers/mmc/core/sdio.c kernel/drivers/mmc/core/sdio.c
           
-          # 4. [SDHCI MOCKING] Injectare membri lipsă pentru structurile SDHCI
+          # 4. [SDHCI MOCKING]
           sed -i '/struct sdhci_host {/a \	bool is_crypto_en;' kernel/drivers/mmc/host/sdhci.h
           sed -i '/struct sdhci_ops {/a \	int (*crypto_engine_cfg)(struct sdhci_host *host, const void *key, unsigned int slot, unsigned int data_unit, bool is_hw_algo, bool is_write); \
           int (*crypto_engine_cmdq_cfg)(struct sdhci_host *host, const void *key, unsigned int slot, unsigned int data_unit, bool is_hw_algo, bool is_write); \
@@ -58,11 +58,11 @@ jobs:
           int (*crypto_cfg_reset)(struct sdhci_host *host, unsigned int slot); \
           int (*crypto_engine_reset)(struct sdhci_host *host);' kernel/drivers/mmc/host/sdhci.h
 
-          # 5. [GPIO FIX] Curățare și Stub compatibil cu header-ul sistemului
+          # 5. [GPIO FIX]
           sed -i '/if (chip->gpio_dump) {/,/}/d' kernel/drivers/gpio/gpiolib.c
           echo 'struct seq_file; int msm_gpio_dump(struct seq_file *s) { return 0; }' >> kernel/drivers/gpio/gpiolib.c
 
-          # 6. [LINKER FIXES] PSCI, Timere Wi-Fi și Baterie (CORRECTED XARGS)
+          # 6. [LINKER FIXES] PSCI, Timere Wi-Fi și Baterie
           echo "void arm64_update_smccc_conduit(unsigned int conduit) {}" >> kernel/arch/arm64/kernel/psci.c
           find kernel/drivers/staging/ -name "*.h" -o -name "*.c" | xargs sed -i 's/timer_setup_on_stack/timer_setup/g' || true
           
@@ -70,10 +70,14 @@ jobs:
           echo "int gbms_storage_register(void *data) { return 0; }" > kernel/drivers/power/supply/google/sm8150_bms.c
           echo "int gbms_gen_chg_flags(void *data) { return 0; }" >> kernel/drivers/power/supply/google/sm8150_bms.c
 
-          # 7. [DM-BOW FIX]
+          # 7. [SCHEDULER WALT FIX] Dezactivăm compilarea walt.c pentru a evita redefinirile
+          # Baza Google are deja suportul necesar în sched/core.c
+          sed -i 's/obj-y += walt.o/# obj-y += walt.o/' kernel/kernel/sched/Makefile
+
+          # 8. [DM-BOW FIX]
           sed -i 's/#define SECTOR_SIZE 512/#ifndef SECTOR_SIZE\n#define SECTOR_SIZE 512\n#endif/' kernel/drivers/md/dm-bow.c
 
-          # 8. Kernel Spoofing la 5.4
+          # 9. Kernel Spoofing
           cd kernel
           sed -i 's/VERSION = 4/VERSION = 5/g' Makefile
           sed -i 's/PATCHLEVEL = 14/PATCHLEVEL = 4/g' Makefile
@@ -86,19 +90,18 @@ jobs:
           
           make $MAKE_ARGS r5q_eur_open_defconfig
           
-          # Configurații BPF obligatorii pentru LineageOS 23 (A15)
+          # Dezactivăm SCHED_WALT din config pentru a folosi implementarea standard Google
           ./scripts/config --file out/.config \
+            -d CONFIG_SCHED_WALT -d CONFIG_SCHED_CORE_CTL \
             -e CONFIG_BPF -e CONFIG_BPF_SYSCALL -e CONFIG_BPF_JIT -e CONFIG_BPF_JIT_ALWAYS_ON \
             -e CONFIG_CGROUP_BPF -e CONFIG_NETFILTER_XT_MATCH_BPF -e CONFIG_BPF_EVENTS \
             -d CONFIG_WERROR -e CONFIG_LTO_NONE -d CONFIG_LTO_CLANG \
             -d CONFIG_MMC_SDHCI_MSM_ICE -d CONFIG_GOOGLE_BMS
             
           make $MAKE_ARGS olddefconfig
-          
-          # Compilare finală Image.gz
           make -j$(nproc --all) $MAKE_ARGS Image.gz dtbs KCFLAGS="-w -fcommon -Wno-implicit-function-declaration -Wno-incompatible-pointer-types"
 
-      - name: Assemble AnyKernel3
+      - name: Assemble Final ZIP
         run: |
           cd kernel
           DTB_FILE=$(find out/arch/arm64/boot/dts/samsung -name "*r5q*eur*.dtb" | head -n 1)
@@ -107,17 +110,16 @@ jobs:
           fi
           
           cat out/arch/arm64/boot/Image.gz "$DTB_FILE" > out/arch/arm64/boot/Image.gz-dtb
-          
           git clone https://github.com/osm0sis/AnyKernel3.git
           cp out/arch/arm64/boot/Image.gz-dtb AnyKernel3/Image.gz
           
           sed -i 's/device.name1=maguro/device.name1=r5q/g' AnyKernel3/anykernel.sh
           sed -i 's/device.name2=toroplus/device.name2=r5qq/g' AnyKernel3/anykernel.sh
           
-          cd AnyKernel3 && zip -r9 ../R5Q-A15-HYBRID-V15.zip *
+          cd AnyKernel3 && zip -r9 ../R5Q-A15-V16-FINAL.zip *
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-S20FE-A15-V15
-          path: R5Q-A15-HYBRID-V15.zip
+          name: Kernel-S20FE-A15-V16
+          path: R5Q-A15-V16-FINAL.zip
