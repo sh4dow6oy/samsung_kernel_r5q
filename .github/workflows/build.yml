@@ -1,4 +1,4 @@
-name: Build R5Q - LineageOS 23 Native Hybrid V13-ULTIMATE
+name: Build R5Q - LineageOS 23 Native Hybrid V14-STABLE
 
 on:
   workflow_dispatch:
@@ -36,21 +36,21 @@ jobs:
 
       - name: Injected Hardware & Source Patches
         run: |
-          # 1. Injectăm Device Tree
+          # 1. Injectăm Device Tree Samsung în baza Google
           mkdir -p kernel/arch/arm64/boot/dts/samsung
           cp -r samsung/arch/arm64/boot/dts/samsung/* kernel/arch/arm64/boot/dts/samsung/
           echo 'obj-y += samsung/' > kernel/arch/arm64/boot/dts/Makefile
           
-          # 2. Config EUR Open S20 FE
+          # 2. Configurație S20 FE
           cp samsung/arch/arm64/configs/r5q_eur_open_defconfig kernel/arch/arm64/configs/r5q_eur_open_defconfig
           
-          # 3. [FILE SWAP] Înlocuim driverele MMC cu cele Samsung
+          # 3. [MMC SWAP] Drivere Samsung pentru Stocare
           cp samsung/drivers/mmc/host/sdhci.c kernel/drivers/mmc/host/sdhci.c
           cp samsung/drivers/mmc/host/sdhci.h kernel/drivers/mmc/host/sdhci.h
           cp samsung/drivers/mmc/host/sdhci-pltfm.c kernel/drivers/mmc/host/sdhci-pltfm.c
           cp samsung/drivers/mmc/core/sdio.c kernel/drivers/mmc/core/sdio.c
           
-          # 4. [SDHCI MOCKING] Injectăm membrii lipsă în structuri
+          # 4. [SDHCI MOCKING] Injectare membri lipsă pentru Qualcomm SDHCI
           sed -i '/struct sdhci_host {/a \	bool is_crypto_en;' kernel/drivers/mmc/host/sdhci.h
           sed -i '/struct sdhci_ops {/a \	int (*crypto_engine_cfg)(struct sdhci_host *host, const void *key, unsigned int slot, unsigned int data_unit, bool is_hw_algo, bool is_write); \
           int (*crypto_engine_cmdq_cfg)(struct sdhci_host *host, const void *key, unsigned int slot, unsigned int data_unit, bool is_hw_algo, bool is_write); \
@@ -58,23 +58,23 @@ jobs:
           int (*crypto_cfg_reset)(struct sdhci_host *host, unsigned int slot); \
           int (*crypto_engine_reset)(struct sdhci_host *host);' kernel/drivers/mmc/host/sdhci.h
 
-          # 5. [LINKER & SYMBOL FIXES] Reparăm simbolurile nedeclarate (stubs)
+          # 5. [GPIO FIX] Curățare și Stub corect pentru msm_gpio_dump (Match include/linux/gpio.h)
+          sed -i '/if (chip->gpio_dump) {/,/}/d' kernel/drivers/gpio/gpiolib.c
+          echo "struct seq_file;" >> kernel/drivers/gpio/gpiolib.c
+          echo "int msm_gpio_dump(struct seq_file *s) { return 0; }" >> kernel/drivers/gpio/gpiolib.c
+
+          # 6. [LINKER FIXES] PSCI, Timere Wi-Fi și Baterie
           echo "void arm64_update_smccc_conduit(unsigned int conduit) {}" >> kernel/arch/arm64/kernel/psci.c
-          echo "void msm_gpio_dump(void) {}" >> kernel/drivers/gpio/gpiolib.c
+          find kernel/drivers/staging/ -name "*.h" -o -name "*.c" | xargs sed -i 's/timer_setup_on_stack/timer_setup/g' || true
           
-          # Fix pentru driverul de baterie Google (GBMS)
           mkdir -p kernel/drivers/power/supply/google/
-          touch kernel/drivers/power/supply/google/sm8150_bms.c
-          echo "int gbms_storage_register(void *data) { return 0; }" >> kernel/drivers/power/supply/google/sm8150_bms.c
+          echo "int gbms_storage_register(void *data) { return 0; }" > kernel/drivers/power/supply/google/sm8150_bms.c
           echo "int gbms_gen_chg_flags(void *data) { return 0; }" >> kernel/drivers/power/supply/google/sm8150_bms.c
 
-          # Fix pentru Timer API vechi în Wi-Fi
-          find kernel/drivers/staging/ -name "*.h" -o -name "*.c" | x86_64-linux-gnu-args sed -i 's/timer_setup_on_stack/timer_setup/g' || true
-
-          # 6. [FIX DM-BOW]
+          # 7. [DM-BOW FIX] Sectoare pentru Android 15
           sed -i 's/#define SECTOR_SIZE 512/#ifndef SECTOR_SIZE\n#define SECTOR_SIZE 512\n#endif/' kernel/drivers/md/dm-bow.c
 
-          # 7. Kernel Spoofing la 5.4
+          # 8. Kernel Spoofing la 5.4
           cd kernel
           sed -i 's/VERSION = 4/VERSION = 5/g' Makefile
           sed -i 's/PATCHLEVEL = 14/PATCHLEVEL = 4/g' Makefile
@@ -87,20 +87,19 @@ jobs:
           
           make $MAKE_ARGS r5q_eur_open_defconfig
           
-          # Configurații critice pentru Android 15 (BPF activat corect)
+          # Forțare setări BPF obligatorii pentru LineageOS 23
           ./scripts/config --file out/.config \
-            -d CONFIG_SCHED_WALT -d CONFIG_SCHED_CORE_CTL -d CONFIG_MSM_CORE_CTL \
             -e CONFIG_BPF -e CONFIG_BPF_SYSCALL -e CONFIG_BPF_JIT -e CONFIG_BPF_JIT_ALWAYS_ON \
-            -e CONFIG_PSI -e CONFIG_CGROUP_BPF -e CONFIG_NETFILTER_XT_MATCH_BPF -e CONFIG_BPF_EVENTS \
+            -e CONFIG_CGROUP_BPF -e CONFIG_NETFILTER_XT_MATCH_BPF -e CONFIG_BPF_EVENTS \
             -d CONFIG_WERROR -e CONFIG_LTO_NONE -d CONFIG_LTO_CLANG \
             -d CONFIG_MMC_SDHCI_MSM_ICE -d CONFIG_GOOGLE_BMS
             
           make $MAKE_ARGS olddefconfig
           
-          # Compilare finală
+          # Compilare Image.gz și DTBs (Ignorăm warning-urile)
           make -j$(nproc --all) $MAKE_ARGS Image.gz dtbs KCFLAGS="-w -fcommon -Wno-implicit-function-declaration -Wno-incompatible-pointer-types"
 
-      - name: Assemble Final ZIP
+      - name: Assemble AnyKernel3
         run: |
           cd kernel
           DTB_FILE=$(find out/arch/arm64/boot/dts/samsung -name "*r5q*eur*.dtb" | head -n 1)
@@ -116,10 +115,10 @@ jobs:
           sed -i 's/device.name1=maguro/device.name1=r5q/g' AnyKernel3/anykernel.sh
           sed -i 's/device.name2=toroplus/device.name2=r5qq/g' AnyKernel3/anykernel.sh
           
-          cd AnyKernel3 && zip -r9 ../R5Q-A15-V13-ULTIMATE.zip *
+          cd AnyKernel3 && zip -r9 ../R5Q-A15-V14-FINAL.zip *
 
-      - name: Upload Artifact
+      - name: Upload Kernel
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-S20FE-Android15-V13
-          path: R5Q-A15-V13-ULTIMATE.zip
+          name: Kernel-S20FE-A15-V14
+          path: R5Q-A15-V14-FINAL.zip
