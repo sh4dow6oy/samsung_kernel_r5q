@@ -1,4 +1,4 @@
-name: Build R5Q - S10 Lite A15 Final V22
+name: Build R5Q - S10 Lite A15 Final V23
 
 on:
   workflow_dispatch:
@@ -54,7 +54,7 @@ jobs:
           sed -i '/if (chip->gpio_dump) {/,/}/d' kernel/drivers/gpio/gpiolib.c
           echo 'struct seq_file; int msm_gpio_dump(struct seq_file *s) { return 0; }' >> kernel/drivers/gpio/gpiolib.c
 
-          # 4. Linker & Wi-Fi Fixes (Corrected xargs)
+          # 4. Linker & Wi-Fi Fixes
           echo "void arm64_update_smccc_conduit(unsigned int conduit) {}" >> kernel/arch/arm64/kernel/psci.c
           find kernel/drivers/staging/ -name "*.h" -o -name "*.c" | xargs sed -i 's/timer_setup_on_stack/timer_setup/g' || true
           
@@ -64,7 +64,10 @@ jobs:
           echo "int gbms_storage_register(void *data) { return 0; }" > kernel/drivers/power/supply/google/sm8150_bms.c
           echo "int gbms_gen_chg_flags(void *data) { return 0; }" >> kernel/drivers/power/supply/google/sm8150_bms.c
 
-          # 6. Kernel Spoofing & DM-BOW
+          # 6. [NEW] Fix Coresight Dummy (Eliminăm eroarea de pointer function)
+          sed -i 's/obj-$(CONFIG_CORESIGHT_DUMMY) += coresight-dummy.o/# coresight-dummy disabled/' kernel/drivers/hwtracing/coresight/Makefile
+
+          # 7. Kernel Spoofing & DM-BOW
           sed -i 's/#define SECTOR_SIZE 512/#ifndef SECTOR_SIZE\n#define SECTOR_SIZE 512\n#endif/' kernel/drivers/md/dm-bow.c
           cd kernel
           sed -i 's/VERSION = 4/VERSION = 5/g' Makefile
@@ -81,10 +84,11 @@ jobs:
             -e CONFIG_BUILD_ARM64_DTBO_IMG -d CONFIG_SCHED_WALT -d CONFIG_SCHED_CORE_CTL \
             -e CONFIG_BPF -e CONFIG_BPF_SYSCALL -e CONFIG_BPF_JIT -e CONFIG_BPF_JIT_ALWAYS_ON \
             -e CONFIG_CGROUP_BPF -e CONFIG_NETFILTER_XT_MATCH_BPF -e CONFIG_BPF_EVENTS \
-            -d CONFIG_WERROR -e CONFIG_LTO_NONE -d CONFIG_GOOGLE_BMS
+            -d CONFIG_WERROR -e CONFIG_LTO_NONE -d CONFIG_GOOGLE_BMS \
+            -d CONFIG_CORESIGHT_DUMMY
           make $MAKE_ARGS olddefconfig
           
-          # Compilare cu limitare de resurse la final pentru a evita Error 2
+          # Compilare controlată
           make -j$(nproc) $MAKE_ARGS Image.gz dtbs KCFLAGS="-w -fcommon"
           make -j4 $MAKE_ARGS dtbo.img KCFLAGS="-w -fcommon" || echo "DTBO skipped"
 
@@ -108,10 +112,10 @@ jobs:
           sed -i 's/device.name1=maguro/device.name1=r5q/g' anykernel.sh
           sed -i 's/device.name2=toroplus/device.name2=SM-G770F/g' anykernel.sh
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-          zip -r9 ../S10Lite_A15_V22.zip *
+          zip -r9 ../S10Lite_A15_V23.zip *
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-Kernel-V22
-          path: S10Lite_A15_V22.zip
+          name: S10Lite-Kernel-V23
+          path: S10Lite_A15_V23.zip
