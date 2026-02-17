@@ -1,25 +1,37 @@
-name: Build R5Q - Lumi BPF V42 (Linker Final Fix)
+name: Build R3Q - BPF 5.10 Backport (pascua28 edition)
 
 on:
   workflow_dispatch:
 
 jobs:
   build:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     steps:
-      - name: Checkout LumiPlayground Kernel
+      - name: Checkout Base (Roynas)
         uses: actions/checkout@v4
         with:
-          repository: LumiPlayground/android_kernel_samsung_sm8150
-          ref: rawr-bpf
+          repository: Roynas-Android-Playground/kernel_samsung_r3q
+          ref: master
           path: kernel
 
-      - name: Install Dependencies
+      - name: Download BPF Backport (pascua28)
+        run: |
+          # Clonăm doar folderele critice de BPF pentru a le injecta
+          git clone --depth 1 -b sixteen https://github.com/pascua28/android_kernel_samsung_sm7150 backport
+          
+          # Înlocuim subsistemul BPF și Netfilter cu cel modern (v6)
+          rm -rf kernel/kernel/bpf kernel/net/core/filter.c
+          cp -r backport/kernel/bpf kernel/kernel/
+          cp backport/net/core/filter.c kernel/net/core/filter.c
+          # Importăm și header-ele necesare pentru noile funcții BPF
+          cp -r backport/include/linux/bpf* kernel/include/linux/
+
+      - name: Install Build Tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu bc libssl-dev
+          sudo apt-get install -y gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu bc libssl-dev python3 bison flex
 
-      - name: Setup Toolchain (Neutron Clang)
+      - name: Setup Neutron Clang
         run: |
           mkdir -p clang
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
@@ -30,50 +42,41 @@ jobs:
           cd kernel
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           
-          # Revenim la un set stabil de argumente, dar adaugam un flag de linker crucial
-          MAKE_ARGS="ARCH=arm64 \
-            LLVM=1 \
-            LLVM_IAS=1 \
-            CC=clang \
-            LD=ld.lld \
-            CROSS_COMPILE=aarch64-linux-gnu- \
-            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-            CLANG_TRIPLE=aarch64-linux-gnu- \
-            O=out"
+          MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- CLANG_TRIPLE=aarch64-linux-gnu- O=out"
           
-          make $MAKE_ARGS r5q_eur_open_defconfig
+          make $MAKE_ARGS r3q_eur_open_defconfig
           
-          # FORȚARE BPF JIT & CURĂȚARE SAMSUNG SECURITY
+          # ACTIVARE BPF 5.10+ (Specificații Android 15/Sixteen)
           ./scripts/config --file out/.config \
             -e CONFIG_BPF -e CONFIG_BPF_SYSCALL -e CONFIG_BPF_JIT -e CONFIG_BPF_JIT_ALWAYS_ON \
-            -e CONFIG_HAVE_EBPF_JIT -e CONFIG_NET_ACT_BPF -e CONFIG_NET_CLS_BPF \
+            -e CONFIG_HAVE_EBPF_JIT -e CONFIG_NET_CLS_BPF -e CONFIG_NET_ACT_BPF \
+            -e CONFIG_BPF_EVENTS -e CONFIG_CGROUP_BPF -e CONFIG_BPF_STREAM_PARSER \
+            -e CONFIG_LWTUNNEL_BPF -e CONFIG_BPF_KPROBE_OVERRIDE \
             -d CONFIG_SAMSUNG_RTIC -d CONFIG_SAMSUNG_RTIC_AMP \
             -d CONFIG_CC_STACKPROTECTOR_STRONG -e CONFIG_CC_STACKPROTECTOR_NONE \
             -d CONFIG_WERROR
             
           make $MAKE_ARGS olddefconfig
           
-          # COMPILARE
-          # Folosim --no-rosegment pentru a evita problemele de permisiuni RWX
-          # Scoatem -mcmodel=large care cauza eroarea kmalloc
-          make -j$(nproc --all) $MAKE_ARGS Image.gz dtbs \
-            KCFLAGS="-w -fcommon" \
-            LDFLAGS="--no-rosegment"
+          # Compilăm. Folosim -fcommon pentru a evita conflictele de redefinire din BPF backport
+          make -j$(nproc --all) $MAKE_ARGS Image.gz dtbs KCFLAGS="-w -fcommon"
 
       - name: Assemble AnyKernel3
         run: |
           OUT="kernel/out/arch/arm64/boot"
           IMAGE="$OUT/Image.gz"
-          DTB=$(find $OUT/dts -name "*r5q*.dtb" -type f | head -n 1)
+          DTB=$(find $OUT/dts/samsung -name "exynos9810-r3q*.dtb" -type f | head -n 1)
+          
           git clone https://github.com/osm0sis/AnyKernel3.git AK3
           [ -f "$DTB" ] && cat "$IMAGE" "$DTB" > AK3/Image.gz || cp "$IMAGE" AK3/Image.gz
+          
           cd AK3
-          sed -i 's/device.name1=maguro/device.name1=r5q/g' anykernel.sh
+          sed -i 's/device.name1=maguro/device.name1=r3q/g' anykernel.sh
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-          zip -r9 ../S10Lite_V42_BPF_LinkerFix.zip *
+          zip -r9 ../R3Q_BPF_Sixteen_v6.zip *
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-V42
-          path: S10Lite_V42_BPF_LinkerFix.zip
+          name: Kernel-R3Q-Sixteen
+          path: R3Q_BPF_Sixteen_v6.zip
