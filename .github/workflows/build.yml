@@ -1,4 +1,4 @@
-name: Build R5Q - Lumi BPF V30 (Enforced JIT)
+name: Build R5Q - Lumi BPF V33 (Audit & Force)
 
 on:
   workflow_dispatch:
@@ -14,26 +14,19 @@ jobs:
           ref: rawr-bpf
           path: kernel
 
-      - name: Install Build Tools
+      - name: Audit BPF Support
         run: |
-          sudo apt-get update
-          sudo apt-get install -y bc build-essential flex bison lz4 libssl-dev libelf-dev \
-          ccache python3 python-is-python3 libarchive-tools wget zstd libtinfo6 zip \
-          gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi device-tree-compiler rsync git
+          echo "=== Verificare Fișiere Critice BPF ==="
+          [ -f "kernel/kernel/bpf/syscall.c" ] && echo "✅ BPF Syscall found" || echo "❌ BPF Syscall MISSING"
+          [ -f "kernel/arch/arm64/net/bpf_jit_comp.c" ] && echo "✅ BPF JIT Compiler found" || echo "❌ BPF JIT Compiler MISSING"
+          [ -f "kernel/net/core/filter.c" ] && echo "✅ Network Filter BPF found" || echo "❌ Network Filter BPF MISSING"
+          echo "======================================"
 
-      - name: Setup Toolchain (Neutron Clang)
+      - name: Setup Toolchain
         run: |
           mkdir -p clang
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
-
-      - name: Verify JIT Source Presence
-        run: |
-          if [ -f "kernel/arch/arm64/net/bpf_jit_comp.c" ]; then
-            echo "SUCCESS: BPF JIT Source found at arch/arm64/net/bpf_jit_comp.c"
-          else
-            echo "WARNING: BPF JIT Source NOT found! Check branch integrity."
-          fi
 
       - name: Build Kernel
         run: |
@@ -43,51 +36,44 @@ jobs:
           
           make $MAKE_ARGS r5q_eur_open_defconfig
           
-          # HARD-ENFORCE BPF & JIT
+          # FORȚĂM ACTIVAREA - Metoda brută
+          # Ștergem orice referință existentă și le punem noi la final
+          sed -i '/CONFIG_BPF_JIT/d' out/.config
+          sed -i '/CONFIG_NET_ACT_BPF/d' out/.config
+          echo "CONFIG_BPF_JIT=y" >> out/.config
+          echo "CONFIG_BPF_JIT_ALWAYS_ON=y" >> out/.config
+          echo "CONFIG_NET_ACT_BPF=y" >> out/.config
+          echo "CONFIG_BPF_SYSCALL=y" >> out/.config
+          
           ./scripts/config --file out/.config \
-            -e CONFIG_BPF \
-            -e CONFIG_BPF_SYSCALL \
-            -e CONFIG_BPF_JIT \
-            -e CONFIG_BPF_JIT_ALWAYS_ON \
-            -e CONFIG_HAVE_EBPF_JIT \
-            -e CONFIG_NET_CLS_BPF \
-            -e CONFIG_NET_ACT_BPF \
-            -e CONFIG_CGROUP_BPF \
-            -e CONFIG_BPF_EVENTS \
-            -d CONFIG_UNMAP_KERNEL_AT_EL0 \
-            -d CONFIG_WERROR \
-            -e CONFIG_LTO_NONE
+            -e CONFIG_BPF -e CONFIG_BPF_EVENTS -e CONFIG_CGROUP_BPF \
+            -e CONFIG_NET_CLS_BPF -d CONFIG_UNMAP_KERNEL_AT_EL0 \
+            -d CONFIG_WERROR -e CONFIG_LTO_NONE
             
           make $MAKE_ARGS olddefconfig
           
-          # Verificăm config-ul după procesare
-          grep "CONFIG_BPF_JIT" out/.config
+          # Verificare finală în log-uri
+          echo "--- Verificare Configurare Finală ---"
+          grep -E "CONFIG_BPF_JIT|CONFIG_NET_ACT_BPF" out/.config
           
-          make -j$(nproc --all) $MAKE_ARGS Image.gz dtbs KCFLAGS="-w -fcommon"
+          make -j$(nproc) $MAKE_ARGS Image.gz dtbs KCFLAGS="-w -fcommon"
 
       - name: Assemble AnyKernel3
         run: |
           OUT="kernel/out/arch/arm64/boot"
           IMAGE="$OUT/Image.gz"
-          DTB=$(find $OUT/dts -name "*r5q*.dtb" -type f | head -n 1)
-
-          if [ ! -f "$IMAGE" ]; then exit 1; fi
-
+          DTB=$(find $OUT/dts -name "*r5q*.dtb" | head -n 1)
+          
           git clone https://github.com/osm0sis/AnyKernel3.git AK3
           [ -f "$DTB" ] && cat "$IMAGE" "$DTB" > AK3/Image.gz || cp "$IMAGE" AK3/Image.gz
-
-          # Adăugăm și fișierul .config pentru verificare
-          cp kernel/out/.config ./build_config.txt
-
+          
           cd AK3
           sed -i 's/device.name1=maguro/device.name1=r5q/g' anykernel.sh
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-          zip -r9 ../S10Lite_V30_JIT_FIX.zip *
+          zip -r9 ../S10Lite_V33_Audit_BPF.zip *
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-V30-Final
-          path: |
-            S10Lite_V30_JIT_FIX.zip
-            build_config.txt
+          name: S10Lite-V33
+          path: S10Lite_V33_Audit_BPF.zip
