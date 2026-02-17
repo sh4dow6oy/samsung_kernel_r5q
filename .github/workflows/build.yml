@@ -25,7 +25,7 @@ jobs:
           cd kernel
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           
-          # Definim argumentele de build forțând toolchain-ul LLVM
+          # Argumente de build complete pentru a evita asamblorul sistemului
           MAKE_ARGS="ARCH=arm64 \
             LLVM=1 \
             LLVM_IAS=1 \
@@ -36,14 +36,18 @@ jobs:
             OBJCOPY=llvm-objcopy \
             OBJDUMP=llvm-objdump \
             STRIP=llvm-strip \
+            OBJSIZE=llvm-size \
+            READELF=llvm-readelf \
+            HOSTCC=clang \
+            HOSTCXX=clang++ \
+            HOSTLD=ld.lld \
             CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-            CLANG_TRIPLE=aarch64-linux-gnu- \
             O=out"
           
           make $MAKE_ARGS r5q_eur_open_defconfig
           
-          # FIX BPF & COMPILER STACK PROTECTOR
+          # FIX BPF & DISABLE STACK PROTECTOR (pentru a trece de erorile de compilator vechi)
           ./scripts/config --file out/.config \
             -d CONFIG_CC_STACKPROTECTOR_STRONG \
             -e CONFIG_CC_STACKPROTECTOR_NONE \
@@ -51,13 +55,13 @@ jobs:
             -e CONFIG_HAVE_EBPF_JIT -e CONFIG_NET_CLS_BPF -e CONFIG_NET_ACT_BPF \
             -d CONFIG_UNMAP_KERNEL_AT_EL0 -d CONFIG_WERROR -e CONFIG_LTO_NONE
             
-          # Forțăm override-ul BPF
+          # Forțăm scrierea manuală a BPF JIT
           echo "CONFIG_BPF_JIT=y" >> out/.config
           echo "CONFIG_BPF_JIT_ALWAYS_ON=y" >> out/.config
           
           make $MAKE_ARGS olddefconfig
           
-          # Compilare cu flag-uri de suprimare a erorilor de asamblare externe
+          # Compilare efectivă cu ignorarea avertismentelor de asamblor defect
           make -j$(nproc --all) $MAKE_ARGS Image.gz dtbs KCFLAGS="-w -fcommon -fno-stack-protector"
 
       - name: Assemble AnyKernel3
@@ -74,10 +78,10 @@ jobs:
           cd AK3
           sed -i 's/device.name1=maguro/device.name1=r5q/g' anykernel.sh
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-          zip -r9 ../S10Lite_V36_BPF_Fixed.zip *
+          zip -r9 ../S10Lite_V36_BPF_Ready.zip *
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: S10Lite-V36
-          path: S10Lite_V36_BPF_Fixed.zip
+          path: S10Lite_V36_BPF_Ready.zip
