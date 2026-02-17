@@ -1,4 +1,4 @@
-name: Build R5Q - S10 Lite A15 Final V21
+name: Build R5Q - S10 Lite A15 Final V22
 
 on:
   workflow_dispatch:
@@ -14,7 +14,7 @@ jobs:
           ref: lineage-21
           path: kernel
 
-      - name: Checkout Mainey R5Q (S10 Lite Source)
+      - name: Checkout Mainey R5Q
         uses: actions/checkout@v4
         with:
           repository: mainey/android_kernel_samsung_r5q
@@ -36,47 +36,36 @@ jobs:
 
       - name: Injected Hardware & Source Patches
         run: |
-          # 1. Injectăm Device Tree Samsung
+          # 1. Device Tree Inject
           mkdir -p kernel/arch/arm64/boot/dts/samsung
           cp -r samsung/arch/arm64/boot/dts/samsung/* kernel/arch/arm64/boot/dts/samsung/
           echo 'obj-y += samsung/' > kernel/arch/arm64/boot/dts/Makefile
           
-          # 2. Config S10 Lite
+          # 2. Config & MMC Drivers
           cp samsung/arch/arm64/configs/r5q_eur_open_defconfig kernel/arch/arm64/configs/r5q_eur_open_defconfig
-          
-          # 3. [MMC SWAP] Drivere Samsung Core
           cp samsung/drivers/mmc/host/sdhci.c kernel/drivers/mmc/host/sdhci.c
           cp samsung/drivers/mmc/host/sdhci.h kernel/drivers/mmc/host/sdhci.h
           cp samsung/drivers/mmc/host/sdhci-pltfm.c kernel/drivers/mmc/host/sdhci-pltfm.c
           cp samsung/drivers/mmc/core/sdio.c kernel/drivers/mmc/core/sdio.c
           
-          # 4. [SDHCI MOCKING] Membri lipsă
+          # 3. SDHCI & GPIO Fixes
           sed -i '/struct sdhci_host {/a \	bool is_crypto_en;' kernel/drivers/mmc/host/sdhci.h
-          sed -i '/struct sdhci_ops {/a \	int (*crypto_engine_cfg)(struct sdhci_host *host, const void *key, unsigned int slot, unsigned int data_unit, bool is_hw_algo, bool is_write); \
-          int (*crypto_engine_cmdq_cfg)(struct sdhci_host *host, const void *key, unsigned int slot, unsigned int data_unit, bool is_hw_algo, bool is_write); \
-          int (*crypto_engine_cfg_end)(struct sdhci_host *host, unsigned int slot); \
-          int (*crypto_cfg_reset)(struct sdhci_host *host, unsigned int slot); \
-          int (*crypto_engine_reset)(struct sdhci_host *host);' kernel/drivers/mmc/host/sdhci.h
-
-          # 5. [GPIO FIX] Stub conform include/linux/gpio.h
+          sed -i '/struct sdhci_ops {/a \	int (*crypto_engine_cfg)(struct sdhci_host *host, const void *key, unsigned int slot, unsigned int data_unit, bool is_hw_algo, bool is_write);' kernel/drivers/mmc/host/sdhci.h
           sed -i '/if (chip->gpio_dump) {/,/}/d' kernel/drivers/gpio/gpiolib.c
           echo 'struct seq_file; int msm_gpio_dump(struct seq_file *s) { return 0; }' >> kernel/drivers/gpio/gpiolib.c
 
-          # 6. [LINKER FIXES] PSCI & Wi-Fi Timers
+          # 4. Linker & Wi-Fi Fixes (Corrected xargs)
           echo "void arm64_update_smccc_conduit(unsigned int conduit) {}" >> kernel/arch/arm64/kernel/psci.c
           find kernel/drivers/staging/ -name "*.h" -o -name "*.c" | xargs sed -i 's/timer_setup_on_stack/timer_setup/g' || true
           
+          # 5. Sched & BMS Stubs
+          sed -i 's/obj-y += walt.o/# obj-y += walt.o/' kernel/kernel/sched/Makefile
           mkdir -p kernel/drivers/power/supply/google/
           echo "int gbms_storage_register(void *data) { return 0; }" > kernel/drivers/power/supply/google/sm8150_bms.c
           echo "int gbms_gen_chg_flags(void *data) { return 0; }" >> kernel/drivers/power/supply/google/sm8150_bms.c
 
-          # 7. [SCHEDULER FIX] Eliminăm conflictul WALT Qualcomm
-          sed -i 's/obj-y += walt.o/# obj-y += walt.o/' kernel/kernel/sched/Makefile
-
-          # 8. [DM-BOW FIX]
+          # 6. Kernel Spoofing & DM-BOW
           sed -i 's/#define SECTOR_SIZE 512/#ifndef SECTOR_SIZE\n#define SECTOR_SIZE 512\n#endif/' kernel/drivers/md/dm-bow.c
-
-          # 9. Kernel Spoofing 5.4 pentru Android 15 (Lineage 23)
           cd kernel
           sed -i 's/VERSION = 4/VERSION = 5/g' Makefile
           sed -i 's/PATCHLEVEL = 14/PATCHLEVEL = 4/g' Makefile
@@ -87,69 +76,42 @@ jobs:
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
           
-          # Pregătire Config
           make $MAKE_ARGS r5q_eur_open_defconfig
           ./scripts/config --file out/.config \
-            -e CONFIG_BUILD_ARM64_DTBO_IMG \
-            -d CONFIG_SCHED_WALT -d CONFIG_SCHED_CORE_CTL \
+            -e CONFIG_BUILD_ARM64_DTBO_IMG -d CONFIG_SCHED_WALT -d CONFIG_SCHED_CORE_CTL \
             -e CONFIG_BPF -e CONFIG_BPF_SYSCALL -e CONFIG_BPF_JIT -e CONFIG_BPF_JIT_ALWAYS_ON \
             -e CONFIG_CGROUP_BPF -e CONFIG_NETFILTER_XT_MATCH_BPF -e CONFIG_BPF_EVENTS \
-            -d CONFIG_WERROR -e CONFIG_LTO_NONE -d CONFIG_LTO_CLANG \
-            -d CONFIG_MMC_SDHCI_MSM_ICE -d CONFIG_GOOGLE_BMS
+            -d CONFIG_WERROR -e CONFIG_LTO_NONE -d CONFIG_GOOGLE_BMS
           make $MAKE_ARGS olddefconfig
           
-          # Compilare secvențială pentru a evita Error 2 (Resurse epuizate)
-          echo "Compilare Image.gz..."
-          make -j$(nproc --all) $MAKE_ARGS Image.gz KCFLAGS="-w -fcommon"
-          
-          echo "Compilare DTBs..."
-          make -j$(nproc --all) $MAKE_ARGS dtbs KCFLAGS="-w -fcommon"
-          
-          echo "Compilare DTBO..."
-          make -j$(nproc --all) $MAKE_ARGS dtbo.img KCFLAGS="-w -fcommon" || echo "DTBO skipped"
+          # Compilare cu limitare de resurse la final pentru a evita Error 2
+          make -j$(nproc) $MAKE_ARGS Image.gz dtbs KCFLAGS="-w -fcommon"
+          make -j4 $MAKE_ARGS dtbo.img KCFLAGS="-w -fcommon" || echo "DTBO skipped"
 
       - name: Assemble AnyKernel3
         run: |
-          # Setăm căile către fișierele generate
           OUT="kernel/out/arch/arm64/boot"
           IMAGE="$OUT/Image.gz"
           DTB=$(find $OUT/dts -name "*r5q*.dtb" -type f | head -n 1)
           DTBO=$(find $OUT -name "dtbo.img" -type f | head -n 1)
 
           if [ ! -f "$IMAGE" ]; then
-            echo "EROARE CRITICĂ: Image.gz nu a fost generat!"
+            echo "ERROR: Image.gz missing!"
             exit 1
           fi
 
-          # Setup AnyKernel3
           git clone https://github.com/osm0sis/AnyKernel3.git AK3
-          
-          # Combinăm Image.gz cu DTB (Samsung Bootloader Requirement)
-          if [ -n "$DTB" ]; then
-            echo "Combinăm Image cu DTB: $DTB"
-            cat "$IMAGE" "$DTB" > AK3/Image.gz
-          else
-            echo "AVERTISMENT: DTB negăsit, folosim doar Image.gz"
-            cp "$IMAGE" AK3/Image.gz
-          fi
-          
-          # Adăugăm DTBO dacă există
-          if [ -f "$DTBO" ]; then
-            cp "$DTBO" AK3/dtbo.img
-            echo "DTBO.img inclus."
-          fi
+          [ -n "$DTB" ] && cat "$IMAGE" "$DTB" > AK3/Image.gz || cp "$IMAGE" AK3/Image.gz
+          [ -f "$DTBO" ] && cp "$DTBO" AK3/dtbo.img
 
-          # Configurare script AnyKernel (S10 Lite r5q)
           cd AK3
           sed -i 's/device.name1=maguro/device.name1=r5q/g' anykernel.sh
           sed -i 's/device.name2=toroplus/device.name2=SM-G770F/g' anykernel.sh
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-          
-          # Creare ZIP
-          zip -r9 ../S10Lite_A15_V21.zip *
+          zip -r9 ../S10Lite_A15_V22.zip *
 
-      - name: Upload Kernel Artifact
+      - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-Kernel-Final-V21
-          path: S10Lite_A15_V21.zip
+          name: S10Lite-Kernel-V22
+          path: S10Lite_A15_V22.zip
