@@ -1,4 +1,4 @@
-name: Build R5Q - LumiPlayground BPF V25
+name: Build R5Q - Lumi BPF V26 (KPTI-OFF)
 
 on:
   workflow_dispatch:
@@ -30,12 +30,8 @@ jobs:
       - name: Patch & Prepare
         run: |
           cd kernel
-          # Fix DM-BOW (Sector Size)
+          # Fix DM-BOW
           sed -i 's/#define SECTOR_SIZE 512/#ifndef SECTOR_SIZE\n#define SECTOR_SIZE 512\n#endif/' drivers/md/dm-bow.c
-          
-          # Kernel Spoofing la 4.14.300+ (pentru a mulțumi Android 15)
-          # Unele versiuni de Android 15 cer minim 4.14.x ridicat
-          sed -i 's/PATCHLEVEL = 14/PATCHLEVEL = 14/g' Makefile 
 
       - name: Build Kernel
         run: |
@@ -43,28 +39,27 @@ jobs:
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
           
-          # Folosim defconfig-ul nativ pentru r5q din acest repo
           make $MAKE_ARGS r5q_eur_open_defconfig
           
-          # Forțăm activarea BPF (BPF_SYSCALL este inima Android 15)
+          # Configurări BPF + Dezactivare KPTI
           ./scripts/config --file out/.config \
+            -d CONFIG_UNMAP_KERNEL_AT_EL0 \
             -e CONFIG_BPF \
             -e CONFIG_BPF_SYSCALL \
             -e CONFIG_BPF_JIT \
             -e CONFIG_BPF_JIT_ALWAYS_ON \
+            -e CONFIG_HAVE_EBPF_JIT \
             -e CONFIG_NETFILTER_XT_MATCH_BPF \
-            -e CONFIG_CGROUP_BPF \
             -d CONFIG_WERROR \
             -e CONFIG_LTO_NONE
             
           make $MAKE_ARGS olddefconfig
           
-          # Compilăm Image.gz, DTBs și DTBO
+          # Compilare Image.gz, DTBs și DTBO
           make -j$(nproc --all) $MAKE_ARGS Image.gz dtbs dtbo.img KCFLAGS="-w -fcommon"
 
       - name: Assemble AnyKernel3
         run: |
-          # Identificăm fișierele generate în folderul 'out'
           OUT="kernel/out/arch/arm64/boot"
           IMAGE="$OUT/Image.gz"
           DTB=$(find $OUT/dts -name "*r5q*.dtb" -type f | head -n 1)
@@ -75,30 +70,26 @@ jobs:
             exit 1
           fi
 
-          # Setup AnyKernel3
           git clone https://github.com/osm0sis/AnyKernel3.git AK3
           
-          # Samsung Style: Concatenăm DTB la Image.gz
+          # Samsung Style: Image.gz + DTB
           if [ -n "$DTB" ]; then
-            echo "Folosim DTB: $DTB"
             cat "$IMAGE" "$DTB" > AK3/Image.gz
           else
             cp "$IMAGE" AK3/Image.gz
           fi
           
-          # Adăugăm DTBO dacă există
           [ -f "$DTBO" ] && cp "$DTBO" AK3/dtbo.img
 
-          # Configurare AnyKernel3 pentru S10 Lite
           cd AK3
           sed -i 's/device.name1=maguro/device.name1=r5q/g' anykernel.sh
           sed -i 's/device.name2=toroplus/device.name2=SM-G770F/g' anykernel.sh
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
           
-          zip -r9 ../S10Lite_Lumi_BPF_V25.zip *
+          zip -r9 ../S10Lite_Lumi_BPF_V26_KPTI_OFF.zip *
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-Lumi-BPF-V25
-          path: S10Lite_Lumi_BPF_V25.zip
+          name: S10Lite-Lumi-V26
+          path: S10Lite_Lumi_BPF_V26_KPTI_OFF.zip
