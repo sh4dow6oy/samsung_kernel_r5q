@@ -1,4 +1,4 @@
-name: Build R5Q - Pure LineageOS (No BPF Backport)
+name: Build R5Q - LineageOS V58 (Fix DT Include)
 
 on:
   workflow_dispatch:
@@ -14,11 +14,22 @@ jobs:
           ref: lineage-20
           path: kernel
 
-      - name: Download r5q_defconfig from Roynas
+      - name: Download r5q_defconfig
         run: |
-          # Preluăm doar configurația hardware specifică S10 Lite
           wget -O kernel/arch/arm64/configs/r5q_defconfig https://raw.githubusercontent.com/Roynas-Android-Playground/kernel_samsung_r3q/master/arch/arm64/configs/r5q_defconfig
 
+      - name: Fix DT Bindings & Includes
+        run: |
+          cd kernel/arch/arm64/boot/dts
+          # Creăm legături între vendorii de dts pentru a evita erorile de "file not found"
+          mkdir -p samsung
+          # Uneori fișierele Samsung caută în ../qcom sau direct în dt-bindings
+          ln -s ../../../scripts/dtc/include-prefixes/dt-bindings dt-bindings || true
+          
+          # Fix pentru eroarea specifică din log: arm-gic.h
+          # Forțăm includerea căii de scripturi în calea de căutare a preprocesorului
+          cd ../../../..
+          
       - name: Install Build Tools
         run: |
           sudo apt-get update
@@ -27,40 +38,51 @@ jobs:
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
 
-      - name: Build Kernel
+      - name: Build Kernel & DTBO
         run: |
           cd kernel
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
+          
+          # Folosim -I pentru a forța compilatorul să găsească headerele DT
+          EXTRA_INC="-I$(pwd)/scripts/dtc/include-prefixes"
+          
           MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- CLANG_TRIPLE=aarch64-linux-gnu- O=out"
           
-          # Aplicăm configurația r5q
           make $MAKE_ARGS r5q_defconfig
           
-          # Opțional: Dezactivăm Samsung RTIC dacă dă erori de securitate la boot
-          ./scripts/config --file out/.config -d CONFIG_SAMSUNG_RTIC -d CONFIG_WERROR
+          # Activăm suportul DTBO și scoatem RTIC
+          ./scripts/config --file out/.config -e CONFIG_BUILD_ARM64_DT_OVERLAY -d CONFIG_SAMSUNG_RTIC -d CONFIG_WERROR
           
           make $MAKE_ARGS olddefconfig
           
-          # Compilare standard
-          make -j$(nproc --all) $MAKE_ARGS Image.gz dtbs
+          # Compilăm cu extra include path pentru DTC
+          make -j$(nproc --all) $MAKE_ARGS Image.gz dtbs dtbo.img KCFLAGS="$EXTRA_INC -w -fcommon" DTC_FLAGS="-i $(pwd)/scripts/dtc/include-prefixes"
 
       - name: Assemble AnyKernel3
         run: |
           OUT="kernel/out/arch/arm64/boot"
-          IMAGE="$OUT/Image.gz"
-          # Căutăm orice DTB relevant pentru platforma sm8150
-          DTB=$(find $OUT/dts -name "*sm8150*.dtb" -type f | head -n 1)
-          
           git clone https://github.com/osm0sis/AnyKernel3.git AK3
-          [ -f "$DTB" ] && cat "$IMAGE" "$DTB" > AK3/Image.gz || cp "$IMAGE" AK3/Image.gz
+          
+          # Copiem Image.gz
+          cp $OUT/Image.gz AK3/
+          
+          # Copiem DTBO
+          find kernel/out -name "dtbo.img" -exec cp {} AK3/dtbo.img \;
+          
+          # Concatenăm DTB la Image (r5q specific)
+          # Căutăm dtb-ul sm8150 sau r5q
+          DTB=$(find $OUT/dts -name "*sm8150*.dtb" -o -name "*r5q*.dtb" | head -n 1)
+          if [ -f "$DTB" ]; then
+            cat $OUT/Image.gz $DTB > AK3/Image.gz
+          fi
           
           cd AK3
           sed -i 's/device.name1=maguro/device.name1=r5q/g' anykernel.sh
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-          zip -r9 ../R5Q_Lineage_Pure.zip *
+          zip -r9 ../R5Q_Lineage_V58.zip *
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-R5Q-Pure
-          path: R5Q_Lineage_Pure.zip
+          name: Kernel-R5Q-V58
+          path: R5Q_Lineage_V58.zip
