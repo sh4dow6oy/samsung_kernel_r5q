@@ -101,25 +101,29 @@ jobs:
           make $MAKE_ARGS olddefconfig
           make -j$(nproc --all) $MAKE_ARGS Image.gz dtbs KCFLAGS="-w -fcommon -Wno-implicit-function-declaration -Wno-incompatible-pointer-types"
 
-      - name: Assemble Final ZIP
-        run: |
-          cd kernel
-          DTB_FILE=$(find out/arch/arm64/boot/dts/samsung -name "*r5q*eur*.dtb" | head -n 1)
-          if [ -z "$DTB_FILE" ]; then
-            DTB_FILE=$(find out/arch/arm64/boot/dts/samsung -name "sm8150-r5q*.dtb" | head -n 1)
-          fi
-          
-          cat out/arch/arm64/boot/Image.gz "$DTB_FILE" > out/arch/arm64/boot/Image.gz-dtb
-          git clone https://github.com/osm0sis/AnyKernel3.git
-          cp out/arch/arm64/boot/Image.gz-dtb AnyKernel3/Image.gz
-          
-          sed -i 's/device.name1=maguro/device.name1=r5q/g' AnyKernel3/anykernel.sh
-          sed -i 's/device.name2=toroplus/device.name2=r5qq/g' AnyKernel3/anykernel.sh
-          
-          cd AnyKernel3 && zip -r9 ../R5Q-A15-V16-FINAL.zip *
-
-      - name: Upload Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: Kernel-S20FE-A15-V16
-          path: R5Q-A15-V16-FINAL.zip
+          - name: Assemble Final ZIP
+                  run: |
+                    cd kernel
+                    # Căutăm orice fișier .dtb care conține r5q în tot folderul out/arch/arm64/boot/dts
+                    DTB_FILE=$(find out/arch/arm64/boot/dts -name "*r5q*.dtb" | head -n 1)
+                    
+                    # Verificăm dacă l-am găsit, altfel luăm primul sm8150 disponibil
+                    if [ -z "$DTB_FILE" ]; then
+                      DTB_FILE=$(find out/arch/arm64/boot/dts -name "sm8150*.dtb" | head -n 1)
+                    fi
+                    
+                    echo "Folosim DTB: $DTB_FILE"
+                    
+                    # Combinăm Imaginea cu Device Tree-ul (Image.gz-dtb este cerut de bootloader-ul Samsung)
+                    cat out/arch/arm64/boot/Image.gz "$DTB_FILE" > out/arch/arm64/boot/Image.gz-dtb
+                    
+                    # Pregătim AnyKernel3
+                    git clone https://github.com/osm0sis/AnyKernel3.git
+                    cp out/arch/arm64/boot/Image.gz-dtb AnyKernel3/Image.gz
+                    
+                    # Configurăm AnyKernel pentru R5Q
+                    sed -i 's/device.name1=maguro/device.name1=r5q/g' AnyKernel3/anykernel.sh
+                    sed -i 's/device.name2=toroplus/device.name2=r5qq/g' AnyKernel3/anykernel.sh
+                    sed -i 's/do.devicecheck=1/do.devicecheck=0/g' AnyKernel3/anykernel.sh
+                    
+                    cd AnyKernel3 && zip -r9 ../R5Q-A15-V17-FINAL.zip *
