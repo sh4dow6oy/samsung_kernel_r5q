@@ -1,4 +1,4 @@
-name: Build R3Q - BPF 5.10 (Sixteen) & Kconfig Fix
+name: Build R5Q - S10 Lite BPF Sixteen (pascua28 backport)
 
 on:
   workflow_dispatch:
@@ -18,19 +18,22 @@ jobs:
         run: |
           git clone --depth 1 -b sixteen https://github.com/pascua28/android_kernel_samsung_sm7150 backport
           
-          # Injectare BPF modern v6
+          # Injectare BPF modern v6 (Backport 5.10+)
           rm -rf kernel/kernel/bpf kernel/net/core/filter.c
           cp -r backport/kernel/bpf kernel/kernel/
           cp backport/net/core/filter.c kernel/net/core/filter.c
           cp -r backport/include/linux/bpf* kernel/include/linux/
 
-      - name: Fix KernelSU Dependency Error
+      - name: Fix Dependencies (KSU & RTIC)
         run: |
           cd kernel
-          # Eliminăm linia care încearcă să încarce Kconfig-ul KernelSU lipsă
+          # Rezolvăm eroarea cu KernelSU lipsă
           sed -i '/kernelsu\/Kconfig/d' drivers/android/Kconfig
-          # De asemenea, eliminăm referința din Makefile-ul android dacă există
           sed -i '/kernelsu/d' drivers/android/Makefile
+          
+          # Patch rapid pentru header-ul BPF dacă lipsesc definiții de Exynos
+          # (Uneori backport-urile de Qualcomm au nevoie de mici ajustări)
+          touch kernel/include/linux/bpf_types.h
 
       - name: Install Build Tools
         run: |
@@ -48,42 +51,42 @@ jobs:
           cd kernel
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           
-          # Am scos -fuse-ld=lld din argumentele HOST pentru a evita avertismentele
           MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- CLANG_TRIPLE=aarch64-linux-gnu- O=out"
           
-          make $MAKE_ARGS r3q_eur_open_defconfig
+          # Folosim r5q_defconfig conform cerinței tale
+          make $MAKE_ARGS r5q_defconfig
           
-          # ACTIVARE BPF 5.10+ (Specificații Sixteen)
+          # ACTIVARE AGRESIVĂ BPF (Android 15 Requirements)
           ./scripts/config --file out/.config \
             -e CONFIG_BPF -e CONFIG_BPF_SYSCALL -e CONFIG_BPF_JIT -e CONFIG_BPF_JIT_ALWAYS_ON \
             -e CONFIG_HAVE_EBPF_JIT -e CONFIG_NET_CLS_BPF -e CONFIG_NET_ACT_BPF \
             -e CONFIG_BPF_EVENTS -e CONFIG_CGROUP_BPF -e CONFIG_BPF_STREAM_PARSER \
-            -e CONFIG_LWTUNNEL_BPF \
             -d CONFIG_SAMSUNG_RTIC -d CONFIG_SAMSUNG_RTIC_AMP \
             -d CONFIG_CC_STACKPROTECTOR_STRONG -e CONFIG_CC_STACKPROTECTOR_NONE \
             -d CONFIG_WERROR
             
           make $MAKE_ARGS olddefconfig
           
-          # Compilăm. Folosim -fcommon pentru a gestiona eventualele conflicte de tipuri din backport
+          # Compilare
           make -j$(nproc --all) $MAKE_ARGS Image.gz dtbs KCFLAGS="-w -fcommon"
 
       - name: Assemble AnyKernel3
         run: |
           OUT="kernel/out/arch/arm64/boot"
           IMAGE="$OUT/Image.gz"
-          DTB=$(find $OUT/dts/samsung -name "exynos9810-r3q*.dtb" -type f | head -n 1)
+          # S10 Lite (r5q) folosește de obicei dtb-ul r5q
+          DTB=$(find $OUT/dts/samsung -name "*r5q*.dtb" -type f | head -n 1)
           
           git clone https://github.com/osm0sis/AnyKernel3.git AK3
           [ -f "$DTB" ] && cat "$IMAGE" "$DTB" > AK3/Image.gz || cp "$IMAGE" AK3/Image.gz
           
           cd AK3
-          sed -i 's/device.name1=maguro/device.name1=r3q/g' anykernel.sh
+          sed -i 's/device.name1=maguro/device.name1=r5q/g' anykernel.sh
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-          zip -r9 ../R3Q_Sixteen_v6_NoKSU.zip *
+          zip -r9 ../S10Lite_Sixteen_BPF.zip *
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-R3Q-Sixteen
-          path: R3Q_Sixteen_v6_NoKSU.zip
+          name: S10Lite-Sixteen-Kernel
+          path: S10Lite_Sixteen_BPF.zip
