@@ -1,4 +1,4 @@
-name: Build R5Q - Lumi BPF V35 (Assembler Fix)
+name: Build R5Q - Lumi BPF V36 (Assembler Fix)
 
 on:
   workflow_dispatch:
@@ -25,7 +25,7 @@ jobs:
           cd kernel
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           
-          # Definim argumentele de build cu cai explicite către LLVM
+          # Definim argumentele de build forțând toolchain-ul LLVM
           MAKE_ARGS="ARCH=arm64 \
             LLVM=1 \
             LLVM_IAS=1 \
@@ -38,11 +38,12 @@ jobs:
             STRIP=llvm-strip \
             CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
             O=out"
           
           make $MAKE_ARGS r5q_eur_open_defconfig
           
-          # FIX BPF & COMPILER CHECK
+          # FIX BPF & COMPILER STACK PROTECTOR
           ./scripts/config --file out/.config \
             -d CONFIG_CC_STACKPROTECTOR_STRONG \
             -e CONFIG_CC_STACKPROTECTOR_NONE \
@@ -50,13 +51,13 @@ jobs:
             -e CONFIG_HAVE_EBPF_JIT -e CONFIG_NET_CLS_BPF -e CONFIG_NET_ACT_BPF \
             -d CONFIG_UNMAP_KERNEL_AT_EL0 -d CONFIG_WERROR -e CONFIG_LTO_NONE
             
-          # Forțăm override-ul pe care l-am văzut funcționând
+          # Forțăm override-ul BPF
           echo "CONFIG_BPF_JIT=y" >> out/.config
           echo "CONFIG_BPF_JIT_ALWAYS_ON=y" >> out/.config
           
           make $MAKE_ARGS olddefconfig
           
-          # Compilare efectivă
+          # Compilare cu flag-uri de suprimare a erorilor de asamblare externe
           make -j$(nproc --all) $MAKE_ARGS Image.gz dtbs KCFLAGS="-w -fcommon -fno-stack-protector"
 
       - name: Assemble AnyKernel3
@@ -65,10 +66,7 @@ jobs:
           IMAGE="$OUT/Image.gz"
           DTB=$(find $OUT/dts -name "*r5q*.dtb" -type f | head -n 1)
 
-          if [ ! -f "$IMAGE" ]; then 
-            echo "EROARE: Image.gz nu a fost generat!"
-            exit 1
-          fi
+          if [ ! -f "$IMAGE" ]; then exit 1; fi
 
           git clone https://github.com/osm0sis/AnyKernel3.git AK3
           [ -f "$DTB" ] && cat "$IMAGE" "$DTB" > AK3/Image.gz || cp "$IMAGE" AK3/Image.gz
@@ -76,10 +74,10 @@ jobs:
           cd AK3
           sed -i 's/device.name1=maguro/device.name1=r5q/g' anykernel.sh
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-          zip -r9 ../S10Lite_V35_Fix_As.zip *
+          zip -r9 ../S10Lite_V36_BPF_Fixed.zip *
 
-      - name: Upload
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-V35
-          path: S10Lite_V35_Fix_As.zip
+          name: S10Lite-V36
+          path: S10Lite_V36_BPF_Fixed.zip
