@@ -1,4 +1,4 @@
-name: Build R5Q - S10 Lite A15 Final V19
+name: Build R5Q - S10 Lite A15 Final V20
 
 on:
   workflow_dispatch:
@@ -28,7 +28,7 @@ jobs:
           ccache python3 python-is-python3 libarchive-tools wget zstd libtinfo6 zip \
           gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi device-tree-compiler rsync git
 
-      - name: Setup Toolchain (Neutron Clang)
+      - name: Setup Toolchain
         run: |
           mkdir -p clang
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
@@ -89,7 +89,6 @@ jobs:
           
           make $MAKE_ARGS r5q_eur_open_defconfig
           
-          # Configurații BPF și DTBO
           ./scripts/config --file out/.config \
             -e CONFIG_BUILD_ARM64_DTBO_IMG \
             -d CONFIG_SCHED_WALT -d CONFIG_SCHED_CORE_CTL \
@@ -103,38 +102,32 @@ jobs:
 
       - name: Assemble AnyKernel3
         run: |
-          cd kernel
-          # Căutare robustă DTB și DTBO
-          DTB_PATH=$(find out/arch/arm64/boot/dts -name "*r5q*.dtb" -type f | head -n 1)
-          DTBO_PATH=$(find out/arch/arm64/boot -name "dtbo.img" -type f | head -n 1)
+          # Identificăm fișierele în out
+          DTB_PATH=$(find kernel/out/arch/arm64/boot/dts -name "*r5q*.dtb" -type f | head -n 1)
+          DTBO_PATH=$(find kernel/out/arch/arm64/boot -name "dtbo.img" -type f | head -n 1)
+          IMAGE_PATH="kernel/out/arch/arm64/boot/Image.gz"
+
+          # Creăm arhiva
+          git clone https://github.com/osm0sis/AnyKernel3.git AK3
           
-          if [ -z "$DTB_PATH" ]; then
-            echo "Eroare: DTB-ul pentru r5q nu a fost găsit!"
-            exit 1
-          fi
+          # Combinăm Image.gz cu DTB (Samsung Style)
+          cat "$IMAGE_PATH" "$DTB_PATH" > AK3/Image.gz
           
-          # Creare imagine combinată
-          cat out/arch/arm64/boot/Image.gz "$DTB_PATH" > Image.gz-dtb
-          
-          # Setup AnyKernel3
-          git clone https://github.com/osm0sis/AnyKernel3.git
-          cp Image.gz-dtb AnyKernel3/Image.gz
-          
+          # Copiem DTBO dacă există
           if [ -f "$DTBO_PATH" ]; then
-            cp "$DTBO_PATH" AnyKernel3/dtbo.img
-            echo "DTBO inclus în pachet."
+            cp "$DTBO_PATH" AK3/dtbo.img
           fi
+
+          # Configurare AnyKernel3
+          cd AK3
+          sed -i 's/device.name1=maguro/device.name1=r5q/g' anykernel.sh
+          sed -i 's/device.name2=toroplus/device.name2=SM-G770F/g' anykernel.sh
+          sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
           
-          # Config script flash
-          sed -i 's/device.name1=maguro/device.name1=r5q/g' AnyKernel3/anykernel.sh
-          sed -i 's/device.name2=toroplus/device.name2=SM-G770F/g' AnyKernel3/anykernel.sh
-          sed -i 's/do.devicecheck=1/do.devicecheck=0/g' AnyKernel3/anykernel.sh
-          
-          cd AnyKernel3
-          zip -r9 ../S10Lite_A15_V19.zip *
+          zip -r9 ../S10Lite_A15_V20.zip *
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-Kernel-V19
-          path: S10Lite_A15_V19.zip
+          name: S10Lite-Kernel-Final-V20
+          path: S10Lite_A15_V20.zip
