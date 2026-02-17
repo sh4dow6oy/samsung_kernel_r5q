@@ -1,4 +1,4 @@
-name: Build R5Q - LineageOS Final Stable
+name: Build R5Q - LineageOS V62 (Python Fix)
 
 on:
   workflow_dispatch:
@@ -18,10 +18,18 @@ jobs:
         run: |
           wget -O kernel/arch/arm64/configs/r5q_defconfig https://raw.githubusercontent.com/Roynas-Android-Playground/kernel_samsung_r3q/master/arch/arm64/configs/r5q_defconfig
 
-      - name: Install Build Tools
+      - name: Install Build Tools & Python 2 Fix
         run: |
           sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu bc libssl-dev python3 bison flex python2
+          # Instalăm dependențele fără python2 momentan
+          sudo apt-get install -y gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu bc libssl-dev python3 bison flex libncurses5
+          
+          # Instalăm manual Python 2 pentru scripturile de procesare DTB
+          sudo apt-get install -y python2-minimal || (wget http://archive.ubuntu.com/ubuntu/pool/universe/p/python2.7/python2.7-minimal_2.7.18-13ubuntu1.1_amd64.deb && sudo apt install ./python2.7-minimal_2.7.18-13ubuntu1.1_amd64.deb)
+          
+          # Creăm link simbolic dacă scripturile caută pur și simplu 'python'
+          sudo ln -sf /usr/bin/python3 /usr/bin/python
+
           mkdir -p clang
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
@@ -32,10 +40,9 @@ jobs:
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- CLANG_TRIPLE=aarch64-linux-gnu- O=out"
           
-          # 1. Aplicăm configurația de bază [cite: 1]
           make $MAKE_ARGS r5q_defconfig
           
-          # 2. Patch-uim config-ul pentru a evita Error 2 văzut în log 
+          # Dezactivăm WERROR pentru a trece de faza unde s-a blocat la WLAN anterior 
           ./scripts/config --file out/.config \
             -d CONFIG_SAMSUNG_RTIC \
             -d CONFIG_WERROR \
@@ -44,45 +51,33 @@ jobs:
             
           make $MAKE_ARGS olddefconfig
           
-          # 3. Compilare Image.gz și DTBs
-          # Folosim -k (keep going) pentru a nu opri tot build-ul la prima eroare non-critică
+          # Compilare Image.gz și DTBs
           make -j$(nproc --all) $MAKE_ARGS Image.gz dtbs KCFLAGS="-w -fcommon"
-
-      - name: Manual DTBO Assembly
-        run: |
-          cd kernel
-          # Căutăm scriptul mkdtboimg sau îl improvizăm pentru a genera dtbo.img
-          DTBO_FILES=$(find out/arch/arm64/boot/dts -name "*.dtbo")
-          if [ ! -z "$DTBO_FILES" ]; then
-            # Dacă sursa are suport, generăm imaginea
-            make $MAKE_ARGS dtbo.img || echo "Skipping internal dtbo target"
-          fi
 
       - name: Assemble AnyKernel3
         run: |
           OUT="kernel/out/arch/arm64/boot"
           git clone https://github.com/osm0sis/AnyKernel3.git AK3
           
-          # Copiem nucleul [cite: 1]
+          # Copiem Image.gz
           cp $OUT/Image.gz AK3/
           
-          # Copiem DTBO dacă există
+          # Căutăm și copiem DTBO dacă a fost generat
           find kernel/out -name "dtbo.img" -exec cp {} AK3/dtbo.img \;
           
-          # Concatenăm DTB la Image (Specific Samsung S10 Lite)
+          # Concatenăm DTB-ul SM8150 la Image (vital pentru S10 Lite) [cite: 3, 4]
           DTB=$(find $OUT/dts -name "*sm8150*.dtb" -o -name "*r5q*.dtb" | head -n 1)
           if [ -f "$DTB" ]; then
             cat $OUT/Image.gz $DTB > AK3/Image.gz
-            echo "DTB appended to Image.gz"
           fi
           
           cd AK3
           sed -i 's/device.name1=maguro/device.name1=r5q/g' anykernel.sh
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-          zip -r9 ../R5Q_Final_Lineage_Build.zip *
+          zip -r9 ../R5Q_Lineage_V62.zip *
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-R5Q-Stable
-          path: R5Q_Final_Lineage_Build.zip
+          name: Kernel-R5Q-V62
+          path: R5Q_Lineage_V62.zip
