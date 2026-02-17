@@ -1,4 +1,4 @@
-name: Build R5Q - BPF Lineage 23 V52 (Assembly Fix)
+name: Build R5Q - BPF Lineage 23 V53 (Robust Fix)
 
 on:
   workflow_dispatch:
@@ -23,31 +23,35 @@ jobs:
           cp -r backport/kernel/bpf kernel/kernel/
           cp backport/net/core/filter.c kernel/net/core/filter.c
           
-          # Injectare Headere agresivă
-          cp -f backport/include/linux/bpf* kernel/include/linux/
-          cp -f backport/include/linux/btf* kernel/include/linux/
+          # Injectare Headere (Folosim rsync sau cp forțat)
+          cp -rf backport/include/linux/bpf* kernel/include/linux/
+          cp -rf backport/include/linux/btf* kernel/include/linux/
           mkdir -p kernel/include/uapi/linux
-          cp -f backport/include/uapi/linux/bpf* kernel/include/uapi/linux/
-          cp -f backport/include/uapi/linux/btf* kernel/include/uapi/linux/
+          cp -rf backport/include/uapi/linux/bpf* kernel/include/uapi/linux/
+          cp -rf backport/include/uapi/linux/btf* kernel/include/uapi/linux/
 
-      - name: Fix Compatibility (Assembly Guarded)
+      - name: Fix Compatibility (With Checks)
         run: |
           cd kernel
-          # Forțăm includerea UAPI în header-ul de BPF
-          sed -i '1s/^/#include <uapi\/linux\/bpf.h>\n/' include/linux/bpf.h
+          # Verificăm și aplicăm fix-ul pentru bpf.h
+          if [ -f include/linux/bpf.h ]; then
+            sed -i '1i #include <uapi/linux/bpf.h>' include/linux/bpf.h
+          fi
           
-          # FIX CRITIC: Adăugăm __poll_t DOAR pentru codul C, protejând asamblorul
-          # Folosim __ASSEMBLY__ ca gardă
-          echo -e "\n#ifndef __ASSEMBLY__\n#ifndef __poll_t\ntypedef unsigned int __poll_t;\n#endif\n#endif" >> include/linux/types.h
+          # Verificăm și aplicăm fix-ul pentru types.h (Garda de asamblare)
+          if [ -f include/linux/types.h ]; then
+            echo -e "\n#ifndef __ASSEMBLY__\n#ifndef __poll_t\ntypedef unsigned int __poll_t;\n#endif\n#endif" >> include/linux/types.h
+          fi
           
-          # Eliminăm KSU
-          sed -i '/kernelsu\/Kconfig/d' drivers/android/Kconfig
-          sed -i '/kernelsu/d' drivers/android/Makefile
+          # Eliminăm KernelSU dacă referințele există
+          [ -f drivers/android/Kconfig ] && sed -i '/kernelsu\/Kconfig/d' drivers/android/Kconfig
+          [ -f drivers/android/Makefile ] && sed -i '/kernelsu/d' drivers/android/Makefile
           
-          # Header dummy pentru bpf_types
+          # Creăm bpf_types.h dacă lipsește
+          mkdir -p include/linux
           [ ! -f include/linux/bpf_types.h ] && echo "/* dummy */" > include/linux/bpf_types.h
 
-      - name: Install Tools & Setup Clang
+      - name: Install Build Tools
         run: |
           sudo apt-get update
           sudo apt-get install -y gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu bc libssl-dev python3 bison flex
@@ -61,8 +65,10 @@ jobs:
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- CLANG_TRIPLE=aarch64-linux-gnu- O=out"
           
+          # Generăm configurația pentru r5q
           make $MAKE_ARGS r5q_defconfig
           
+          # Activăm opțiunile BPF pentru Android 15
           ./scripts/config --file out/.config \
             -e CONFIG_BPF -e CONFIG_BPF_SYSCALL -e CONFIG_BPF_JIT -e CONFIG_BPF_JIT_ALWAYS_ON \
             -e CONFIG_HAVE_EBPF_JIT -e CONFIG_NET_CLS_BPF -e CONFIG_NET_ACT_BPF \
@@ -72,19 +78,19 @@ jobs:
             
           make $MAKE_ARGS olddefconfig
           
-          # Compilăm cu -fcommon. Am scos -D__poll_t din KCFLAGS pentru că îl gestionăm acum în types.h
+          # Compilarea propriu-zisă
           make -j$(nproc --all) $MAKE_ARGS Image.gz dtbs KCFLAGS="-w -fcommon"
 
-      - name: Assemble
+      - name: Assemble Zip
         run: |
           OUT="kernel/out/arch/arm64/boot"
           DTB=$(find $OUT/dts -name "*r5q*.dtb" -type f | head -n 1)
           git clone https://github.com/osm0sis/AnyKernel3.git AK3
           [ -f "$DTB" ] && cat "$OUT/Image.gz" "$DTB" > AK3/Image.gz || cp "$OUT/Image.gz" AK3/Image.gz
-          cd AK3 && zip -r9 ../R5Q_A15_BPF_V52.zip *
+          cd AK3 && zip -r9 ../R5Q_BPF_V53.zip *
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-V52
-          path: R5Q_A15_BPF_V52.zip
+          name: Kernel-R5Q-V53
+          path: R5Q_BPF_V53.zip
