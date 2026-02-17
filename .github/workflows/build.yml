@@ -1,4 +1,4 @@
-name: Build R5Q - LineageOS V58 (Fix DT Include)
+name: Build R5Q - LineageOS V59 (Manual DTBO)
 
 on:
   workflow_dispatch:
@@ -18,18 +18,6 @@ jobs:
         run: |
           wget -O kernel/arch/arm64/configs/r5q_defconfig https://raw.githubusercontent.com/Roynas-Android-Playground/kernel_samsung_r3q/master/arch/arm64/configs/r5q_defconfig
 
-      - name: Fix DT Bindings & Includes
-        run: |
-          cd kernel/arch/arm64/boot/dts
-          # Creăm legături între vendorii de dts pentru a evita erorile de "file not found"
-          mkdir -p samsung
-          # Uneori fișierele Samsung caută în ../qcom sau direct în dt-bindings
-          ln -s ../../../scripts/dtc/include-prefixes/dt-bindings dt-bindings || true
-          
-          # Fix pentru eroarea specifică din log: arm-gic.h
-          # Forțăm includerea căii de scripturi în calea de căutare a preprocesorului
-          cd ../../../..
-          
       - name: Install Build Tools
         run: |
           sudo apt-get update
@@ -38,25 +26,40 @@ jobs:
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
 
-      - name: Build Kernel & DTBO
+      - name: Build Kernel & DTBs
         run: |
           cd kernel
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
-          
-          # Folosim -I pentru a forța compilatorul să găsească headerele DT
-          EXTRA_INC="-I$(pwd)/scripts/dtc/include-prefixes"
-          
           MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- CLANG_TRIPLE=aarch64-linux-gnu- O=out"
           
+          # Configurare
           make $MAKE_ARGS r5q_defconfig
-          
-          # Activăm suportul DTBO și scoatem RTIC
           ./scripts/config --file out/.config -e CONFIG_BUILD_ARM64_DT_OVERLAY -d CONFIG_SAMSUNG_RTIC -d CONFIG_WERROR
-          
           make $MAKE_ARGS olddefconfig
           
-          # Compilăm cu extra include path pentru DTC
-          make -j$(nproc --all) $MAKE_ARGS Image.gz dtbs dtbo.img KCFLAGS="$EXTRA_INC -w -fcommon" DTC_FLAGS="-i $(pwd)/scripts/dtc/include-prefixes"
+          # Compilăm Kernel-ul și DTB-urile (Fără target-ul dtbo.img care dă eroare)
+          make -j$(nproc --all) $MAKE_ARGS Image.gz dtbs
+
+      - name: Create Manual DTBO
+        run: |
+          cd kernel
+          # Căutăm scriptul de generare DTBO în surse
+          MKDTBOIMG=$(find . -name mkdtboimg.py | head -n 1)
+          if [ -z "$MKDTBOIMG" ]; then
+             # Dacă nu există, îl descărcăm pe cel oficial AOSP
+             wget https://android.googlesource.com/platform/system/libufdt/+/refs/heads/master/utils/src/mkdtboimg.py?format=TEXT -O mkdtboimg_base64.txt
+             base64 -d mkdtboimg_base64.txt > mkdtboimg.py
+             MKDTBOIMG="./mkdtboimg.py"
+          fi
+          
+          # Căutăm fișierele .dtbo generate în out/
+          DTBO_FILES=$(find out/arch/arm64/boot/dts -name "*.dtbo")
+          if [ ! -z "$DTBO_FILES" ]; then
+            python3 $MKDTBOIMG create out/arch/arm64/boot/dtbo.img $DTBO_FILES
+            echo "DTBO.img created successfully."
+          else
+            echo "No .dtbo files found. Skipping DTBO generation."
+          fi
 
       - name: Assemble AnyKernel3
         run: |
@@ -66,23 +69,24 @@ jobs:
           # Copiem Image.gz
           cp $OUT/Image.gz AK3/
           
-          # Copiem DTBO
-          find kernel/out -name "dtbo.img" -exec cp {} AK3/dtbo.img \;
+          # Copiem DTBO dacă am reușit să-l creăm
+          [ -f "$OUT/dtbo.img" ] && cp $OUT/dtbo.img AK3/
           
-          # Concatenăm DTB la Image (r5q specific)
-          # Căutăm dtb-ul sm8150 sau r5q
+          # Concatenăm DTB la Image (pentru bootloader-ele Samsung S10 Lite)
+          # Căutăm dtb-ul sm8150 (platforma) sau r5q (device-ul)
           DTB=$(find $OUT/dts -name "*sm8150*.dtb" -o -name "*r5q*.dtb" | head -n 1)
           if [ -f "$DTB" ]; then
             cat $OUT/Image.gz $DTB > AK3/Image.gz
+            echo "Appended DTB to Image.gz"
           fi
           
           cd AK3
           sed -i 's/device.name1=maguro/device.name1=r5q/g' anykernel.sh
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-          zip -r9 ../R5Q_Lineage_V58.zip *
+          zip -r9 ../R5Q_Lineage_V59.zip *
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-R5Q-V58
-          path: R5Q_Lineage_V58.zip
+          name: Kernel-R5Q-V59
+          path: R5Q_Lineage_V59.zip
