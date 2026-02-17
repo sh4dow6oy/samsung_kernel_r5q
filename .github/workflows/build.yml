@@ -1,4 +1,4 @@
-name: Build R5Q - LineageOS V69 (Linker Override)
+name: Build R5Q - LineageOS V70 (Anti-Timeout)
 
 on:
   workflow_dispatch:
@@ -22,71 +22,63 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu bc libssl-dev python3 bison flex libncurses6 libncurses-dev zstd
-          
-          # Fix-uri biblioteci
           sudo ln -sf /usr/lib/x86_64-linux-gnu/libncurses.so.6 /usr/lib/x86_64-linux-gnu/libncurses.so.5
           sudo ln -sf /usr/lib/x86_64-linux-gnu/libtinfo.so.6 /usr/lib/x86_64-linux-gnu/libtinfo.so.5
           sudo ln -sf /usr/bin/python3 /usr/bin/python
-
           mkdir -p clang
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
 
-      - name: Build Kernel
+      - name: Build Kernel with Keep-Alive
         run: |
           cd kernel
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
-          
-          # Reducem paralelismul pentru a evita crash-urile tăcute de memorie la linkare
-          JOBS=$(nproc)
-          [ $JOBS -gt 4 ] && JOBS=4 
-          
           MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- CLANG_TRIPLE=aarch64-linux-gnu- O=out"
           
           make $MAKE_ARGS r5q_defconfig
-          
-          # Dezactivăm modulele care provoacă conflicte de simboluri la linkarea finală
-          ./scripts/config --file out/.config \
-            -d CONFIG_SAMSUNG_RTIC \
-            -d CONFIG_WERROR \
-            -d CONFIG_LTO_CLANG \
-            -d CONFIG_CFI_CLANG \
-            -e CONFIG_BUILD_ARM64_DT_OVERLAY
-            
+          ./scripts/config --file out/.config -d CONFIG_SAMSUNG_RTIC -d CONFIG_WERROR -d CONFIG_LTO_CLANG -d CONFIG_CFI_CLANG -e CONFIG_BUILD_ARM64_DT_OVERLAY
           make $MAKE_ARGS olddefconfig
+
+          # Script de Keep-Alive în fundal (previne timeout-ul de 10 min)
+          while true; do echo "Building... $(date)"; sleep 60; done &
+          KEEP_ALIVE_PID=$!
+
+          # Compilăm cu 2 thread-uri (safe mode pentru RAM)
+          make -j2 $MAKE_ARGS Image.gz dtbs KCFLAGS="-w -fcommon" LDFLAGS="--allow-multiple-definition" || exit 1
           
-          # PAS CRITIC: Forțăm linkerul să ignore erorile de tip "multiple definition" din driverele WLAN
-          # și erorile de secțiune. Folosim -k (keep going) pentru a extrage cât mai mult din build.
-          make -j$JOBS $MAKE_ARGS Image.gz dtbs \
-            KCFLAGS="-w -fcommon" \
-            LDFLAGS="--allow-multiple-definition --no-fatal-warnings" || echo "Build continued after minor errors"
+          # Omorâm keep-alive-ul la final
+          kill $KEEP_ALIVE_PID
+
+      - name: Manual DTBO Creation
+        run: |
+          cd kernel
+          # Dacă make dtbo.img eșuează, folosim scriptul intern pentru a-l crea din fișierele .dtbo generate
+          find out/arch/arm64/boot/dts -name "*.dtbo" > dtbo_list.txt
+          if [ -s dtbo_list.txt ]; then
+             python3 scripts/dtc/libfdt/mkdtboimg.py create out/arch/arm64/boot/dtbo.img $(cat dtbo_list.txt) || echo "Failed to create DTBO"
+          fi
 
       - name: Assemble AnyKernel3
         run: |
           OUT="kernel/out/arch/arm64/boot"
           git clone https://github.com/osm0sis/AnyKernel3.git AK3
-          
           if [ -f "$OUT/Image.gz" ]; then
             cp $OUT/Image.gz AK3/
-            
-            # Concatenare DTB (Specific r5q)
             DTB=$(find $OUT/dts -name "*r5q*.dtb" -o -name "*sm8150*.dtb" | head -n 1)
             [ -f "$DTB" ] && cat $OUT/Image.gz $DTB > AK3/Image.gz
-            
-            # Căutare DTBO
-            find kernel/out -name "dtbo.img" -exec cp {} AK3/dtbo.img \;
+            [ -f "$OUT/dtbo.img" ] && cp $OUT/dtbo.img AK3/
             
             cd AK3
             sed -i 's/device.name1=maguro/device.name1=r5q/g' anykernel.sh
             sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-            zip -r9 ../R5Q_Lineage_V69.zip *
+            zip -r9 ../R5Q_Build_V70.zip *
           else
-            echo "Eroare fatală: Imaginea kernel nu a fost generată nici după linkarea forțată."
+            echo "Kernel not found!"
             exit 1
           fi
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-R5Q-V69
-          path: R5Q_Lineage_V69.zip
+          name: Kernel-R5Q-V70
+          path: R5Q_Build_V70.zip
