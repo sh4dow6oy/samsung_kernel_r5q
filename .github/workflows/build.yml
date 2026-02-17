@@ -1,4 +1,4 @@
-name: Build R5Q - LineageOS V62 (Python Fix)
+name: Build R5Q - LineageOS V63 (Library Fix)
 
 on:
   workflow_dispatch:
@@ -18,16 +18,19 @@ jobs:
         run: |
           wget -O kernel/arch/arm64/configs/r5q_defconfig https://raw.githubusercontent.com/Roynas-Android-Playground/kernel_samsung_r3q/master/arch/arm64/configs/r5q_defconfig
 
-      - name: Install Build Tools & Python 2 Fix
+      - name: Install Build Tools (Modernized)
         run: |
           sudo apt-get update
-          # Instalăm dependențele fără python2 momentan
-          sudo apt-get install -y gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu bc libssl-dev python3 bison flex libncurses5
+          # Instalăm libncurses-dev și libncurses6 care înlocuiesc versiunea 5
+          sudo apt-get install -y gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu bc libssl-dev python3 bison flex libncurses-dev libncurses6
           
-          # Instalăm manual Python 2 pentru scripturile de procesare DTB
-          sudo apt-get install -y python2-minimal || (wget http://archive.ubuntu.com/ubuntu/pool/universe/p/python2.7/python2.7-minimal_2.7.18-13ubuntu1.1_amd64.deb && sudo apt install ./python2.7-minimal_2.7.18-13ubuntu1.1_amd64.deb)
-          
-          # Creăm link simbolic dacă scripturile caută pur și simplu 'python'
+          # Fix pentru scripturile care caută libncurses5
+          sudo ln -sf /usr/lib/x86_64-linux-gnu/libncurses.so.6 /usr/lib/x86_64-linux-gnu/libncurses.so.5
+          sudo ln -sf /usr/lib/x86_64-linux-gnu/libtinfo.so.6 /usr/lib/x86_64-linux-gnu/libtinfo.so.5
+
+          # Python 2 Fix - Descărcare directă pentru compatibilitate DTS
+          wget http://archive.ubuntu.com/ubuntu/pool/universe/p/python2.7/python2.7-minimal_2.7.18-13ubuntu1.1_amd64.deb || true
+          sudo apt install ./python2.7-minimal_2.7.18-13ubuntu1.1_amd64.deb || echo "Python 2 install failed, continuing with python3 symlink"
           sudo ln -sf /usr/bin/python3 /usr/bin/python
 
           mkdir -p clang
@@ -42,7 +45,7 @@ jobs:
           
           make $MAKE_ARGS r5q_defconfig
           
-          # Dezactivăm WERROR pentru a trece de faza unde s-a blocat la WLAN anterior 
+          # Dezactivăm WERROR și Samsung Security
           ./scripts/config --file out/.config \
             -d CONFIG_SAMSUNG_RTIC \
             -d CONFIG_WERROR \
@@ -51,7 +54,7 @@ jobs:
             
           make $MAKE_ARGS olddefconfig
           
-          # Compilare Image.gz și DTBs
+          # Compilare
           make -j$(nproc --all) $MAKE_ARGS Image.gz dtbs KCFLAGS="-w -fcommon"
 
       - name: Assemble AnyKernel3
@@ -59,13 +62,12 @@ jobs:
           OUT="kernel/out/arch/arm64/boot"
           git clone https://github.com/osm0sis/AnyKernel3.git AK3
           
-          # Copiem Image.gz
           cp $OUT/Image.gz AK3/
           
-          # Căutăm și copiem DTBO dacă a fost generat
+          # Copiem DTBO
           find kernel/out -name "dtbo.img" -exec cp {} AK3/dtbo.img \;
           
-          # Concatenăm DTB-ul SM8150 la Image (vital pentru S10 Lite) [cite: 3, 4]
+          # Concatenăm DTB (r5q)
           DTB=$(find $OUT/dts -name "*sm8150*.dtb" -o -name "*r5q*.dtb" | head -n 1)
           if [ -f "$DTB" ]; then
             cat $OUT/Image.gz $DTB > AK3/Image.gz
@@ -74,10 +76,10 @@ jobs:
           cd AK3
           sed -i 's/device.name1=maguro/device.name1=r5q/g' anykernel.sh
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-          zip -r9 ../R5Q_Lineage_V62.zip *
+          zip -r9 ../R5Q_Lineage_V63.zip *
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-R5Q-V62
-          path: R5Q_Lineage_V62.zip
+          name: Kernel-R5Q-V63
+          path: R5Q_Lineage_V63.zip
