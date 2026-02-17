@@ -1,4 +1,4 @@
-name: Build R5Q - LineageOS V63 (Library Fix)
+name: Build R5Q - LineageOS V66 (Mainey EUR Fix)
 
 on:
   workflow_dispatch:
@@ -10,76 +10,80 @@ jobs:
       - name: Checkout LineageOS SM8150
         uses: actions/checkout@v4
         with:
-          repository: nzlnice/kernel_qcom_sm8150
-          ref: lineage-23.0
+          repository: LineageOS/android_kernel_qcom_sm8150
+          ref: lineage-20
           path: kernel
 
-      - name: Download r5q_defconfig
+      - name: Download Correct Defconfig
         run: |
-          wget -O kernel/arch/arm64/configs/r5q_defconfig https://raw.githubusercontent.com/Roynas-Android-Playground/kernel_samsung_r3q/master/arch/arm64/configs/r5q_defconfig
+          # Descarcă fișierul r5q_eur_open_defconfig și îl salvează ca r5q_defconfig pentru simplitate
+          wget -O kernel/arch/arm64/configs/r5q_defconfig https://raw.githubusercontent.com/mainey/android_kernel_samsung_r5q/lineage-19.0/arch/arm64/configs/r5q_eur_open_defconfig
 
-      - name: Install Build Tools (Modernized)
+      - name: Install Build Tools
         run: |
           sudo apt-get update
-          # Instalăm libncurses-dev și libncurses6 care înlocuiesc versiunea 5
-          sudo apt-get install -y gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu bc libssl-dev python3 bison flex libncurses-dev libncurses6
+          sudo apt-get install -y gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu bc libssl-dev python3 bison flex libncurses6 libncurses-dev
           
-          # Fix pentru scripturile care caută libncurses5
+          # Fix-uri de biblioteci pentru compatibilitate
           sudo ln -sf /usr/lib/x86_64-linux-gnu/libncurses.so.6 /usr/lib/x86_64-linux-gnu/libncurses.so.5
           sudo ln -sf /usr/lib/x86_64-linux-gnu/libtinfo.so.6 /usr/lib/x86_64-linux-gnu/libtinfo.so.5
-
-          # Python 2 Fix - Descărcare directă pentru compatibilitate DTS
-          wget http://archive.ubuntu.com/ubuntu/pool/universe/p/python2.7/python2.7-minimal_2.7.18-13ubuntu1.1_amd64.deb || true
-          sudo apt install ./python2.7-minimal_2.7.18-13ubuntu1.1_amd64.deb || echo "Python 2 install failed, continuing with python3 symlink"
           sudo ln -sf /usr/bin/python3 /usr/bin/python
 
           mkdir -p clang
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
 
-      - name: Build Kernel & DTBs
+      - name: Build Kernel
         run: |
           cd kernel
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- CLANG_TRIPLE=aarch64-linux-gnu- O=out"
           
+          # Utilizăm fișierul descărcat anterior
           make $MAKE_ARGS r5q_defconfig
           
-          # Dezactivăm WERROR și Samsung Security
+          # Optimizări pentru stabilitatea compilării pe LineageOS 20
           ./scripts/config --file out/.config \
             -d CONFIG_SAMSUNG_RTIC \
             -d CONFIG_WERROR \
             -e CONFIG_BUILD_ARM64_DT_OVERLAY \
-            -d CONFIG_SECURITY_DEFX
+            -d CONFIG_LTO_CLANG \
+            -d CONFIG_CFI_CLANG
             
           make $MAKE_ARGS olddefconfig
           
-          # Compilare
-          make -j$(nproc --all) $MAKE_ARGS Image.gz dtbs KCFLAGS="-w -fcommon"
+          # Compilare efectivă
+          make -j$(nproc --all) $MAKE_ARGS Image.gz dtbs KCFLAGS="-w -fcommon" LDFLAGS="--allow-multiple-definition"
 
       - name: Assemble AnyKernel3
         run: |
           OUT="kernel/out/arch/arm64/boot"
           git clone https://github.com/osm0sis/AnyKernel3.git AK3
           
-          cp $OUT/Image.gz AK3/
-          
-          # Copiem DTBO
-          find kernel/out -name "dtbo.img" -exec cp {} AK3/dtbo.img \;
-          
-          # Concatenăm DTB (r5q)
-          DTB=$(find $OUT/dts -name "*sm8150*.dtb" -o -name "*r5q*.dtb" | head -n 1)
-          if [ -f "$DTB" ]; then
-            cat $OUT/Image.gz $DTB > AK3/Image.gz
+          if [ -f "$OUT/Image.gz" ]; then
+            cp $OUT/Image.gz AK3/
+            
+            # Căutăm DTB pentru concatenare (Samsung r5q are nevoie de asta pentru bootloader)
+            DTB=$(find $OUT/dts -name "*sm8150*.dtb" -o -name "*r5q*.dtb" | head -n 1)
+            if [ -f "$DTB" ]; then
+              cat $OUT/Image.gz $DTB > AK3/Image.gz
+              echo "DTB found and appended: $DTB"
+            fi
+            
+            # Încercăm să preluăm DTBO
+            find kernel/out -name "dtbo.img" -exec cp {} AK3/dtbo.img \;
+            
+            cd AK3
+            sed -i 's/device.name1=maguro/device.name1=r5q/g' anykernel.sh
+            sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
+            zip -r9 ../R5Q_Lineage20_Final.zip *
+          else
+            echo "Eroare: Image.gz nu a fost generat!"
+            exit 1
           fi
-          
-          cd AK3
-          sed -i 's/device.name1=maguro/device.name1=r5q/g' anykernel.sh
-          sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-          zip -r9 ../R5Q_Lineage_V63.zip *
 
-      - name: Upload
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-R5Q-V63
-          path: R5Q_Lineage_V63.zip
+          name: Kernel-R5Q-EUR
+          path: R5Q_Lineage20_Final.zip
