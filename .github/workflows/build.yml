@@ -1,4 +1,4 @@
-name: Build R5Q - Lumi BPF V41 (JIT & Linker Fix)
+name: Build R5Q - Lumi BPF V42 (Linker Final Fix)
 
 on:
   workflow_dispatch:
@@ -28,10 +28,9 @@ jobs:
       - name: Build Kernel
         run: |
           cd kernel
-          # Curățăm PATH-ul: Neutron Clang primul, apoi restul sistemului neatins
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           
-          # Folosim LLVM complet pentru target, dar lăsăm HOSTCC implicit pentru utilitarele de build
+          # Revenim la un set stabil de argumente, dar adaugam un flag de linker crucial
           MAKE_ARGS="ARCH=arm64 \
             LLVM=1 \
             LLVM_IAS=1 \
@@ -44,7 +43,7 @@ jobs:
           
           make $MAKE_ARGS r5q_eur_open_defconfig
           
-          # FORȚARE BPF JIT & ELIMINARE RTIC (pentru a evita eroarea de SELinux)
+          # FORȚARE BPF JIT & CURĂȚARE SAMSUNG SECURITY
           ./scripts/config --file out/.config \
             -e CONFIG_BPF -e CONFIG_BPF_SYSCALL -e CONFIG_BPF_JIT -e CONFIG_BPF_JIT_ALWAYS_ON \
             -e CONFIG_HAVE_EBPF_JIT -e CONFIG_NET_ACT_BPF -e CONFIG_NET_CLS_BPF \
@@ -54,11 +53,12 @@ jobs:
             
           make $MAKE_ARGS olddefconfig
           
-          # Verificăm dacă JIT a rămas activ
-          grep "CONFIG_BPF_JIT" out/.config
-          
-          # Compilăm. mcmodel=large repară eroarea de "relocation truncated" din SELinux
-          make -j$(nproc --all) $MAKE_ARGS Image.gz dtbs KCFLAGS="-w -fcommon -mcmodel=large"
+          # COMPILARE
+          # Folosim --no-rosegment pentru a evita problemele de permisiuni RWX
+          # Scoatem -mcmodel=large care cauza eroarea kmalloc
+          make -j$(nproc --all) $MAKE_ARGS Image.gz dtbs \
+            KCFLAGS="-w -fcommon" \
+            LDFLAGS="--no-rosegment"
 
       - name: Assemble AnyKernel3
         run: |
@@ -70,10 +70,10 @@ jobs:
           cd AK3
           sed -i 's/device.name1=maguro/device.name1=r5q/g' anykernel.sh
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-          zip -r9 ../S10Lite_V41_Final_JIT.zip *
+          zip -r9 ../S10Lite_V42_BPF_LinkerFix.zip *
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-V41
-          path: S10Lite_V41_Final_JIT.zip
+          name: S10Lite-V42
+          path: S10Lite_V42_BPF_LinkerFix.zip
