@@ -94,7 +94,7 @@ jobs:
           cd AK3 && zip -r9 ../R5Q_BPF_V54.zip *
 
       - name: Upload
-        uses: upload-artifact@v4
+        uses: actions/upload-artifact@v4
         with:
           name: Kernel-R5Q-V54
           path: R5Q_BPF_V54.zip
