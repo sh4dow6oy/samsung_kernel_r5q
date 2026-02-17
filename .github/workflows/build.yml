@@ -1,4 +1,4 @@
-name: Build R5Q - BPF Lineage 23 V54
+name: Build R5Q - Pure LineageOS (No BPF Backport)
 
 on:
   workflow_dispatch:
@@ -7,56 +7,17 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Base (Roynas)
+      - name: Checkout LineageOS SM8150
         uses: actions/checkout@v4
         with:
-          repository: Roynas-Android-Playground/kernel_samsung_r3q
-          ref: master
+          repository: LineageOS/android_kernel_qcom_sm8150
+          ref: lineage-20
           path: kernel
 
-      - name: Download BPF Backport (Lineage 23)
+      - name: Download r5q_defconfig from Roynas
         run: |
-          git clone --depth 1 -b bpf-lineage23 https://github.com/pascua28/android_kernel_samsung_sm7150 backport
-          
-          # Injectare Cod Sursă v7
-          rm -rf kernel/kernel/bpf kernel/net/core/filter.c
-          cp -r backport/kernel/bpf kernel/kernel/
-          cp backport/net/core/filter.c kernel/net/core/filter.c
-          
-          # Injectare Headere
-          cp -rf backport/include/linux/bpf* kernel/include/linux/ || true
-          cp -rf backport/include/linux/btf* kernel/include/linux/ || true
-          mkdir -p kernel/include/uapi/linux
-          cp -rf backport/include/uapi/linux/bpf* kernel/include/uapi/linux/ || true
-          cp -rf backport/include/uapi/linux/btf* kernel/include/uapi/linux/ || true
-
-      - name: Fix Compatibility (Safe Mode)
-        run: |
-          cd kernel
-          # Folosim if/then pentru a evita crash-ul scriptului sub 'set -e'
-          if [ -f include/linux/bpf.h ]; then
-            sed -i '1i #include <uapi/linux/bpf.h>' include/linux/bpf.h
-          fi
-          
-          if [ -f include/linux/types.h ]; then
-            # Curățăm orice tentativă anterioară și adăugăm garda corect
-            sed -i '/__poll_t/d' include/linux/types.h || true
-            echo -e "\n#ifndef __ASSEMBLY__\n#ifndef __poll_t\ntypedef unsigned int __poll_t;\n#endif\n#endif" >> include/linux/types.h
-          fi
-          
-          # Eliminăm referințele KernelSU într-un mod care nu oprește scriptul
-          if [ -f drivers/android/Kconfig ]; then
-            sed -i '/kernelsu\/Kconfig/d' drivers/android/Kconfig || true
-          fi
-          if [ -f drivers/android/Makefile ]; then
-            sed -i '/kernelsu/d' drivers/android/Makefile || true
-          fi
-          
-          # Asigurăm existența folderului include/linux
-          mkdir -p include/linux
-          if [ ! -f include/linux/bpf_types.h ]; then
-            echo "/* dummy */" > include/linux/bpf_types.h
-          fi
+          # Preluăm doar configurația hardware specifică S10 Lite
+          wget -O kernel/arch/arm64/configs/r5q_defconfig https://raw.githubusercontent.com/Roynas-Android-Playground/kernel_samsung_r3q/master/arch/arm64/configs/r5q_defconfig
 
       - name: Install Build Tools
         run: |
@@ -72,29 +33,34 @@ jobs:
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- CLANG_TRIPLE=aarch64-linux-gnu- O=out"
           
+          # Aplicăm configurația r5q
           make $MAKE_ARGS r5q_defconfig
           
-          # Activare BPF
-          ./scripts/config --file out/.config \
-            -e CONFIG_BPF -e CONFIG_BPF_SYSCALL -e CONFIG_BPF_JIT -e CONFIG_BPF_JIT_ALWAYS_ON \
-            -e CONFIG_HAVE_EBPF_JIT -e CONFIG_NET_CLS_BPF -e CONFIG_NET_ACT_BPF \
-            -e CONFIG_BPF_EVENTS -e CONFIG_CGROUP_BPF \
-            -d CONFIG_SAMSUNG_RTIC -d CONFIG_CC_STACKPROTECTOR_STRONG \
-            -e CONFIG_CC_STACKPROTECTOR_NONE -d CONFIG_WERROR
-            
+          # Opțional: Dezactivăm Samsung RTIC dacă dă erori de securitate la boot
+          ./scripts/config --file out/.config -d CONFIG_SAMSUNG_RTIC -d CONFIG_WERROR
+          
           make $MAKE_ARGS olddefconfig
-          make -j$(nproc --all) $MAKE_ARGS Image.gz dtbs KCFLAGS="-w -fcommon"
+          
+          # Compilare standard
+          make -j$(nproc --all) $MAKE_ARGS Image.gz dtbs
 
-      - name: Assemble
+      - name: Assemble AnyKernel3
         run: |
           OUT="kernel/out/arch/arm64/boot"
-          DTB=$(find $OUT/dts -name "*r5q*.dtb" -type f | head -n 1)
+          IMAGE="$OUT/Image.gz"
+          # Căutăm orice DTB relevant pentru platforma sm8150
+          DTB=$(find $OUT/dts -name "*sm8150*.dtb" -type f | head -n 1)
+          
           git clone https://github.com/osm0sis/AnyKernel3.git AK3
-          [ -f "$DTB" ] && cat "$OUT/Image.gz" "$DTB" > AK3/Image.gz || cp "$OUT/Image.gz" AK3/Image.gz
-          cd AK3 && zip -r9 ../R5Q_BPF_V54.zip *
+          [ -f "$DTB" ] && cat "$IMAGE" "$DTB" > AK3/Image.gz || cp "$IMAGE" AK3/Image.gz
+          
+          cd AK3
+          sed -i 's/device.name1=maguro/device.name1=r5q/g' anykernel.sh
+          sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
+          zip -r9 ../R5Q_Lineage_Pure.zip *
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-R5Q-V54
-          path: R5Q_BPF_V54.zip
+          name: Kernel-R5Q-Pure
+          path: R5Q_Lineage_Pure.zip
