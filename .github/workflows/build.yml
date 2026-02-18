@@ -1,11 +1,11 @@
-name: R5Q LumiBPF - V6 BPF Type Fix
+name: R5Q LumiBPF - V31 Final JIT-DTBO
 
 on:
   workflow_dispatch:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout Lumi Kernel
         uses: actions/checkout@v4
@@ -14,24 +14,25 @@ jobs:
           ref: rawr-bpf
           path: kernel
 
-      - name: Setup Toolchain (Neutron Clang)
+      - name: Install Build Tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y bc libssl-dev python3 bison flex libncurses6 libncurses-dev git gcc-aarch64-linux-gnu zstd device-tree-compiler
-          sudo ln -sf /usr/bin/python3 /usr/bin/python
+          sudo apt-get install -y bc build-essential flex bison lz4 libssl-dev libelf-dev \
+          ccache python3 python-is-python3 libarchive-tools wget zstd libtinfo6 zip \
+          gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi device-tree-compiler rsync git
+
+      - name: Setup Toolchain (Neutron Clang)
+        run: |
           mkdir -p clang
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
 
-      - name: Build Phase
+      - name: Build Kernel & DTBO
         run: |
           cd kernel
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           
-          # Fix pentru erorile de redefinire 'bool'/'true'/'false'
-          # Adăugăm flag-uri care forțează Clang să folosească definițiile din kernel
-          EXTRA_CFLAGS="-fno-builtin-bool -fno-builtin-stdbool.h"
-          
+          # Argumente de compilare standard
           MAKE_ARGS="ARCH=arm64 \
                      LLVM=1 \
                      LLVM_IAS=1 \
@@ -39,55 +40,76 @@ jobs:
                      LD=ld.lld \
                      CROSS_COMPILE=aarch64-linux-gnu- \
                      CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-                     KCFLAGS=$EXTRA_CFLAGS \
                      O=out"
-          
-          # 1. Configurare nativă R5Q
+
+          # 1. Aplicăm defconfig-ul nativ r5q
           make $MAKE_ARGS r5q_eur_open_defconfig
-          
-          # 2. Activare flag-uri proiect conform Makefile-ului tău 
+
+          # 2. HARD-ENFORCE eBPF JIT & PROJECT FLAGS
+          # Folosim flag-ul CONFIG_SEC_R5Q_PROJECT pentru a activa Makefile-ul de DTBO 
           ./scripts/config --file out/.config \
             -e CONFIG_SEC_R5Q_PROJECT \
+            -e CONFIG_BPF \
+            -e CONFIG_BPF_SYSCALL \
+            -e CONFIG_BPF_JIT \
+            -e CONFIG_BPF_JIT_ALWAYS_ON \
+            -e CONFIG_HAVE_EBPF_JIT \
+            -e CONFIG_NET_CLS_BPF \
+            -e CONFIG_NET_ACT_BPF \
+            -e CONFIG_CGROUP_BPF \
+            -e CONFIG_BPF_EVENTS \
             -e CONFIG_BUILD_ARM64_DT_OVERLAY \
             -e CONFIG_OF_LIBFDT_OVERLAY \
-            -d CONFIG_SAMSUNG_RTIC \
-            -d CONFIG_WERROR
-            
+            -d CONFIG_UNMAP_KERNEL_AT_EL0 \
+            -d CONFIG_WERROR \
+            -e CONFIG_LTO_NONE
+
           make $MAKE_ARGS olddefconfig
-          
-          # 3. Compilare Kernel + DTBs
-          make -j$(nproc --all) $MAKE_ARGS V=1 Image.gz dtbs
+
+          # 3. Compilare efectivă
+          # Folosim -fcommon pentru a evita erorile de redefinire bool/true/false
+          make -j$(nproc --all) $MAKE_ARGS Image.gz dtbs KCFLAGS="-w -fcommon"
 
       - name: Assemble AnyKernel3
         run: |
           OUT="kernel/out/arch/arm64/boot"
-          if [ -f "$OUT/Image.gz" ]; then
-            git clone https://github.com/osm0sis/AnyKernel3.git AK3
-            cp $OUT/Image.gz AK3/
-            
-            # Căutăm DTB-ul principal
-            DTB=$(find $OUT/dts -name "*r5q*.dtb" | head -n 1)
-            if [ -f "$DTB" ]; then
-                cat $OUT/Image.gz $DTB > AK3/Image.gz
-            fi
-            
-            # Colectăm overlay-urile r5q listate în Makefile 
-            # Ex: sm8150-sec-r5q-overlay-r00.dtbo
-            echo "Colectăm overlay-urile compilate..."
-            find kernel/out/arch/arm64/boot/dts/samsung/renovation -name "sm8150-sec-r5q-*.dtbo" -exec cp {} AK3/ \;
-            
-            # Verificăm dacă există un dtbo.img unitar generat de sursă
-            DTBO_IMG=$(find kernel/out -name "dtbo.img" | head -n 1)
-            [ -f "$DTBO_IMG" ] && cp $DTBO_IMG AK3/dtbo.img
-            
-            cd AK3 && zip -r9 ../R5Q_Lumi_V6.zip *
-          else
-            echo "Eroare: Compilarea a eșuat la faza de linkare sau tipuri de date."
+          IMAGE="$OUT/Image.gz"
+          
+          if [ ! -f "$IMAGE" ]; then 
+            echo "ERROR: Kernel image not found. Build failed."
             exit 1
           fi
 
-      - name: Upload
+          git clone https://github.com/osm0sis/AnyKernel3.git AK3
+          
+          # Concatenare DTB principal pentru R5Q
+          DTB=$(find $OUT/dts -name "*r5q*.dtb" -type f | head -n 1)
+          if [ -f "$DTB" ]; then
+            cat "$IMAGE" "$DTB" > AK3/Image.gz
+            echo "SUCCESS: Appended R5Q DTB to Image.gz"
+          else
+            cp "$IMAGE" AK3/Image.gz
+            echo "WARNING: R5Q DTB not found, using raw Image.gz"
+          fi
+
+          # COLECTARE DTBO (Conform Makefile-ului r5q: r00, r01, r07, r08, r09) 
+          # Căutăm exact pattern-ul definit în sursa ta [cite: 1, 2]
+          echo "Collecting Samsung DTBO fragments..."
+          find kernel/out/arch/arm64/boot/dts/samsung/renovation -name "sm8150-sec-r5q-overlay-*.dtbo" -exec cp {} AK3/ \;
+
+          # Verificăm dacă a ieșit și un dtbo.img unitar
+          [ -f "kernel/out/dtbo.img" ] && cp kernel/out/dtbo.img AK3/dtbo.img
+
+          # Patch AnyKernel3 pentru R5Q
+          cd AK3
+          sed -i 's/device.name1=maguro/device.name1=r5q/g' anykernel.sh
+          sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
+          
+          # Împachetare finală
+          zip -r9 ../R5Q_Lumi_V31_Final.zip *
+
+      - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-R5Q-V6
-          path: R5Q_Lumi_V6.zip
+          name: S10Lite-Lumi-BPF-Final
+          path: R5Q_Lumi_V31_Final.zip
