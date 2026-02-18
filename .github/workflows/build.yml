@@ -1,4 +1,4 @@
-name: Build R5Q - V111 Fix Makefile
+name: Build R5Q - V112 Header Fix
 
 on:
   workflow_dispatch:
@@ -14,25 +14,29 @@ jobs:
           ref: lineage-23.2
           path: kernel
 
-      - name: DTS & Config Surgery
+      - name: DTS & Full Header Transplant
         run: |
           # 1. Clonăm Mainey
           git clone --depth=1 https://github.com/mainey/android_kernel_samsung_r5q -b lineage-19.0 mainey_source
           
-          # 2. Transplant folder samsung
+          # 2. Transplant folder samsung DTS
           mkdir -p kernel/arch/arm64/boot/dts/samsung
           cp -r mainey_source/arch/arm64/boot/dts/samsung/* kernel/arch/arm64/boot/dts/samsung/
           
-          # 3. Transplant Headere Bindings (Directly into include)
-          cp -r mainey_source/include/dt-bindings/* kernel/include/dt-bindings/
+          # 3. Transplant TOTAL de Headere (Bindings)
+          # Copiem absolut tot ce e în dt-bindings din Mainey în Ducky
+          mkdir -p kernel/include/dt-bindings
+          cp -rf mainey_source/include/dt-bindings/* kernel/include/dt-bindings/
           
-          # 4. Patch Makefile principal (curat)
-          echo 'subdir-y += samsung' >> kernel/arch/arm64/boot/dts/Makefile
+          # 4. Patch Makefile principal
+          sed -i '1i subdir-y += samsung' kernel/arch/arm64/boot/dts/Makefile
           
-          # 5. Fix Makefile Samsung (Simplificat pentru a evita erori de sintaxă)
-          # Pur și simplu îi spunem să compileze tot ce găsește în folder
-          printf "dtbo-y += \$(patsubst %.dts,%.dtbo,\$(notdir \$(wildcard \$(srctree)/\$(src)/*_overlay.dts)))\n" > kernel/arch/arm64/boot/dts/samsung/Makefile
-          printf "obj-y += \$(patsubst %.dts,%.dtb,\$(notdir \$(wildcard \$(srctree)/\$(src)/*.dts)))\n" >> kernel/arch/arm64/boot/dts/samsung/Makefile
+          # 5. Fix Makefile Samsung (Mai robust)
+          # Generăm reguli manuale pentru a fi siguri că găsește fișierele
+          cd kernel/arch/arm64/boot/dts/samsung/
+          echo "dtbo-y += \$(patsubst %.dts,%.dtbo,\$(wildcard *_overlay.dts))" > Makefile
+          echo "obj-y += \$(patsubst %.dts,%.dtb,\$(wildcard *.dts))" >> Makefile
+          cd ../../../../../
 
           # 6. INJECTARE CONFIG R5Q
           cat <<EOF >> kernel/arch/arm64/configs/vendor/sm8150-perf_defconfig
@@ -61,12 +65,15 @@ jobs:
         run: |
           cd kernel
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
+          # Adăugăm flag-ul de include suplimentar pentru siguranță
+          export KCFLAGS="-I$GITHUB_WORKSPACE/kernel/include"
+          
           MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
           
           make $MAKE_ARGS vendor/sm8150-perf_defconfig
           make $MAKE_ARGS olddefconfig
           
-          # Build target
+          # Încercăm build-ul
           make -j$(nproc --all) $MAKE_ARGS V=1 Image.gz dtbs dtbo.img || make -j$(nproc --all) $MAKE_ARGS V=1 Image.gz dtbs
 
       - name: Assemble
@@ -83,13 +90,14 @@ jobs:
             else
                 find kernel/out -name "*.dtbo" -exec cp {} AK3/ \;
             fi
-            cd AK3 && zip -r9 ../R5Q_Final_V111.zip *
+            cd AK3 && zip -r9 ../R5Q_Final_V112.zip *
           else
+            echo "Eroare: Încă lipsesc headere sau eroare de sintaxă în DTS."
             exit 1
           fi
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-R5Q-V111
-          path: R5Q_Final_V111.zip
+          name: Kernel-R5Q-V112
+          path: R5Q_Final_V112.zip
