@@ -77,7 +77,7 @@ jobs:
           fi
 
       - name: Upload
-        uses: upload-artifact@v4
+        uses: actions/upload-artifact@v4
         with:
           name: Kernel-R5Q-Neutron
           path: R5Q_Neutron_LTO_V103.zip
