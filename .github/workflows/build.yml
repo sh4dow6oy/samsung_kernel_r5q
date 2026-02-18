@@ -1,80 +1,83 @@
-name: Build R5Q - Ducky Source + Mainey Config
+name: Build R5Q - Ducky 4.19 + Neutron Clang (LTO)
 
 on:
   workflow_dispatch:
 
 jobs:
   build:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest # Neutron recomandă cel mai nou mediu
     steps:
-      - name: Checkout DuckyDuck Kernel (Source)
+      - name: Checkout DuckyDuck Kernel (4.19)
         uses: actions/checkout@v4
         with:
           repository: duckyduckG/android_kernel_qcom_sm8150_419
           ref: lineage-23.2
           path: kernel
 
-      - name: Import Mainey Config (r5q_eur_open)
+      - name: Import Mainey Config (r5q)
         run: |
-          # Descărcăm defconfig-ul de r5q direct în folderul de configs al sursei noi
           wget -O kernel/arch/arm64/configs/r5q_imported_defconfig https://raw.githubusercontent.com/mainey/android_kernel_samsung_r5q/lineage-19.0/arch/arm64/configs/r5q_eur_open_defconfig
 
-      - name: Install Build Tools
+      - name: Setup Neutron Clang
+        run: |
+          mkdir -p clang
+          # Descarcă ultima versiune stabilă de Neutron
+          curl -LSs "https://raw.githubusercontent.com/Neutron-Toolchains/antman/main/antman" | bash -s -- --install=clang
+          mv bin clang/bin || true # Ajustare path dacă e nevoie
+
+      - name: Install Dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y bc libssl-dev python3 bison flex libncurses6 libncurses-dev zstd git gcc-aarch64-linux-gnu
-          sudo ln -sf /usr/bin/python3 /usr/bin/python
-          git clone --depth=1 https://github.com/kdrag0n/proton-clang.git clang-proton
 
-      - name: Configure & Patch
+      - name: Build with Neutron & LTO
         run: |
           cd kernel
-          export PATH="$GITHUB_WORKSPACE/clang-proton/bin:$PATH"
-          MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=0 CC=clang LD=ld.lld CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
+          export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           
-          # Aplicăm config-ul importat
+          # Neutron funcționează cel mai bine cu LLVM=1 și LLVM_IAS=1
+          MAKE_ARGS="ARCH=arm64 \
+                     LLVM=1 \
+                     LLVM_IAS=1 \
+                     CC=clang \
+                     LD=ld.lld \
+                     CROSS_COMPILE=aarch64-linux-gnu- \
+                     CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+                     O=out"
+          
           make $MAKE_ARGS r5q_imported_defconfig
           
-          # Ajustări pentru a preveni erorile de compilare pe 4.19
+          # Activăm LTO pentru performanță maximă
           ./scripts/config --file out/.config \
+            -e CONFIG_LTO_CLANG \
+            -e CONFIG_LTO_CLANG_THIN \
+            -d CONFIG_LTO_NONE \
             -d CONFIG_SAMSUNG_RTIC \
-            -d CONFIG_WERROR \
-            -d CONFIG_SECURITY_DEFEX \
-            -e CONFIG_BUILD_ARM64_DT_OVERLAY
-          
+            -d CONFIG_WERROR
+            
           make $MAKE_ARGS olddefconfig
-
-      - name: Build Kernel
-        run: |
-          cd kernel
-          export PATH="$GITHUB_WORKSPACE/clang-proton/bin:$PATH"
-          MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=0 CC=clang LD=ld.lld CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
           
-          # Build propriu-zis
+          # Start build
           make -j$(nproc --all) $MAKE_ARGS V=1 Image.gz dtbs
 
-      - name: Assemble AnyKernel3
+      - name: Assemble
         run: |
           OUT="kernel/out/arch/arm64/boot"
           if [ -f "$OUT/Image.gz" ]; then
             git clone https://github.com/osm0sis/AnyKernel3.git AK3
             cp $OUT/Image.gz AK3/
-            
-            # Căutăm DTB-ul de r5q în output-ul sursei noi
+            # Căutăm DTB-ul Samsung în sursa Ducky
             DTB=$(find $OUT/dts -name "*r5q*.dtb" | head -n 1)
             [ -f "$DTB" ] && cat $OUT/Image.gz $DTB > AK3/Image.gz
-            
-            # Copiem DTBO (critic pentru ecranul Samsung)
             find kernel/out -name "dtbo.img" -exec cp {} AK3/dtbo.img \;
-            
-            cd AK3 && zip -r9 ../R5Q_Ducky_MaineyConfig.zip *
+            cd AK3 && zip -r9 ../R5Q_Neutron_LTO_V103.zip *
           else
-            echo "Build failed. Probabil conflicte între config-ul vechi și sursa nouă."
+            echo "Build failed. Verifică dacă LTO a consumat tot RAM-ul."
             exit 1
           fi
 
       - name: Upload
-        uses: actions/upload-artifact@v4
+        uses: upload-artifact@v4
         with:
-          name: Kernel-R5Q-V102
-          path: R5Q_Ducky_MaineyConfig.zip
+          name: Kernel-R5Q-Neutron
+          path: R5Q_Neutron_LTO_V103.zip
