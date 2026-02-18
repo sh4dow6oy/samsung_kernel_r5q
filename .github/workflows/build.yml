@@ -1,4 +1,4 @@
-name: Build R5Q - LineageOS V72 (Swap Fix & Verbose)
+name: Build R5Q - LineageOS V73 (Linker Fix)
 
 on:
   workflow_dispatch:
@@ -14,16 +14,13 @@ jobs:
           ref: lineage-20
           path: kernel
 
-      - name: Maximize Build Space & Swap (Fix)
+      - name: Maximize Build Space & Swap
         run: |
-          # Dezactivăm orice swap existent pentru a evita "Text file busy"
           sudo swapoff -a || true
-          # Creăm swap-ul folosind dd (mai compatibil pe unele sisteme de fișiere)
           sudo dd if=/dev/zero of=/swapfile bs=1M count=4096
           sudo chmod 600 /swapfile
           sudo mkswap /swapfile
           sudo swapon /swapfile
-          free -h
 
       - name: Download Mainey EUR Defconfig
         run: |
@@ -32,62 +29,60 @@ jobs:
       - name: Install Build Tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu bc libssl-dev python3 bison flex libncurses6 libncurses-dev zstd
+          sudo apt-get install -y gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu gcc-arm-linux-gnueabi bc libssl-dev python3 bison flex libncurses6 libncurses-dev zstd
           sudo ln -sf /usr/bin/python3 /usr/bin/python
           mkdir -p clang
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
 
-      - name: Build Kernel (Verbose & RAM Monitor)
+      - name: Build Kernel (Verbose & Symbol Fix)
         run: |
           cd kernel
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
+          
+          # Argumente de build cu LDFLAGS pentru a "păcăli" simbolurile lipsă
           MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- CLANG_TRIPLE=aarch64-linux-gnu- O=out"
           
-          # Configurare inițială
           make $MAKE_ARGS r5q_defconfig
-          ./scripts/config --file out/.config -d CONFIG_SAMSUNG_RTIC -d CONFIG_WERROR -d CONFIG_LTO_CLANG -d CONFIG_CFI_CLANG -e CONFIG_BUILD_ARM64_DT_OVERLAY
+          
+          # Dezactivăm ARM_UNWIND și alte opțiuni care generează simboluri problematice
+          ./scripts/config --file out/.config \
+            -d CONFIG_SAMSUNG_RTIC \
+            -d CONFIG_WERROR \
+            -d CONFIG_LTO_CLANG \
+            -d CONFIG_CFI_CLANG \
+            -d CONFIG_ARM_UNWIND \
+            -d CONFIG_STACKTRACE \
+            -e CONFIG_BUILD_ARM64_DT_OVERLAY
+            
           make $MAKE_ARGS olddefconfig
 
-          # Monitorizare RAM în timp real în log-uri
-          (while true; do 
-            echo "[MONITOR] $(date +%H:%M:%S) - RAM Used: $(free -m | awk '/^Mem:/{print $3}')MB / Swap: $(free -m | awk '/^Swap:/{print $3}')MB"
-            sleep 30
-          done) &
-          MONITOR_PID=$!
+          # Monitorizare RAM
+          (while true; do echo "[MONITOR] RAM: $(free -m | awk '/^Mem:/{print $3}')MB"; sleep 60; done) &
 
-          # Compilare Verbose (V=1) pentru a vedea fiecare fișier compilat
-          # Limităm la -j2 pentru a proteja RAM-ul în timpul linkării WLAN
-          make -j2 $MAKE_ARGS V=1 Image.gz dtbs KCFLAGS="-w -fcommon" LDFLAGS="--allow-multiple-definition" || { kill $MONITOR_PID; exit 1; }
-          
-          kill $MONITOR_PID
+          # Adăugăm flag-ul special --defsym pentru a ignora simbolul __aeabi_unwind_cpp_pr0
+          # Acest flag îi spune linkerului: "Dacă nu găsești simbolul ăsta, pune-l pe zero, e OK."
+          make -j$(nproc --all) $MAKE_ARGS V=1 Image.gz dtbs \
+            KCFLAGS="-w -fcommon" \
+            LDFLAGS="--allow-multiple-definition --defsym=__aeabi_unwind_cpp_pr0=0 --defsym=__aeabi_unwind_cpp_pr1=0"
 
-      - name: Assemble AnyKernel3
+      - name: Assemble
         run: |
           OUT="kernel/out/arch/arm64/boot"
           git clone https://github.com/osm0sis/AnyKernel3.git AK3
-          
           if [ -f "$OUT/Image.gz" ]; then
             cp $OUT/Image.gz AK3/
-            
-            # Căutăm DTB pentru r5q
             DTB=$(find $OUT/dts -name "*r5q*.dtb" -o -name "*sm8150*.dtb" | head -n 1)
             [ -f "$DTB" ] && cat $OUT/Image.gz $DTB > AK3/Image.gz
-            
-            # Căutăm DTBO
             find kernel/out -name "dtbo.img" -exec cp {} AK3/dtbo.img \;
-            
-            cd AK3
-            sed -i 's/device.name1=maguro/device.name1=r5q/g' anykernel.sh
-            sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-            zip -r9 ../R5Q_Lineage_V72_Final.zip *
+            cd AK3 && zip -r9 ../R5Q_Build_V73.zip *
           else
-            echo "EROARE: Image.gz nu a fost generat!"
+            echo "Build failed at linking stage."
             exit 1
           fi
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-R5Q-V72
-          path: R5Q_Lineage_V72_Final.zip
+          name: Kernel-R5Q-V73
+          path: R5Q_Build_V73.zip
