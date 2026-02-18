@@ -1,4 +1,4 @@
-name: Build R5Q - LineageOS V90 (vDSO Symbol Strike)
+name: Build R5Q - LineageOS V91 (Anti-Static & Linker Fix)
 
 on:
   workflow_dispatch:
@@ -35,23 +35,25 @@ jobs:
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
 
-      - name: Hard-Patch vDSO Duplicate Symbols
+      - name: Surgical vDSO Makefile & Source Patch
         run: |
           cd kernel
-          # Căutăm fișierele vDSO și dezactivăm definițiile manuale de memcpy/memset/memmove
-          # Acestea cauzează "duplicate symbol" pentru că Clang le aduce singur
-          find arch/arm64/kernel/vdso -type f -name "*.[chS]" -exec sed -i 's/^void \*memcpy/__attribute__((unused)) void *__unused_memcpy/g' {} +
-          find arch/arm64/kernel/vdso -type f -name "*.[chS]" -exec sed -i 's/^void \*memset/__attribute__((unused)) void *__unused_memset/g' {} +
-          find arch/arm64/kernel/vdso -type f -name "*.[chS]" -exec sed -i 's/^void \*memmove/__attribute__((unused)) void *__unused_memmove/g' {} +
-          
-          # Curățăm Makefile-ul de orice flag-uri experimentale anterioare
+          # 1. Aplicăm fix-ul tău Anti-Static
           VDSO_MAKE="arch/arm64/kernel/vdso/Makefile"
           if [ -f "$VDSO_MAKE" ]; then
-            echo "Cleaning vDSO Makefile..."
-            sed -i '/ccflags-y/d' "$VDSO_MAKE"
-            # Forțăm dezactivarea built-in-urilor la nivel de unitate de compilare
-            echo "ccflags-y := -fno-builtin" >> "$VDSO_MAKE"
+            echo "Applying Anti-Static fix to $VDSO_MAKE"
+            sed -i 's/-static//g' "$VDSO_MAKE"
+            # Asigurăm că LDFLAGS nu reintroduc -static prin filtrare
+            sed -i 's/$(LDFLAGS)/$(filter-out -static,$(LDFLAGS))/g' "$VDSO_MAKE"
+            # Adăugăm flag-urile de toleranță la redefinire
+            echo "ccflags-y += -fno-builtin" >> "$VDSO_MAKE"
           fi
+
+          # 2. Prevenim redefinirea simbolurilor prin redenumirea lor în surse
+          # Clang 17 va furniza propriile versiuni 'built-in', deci cele din vDSO sunt redundante
+          find arch/arm64/kernel/vdso -type f -name "*.[chS]" -exec sed -i 's/\bmemcpy\b/vdso_memcpy/g' {} +
+          find arch/arm64/kernel/vdso -type f -name "*.[chS]" -exec sed -i 's/\bmemset\b/vdso_memset/g' {} +
+          find arch/arm64/kernel/vdso -type f -name "*.[chS]" -exec sed -i 's/\bmemmove\b/vdso_memmove/g' {} +
 
       - name: Build Kernel
         run: |
@@ -63,9 +65,8 @@ jobs:
           ./scripts/config --file out/.config -d CONFIG_SAMSUNG_RTIC -d CONFIG_WERROR -d CONFIG_LTO_CLANG -d CONFIG_CFI_CLANG -e CONFIG_BUILD_ARM64_DT_OVERLAY
           make $MAKE_ARGS olddefconfig
 
-          (while true; do echo "[MONITOR] RAM Free: $(free -m | awk '/^Mem:/{print $4}')MB"; sleep 60; done) &
+          (while true; do echo "[LOG] Progress... RAM: $(free -m | awk '/^Mem:/{print $3}')MB"; sleep 60; done) &
 
-          # Folosim KBUILD_CFLAGS pentru a injecta flag-ul de relaxare a linkerului direct în procesul de build
           make -j$(nproc --all) $MAKE_ARGS V=1 Image.gz dtbs \
             KCFLAGS="-w -fcommon -fno-builtin -D__NO_FORTIFY" \
             LDFLAGS="--allow-multiple-definition --defsym=__aeabi_unwind_cpp_pr0=0 --defsym=__aeabi_unwind_cpp_pr1=0"
@@ -79,14 +80,14 @@ jobs:
             DTB=$(find $OUT/dts -name "*r5q*.dtb" -o -name "*sm8150*.dtb" | head -n 1)
             [ -f "$DTB" ] && cat $OUT/Image.gz $DTB > AK3/Image.gz
             find kernel/out -name "dtbo.img" -exec cp {} AK3/dtbo.img \;
-            cd AK3 && zip -r9 ../R5Q_Build_V90.zip *
+            cd AK3 && zip -r9 ../R5Q_Build_V91.zip *
           else
-            echo "Build failed at vDSO. Symbol duplication remains an issue."
+            echo "Build failed at vDSO/Linking stage."
             exit 1
           fi
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-R5Q-V90
-          path: R5Q_Build_V90.zip
+          name: Kernel-R5Q-V91
+          path: R5Q_Build_V91.zip
