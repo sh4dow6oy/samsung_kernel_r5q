@@ -1,4 +1,4 @@
-name: Build R5Q - LineageOS V78 (Surgical Fix)
+name: Build R5Q - LineageOS V80 (vDSO Assembly Fix)
 
 on:
   workflow_dispatch:
@@ -35,27 +35,36 @@ jobs:
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
 
-      - name: Patch vDSO Source (Kill Memmove Conflict)
+      - name: Patch vDSO Assembly
         run: |
           cd kernel
-          # Redenumim memmove în vDSO pentru a evita conflictul cu built-in-ul Clang
-          sed -i 's/memmove/vdso_memmove/g' arch/arm64/kernel/vdso/vgettimeofday.c
-          # Aplicăm aceeași logică și pentru memset/memcpy dacă există
-          sed -i 's/memcpy/vdso_memcpy/g' arch/arm64/kernel/vdso/vgettimeofday.c
-          sed -i 's/memset/vdso_memset/g' arch/arm64/kernel/vdso/vgettimeofday.c
+          # Deoarece fișierul este .S, redenumim etichetele de asamblare care cauzează conflictul
+          # Folosim o metodă mai sigură pentru a nu distruge directivele de sistem
+          FILE="arch/arm64/kernel/vdso/gettimeofday.S"
+          if [ -f "$FILE" ]; then
+            echo "Patching $FILE..."
+            sed -i 's/\bmemmove\b/vdso_memmove/g' "$FILE"
+            sed -i 's/\bmemcpy\b/vdso_memcpy/g' "$FILE"
+            sed -i 's/\bmemset\b/vdso_memset/g' "$FILE"
+          else
+            echo "Fișierul nu a fost găsit în calea specificată!"
+            find arch/arm64/kernel/vdso -name "*.S"
+          fi
 
-      - name: Build Kernel (V=1)
+      - name: Build Kernel
         run: |
           cd kernel
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
+          # Rămânem pe LLVM_IAS=0 pentru a folosi GNU Assembler pentru fișierele .S
           MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=0 CC=clang LD=ld.lld CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- CLANG_TRIPLE=aarch64-linux-gnu- O=out"
           
           make $MAKE_ARGS r5q_defconfig
           ./scripts/config --file out/.config -d CONFIG_SAMSUNG_RTIC -d CONFIG_WERROR -d CONFIG_LTO_CLANG -d CONFIG_CFI_CLANG -e CONFIG_BUILD_ARM64_DT_OVERLAY
           make $MAKE_ARGS olddefconfig
 
-          (while true; do echo "[KEEP-ALIVE] RAM: $(free -m | awk '/^Mem:/{print $3}')MB"; sleep 60; done) &
+          (while true; do echo "[LOG] Status: Compiling... RAM: $(free -m | awk '/^Mem:/{print $3}')MB"; sleep 60; done) &
 
+          # Adăugăm -fno-builtin și la nivel de asamblor dacă e posibil prin KCFLAGS
           make -j$(nproc --all) $MAKE_ARGS V=1 Image.gz dtbs \
             KCFLAGS="-w -fcommon -fno-builtin -D__NO_FORTIFY -D__LINUX_ARM_ARCH__=8" \
             LDFLAGS="--allow-multiple-definition --defsym=__aeabi_unwind_cpp_pr0=0 --defsym=__aeabi_unwind_cpp_pr1=0"
@@ -69,14 +78,14 @@ jobs:
             DTB=$(find $OUT/dts -name "*r5q*.dtb" -o -name "*sm8150*.dtb" | head -n 1)
             [ -f "$DTB" ] && cat $OUT/Image.gz $DTB > AK3/Image.gz
             find kernel/out -name "dtbo.img" -exec cp {} AK3/dtbo.img \;
-            cd AK3 && zip -r9 ../R5Q_Build_V78.zip *
+            cd AK3 && zip -r9 ../R5Q_Lineage_V80.zip *
           else
-            echo "Failed: Kernel image not found."
+            echo "Eroare: Build-ul a eșuat. Verifică log-ul de asamblare pentru gettimeofday.S"
             exit 1
           fi
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-R5Q-V78
-          path: R5Q_Build_V78.zip
+          name: Kernel-R5Q-V80
+          path: R5Q_Lineage_V80.zip
