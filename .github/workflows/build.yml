@@ -1,4 +1,4 @@
-name: Build R5Q - LineageOS V96 (Proton Clang Fix)
+name: Build R5Q - LineageOS V97 (Proton Hybrid Fix)
 
 on:
   workflow_dispatch:
@@ -26,51 +26,44 @@ jobs:
         run: |
           wget -O kernel/arch/arm64/configs/r5q_defconfig https://raw.githubusercontent.com/mainey/android_kernel_samsung_r5q/lineage-19.0/arch/arm64/configs/r5q_eur_open_defconfig
 
-      - name: Install Build Tools
+      - name: Install Build Tools (Binutils included)
         run: |
           sudo apt-get update
-          sudo apt-get install -y bc libssl-dev python3 bison flex libncurses6 libncurses-dev zstd git
+          sudo apt-get install -y bc libssl-dev python3 bison flex libncurses6 libncurses-dev zstd git gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu
           sudo ln -sf /usr/bin/python3 /usr/bin/python
-          # Clone Proton Clang
           git clone --depth=1 https://github.com/kdrag0n/proton-clang.git clang-proton
 
       - name: vDSO Surgical Patch
         run: |
           cd kernel/arch/arm64/kernel/vdso
-          # Redenumim simbolurile pentru a evita redefinirea în Clang
+          # Redenumim simbolurile pentru a evita redefinirea
           sed -i 's/\bmemcpy\b/vdso_memcpy/g' *.[cS] || true
           sed -i 's/\bmemset\b/vdso_memset/g' *.[cS] || true
           sed -i 's/\bmemmove\b/vdso_memmove/g' *.[cS] || true
-          # Fix anti-static în Makefile-ul vDSO
+          # Eliminăm -static pentru a permite linkarea corectă
           sed -i 's/-static//g' Makefile || true
 
       - name: Build Kernel
         run: |
           cd kernel
-          # Adăugăm toolchain-ul în PATH
           export PATH="$GITHUB_WORKSPACE/clang-proton/bin:$PATH"
           
-          # Definim argumentele de build. Proton Clang folosește de obicei acest setup:
+          # Revenim la LLVM_IAS=0 pentru compatibilitate cu vDSO-ul Qualcomm
           MAKE_ARGS="ARCH=arm64 \
                      LLVM=1 \
-                     LLVM_IAS=1 \
+                     LLVM_IAS=0 \
                      CC=clang \
                      LD=ld.lld \
-                     AR=llvm-ar \
-                     NM=llvm-nm \
-                     OBJCOPY=llvm-objcopy \
-                     OBJDUMP=llvm-objdump \
-                     STRIP=llvm-strip \
                      CROSS_COMPILE=aarch64-linux-gnu- \
                      CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
                      O=out"
           
-          # Configurare
           make $MAKE_ARGS r5q_defconfig
           ./scripts/config --file out/.config -d CONFIG_SAMSUNG_RTIC -d CONFIG_WERROR -d CONFIG_LTO_CLANG -d CONFIG_CFI_CLANG -e CONFIG_BUILD_ARM64_DT_OVERLAY
           make $MAKE_ARGS olddefconfig
 
-          # Build propriu-zis
+          (while true; do echo "[KEEP-ALIVE] RAM: $(free -m | awk '/^Mem:/{print $3}')MB"; sleep 60; done) &
+
           make -j$(nproc --all) $MAKE_ARGS V=1 Image.gz dtbs \
             KCFLAGS="-w -fcommon -fno-builtin -D__NO_FORTIFY" \
             LDFLAGS="--allow-multiple-definition"
@@ -84,14 +77,14 @@ jobs:
             DTB=$(find $OUT/dts -name "*r5q*.dtb" -o -name "*sm8150*.dtb" | head -n 1)
             [ -f "$DTB" ] && cat $OUT/Image.gz $DTB > AK3/Image.gz
             find kernel/out -name "dtbo.img" -exec cp {} AK3/dtbo.img \;
-            cd AK3 && zip -r9 ../R5Q_Proton_Fixed.zip *
+            cd AK3 && zip -r9 ../R5Q_Proton_V97.zip *
           else
-            echo "Build failed. Check the logs for vDSO or Path errors."
+            echo "Build failed. Check if vDSO target is finally compatible."
             exit 1
           fi
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-R5Q-Proton
-          path: R5Q_Proton_Fixed.zip
+          name: Kernel-R5Q-Proton-V97
+          path: R5Q_Proton_V97.zip
