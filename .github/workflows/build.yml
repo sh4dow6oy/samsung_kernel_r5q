@@ -18,12 +18,14 @@ jobs:
         run: |
           wget -O kernel/arch/arm64/configs/r5q_imported_defconfig https://raw.githubusercontent.com/mainey/android_kernel_samsung_r5q/lineage-19.0/arch/arm64/configs/r5q_eur_open_defconfig
 
-      - name: Setup Neutron Clang
+      - name: Setup Neutron Clang (Manual Fallback)
         run: |
           mkdir -p clang
-          # Descarcă ultima versiune stabilă de Neutron
-          curl -LSs "https://raw.githubusercontent.com/Neutron-Toolchains/antman/main/antman" | bash -s -- --install=clang
-          mv bin clang/bin || true # Ajustare path dacă e nevoie
+          # Luăm ultima versiune stabilă (poți ajusta data dacă vrei una specifică)
+          wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
+          # Instalăm zstd dacă nu există
+          sudo apt-get install -y zstd
+          tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
 
       - name: Install Dependencies
         run: |
