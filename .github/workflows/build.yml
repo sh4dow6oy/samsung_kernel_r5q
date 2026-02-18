@@ -1,4 +1,4 @@
-name: Build R5Q - LineageOS V76 (vDSO Fix)
+name: Build R5Q - LineageOS V77 (vDSO Hard-Fix)
 
 on:
   workflow_dispatch:
@@ -35,13 +35,12 @@ jobs:
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
 
-      - name: Build Kernel (vDSO & Memmove Fix)
+      - name: Build Kernel (The vDSO Final Boss)
         run: |
           cd kernel
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           
-          # Dezactivăm LLVM_IAS (Integrated Assembler) pentru compatibilitate cu codul asamblare vechi
-          # Adăugăm flag-ul -fno-builtin-memmove și -fno-builtin-memcpy
+          # Dezactivăm LLVM_IAS pentru a folosi asamblorul GNU (mai tolerant)
           MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=0 CC=clang LD=ld.lld CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- CLANG_TRIPLE=aarch64-linux-gnu- O=out"
           
           make $MAKE_ARGS r5q_defconfig
@@ -55,16 +54,16 @@ jobs:
             
           make $MAKE_ARGS olddefconfig
 
-          # Monitorizare RAM
-          (while true; do echo "[MONITOR] RAM: $(free -m | awk '/^Mem:/{print $3}')MB"; sleep 60; done) &
+          # Keep-Alive & Monitor
+          (while true; do echo "[LOG] Compiling... RAM: $(free -m | awk '/^Mem:/{print $3}')MB"; sleep 60; done) &
 
-          # PASUL CHEIE: Adăugăm -fno-builtin pe lângă restul flag-urilor
-          # Folosim și -fno-stack-protector pentru vDSO dacă e cazul
+          # PASUL DECISIV: Adăugăm flag-uri care dezactivează definițiile de string din headerele incluse
+          # __NO_FORTIFY previne macro-urile de optimizare pentru memmove/memcpy
           make -j$(nproc --all) $MAKE_ARGS V=1 Image.gz dtbs \
-            KCFLAGS="-w -fcommon -fno-builtin -fno-builtin-memmove -fno-builtin-memcpy -fno-builtin-memset -D__LINUX_ARM_ARCH__=8" \
+            KCFLAGS="-w -fcommon -fno-builtin -fno-builtin-memmove -fno-builtin-memcpy -D__NO_FORTIFY -D__LINUX_ARM_ARCH__=8" \
             LDFLAGS="--allow-multiple-definition --defsym=__aeabi_unwind_cpp_pr0=0 --defsym=__aeabi_unwind_cpp_pr1=0"
 
-      - name: Assemble AnyKernel3
+      - name: Assemble
         run: |
           OUT="kernel/out/arch/arm64/boot"
           git clone https://github.com/osm0sis/AnyKernel3.git AK3
@@ -73,14 +72,14 @@ jobs:
             DTB=$(find $OUT/dts -name "*r5q*.dtb" -o -name "*sm8150*.dtb" | head -n 1)
             [ -f "$DTB" ] && cat $OUT/Image.gz $DTB > AK3/Image.gz
             find kernel/out -name "dtbo.img" -exec cp {} AK3/dtbo.img \;
-            cd AK3 && zip -r9 ../R5Q_Build_V76_Final.zip *
+            cd AK3 && zip -r9 ../R5Q_Build_V77_vDSO_Fixed.zip *
           else
-            echo "Build failed at vDSO stage."
+            echo "Eroare: Linkarea a eșuat din nou la vDSO sau simboluri."
             exit 1
           fi
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-R5Q-V76
-          path: R5Q_Build_V76_Final.zip
+          name: Kernel-R5Q-V77
+          path: R5Q_Build_V77_vDSO_Fixed.zip
