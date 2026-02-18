@@ -1,4 +1,4 @@
-name: R5Q LumiBPF - V5 Project R5Q
+name: R5Q LumiBPF - V6 BPF Type Fix
 
 on:
   workflow_dispatch:
@@ -19,7 +19,6 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y bc libssl-dev python3 bison flex libncurses6 libncurses-dev git gcc-aarch64-linux-gnu zstd device-tree-compiler
           sudo ln -sf /usr/bin/python3 /usr/bin/python
-          
           mkdir -p clang
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
@@ -29,6 +28,10 @@ jobs:
           cd kernel
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           
+          # Fix pentru erorile de redefinire 'bool'/'true'/'false'
+          # Adăugăm flag-uri care forțează Clang să folosească definițiile din kernel
+          EXTRA_CFLAGS="-fno-builtin-bool -fno-builtin-stdbool.h"
+          
           MAKE_ARGS="ARCH=arm64 \
                      LLVM=1 \
                      LLVM_IAS=1 \
@@ -36,12 +39,13 @@ jobs:
                      LD=ld.lld \
                      CROSS_COMPILE=aarch64-linux-gnu- \
                      CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+                     KCFLAGS=$EXTRA_CFLAGS \
                      O=out"
           
-          # 1. Inițializăm config-ul nativ pentru S10 Lite
+          # 1. Configurare nativă R5Q
           make $MAKE_ARGS r5q_eur_open_defconfig
           
-          # 2. Injectăm flag-urile necesare conform Makefile-ului tău
+          # 2. Activare flag-uri proiect conform Makefile-ului tău 
           ./scripts/config --file out/.config \
             -e CONFIG_SEC_R5Q_PROJECT \
             -e CONFIG_BUILD_ARM64_DT_OVERLAY \
@@ -51,9 +55,7 @@ jobs:
             
           make $MAKE_ARGS olddefconfig
           
-          # 3. Build: Image.gz + DTBs
-          # Makefile-ul tău spune că dtbo-y depinde de CONFIG_SEC_R5Q_PROJECT 
-          # Compilând target-ul dtbs, Makefile-ul va genera automate fișierele .dtbo 
+          # 3. Compilare Kernel + DTBs
           make -j$(nproc --all) $MAKE_ARGS V=1 Image.gz dtbs
 
       - name: Assemble AnyKernel3
@@ -63,29 +65,29 @@ jobs:
             git clone https://github.com/osm0sis/AnyKernel3.git AK3
             cp $OUT/Image.gz AK3/
             
-            # Căutăm DTB-ul principal R5Q
+            # Căutăm DTB-ul principal
             DTB=$(find $OUT/dts -name "*r5q*.dtb" | head -n 1)
             if [ -f "$DTB" ]; then
                 cat $OUT/Image.gz $DTB > AK3/Image.gz
             fi
             
-            # Colectăm overlay-urile generate conform Makefile 
-            # Căutăm fișierele sm8150-sec-r5q-overlay-*.dtbo
-            echo "Colectăm fișierele DTBO specifice R5Q..."
-            find kernel/out/arch/arm64/boot/dts/samsung/renovation -name "sm8150-sec-r5q-overlay-*.dtbo" -exec cp {} AK3/ \;
+            # Colectăm overlay-urile r5q listate în Makefile 
+            # Ex: sm8150-sec-r5q-overlay-r00.dtbo
+            echo "Colectăm overlay-urile compilate..."
+            find kernel/out/arch/arm64/boot/dts/samsung/renovation -name "sm8150-sec-r5q-*.dtbo" -exec cp {} AK3/ \;
             
-            # În caz că Makefile-ul a reușit să asambleze dtbo.img
+            # Verificăm dacă există un dtbo.img unitar generat de sursă
             DTBO_IMG=$(find kernel/out -name "dtbo.img" | head -n 1)
             [ -f "$DTBO_IMG" ] && cp $DTBO_IMG AK3/dtbo.img
             
-            cd AK3 && zip -r9 ../R5Q_Renovation_Final.zip *
+            cd AK3 && zip -r9 ../R5Q_Lumi_V6.zip *
           else
-            echo "Eroare: Kernel-ul nu s-a compilat!"
+            echo "Eroare: Compilarea a eșuat la faza de linkare sau tipuri de date."
             exit 1
           fi
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-R5Q-Final
-          path: R5Q_Renovation_Final.zip
+          name: Kernel-R5Q-V6
+          path: R5Q_Lumi_V6.zip
