@@ -1,4 +1,4 @@
-name: Build R5Q - LineageOS V74 (Assembly Fix)
+name: Build R5Q - LineageOS V75 (Built-in Fix)
 
 on:
   workflow_dispatch:
@@ -35,37 +35,31 @@ jobs:
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
 
-      - name: Build Kernel (Fix Assembly & Symbols)
+      - name: Build Kernel (Built-in & Assembler Fix)
         run: |
           cd kernel
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           
-          # Definim argumentele de build
-          # Adăugăm flag-uri pentru a ignora directivele de asamblare nefamiliare
-          MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- CLANG_TRIPLE=aarch64-linux-gnu- O=out"
+          # Schimbăm LLVM_IAS=0 pentru a folosi GNU Assembler (fix pentru .arch armv7)
+          # Adăugăm -fno-builtin pentru fix-ul memmove
+          MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=0 CC=clang LD=ld.lld CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- CLANG_TRIPLE=aarch64-linux-gnu- O=out"
           
           make $MAKE_ARGS r5q_defconfig
           
-          # Patch agresiv pentru a scoate suportul de 32-bit/v7 care cauzează erori în Clang
           ./scripts/config --file out/.config \
             -d CONFIG_SAMSUNG_RTIC \
             -d CONFIG_WERROR \
             -d CONFIG_LTO_CLANG \
             -d CONFIG_CFI_CLANG \
-            -d CONFIG_ARM_UNWIND \
-            -d CONFIG_VFP \
-            -d CONFIG_NEON \
             -e CONFIG_BUILD_ARM64_DT_OVERLAY
             
           make $MAKE_ARGS olddefconfig
 
-          # Monitorizare RAM
-          (while true; do echo "[MONITOR] RAM Free: $(free -m | awk '/^Mem:/{print $4}')MB"; sleep 60; done) &
+          (while true; do echo "[MONITOR] RAM: $(free -m | awk '/^Mem:/{print $3}')MB"; sleep 60; done) &
 
-          # KCFLAGS fix: -D__LINUX_ARM_ARCH__=8 forțează codul să creadă că e pe ARMv8 (64-bit)
-          # -fno-integrated-as (opțional, dar am păstrat LLVM_IAS=1 momentan pentru viteză)
+          # Flag-ul -fno-builtin rezolvă eroarea de rediferinire memmove/memcpy
           make -j$(nproc --all) $MAKE_ARGS V=1 Image.gz dtbs \
-            KCFLAGS="-w -fcommon -D__LINUX_ARM_ARCH__=8" \
+            KCFLAGS="-w -fcommon -fno-builtin -D__LINUX_ARM_ARCH__=8" \
             LDFLAGS="--allow-multiple-definition --defsym=__aeabi_unwind_cpp_pr0=0 --defsym=__aeabi_unwind_cpp_pr1=0"
 
       - name: Assemble AnyKernel3
@@ -77,14 +71,14 @@ jobs:
             DTB=$(find $OUT/dts -name "*r5q*.dtb" -o -name "*sm8150*.dtb" | head -n 1)
             [ -f "$DTB" ] && cat $OUT/Image.gz $DTB > AK3/Image.gz
             find kernel/out -name "dtbo.img" -exec cp {} AK3/dtbo.img \;
-            cd AK3 && zip -r9 ../R5Q_Build_V74.zip *
+            cd AK3 && zip -r9 ../R5Q_Build_V75_Stable.zip *
           else
-            echo "Build failed again. Check the log for 'unknown directive' location."
+            echo "Build failed. Check if memmove error persists."
             exit 1
           fi
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-R5Q-V74
-          path: R5Q_Build_V74.zip
+          name: Kernel-R5Q-V75
+          path: R5Q_Build_V75_Stable.zip
