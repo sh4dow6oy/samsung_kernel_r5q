@@ -1,4 +1,4 @@
-name: Build R5Q - Ducky 4.19 + Neutron Manual
+name: Build R5Q - Ducky 4.19 (Smart Merge V105)
 
 on:
   workflow_dispatch:
@@ -14,48 +14,42 @@ jobs:
           ref: lineage-23.2
           path: kernel
 
-      - name: Maximize Space
+      - name: Maximize Space & Toolchain
         run: |
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
-          sudo swapoff -a || true
-          sudo dd if=/dev/zero of=/swapfile bs=1M count=8192
-          sudo chmod 600 /swapfile
-          sudo mkswap /swapfile
-          sudo swapon /swapfile
-
-      - name: Setup Neutron Clang (Direct Download)
-        run: |
           mkdir -p clang
-          # Folosim un link direct către un release stabil
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           sudo apt-get install -y zstd
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
-          rm neutron-clang-10032024.tar.zst
 
-      - name: Install Dependencies
+      - name: Install Deps
         run: |
           sudo apt-get update
           sudo apt-get install -y bc libssl-dev python3 bison flex libncurses6 libncurses-dev git gcc-aarch64-linux-gnu
           sudo ln -sf /usr/bin/python3 /usr/bin/python
 
-      - name: Import & Build
+      - name: Smart Config & Build
         run: |
           cd kernel
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
-          
-          # Import config Mainey
-          wget -O arch/arm64/configs/r5q_imported_defconfig https://raw.githubusercontent.com/mainey/android_kernel_samsung_r5q/lineage-19.0/arch/arm64/configs/r5q_eur_open_defconfig
-          
           MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
           
-          make $MAKE_ARGS r5q_imported_defconfig
+          # 1. Folosim config-ul nativ al sursei (cel pe care mi l-ai trimis)
+          make $MAKE_ARGS vendor/sm8150-perf_defconfig
           
-          # Fix-uri obligatorii pentru 4.19 + Neutron
-          ./scripts/config --file out/.config \
+          # 2. Injectăm manual setările critice pentru R5Q/Samsung
+          # Acestea activează suportul de bază fără a strica dependențele Kconfig
+          scripts/config --file out/.config \
+            -e CONFIG_MACH_SAMSUNG \
+            -e CONFIG_MACH_R5Q \
+            -e CONFIG_SAMSUNG_REBOOT_REASON \
+            -e CONFIG_SAMSUNG_BATTERY \
+            -e CONFIG_BUILD_ARM64_DT_OVERLAY \
             -e CONFIG_LTO_CLANG_THIN \
             -d CONFIG_LTO_NONE \
             -d CONFIG_SAMSUNG_RTIC \
-            -d CONFIG_WERROR
+            -d CONFIG_WERROR \
+            -d CONFIG_PANIC_ON_RECURSIVE_FAULT
             
           make $MAKE_ARGS olddefconfig
           make -j$(nproc --all) $MAKE_ARGS V=1 Image.gz dtbs
@@ -66,10 +60,11 @@ jobs:
           if [ -f "$OUT/Image.gz" ]; then
             git clone https://github.com/osm0sis/AnyKernel3.git AK3
             cp $OUT/Image.gz AK3/
-            DTB=$(find $OUT/dts -name "*r5q*.dtb" | head -n 1)
+            # Căutăm DTB-ul (Ducky s-ar putea să-l pună în vendor/)
+            DTB=$(find $OUT/dts -name "*r5q*.dtb" -o -name "*sm8150-v2.dtb" | head -n 1)
             [ -f "$DTB" ] && cat $OUT/Image.gz $DTB > AK3/Image.gz
             find kernel/out -name "dtbo.img" -exec cp {} AK3/dtbo.img \;
-            cd AK3 && zip -r9 ../R5Q_Neutron_V104.zip *
+            cd AK3 && zip -r9 ../R5Q_Neutron_V105.zip *
           else
             echo "Build failed!"
             exit 1
@@ -78,5 +73,5 @@ jobs:
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-R5Q-Neutron-V104
-          path: R5Q_Neutron_V104.zip
+          name: Kernel-R5Q-V105
+          path: R5Q_Neutron_V105.zip
