@@ -1,4 +1,4 @@
-name: R5Q LumiBPF - V3 (Renovation)
+name: R5Q LumiBPF - V5 Project R5Q
 
 on:
   workflow_dispatch:
@@ -38,21 +38,22 @@ jobs:
                      CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
                      O=out"
           
-          # Pasul 1: Configurare nativă R5Q
+          # 1. Inițializăm config-ul nativ pentru S10 Lite
           make $MAKE_ARGS r5q_eur_open_defconfig
           
-          # Pasul 2: Activăm suportul DTBO explicit
+          # 2. Injectăm flag-urile necesare conform Makefile-ului tău
           ./scripts/config --file out/.config \
+            -e CONFIG_SEC_R5Q_PROJECT \
             -e CONFIG_BUILD_ARM64_DT_OVERLAY \
             -e CONFIG_OF_LIBFDT_OVERLAY \
-            -e CONFIG_DTC \
             -d CONFIG_SAMSUNG_RTIC \
             -d CONFIG_WERROR
             
           make $MAKE_ARGS olddefconfig
           
-          # Pasul 3: Build - Încercăm să generăm Image.gz, DTBs și DTBO.img
-          # Folosim target-ul 'dtbs' care în sursele Samsung include de obicei și .dtbo-urile
+          # 3. Build: Image.gz + DTBs
+          # Makefile-ul tău spune că dtbo-y depinde de CONFIG_SEC_R5Q_PROJECT 
+          # Compilând target-ul dtbs, Makefile-ul va genera automate fișierele .dtbo 
           make -j$(nproc --all) $MAKE_ARGS V=1 Image.gz dtbs
 
       - name: Assemble AnyKernel3
@@ -62,23 +63,22 @@ jobs:
             git clone https://github.com/osm0sis/AnyKernel3.git AK3
             cp $OUT/Image.gz AK3/
             
-            # 1. Căutăm DTB-ul principal R5Q (din folderul renovation)
+            # Căutăm DTB-ul principal R5Q
             DTB=$(find $OUT/dts -name "*r5q*.dtb" | head -n 1)
             if [ -f "$DTB" ]; then
                 cat $OUT/Image.gz $DTB > AK3/Image.gz
-                echo "DTB R5Q lipit de kernel!"
             fi
             
-            # 2. Căutăm orice fișier .dtbo care are 'r5q' în nume
-            # Acestea sunt overlay-urile pentru ecran, baterie etc.
-            echo "Colectăm overlay-urile R5Q..."
-            find kernel/out/arch/arm64/boot/dts/samsung/renovation -name "*r5q*.dtbo" -exec cp {} AK3/ \;
+            # Colectăm overlay-urile generate conform Makefile 
+            # Căutăm fișierele sm8150-sec-r5q-overlay-*.dtbo
+            echo "Colectăm fișierele DTBO specifice R5Q..."
+            find kernel/out/arch/arm64/boot/dts/samsung/renovation -name "sm8150-sec-r5q-overlay-*.dtbo" -exec cp {} AK3/ \;
             
-            # 3. Verificăm dacă s-a generat și un dtbo.img unitar
+            # În caz că Makefile-ul a reușit să asambleze dtbo.img
             DTBO_IMG=$(find kernel/out -name "dtbo.img" | head -n 1)
-            [ -f "$DTBO_IMG" ] && cp $DTBO_IMG AK3/dtbo.img && echo "Binar dtbo.img găsit!"
+            [ -f "$DTBO_IMG" ] && cp $DTBO_IMG AK3/dtbo.img
             
-            cd AK3 && zip -r9 ../R5Q_Lumi_Renovation.zip *
+            cd AK3 && zip -r9 ../R5Q_Renovation_Final.zip *
           else
             echo "Eroare: Kernel-ul nu s-a compilat!"
             exit 1
@@ -87,5 +87,5 @@ jobs:
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-R5Q-Renovation
-          path: R5Q_Lumi_Renovation.zip
+          name: Kernel-R5Q-Final
+          path: R5Q_Renovation_Final.zip
