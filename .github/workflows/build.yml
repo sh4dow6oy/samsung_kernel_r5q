@@ -1,11 +1,11 @@
-name: Build R5Q - LineageOS V96 (Proton Clang + Ubuntu 22)
+name: Build R5Q - LineageOS V96 (Proton Clang Fix)
 
 on:
   workflow_dispatch:
 
 jobs:
   build:
-    runs-on: ubuntu-22.04 # Forțăm Ubuntu 22.04
+    runs-on: ubuntu-22.04
     steps:
       - name: Checkout LineageOS SM8150
         uses: actions/checkout@v4
@@ -29,34 +29,48 @@ jobs:
       - name: Install Build Tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu gcc-arm-linux-gnueabi bc libssl-dev python3 bison flex libncurses6 libncurses-dev zstd git
+          sudo apt-get install -y bc libssl-dev python3 bison flex libncurses6 libncurses-dev zstd git
           sudo ln -sf /usr/bin/python3 /usr/bin/python
-          # Descarcăm Proton Clang
-          git clone --depth=1 https://github.com/kdrag0n/proton-clang.git clang
+          # Clone Proton Clang
+          git clone --depth=1 https://github.com/kdrag0n/proton-clang.git clang-proton
 
-      - name: Surgical vDSO Fix
+      - name: vDSO Surgical Patch
         run: |
           cd kernel/arch/arm64/kernel/vdso
-          # Redenumim simbolurile conflictuale în sursele vDSO
+          # Redenumim simbolurile pentru a evita redefinirea în Clang
           sed -i 's/\bmemcpy\b/vdso_memcpy/g' *.[cS] || true
           sed -i 's/\bmemset\b/vdso_memset/g' *.[cS] || true
           sed -i 's/\bmemmove\b/vdso_memmove/g' *.[cS] || true
-          # Scoatem -static din Makefile-ul vDSO
+          # Fix anti-static în Makefile-ul vDSO
           sed -i 's/-static//g' Makefile || true
 
       - name: Build Kernel
         run: |
           cd kernel
-          export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
-          # Proton Clang funcționează mai bine cu LLVM=1
-          MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- CLANG_TRIPLE=aarch64-linux-gnu- O=out"
+          # Adăugăm toolchain-ul în PATH
+          export PATH="$GITHUB_WORKSPACE/clang-proton/bin:$PATH"
           
+          # Definim argumentele de build. Proton Clang folosește de obicei acest setup:
+          MAKE_ARGS="ARCH=arm64 \
+                     LLVM=1 \
+                     LLVM_IAS=1 \
+                     CC=clang \
+                     LD=ld.lld \
+                     AR=llvm-ar \
+                     NM=llvm-nm \
+                     OBJCOPY=llvm-objcopy \
+                     OBJDUMP=llvm-objdump \
+                     STRIP=llvm-strip \
+                     CROSS_COMPILE=aarch64-linux-gnu- \
+                     CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+                     O=out"
+          
+          # Configurare
           make $MAKE_ARGS r5q_defconfig
           ./scripts/config --file out/.config -d CONFIG_SAMSUNG_RTIC -d CONFIG_WERROR -d CONFIG_LTO_CLANG -d CONFIG_CFI_CLANG -e CONFIG_BUILD_ARM64_DT_OVERLAY
           make $MAKE_ARGS olddefconfig
 
-          (while true; do echo "[LOG] Compiling with Proton... RAM: $(free -m | awk '/^Mem:/{print $3}')MB"; sleep 60; done) &
-
+          # Build propriu-zis
           make -j$(nproc --all) $MAKE_ARGS V=1 Image.gz dtbs \
             KCFLAGS="-w -fcommon -fno-builtin -D__NO_FORTIFY" \
             LDFLAGS="--allow-multiple-definition"
@@ -64,15 +78,15 @@ jobs:
       - name: Assemble AnyKernel3
         run: |
           OUT="kernel/out/arch/arm64/boot"
-          git clone https://github.com/osm0sis/AnyKernel3.git AK3
           if [ -f "$OUT/Image.gz" ]; then
+            git clone https://github.com/osm0sis/AnyKernel3.git AK3
             cp $OUT/Image.gz AK3/
             DTB=$(find $OUT/dts -name "*r5q*.dtb" -o -name "*sm8150*.dtb" | head -n 1)
             [ -f "$DTB" ] && cat $OUT/Image.gz $DTB > AK3/Image.gz
             find kernel/out -name "dtbo.img" -exec cp {} AK3/dtbo.img \;
-            cd AK3 && zip -r9 ../R5Q_Proton_V96.zip *
+            cd AK3 && zip -r9 ../R5Q_Proton_Fixed.zip *
           else
-            echo "Build failed. Chiar și cu Proton Clang, vDSO face probleme."
+            echo "Build failed. Check the logs for vDSO or Path errors."
             exit 1
           fi
 
@@ -80,4 +94,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: Kernel-R5Q-Proton
-          path: R5Q_Proton_V96.zip
+          path: R5Q_Proton_Fixed.zip
