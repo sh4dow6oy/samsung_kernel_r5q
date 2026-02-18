@@ -72,8 +72,10 @@ jobs:
 
       - name: Assemble AnyKernel3
         run: |
-          OUT="kernel/out/arch/arm64/boot"
-          IMAGE="$OUT/Image.gz"
+          # Definim calea de bază a build-ului
+          BUILD_OUT="kernel/out"
+          BOOT_OUT="$BUILD_OUT/arch/arm64/boot"
+          IMAGE="$BOOT_OUT/Image.gz"
           
           if [ ! -f "$IMAGE" ]; then 
             echo "ERROR: Kernel image not found. Build failed."
@@ -82,34 +84,40 @@ jobs:
 
           git clone https://github.com/osm0sis/AnyKernel3.git AK3
           
-          # Concatenare DTB principal pentru R5Q
-          DTB=$(find $OUT/dts -name "*r5q*.dtb" -type f | head -n 1)
+          # Căutăm DTB-ul principal R5Q în tot folderul out
+          echo "Căutăm DTB-ul principal..."
+          DTB=$(find $BUILD_OUT -name "*r5q*.dtb" -type f | head -n 1)
+          
           if [ -f "$DTB" ]; then
             cat "$IMAGE" "$DTB" > AK3/Image.gz
-            echo "SUCCESS: Appended R5Q DTB to Image.gz"
+            echo "SUCCESS: Appended R5Q DTB ($DTB) to Image.gz"
           else
             cp "$IMAGE" AK3/Image.gz
             echo "WARNING: R5Q DTB not found, using raw Image.gz"
           fi
 
-          # COLECTARE DTBO (Conform Makefile-ului r5q: r00, r01, r07, r08, r09) 
-          # Căutăm exact pattern-ul definit în sursa ta [cite: 1, 2]
-          echo "Collecting Samsung DTBO fragments..."
-          find kernel/out/arch/arm64/boot/dts/samsung/renovation -name "sm8150-sec-r5q-overlay-*.dtbo" -exec cp {} AK3/ \;
+          # COLECTARE DTBO (Căutare globală în folderul out)
+          echo "Colectăm fișierele DTBO pentru Samsung..."
+          # Folosim o căutare mai permisivă pentru a găsi fișierele indiferent de folderul exact
+          find $BUILD_OUT -name "sm8150-sec-r5q-overlay-*.dtbo" -exec cp {} AK3/ \;
+          
+          # Verificăm dacă s-au copiat fișiere
+          COUNT=$(ls AK3/*.dtbo 2>/dev/null | wc -l)
+          echo "Am găsit și copiat $COUNT fișiere DTBO."
 
-          # Verificăm dacă a ieșit și un dtbo.img unitar
-          [ -f "kernel/out/dtbo.img" ] && cp kernel/out/dtbo.img AK3/dtbo.img
+          # Verificăm imaginea unitară dtbo.img
+          DTBO_IMG=$(find $BUILD_OUT -name "dtbo.img" -type f | head -n 1)
+          [ -f "$DTBO_IMG" ] && cp "$DTBO_IMG" AK3/dtbo.img
 
-          # Patch AnyKernel3 pentru R5Q
+          # Patch AnyKernel3
           cd AK3
           sed -i 's/device.name1=maguro/device.name1=r5q/g' anykernel.sh
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
           
-          # Împachetare finală
-          zip -r9 ../R5Q_Lumi_V31_Final.zip *
+          zip -r9 ../R5Q_Lumi_V32_Final.zip *
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-Lumi-BPF-Final
-          path: R5Q_Lumi_V31_Final.zip
+          name: S10Lite-Lumi-V32
+          path: R5Q_Lumi_V32_Final.zip
