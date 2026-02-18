@@ -70,54 +70,31 @@ jobs:
           # Folosim -fcommon pentru a evita erorile de redefinire bool/true/false
           make -j$(nproc --all) $MAKE_ARGS Image.gz dtbs KCFLAGS="-w -fcommon"
 
-      - name: Assemble AnyKernel3
+      - name: Package with AnyKernel3
         run: |
-          # Definim calea de bază a build-ului
-          BUILD_OUT="kernel/out"
-          BOOT_OUT="$BUILD_OUT/arch/arm64/boot"
-          IMAGE="$BOOT_OUT/Image.gz"
-          
-          if [ ! -f "$IMAGE" ]; then 
-            echo "ERROR: Kernel image not found. Build failed."
-            exit 1
+          # Identificăm fișierele generate
+          IMAGE="$GITHUB_WORKSPACE/out/arch/arm64/boot/Image.gz-dtb"
+          if [ ! -f "$IMAGE" ]; then
+            IMAGE="$GITHUB_WORKSPACE/out/arch/arm64/boot/Image.gz"
           fi
-
-          git clone https://github.com/osm0sis/AnyKernel3.git AK3
+          DTBO="$GITHUB_WORKSPACE/out/arch/arm64/boot/dtbo.img"
+          # Clonăm AnyKernel3 pentru ambalare
+          git clone https://github.com/osm0sis/AnyKernel3.git
+          rm -rf AnyKernel3/.git
           
-          # Căutăm DTB-ul principal R5Q în tot folderul out
-          echo "Căutăm DTB-ul principal..."
-          DTB=$(find $BUILD_OUT -name "*r5q*.dtb" -type f | head -n 1)
+          # Copiem kernelul și DTBO în folderul AnyKernel
+          cp $IMAGE AnyKernel3/Image.gz
+          [ -f "$DTBO" ] && cp $DTBO AnyKernel3/dtbo.img
+          # Configurăm anykernel.sh pentru S10 Lite (r5q)
+          sed -i 's/device.name1=maguro/device.name1=r5q/g' AnyKernel3/anykernel.sh
+          sed -i 's/device.name2=toroplus/device.name2=SM-G770F/g' AnyKernel3/anykernel.sh
+          sed -i 's/device.name3=toro/device.name3=r5q/g' AnyKernel3/anykernel.sh
           
-          if [ -f "$DTB" ]; then
-            cat "$IMAGE" "$DTB" > AK3/Image.gz
-            echo "SUCCESS: Appended R5Q DTB ($DTB) to Image.gz"
-          else
-            cp "$IMAGE" AK3/Image.gz
-            echo "WARNING: R5Q DTB not found, using raw Image.gz"
-          fi
-
-          # COLECTARE DTBO (Căutare globală în folderul out)
-          echo "Colectăm fișierele DTBO pentru Samsung..."
-          # Folosim o căutare mai permisivă pentru a găsi fișierele indiferent de folderul exact
-          find $BUILD_OUT -name "sm8150-sec-r5q-overlay-*.dtbo" -exec cp {} AK3/ \;
-          
-          # Verificăm dacă s-au copiat fișiere
-          COUNT=$(ls AK3/*.dtbo 2>/dev/null | wc -l)
-          echo "Am găsit și copiat $COUNT fișiere DTBO."
-
-          # Verificăm imaginea unitară dtbo.img
-          DTBO_IMG=$(find $BUILD_OUT -name "dtbo.img" -type f | head -n 1)
-          [ -f "$DTBO_IMG" ] && cp "$DTBO_IMG" AK3/dtbo.img
-
-          # Patch AnyKernel3
-          cd AK3
-          sed -i 's/device.name1=maguro/device.name1=r5q/g' anykernel.sh
-          sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-          
-          zip -r9 ../R5Q_Lumi_V32_Final.zip *
-
-      - name: Upload Artifacts
+          # Creăm arhiva ZIP finală
+          cd AnyKernel3
+          zip -r9 ../Kernel-S10Lite-R5Q-Neutron.zip *
+      - name: Upload Flashable Kernel
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-Lumi-V32
-          path: R5Q_Lumi_V32_Final.zip
+          name: Kernel-S10Lite-R5Q
+          path: Kernel-S10Lite-R5Q-Neutron.zip
