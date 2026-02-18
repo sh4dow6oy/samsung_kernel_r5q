@@ -1,4 +1,4 @@
-name: Build R5Q - V109 DTS Transplant & Bindings
+name: Build R5Q - V110 Final Strategy
 
 on:
   workflow_dispatch:
@@ -14,27 +14,35 @@ jobs:
           ref: lineage-23.2
           path: kernel
 
-      - name: Transplant DTS & Headers from Mainey
+      - name: DTS & Config Surgery
         run: |
-          # 1. Clonăm sursa Mainey temporar pentru "organe"
+          # 1. Clonăm Mainey pentru resurse
           git clone --depth=1 https://github.com/mainey/android_kernel_samsung_r5q -b lineage-19.0 mainey_source
           
-          # 2. Transplant folder samsung în dts (calea nativă Samsung)
+          # 2. Transplant DTS samsung direct în dts/ (calea simplă)
           mkdir -p kernel/arch/arm64/boot/dts/samsung
           cp -r mainey_source/arch/arm64/boot/dts/samsung/* kernel/arch/arm64/boot/dts/samsung/
           
-          # 3. Transplant CRITIC: Copiem toate headerele dt-bindings
-          # DTS-ul vechi are nevoie de constantele din 4.14 pentru a se compila pe 4.19
+          # 3. Transplant Headere Bindings
           mkdir -p kernel/include/dt-bindings
           cp -r mainey_source/include/dt-bindings/* kernel/include/dt-bindings/
           
-          # 4. Patch Makefile principal (arch/arm64/boot/dts/Makefile)
-          # Inserăm instrucțiunea de intrare în folderul samsung pe prima linie
+          # 4. Patch Makefile principal pentru a include folderul samsung
           sed -i '1i subdir-y += samsung' kernel/arch/arm64/boot/dts/Makefile
           
-          # 5. Patch Makefile-ul din folderul samsung (asigurăm suportul de overlay)
-          # Uneori Makefile-urile vechi au nevoie de ajutor pentru a genera .dtbo în 4.19
-          echo "dtbo-y += $(find kernel/arch/arm64/boot/dts/samsung -name '*_overlay.dts' | sed 's|.*/||' | sed 's|.dts|.dtbo|')" >> kernel/arch/arm64/boot/dts/samsung/Makefile
+          # 5. INJECTARE CONFIG R5Q în vendor/sm8150-perf_defconfig
+          # Adăugăm flag-urile Samsung la finalul config-ului nativ
+          cat <<EOF >> kernel/arch/arm64/configs/vendor/sm8150-perf_defconfig
+          CONFIG_MACH_SAMSUNG=y
+          CONFIG_MACH_R5Q=y
+          CONFIG_BUILD_ARM64_DT_OVERLAY=y
+          CONFIG_OF_LIBFDT_OVERLAY=y
+          CONFIG_DTC=y
+          CONFIG_LTO_CLANG_THIN=y
+          # CONFIG_LTO_NONE is not set
+          # CONFIG_SAMSUNG_RTIC is not set
+          # CONFIG_WERROR is not set
+          EOF
 
       - name: Maximize Space & Install Toolchain
         run: |
@@ -42,36 +50,21 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y bc libssl-dev python3 bison flex libncurses6 libncurses-dev git gcc-aarch64-linux-gnu zstd device-tree-compiler
           sudo ln -sf /usr/bin/python3 /usr/bin/python
-          
           mkdir -p clang
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
-          rm neutron-clang-10032024.tar.zst
 
-      - name: Smart Config & Build
+      - name: Build Kernel & DTBO
         run: |
           cd kernel
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
           
-          # Folosim config-ul sm8150 furnizat ca bază stabilă
+          # Acum sm8150-perf_defconfig conține deja setările noastre pentru r5q
           make $MAKE_ARGS vendor/sm8150-perf_defconfig
-          
-          # Injectăm suportul r5q și forțăm generarea DTBO
-          ./scripts/config --file out/.config \
-            -e CONFIG_MACH_SAMSUNG \
-            -e CONFIG_MACH_R5Q \
-            -e CONFIG_BUILD_ARM64_DT_OVERLAY \
-            -e CONFIG_DTC \
-            -e CONFIG_OF_LIBFDT_OVERLAY \
-            -e CONFIG_LTO_CLANG_THIN \
-            -d CONFIG_LTO_NONE \
-            -d CONFIG_SAMSUNG_RTIC \
-            -d CONFIG_WERROR
-            
           make $MAKE_ARGS olddefconfig
           
-          # Build: Image.gz + DTBs + încercăm DTBO.img
+          # Compilăm
           make -j$(nproc --all) $MAKE_ARGS V=1 Image.gz dtbs dtbo.img || make -j$(nproc --all) $MAKE_ARGS V=1 Image.gz dtbs
 
       - name: Assemble AnyKernel3
@@ -81,31 +74,28 @@ jobs:
             git clone https://github.com/osm0sis/AnyKernel3.git AK3
             cp $OUT/Image.gz AK3/
             
-            # Căutăm DTB-ul de r5q generat din transplant
+            # Căutăm DTB de r5q
             DTB=$(find $OUT/dts -name "*r5q*.dtb" | head -n 1)
             if [ -f "$DTB" ]; then
                 cat $OUT/Image.gz $DTB > AK3/Image.gz
-                echo "DTB găsit și concatenat: $DTB"
             fi
             
-            # Căutăm DTBO (binar sau fragmente)
+            # Căutăm DTBO
             DTBO_IMG=$(find kernel/out -name "dtbo.img" | head -n 1)
             if [ -f "$DTBO_IMG" ]; then
                 cp $DTBO_IMG AK3/dtbo.img
-                echo "DTBO.img a fost generat!"
             else
-                echo "DTBO.img lipsește, colectăm fișierele .dtbo individuale..."
                 find kernel/out -name "*.dtbo" -exec cp {} AK3/ \;
             fi
             
-            cd AK3 && zip -r9 ../R5Q_Transplant_V109.zip *
+            cd AK3 && zip -r9 ../R5Q_Final_V110.zip *
           else
-            echo "Eroare: Kernel-ul nu s-a compilat. Verifică log-ul pentru erori de tip 'DTS compilation error'."
+            echo "Build failed!"
             exit 1
           fi
 
-      - name: Upload Artifact
+      - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-R5Q-V109
-          path: R5Q_Transplant_V109.zip
+          name: Kernel-R5Q-V110
+          path: R5Q_Final_V110.zip
