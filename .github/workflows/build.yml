@@ -1,85 +1,82 @@
-name: Build R5Q - Ducky 4.19 + Neutron Clang (LTO)
+name: Build R5Q - Ducky 4.19 + Neutron Manual
 
 on:
   workflow_dispatch:
 
 jobs:
   build:
-    runs-on: ubuntu-latest # Neutron recomandă cel mai nou mediu
+    runs-on: ubuntu-latest
     steps:
-      - name: Checkout DuckyDuck Kernel (4.19)
+      - name: Checkout Kernel
         uses: actions/checkout@v4
         with:
           repository: duckyduckG/android_kernel_qcom_sm8150_419
           ref: lineage-23.2
           path: kernel
 
-      - name: Import Mainey Config (r5q)
+      - name: Maximize Space
         run: |
-          wget -O kernel/arch/arm64/configs/r5q_imported_defconfig https://raw.githubusercontent.com/mainey/android_kernel_samsung_r5q/lineage-19.0/arch/arm64/configs/r5q_eur_open_defconfig
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
+          sudo swapoff -a || true
+          sudo dd if=/dev/zero of=/swapfile bs=1M count=8192
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
 
-      - name: Setup Neutron Clang (Manual Fallback)
+      - name: Setup Neutron Clang (Direct Download)
         run: |
           mkdir -p clang
-          # Luăm ultima versiune stabilă (poți ajusta data dacă vrei una specifică)
+          # Folosim un link direct către un release stabil
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
-          # Instalăm zstd dacă nu există
           sudo apt-get install -y zstd
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
+          rm neutron-clang-10032024.tar.zst
 
       - name: Install Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y bc libssl-dev python3 bison flex libncurses6 libncurses-dev zstd git gcc-aarch64-linux-gnu
+          sudo apt-get install -y bc libssl-dev python3 bison flex libncurses6 libncurses-dev git gcc-aarch64-linux-gnu
+          sudo ln -sf /usr/bin/python3 /usr/bin/python
 
-      - name: Build with Neutron & LTO
+      - name: Import & Build
         run: |
           cd kernel
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           
-          # Neutron funcționează cel mai bine cu LLVM=1 și LLVM_IAS=1
-          MAKE_ARGS="ARCH=arm64 \
-                     LLVM=1 \
-                     LLVM_IAS=1 \
-                     CC=clang \
-                     LD=ld.lld \
-                     CROSS_COMPILE=aarch64-linux-gnu- \
-                     CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-                     O=out"
+          # Import config Mainey
+          wget -O arch/arm64/configs/r5q_imported_defconfig https://raw.githubusercontent.com/mainey/android_kernel_samsung_r5q/lineage-19.0/arch/arm64/configs/r5q_eur_open_defconfig
+          
+          MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
           
           make $MAKE_ARGS r5q_imported_defconfig
           
-          # Activăm LTO pentru performanță maximă
+          # Fix-uri obligatorii pentru 4.19 + Neutron
           ./scripts/config --file out/.config \
-            -e CONFIG_LTO_CLANG \
             -e CONFIG_LTO_CLANG_THIN \
             -d CONFIG_LTO_NONE \
             -d CONFIG_SAMSUNG_RTIC \
             -d CONFIG_WERROR
             
           make $MAKE_ARGS olddefconfig
-          
-          # Start build
           make -j$(nproc --all) $MAKE_ARGS V=1 Image.gz dtbs
 
-      - name: Assemble
+      - name: Assemble AnyKernel3
         run: |
           OUT="kernel/out/arch/arm64/boot"
           if [ -f "$OUT/Image.gz" ]; then
             git clone https://github.com/osm0sis/AnyKernel3.git AK3
             cp $OUT/Image.gz AK3/
-            # Căutăm DTB-ul Samsung în sursa Ducky
             DTB=$(find $OUT/dts -name "*r5q*.dtb" | head -n 1)
             [ -f "$DTB" ] && cat $OUT/Image.gz $DTB > AK3/Image.gz
             find kernel/out -name "dtbo.img" -exec cp {} AK3/dtbo.img \;
-            cd AK3 && zip -r9 ../R5Q_Neutron_LTO_V103.zip *
+            cd AK3 && zip -r9 ../R5Q_Neutron_V104.zip *
           else
-            echo "Build failed. Verifică dacă LTO a consumat tot RAM-ul."
+            echo "Build failed!"
             exit 1
           fi
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-R5Q-Neutron
-          path: R5Q_Neutron_LTO_V103.zip
+          name: Kernel-R5Q-Neutron-V104
+          path: R5Q_Neutron_V104.zip
