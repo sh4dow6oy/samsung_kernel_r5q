@@ -1,4 +1,4 @@
-name: Build R5Q - LineageOS V91 (Anti-Static & Linker Fix)
+name: Build R5Q - LineageOS V92 (Total Linker Permissiveness)
 
 on:
   workflow_dispatch:
@@ -17,7 +17,7 @@ jobs:
       - name: Maximize Build Space & Swap
         run: |
           sudo swapoff -a || true
-          sudo dd if=/dev/zero of=/swapfile bs=1M count=4096
+          sudo dd if=/dev/zero of=/swapfile bs=1M count=8192
           sudo chmod 600 /swapfile
           sudo mkswap /swapfile
           sudo swapon /swapfile
@@ -35,22 +35,20 @@ jobs:
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
 
-      - name: Surgical vDSO Makefile & Source Patch
+      - name: Final vDSO & Makefile Overhaul
         run: |
           cd kernel
-          # 1. Aplicăm fix-ul tău Anti-Static
+          # 1. Eliminăm flag-ul -static care blochează linkarea dinamică a vDSO
+          find arch/arm64/kernel/vdso -name "Makefile" -exec sed -i 's/-static//g' {} +
+          
+          # 2. Patch-uim Makefile-ul principal vDSO pentru a forța Clang să ignore orice built-in
           VDSO_MAKE="arch/arm64/kernel/vdso/Makefile"
           if [ -f "$VDSO_MAKE" ]; then
-            echo "Applying Anti-Static fix to $VDSO_MAKE"
-            sed -i 's/-static//g' "$VDSO_MAKE"
-            # Asigurăm că LDFLAGS nu reintroduc -static prin filtrare
-            sed -i 's/$(LDFLAGS)/$(filter-out -static,$(LDFLAGS))/g' "$VDSO_MAKE"
-            # Adăugăm flag-urile de toleranță la redefinire
-            echo "ccflags-y += -fno-builtin" >> "$VDSO_MAKE"
+            echo "ccflags-y += -fno-builtin -fno-builtin-memcpy -fno-builtin-memset -fno-builtin-memmove" >> "$VDSO_MAKE"
+            echo "ldflags-y += --allow-multiple-definition --no-fatal-warnings" >> "$VDSO_MAKE"
           fi
 
-          # 2. Prevenim redefinirea simbolurilor prin redenumirea lor în surse
-          # Clang 17 va furniza propriile versiuni 'built-in', deci cele din vDSO sunt redundante
+          # 3. Patch surse pentru a evita orice conflict de nume cu built-in-urile
           find arch/arm64/kernel/vdso -type f -name "*.[chS]" -exec sed -i 's/\bmemcpy\b/vdso_memcpy/g' {} +
           find arch/arm64/kernel/vdso -type f -name "*.[chS]" -exec sed -i 's/\bmemset\b/vdso_memset/g' {} +
           find arch/arm64/kernel/vdso -type f -name "*.[chS]" -exec sed -i 's/\bmemmove\b/vdso_memmove/g' {} +
@@ -59,17 +57,19 @@ jobs:
         run: |
           cd kernel
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
+          # LLVM_IAS=0 este obligatoriu pentru vDSO în kernel 4.14/4.19 cu Clang 17
           MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=0 CC=clang LD=ld.lld CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- CLANG_TRIPLE=aarch64-linux-gnu- O=out"
           
           make $MAKE_ARGS r5q_defconfig
           ./scripts/config --file out/.config -d CONFIG_SAMSUNG_RTIC -d CONFIG_WERROR -d CONFIG_LTO_CLANG -d CONFIG_CFI_CLANG -e CONFIG_BUILD_ARM64_DT_OVERLAY
           make $MAKE_ARGS olddefconfig
 
-          (while true; do echo "[LOG] Progress... RAM: $(free -m | awk '/^Mem:/{print $3}')MB"; sleep 60; done) &
+          (while true; do echo "[BUILD] Building... RAM Free: $(free -m | awk '/^Mem:/{print $4}')MB"; sleep 60; done) &
 
+          # KCFLAGS agresive și LDFLAGS de toleranță maximă
           make -j$(nproc --all) $MAKE_ARGS V=1 Image.gz dtbs \
             KCFLAGS="-w -fcommon -fno-builtin -D__NO_FORTIFY" \
-            LDFLAGS="--allow-multiple-definition --defsym=__aeabi_unwind_cpp_pr0=0 --defsym=__aeabi_unwind_cpp_pr1=0"
+            LDFLAGS="--allow-multiple-definition --no-fatal-warnings --defsym=__aeabi_unwind_cpp_pr0=0 --defsym=__aeabi_unwind_cpp_pr1=0"
 
       - name: Assemble AnyKernel3
         run: |
@@ -80,14 +80,14 @@ jobs:
             DTB=$(find $OUT/dts -name "*r5q*.dtb" -o -name "*sm8150*.dtb" | head -n 1)
             [ -f "$DTB" ] && cat $OUT/Image.gz $DTB > AK3/Image.gz
             find kernel/out -name "dtbo.img" -exec cp {} AK3/dtbo.img \;
-            cd AK3 && zip -r9 ../R5Q_Build_V91.zip *
+            cd AK3 && zip -r9 ../R5Q_Build_V92.zip *
           else
-            echo "Build failed at vDSO/Linking stage."
+            echo "Build failed. The vDSO issue is still blocking the image generation."
             exit 1
           fi
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-R5Q-V91
-          path: R5Q_Build_V91.zip
+          name: Kernel-R5Q-V92
+          path: R5Q_Build_V92.zip
