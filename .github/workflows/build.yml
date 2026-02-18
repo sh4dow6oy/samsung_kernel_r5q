@@ -1,4 +1,4 @@
-name: Build R5Q - V110 Final Strategy
+name: Build R5Q - V111 Fix Makefile
 
 on:
   workflow_dispatch:
@@ -16,22 +16,25 @@ jobs:
 
       - name: DTS & Config Surgery
         run: |
-          # 1. Clonăm Mainey pentru resurse
+          # 1. Clonăm Mainey
           git clone --depth=1 https://github.com/mainey/android_kernel_samsung_r5q -b lineage-19.0 mainey_source
           
-          # 2. Transplant DTS samsung direct în dts/ (calea simplă)
+          # 2. Transplant folder samsung
           mkdir -p kernel/arch/arm64/boot/dts/samsung
           cp -r mainey_source/arch/arm64/boot/dts/samsung/* kernel/arch/arm64/boot/dts/samsung/
           
-          # 3. Transplant Headere Bindings
-          mkdir -p kernel/include/dt-bindings
+          # 3. Transplant Headere Bindings (Directly into include)
           cp -r mainey_source/include/dt-bindings/* kernel/include/dt-bindings/
           
-          # 4. Patch Makefile principal pentru a include folderul samsung
-          sed -i '1i subdir-y += samsung' kernel/arch/arm64/boot/dts/Makefile
+          # 4. Patch Makefile principal (curat)
+          echo 'subdir-y += samsung' >> kernel/arch/arm64/boot/dts/Makefile
           
-          # 5. INJECTARE CONFIG R5Q în vendor/sm8150-perf_defconfig
-          # Adăugăm flag-urile Samsung la finalul config-ului nativ
+          # 5. Fix Makefile Samsung (Simplificat pentru a evita erori de sintaxă)
+          # Pur și simplu îi spunem să compileze tot ce găsește în folder
+          printf "dtbo-y += \$(patsubst %.dts,%.dtbo,\$(notdir \$(wildcard \$(srctree)/\$(src)/*_overlay.dts)))\n" > kernel/arch/arm64/boot/dts/samsung/Makefile
+          printf "obj-y += \$(patsubst %.dts,%.dtb,\$(notdir \$(wildcard \$(srctree)/\$(src)/*.dts)))\n" >> kernel/arch/arm64/boot/dts/samsung/Makefile
+
+          # 6. INJECTARE CONFIG R5Q
           cat <<EOF >> kernel/arch/arm64/configs/vendor/sm8150-perf_defconfig
           CONFIG_MACH_SAMSUNG=y
           CONFIG_MACH_R5Q=y
@@ -44,7 +47,7 @@ jobs:
           # CONFIG_WERROR is not set
           EOF
 
-      - name: Maximize Space & Install Toolchain
+      - name: Toolchain & Deps
         run: |
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
           sudo apt-get update
@@ -54,48 +57,39 @@ jobs:
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
 
-      - name: Build Kernel & DTBO
+      - name: Build
         run: |
           cd kernel
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
           
-          # Acum sm8150-perf_defconfig conține deja setările noastre pentru r5q
           make $MAKE_ARGS vendor/sm8150-perf_defconfig
           make $MAKE_ARGS olddefconfig
           
-          # Compilăm
+          # Build target
           make -j$(nproc --all) $MAKE_ARGS V=1 Image.gz dtbs dtbo.img || make -j$(nproc --all) $MAKE_ARGS V=1 Image.gz dtbs
 
-      - name: Assemble AnyKernel3
+      - name: Assemble
         run: |
           OUT="kernel/out/arch/arm64/boot"
           if [ -f "$OUT/Image.gz" ]; then
             git clone https://github.com/osm0sis/AnyKernel3.git AK3
             cp $OUT/Image.gz AK3/
-            
-            # Căutăm DTB de r5q
             DTB=$(find $OUT/dts -name "*r5q*.dtb" | head -n 1)
-            if [ -f "$DTB" ]; then
-                cat $OUT/Image.gz $DTB > AK3/Image.gz
-            fi
-            
-            # Căutăm DTBO
+            [ -f "$DTB" ] && cat $OUT/Image.gz $DTB > AK3/Image.gz
             DTBO_IMG=$(find kernel/out -name "dtbo.img" | head -n 1)
             if [ -f "$DTBO_IMG" ]; then
                 cp $DTBO_IMG AK3/dtbo.img
             else
                 find kernel/out -name "*.dtbo" -exec cp {} AK3/ \;
             fi
-            
-            cd AK3 && zip -r9 ../R5Q_Final_V110.zip *
+            cd AK3 && zip -r9 ../R5Q_Final_V111.zip *
           else
-            echo "Build failed!"
             exit 1
           fi
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-R5Q-V110
-          path: R5Q_Final_V110.zip
+          name: Kernel-R5Q-V111
+          path: R5Q_Final_V111.zip
