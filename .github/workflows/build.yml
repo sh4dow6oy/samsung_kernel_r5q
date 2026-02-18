@@ -1,4 +1,4 @@
-name: Build R5Q - LineageOS V77 (vDSO Hard-Fix)
+name: Build R5Q - LineageOS V78 (Surgical Fix)
 
 on:
   workflow_dispatch:
@@ -35,35 +35,32 @@ jobs:
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
 
-      - name: Build Kernel (The vDSO Final Boss)
+      - name: Patch vDSO Source (Kill Memmove Conflict)
+        run: |
+          cd kernel
+          # Redenumim memmove în vDSO pentru a evita conflictul cu built-in-ul Clang
+          sed -i 's/memmove/vdso_memmove/g' arch/arm64/kernel/vdso/vgettimeofday.c
+          # Aplicăm aceeași logică și pentru memset/memcpy dacă există
+          sed -i 's/memcpy/vdso_memcpy/g' arch/arm64/kernel/vdso/vgettimeofday.c
+          sed -i 's/memset/vdso_memset/g' arch/arm64/kernel/vdso/vgettimeofday.c
+
+      - name: Build Kernel (V=1)
         run: |
           cd kernel
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
-          
-          # Dezactivăm LLVM_IAS pentru a folosi asamblorul GNU (mai tolerant)
           MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=0 CC=clang LD=ld.lld CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- CLANG_TRIPLE=aarch64-linux-gnu- O=out"
           
           make $MAKE_ARGS r5q_defconfig
-          
-          ./scripts/config --file out/.config \
-            -d CONFIG_SAMSUNG_RTIC \
-            -d CONFIG_WERROR \
-            -d CONFIG_LTO_CLANG \
-            -d CONFIG_CFI_CLANG \
-            -e CONFIG_BUILD_ARM64_DT_OVERLAY
-            
+          ./scripts/config --file out/.config -d CONFIG_SAMSUNG_RTIC -d CONFIG_WERROR -d CONFIG_LTO_CLANG -d CONFIG_CFI_CLANG -e CONFIG_BUILD_ARM64_DT_OVERLAY
           make $MAKE_ARGS olddefconfig
 
-          # Keep-Alive & Monitor
-          (while true; do echo "[LOG] Compiling... RAM: $(free -m | awk '/^Mem:/{print $3}')MB"; sleep 60; done) &
+          (while true; do echo "[KEEP-ALIVE] RAM: $(free -m | awk '/^Mem:/{print $3}')MB"; sleep 60; done) &
 
-          # PASUL DECISIV: Adăugăm flag-uri care dezactivează definițiile de string din headerele incluse
-          # __NO_FORTIFY previne macro-urile de optimizare pentru memmove/memcpy
           make -j$(nproc --all) $MAKE_ARGS V=1 Image.gz dtbs \
-            KCFLAGS="-w -fcommon -fno-builtin -fno-builtin-memmove -fno-builtin-memcpy -D__NO_FORTIFY -D__LINUX_ARM_ARCH__=8" \
+            KCFLAGS="-w -fcommon -fno-builtin -D__NO_FORTIFY -D__LINUX_ARM_ARCH__=8" \
             LDFLAGS="--allow-multiple-definition --defsym=__aeabi_unwind_cpp_pr0=0 --defsym=__aeabi_unwind_cpp_pr1=0"
 
-      - name: Assemble
+      - name: Assemble AnyKernel3
         run: |
           OUT="kernel/out/arch/arm64/boot"
           git clone https://github.com/osm0sis/AnyKernel3.git AK3
@@ -72,14 +69,14 @@ jobs:
             DTB=$(find $OUT/dts -name "*r5q*.dtb" -o -name "*sm8150*.dtb" | head -n 1)
             [ -f "$DTB" ] && cat $OUT/Image.gz $DTB > AK3/Image.gz
             find kernel/out -name "dtbo.img" -exec cp {} AK3/dtbo.img \;
-            cd AK3 && zip -r9 ../R5Q_Build_V77_vDSO_Fixed.zip *
+            cd AK3 && zip -r9 ../R5Q_Build_V78.zip *
           else
-            echo "Eroare: Linkarea a eșuat din nou la vDSO sau simboluri."
+            echo "Failed: Kernel image not found."
             exit 1
           fi
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-R5Q-V77
-          path: R5Q_Build_V77_vDSO_Fixed.zip
+          name: Kernel-R5Q-V78
+          path: R5Q_Build_V78.zip
