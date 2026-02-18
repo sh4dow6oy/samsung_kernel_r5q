@@ -1,4 +1,4 @@
-name: Build R5Q - LineageOS V71 (Verbose Logs)
+name: Build R5Q - LineageOS V72 (Swap Fix & Verbose)
 
 on:
   workflow_dispatch:
@@ -14,10 +14,12 @@ jobs:
           ref: lineage-20
           path: kernel
 
-      - name: Maximize Build Space & Swap
+      - name: Maximize Build Space & Swap (Fix)
         run: |
-          # Creăm un fișier swap de 4GB pentru a preveni crash-ul linker-ului (OOM)
-          sudo fallocate -l 4G /swapfile
+          # Dezactivăm orice swap existent pentru a evita "Text file busy"
+          sudo swapoff -a || true
+          # Creăm swap-ul folosind dd (mai compatibil pe unele sisteme de fișiere)
+          sudo dd if=/dev/zero of=/swapfile bs=1M count=4096
           sudo chmod 600 /swapfile
           sudo mkswap /swapfile
           sudo swapon /swapfile
@@ -36,26 +38,29 @@ jobs:
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
 
-      - name: Build Kernel with Verbose Logs
+      - name: Build Kernel (Verbose & RAM Monitor)
         run: |
           cd kernel
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- CLANG_TRIPLE=aarch64-linux-gnu- O=out"
           
-          # Configurare
+          # Configurare inițială
           make $MAKE_ARGS r5q_defconfig
           ./scripts/config --file out/.config -d CONFIG_SAMSUNG_RTIC -d CONFIG_WERROR -d CONFIG_LTO_CLANG -d CONFIG_CFI_CLANG -e CONFIG_BUILD_ARM64_DT_OVERLAY
           make $MAKE_ARGS olddefconfig
 
-          # Keep-Alive Script pentru a evita timeout-ul GitHub de 10 min fără output
-          (while true; do echo "STILL BUILDING... RAM Usage: $(free -m | awk '/^Mem:/{print $3}')MB"; sleep 30; done) &
-          KEEP_ALIVE_PID=$!
+          # Monitorizare RAM în timp real în log-uri
+          (while true; do 
+            echo "[MONITOR] $(date +%H:%M:%S) - RAM Used: $(free -m | awk '/^Mem:/{print $3}')MB / Swap: $(free -m | awk '/^Swap:/{print $3}')MB"
+            sleep 30
+          done) &
+          MONITOR_PID=$!
 
-          # V=1 activează log-urile detaliate (Verbose)
-          # Folosim -j2 pentru a nu umple memoria la linkare
-          make -j2 $MAKE_ARGS V=1 Image.gz dtbs KCFLAGS="-w -fcommon" LDFLAGS="--allow-multiple-definition" || { kill $KEEP_ALIVE_PID; exit 1; }
+          # Compilare Verbose (V=1) pentru a vedea fiecare fișier compilat
+          # Limităm la -j2 pentru a proteja RAM-ul în timpul linkării WLAN
+          make -j2 $MAKE_ARGS V=1 Image.gz dtbs KCFLAGS="-w -fcommon" LDFLAGS="--allow-multiple-definition" || { kill $MONITOR_PID; exit 1; }
           
-          kill $KEEP_ALIVE_PID
+          kill $MONITOR_PID
 
       - name: Assemble AnyKernel3
         run: |
@@ -65,24 +70,24 @@ jobs:
           if [ -f "$OUT/Image.gz" ]; then
             cp $OUT/Image.gz AK3/
             
-            # Căutăm DTB
+            # Căutăm DTB pentru r5q
             DTB=$(find $OUT/dts -name "*r5q*.dtb" -o -name "*sm8150*.dtb" | head -n 1)
             [ -f "$DTB" ] && cat $OUT/Image.gz $DTB > AK3/Image.gz
             
-            # Căutăm DTBO prin tot folderul out (metodă sigură)
+            # Căutăm DTBO
             find kernel/out -name "dtbo.img" -exec cp {} AK3/dtbo.img \;
             
             cd AK3
             sed -i 's/device.name1=maguro/device.name1=r5q/g' anykernel.sh
             sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-            zip -r9 ../R5Q_Build_V71_Verbose.zip *
+            zip -r9 ../R5Q_Lineage_V72_Final.zip *
           else
-            echo "EROARE: Image.gz nu a fost generat. Verifică ultimele linii din log-ul Verbose."
+            echo "EROARE: Image.gz nu a fost generat!"
             exit 1
           fi
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-R5Q-Verbose
-          path: R5Q_Build_V71_Verbose.zip
+          name: Kernel-R5Q-V72
+          path: R5Q_Lineage_V72_Final.zip
