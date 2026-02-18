@@ -1,4 +1,4 @@
-name: Build R5Q - LineageOS V92 (Total Linker Permissiveness)
+name: Build R5Q - LineageOS V94 (vDSO Disabled)
 
 on:
   workflow_dispatch:
@@ -14,7 +14,7 @@ jobs:
           ref: lineage-20
           path: kernel
 
-      - name: Maximize Build Space & Swap
+      - name: Maximize Build Space
         run: |
           sudo swapoff -a || true
           sudo dd if=/dev/zero of=/swapfile bs=1M count=8192
@@ -35,41 +35,37 @@ jobs:
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
 
-      - name: Final vDSO & Makefile Overhaul
+      - name: Nuke vDSO from Architecture
         run: |
           cd kernel
-          # 1. Eliminăm flag-ul -static care blochează linkarea dinamică a vDSO
-          find arch/arm64/kernel/vdso -name "Makefile" -exec sed -i 's/-static//g' {} +
+          # 1. Scoatem vDSO din Makefile-ul de arhitectură arm64
+          # Aceasta oprește intrarea în folderul vdso în timpul compilării
+          sed -i 's/vdso//g' arch/arm64/kernel/Makefile
           
-          # 2. Patch-uim Makefile-ul principal vDSO pentru a forța Clang să ignore orice built-in
-          VDSO_MAKE="arch/arm64/kernel/vdso/Makefile"
-          if [ -f "$VDSO_MAKE" ]; then
-            echo "ccflags-y += -fno-builtin -fno-builtin-memcpy -fno-builtin-memset -fno-builtin-memmove" >> "$VDSO_MAKE"
-            echo "ldflags-y += --allow-multiple-definition --no-fatal-warnings" >> "$VDSO_MAKE"
-          fi
-
-          # 3. Patch surse pentru a evita orice conflict de nume cu built-in-urile
-          find arch/arm64/kernel/vdso -type f -name "*.[chS]" -exec sed -i 's/\bmemcpy\b/vdso_memcpy/g' {} +
-          find arch/arm64/kernel/vdso -type f -name "*.[chS]" -exec sed -i 's/\bmemset\b/vdso_memset/g' {} +
-          find arch/arm64/kernel/vdso -type f -name "*.[chS]" -exec sed -i 's/\bmemmove\b/vdso_memmove/g' {} +
+          # 2. Ștergem fizic conținutul Makefile-ului din vdso (ca failsafe)
+          echo "obj-y :=" > arch/arm64/kernel/vdso/Makefile
+          echo "install :=" >> arch/arm64/kernel/vdso/Makefile
 
       - name: Build Kernel
         run: |
           cd kernel
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
-          # LLVM_IAS=0 este obligatoriu pentru vDSO în kernel 4.14/4.19 cu Clang 17
           MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=0 CC=clang LD=ld.lld CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- CLANG_TRIPLE=aarch64-linux-gnu- O=out"
           
           make $MAKE_ARGS r5q_defconfig
+          
+          # Dezactivăm explicit suportul de vDSO din config
+          ./scripts/config --file out/.config -d CONFIG_VDSO -d CONFIG_ARM64_SW_TTBR0_PAN
+          # Restul setărilor tale
           ./scripts/config --file out/.config -d CONFIG_SAMSUNG_RTIC -d CONFIG_WERROR -d CONFIG_LTO_CLANG -d CONFIG_CFI_CLANG -e CONFIG_BUILD_ARM64_DT_OVERLAY
+          
           make $MAKE_ARGS olddefconfig
 
-          (while true; do echo "[BUILD] Building... RAM Free: $(free -m | awk '/^Mem:/{print $4}')MB"; sleep 60; done) &
+          (while true; do echo "[PROGRESS] Compiling... RAM: $(free -m | awk '/^Mem:/{print $3}')MB"; sleep 60; done) &
 
-          # KCFLAGS agresive și LDFLAGS de toleranță maximă
           make -j$(nproc --all) $MAKE_ARGS V=1 Image.gz dtbs \
             KCFLAGS="-w -fcommon -fno-builtin -D__NO_FORTIFY" \
-            LDFLAGS="--allow-multiple-definition --no-fatal-warnings --defsym=__aeabi_unwind_cpp_pr0=0 --defsym=__aeabi_unwind_cpp_pr1=0"
+            LDFLAGS="--allow-multiple-definition --defsym=__aeabi_unwind_cpp_pr0=0 --defsym=__aeabi_unwind_cpp_pr1=0"
 
       - name: Assemble AnyKernel3
         run: |
@@ -80,14 +76,14 @@ jobs:
             DTB=$(find $OUT/dts -name "*r5q*.dtb" -o -name "*sm8150*.dtb" | head -n 1)
             [ -f "$DTB" ] && cat $OUT/Image.gz $DTB > AK3/Image.gz
             find kernel/out -name "dtbo.img" -exec cp {} AK3/dtbo.img \;
-            cd AK3 && zip -r9 ../R5Q_Build_V92.zip *
+            cd AK3 && zip -r9 ../R5Q_No_vDSO_V94.zip *
           else
-            echo "Build failed. The vDSO issue is still blocking the image generation."
+            echo "Build failed. If it still complains about vDSO, some code has hard-dependencies on it."
             exit 1
           fi
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-R5Q-V92
-          path: R5Q_Build_V92.zip
+          name: Kernel-R5Q-No-vDSO
+          path: R5Q_No_vDSO_V94.zip
