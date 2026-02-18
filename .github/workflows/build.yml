@@ -1,4 +1,4 @@
-name: Build R5Q - LineageOS V87 (Final vDSO Stand)
+name: Build R5Q - LineageOS V88 (Pre-processor Fix)
 
 on:
   workflow_dispatch:
@@ -35,23 +35,16 @@ jobs:
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
 
-      - name: Surgical Patching
+      - name: Surgical Makefile Injection
         run: |
           cd kernel
-          # Patch Makefile vDSO - Injectăm flag-urile de eroare direct în variabila de compilare a vDSO
           VDSO_MAKE="arch/arm64/kernel/vdso/Makefile"
           if [ -f "$VDSO_MAKE" ]; then
-            echo "Injecting flags into $VDSO_MAKE"
-            # Adăugăm flag-urile la începutul fișierului pentru a fi sigur că sunt luate în calcul
-            sed -i '1i ccflags-y := -fno-builtin -fno-builtin-memcpy -fno-builtin-memset -fno-builtin-memmove' "$VDSO_MAKE"
-            sed -i 's/-Werror//g' "$VDSO_MAKE"
+            echo "Injecting redefinition macros into vDSO Makefile..."
+            # Folosim macro-uri de preprocesor pentru a redenumi funcțiile 'on-the-fly'
+            # Aceasta rezolvă eroarea chiar dacă fișierul vgettimeofday.c este generat dinamic
+            sed -i '1i ccflags-y := -Dmemcpy=vdso_memcpy -Dmemset=vdso_memset -Dmemmove=vdso_memmove -Dmemcmp=vdso_memcmp -fno-builtin' "$VDSO_MAKE"
           fi
-
-          # Patch surse vDSO - căutăm în tot subdirectorul de arhitectură
-          echo "Patching vDSO source files..."
-          find arch/arm64/kernel/vdso -type f -name "*.[chS]" -exec sed -i 's/\bmemmove\b/vdso_memmove/g' {} +
-          find arch/arm64/kernel/vdso -type f -name "*.[chS]" -exec sed -i 's/\bmemcpy\b/vdso_memcpy/g' {} +
-          find arch/arm64/kernel/vdso -type f -name "*.[chS]" -exec sed -i 's/\bmemset\b/vdso_memset/g' {} +
 
       - name: Build Kernel
         run: |
@@ -63,7 +56,7 @@ jobs:
           ./scripts/config --file out/.config -d CONFIG_SAMSUNG_RTIC -d CONFIG_WERROR -d CONFIG_LTO_CLANG -d CONFIG_CFI_CLANG -e CONFIG_BUILD_ARM64_DT_OVERLAY
           make $MAKE_ARGS olddefconfig
 
-          (while true; do echo "[KEEP-ALIVE] Building... RAM: $(free -m | awk '/^Mem:/{print $3}')MB"; sleep 60; done) &
+          (while true; do echo "[LOG] Compiling... RAM: $(free -m | awk '/^Mem:/{print $3}')MB"; sleep 60; done) &
 
           make -j$(nproc --all) $MAKE_ARGS V=1 Image.gz dtbs \
             KCFLAGS="-w -fcommon -fno-builtin -D__NO_FORTIFY -D__LINUX_ARM_ARCH__=8" \
@@ -78,14 +71,14 @@ jobs:
             DTB=$(find $OUT/dts -name "*r5q*.dtb" -o -name "*sm8150*.dtb" | head -n 1)
             [ -f "$DTB" ] && cat $OUT/Image.gz $DTB > AK3/Image.gz
             find kernel/out -name "dtbo.img" -exec cp {} AK3/dtbo.img \;
-            cd AK3 && zip -r9 ../R5Q_Build_V87.zip *
+            cd AK3 && zip -r9 ../R5Q_Build_V88.zip *
           else
-            echo "Build failed. See logs above for vDSO/linker errors."
+            echo "Build failed. Check vDSO linking output."
             exit 1
           fi
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-R5Q-V87
-          path: R5Q_Build_V87.zip
+          name: Kernel-R5Q-V88
+          path: R5Q_Build_V88.zip
