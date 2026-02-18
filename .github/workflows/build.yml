@@ -1,4 +1,4 @@
-name: Build R5Q - LineageOS V75 (Built-in Fix)
+name: Build R5Q - LineageOS V76 (vDSO Fix)
 
 on:
   workflow_dispatch:
@@ -35,13 +35,13 @@ jobs:
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
 
-      - name: Build Kernel (Built-in & Assembler Fix)
+      - name: Build Kernel (vDSO & Memmove Fix)
         run: |
           cd kernel
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           
-          # Schimbăm LLVM_IAS=0 pentru a folosi GNU Assembler (fix pentru .arch armv7)
-          # Adăugăm -fno-builtin pentru fix-ul memmove
+          # Dezactivăm LLVM_IAS (Integrated Assembler) pentru compatibilitate cu codul asamblare vechi
+          # Adăugăm flag-ul -fno-builtin-memmove și -fno-builtin-memcpy
           MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=0 CC=clang LD=ld.lld CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- CLANG_TRIPLE=aarch64-linux-gnu- O=out"
           
           make $MAKE_ARGS r5q_defconfig
@@ -55,11 +55,13 @@ jobs:
             
           make $MAKE_ARGS olddefconfig
 
+          # Monitorizare RAM
           (while true; do echo "[MONITOR] RAM: $(free -m | awk '/^Mem:/{print $3}')MB"; sleep 60; done) &
 
-          # Flag-ul -fno-builtin rezolvă eroarea de rediferinire memmove/memcpy
+          # PASUL CHEIE: Adăugăm -fno-builtin pe lângă restul flag-urilor
+          # Folosim și -fno-stack-protector pentru vDSO dacă e cazul
           make -j$(nproc --all) $MAKE_ARGS V=1 Image.gz dtbs \
-            KCFLAGS="-w -fcommon -fno-builtin -D__LINUX_ARM_ARCH__=8" \
+            KCFLAGS="-w -fcommon -fno-builtin -fno-builtin-memmove -fno-builtin-memcpy -fno-builtin-memset -D__LINUX_ARM_ARCH__=8" \
             LDFLAGS="--allow-multiple-definition --defsym=__aeabi_unwind_cpp_pr0=0 --defsym=__aeabi_unwind_cpp_pr1=0"
 
       - name: Assemble AnyKernel3
@@ -71,14 +73,14 @@ jobs:
             DTB=$(find $OUT/dts -name "*r5q*.dtb" -o -name "*sm8150*.dtb" | head -n 1)
             [ -f "$DTB" ] && cat $OUT/Image.gz $DTB > AK3/Image.gz
             find kernel/out -name "dtbo.img" -exec cp {} AK3/dtbo.img \;
-            cd AK3 && zip -r9 ../R5Q_Build_V75_Stable.zip *
+            cd AK3 && zip -r9 ../R5Q_Build_V76_Final.zip *
           else
-            echo "Build failed. Check if memmove error persists."
+            echo "Build failed at vDSO stage."
             exit 1
           fi
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-R5Q-V75
-          path: R5Q_Build_V75_Stable.zip
+          name: Kernel-R5Q-V76
+          path: R5Q_Build_V76_Final.zip
