@@ -1,4 +1,4 @@
-name: Build R5Q - LineageOS V85 (Universal vDSO Neutralizer)
+name: Build R5Q - LineageOS V86 (Makefile Surgical Fix)
 
 on:
   workflow_dispatch:
@@ -35,32 +35,37 @@ jobs:
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
 
-      - name: Universal vDSO Symbol Patch
+      - name: Surgical Makefile Patch
         run: |
           cd kernel
-          echo "Scanning and patching all vDSO related symbols..."
-          # Căutăm orice fișier care are 'vdso' în cale și redenumim funcțiile problematice
-          find . -path "*vdso*" -type f \( -name "*.c" -o -name "*.h" -o -name "*.S" \) -exec sed -i 's/\bmemmove\b/vdso_memmove/g' {} +
-          find . -path "*vdso*" -type f \( -name "*.c" -o -name "*.h" -o -name "*.S" \) -exec sed -i 's/\bmemcpy\b/vdso_memcpy/g' {} +
-          find . -path "*vdso*" -type f \( -name "*.c" -o -name "*.h" -o -name "*.S" \) -exec sed -i 's/\bmemset\b/vdso_memset/g' {} +
-          find . -path "*vdso*" -type f \( -name "*.c" -o -name "*.h" -o -name "*.S" \) -exec sed -i 's/\bmemcmp\b/vdso_memcmp/g' {} +
+          # Pasul 1: Injectăm flag-urile direct în Makefile-ul vDSO pentru a forța Clang să ignore built-in-urile
+          VDSO_MAKEFILE="arch/arm64/kernel/vdso/Makefile"
+          if [ -f "$VDSO_MAKEFILE" ]; then
+            echo "Patching vDSO Makefile..."
+            # Adăugăm flag-urile de dezactivare built-in la începutul listei de flag-uri vDSO
+            sed -i '1i  ccflags-y += -fno-builtin -fno-builtin-memcpy -fno-builtin-memset -fno-builtin-memmove' "$VDSO_MAKEFILE"
+          fi
+
+          # Pasul 2: Patch-uim sursa generică din lib/vdso (care e sursa reală pentru SM8150)
+          find lib/vdso -type f -name "*.c" -exec sed -i 's/\bmemmove\b/vdso_memmove/g' {} +
+          find lib/vdso -type f -name "*.c" -exec sed -i 's/\bmemcpy\b/vdso_memcpy/g' {} +
+          find lib/vdso -type f -name "*.c" -exec sed -i 's/\bmemset\b/vdso_memset/g' {} +
 
       - name: Build Kernel
         run: |
           cd kernel
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
-          # LLVM_IAS=0 pentru a folosi asamblorul GNU, necesar pentru compatibilitatea vDSO
+          # LLVM_IAS=0 pentru a folosi GNU Assembler
           MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=0 CC=clang LD=ld.lld CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- CLANG_TRIPLE=aarch64-linux-gnu- O=out"
           
           make $MAKE_ARGS r5q_defconfig
           ./scripts/config --file out/.config -d CONFIG_SAMSUNG_RTIC -d CONFIG_WERROR -d CONFIG_LTO_CLANG -d CONFIG_CFI_CLANG -e CONFIG_BUILD_ARM64_DT_OVERLAY
           make $MAKE_ARGS olddefconfig
 
-          (while true; do echo "[LOG] RAM Usage: $(free -m | awk '/^Mem:/{print $3}')MB"; sleep 60; done) &
+          (while true; do echo "[KEEP-ALIVE] RAM: $(free -m | awk '/^Mem:/{print $3}')MB"; sleep 60; done) &
 
-          # KCFLAGS pentru a forța Clang să nu mai "ghicească" funcțiile built-in
           make -j$(nproc --all) $MAKE_ARGS V=1 Image.gz dtbs \
-            KCFLAGS="-w -fcommon -fno-builtin -fno-stack-protector -D__NO_FORTIFY -D__LINUX_ARM_ARCH__=8" \
+            KCFLAGS="-w -fcommon -fno-builtin -D__NO_FORTIFY -D__LINUX_ARM_ARCH__=8" \
             LDFLAGS="--allow-multiple-definition --defsym=__aeabi_unwind_cpp_pr0=0 --defsym=__aeabi_unwind_cpp_pr1=0"
 
       - name: Assemble AnyKernel3
@@ -72,14 +77,14 @@ jobs:
             DTB=$(find $OUT/dts -name "*r5q*.dtb" -o -name "*sm8150*.dtb" | head -n 1)
             [ -f "$DTB" ] && cat $OUT/Image.gz $DTB > AK3/Image.gz
             find kernel/out -name "dtbo.img" -exec cp {} AK3/dtbo.img \;
-            cd AK3 && zip -r9 ../R5Q_Lineage_V85.zip *
+            cd AK3 && zip -r9 ../R5Q_Build_V86.zip *
           else
-            echo "Eroare: Imaginea kernel nu a fost generată nici după patch-ul universal."
+            echo "Build failed. Makefile patch didn't bypass the redefinition."
             exit 1
           fi
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-R5Q-V85
-          path: R5Q_Lineage_V85.zip
+          name: Kernel-R5Q-V86
+          path: R5Q_Build_V86.zip
