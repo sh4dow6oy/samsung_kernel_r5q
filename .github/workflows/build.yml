@@ -1,11 +1,11 @@
-name: Build R5Q - LineageOS V94 (vDSO Disabled)
+name: Build R5Q - LineageOS V96 (Proton Clang + Ubuntu 22)
 
 on:
   workflow_dispatch:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04 # Forțăm Ubuntu 22.04
     steps:
       - name: Checkout LineageOS SM8150
         uses: actions/checkout@v4
@@ -29,43 +29,37 @@ jobs:
       - name: Install Build Tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu gcc-arm-linux-gnueabi bc libssl-dev python3 bison flex libncurses6 libncurses-dev zstd
+          sudo apt-get install -y gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu gcc-arm-linux-gnueabi bc libssl-dev python3 bison flex libncurses6 libncurses-dev zstd git
           sudo ln -sf /usr/bin/python3 /usr/bin/python
-          mkdir -p clang
-          wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
-          tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
+          # Descarcăm Proton Clang
+          git clone --depth=1 https://github.com/kdrag0n/proton-clang.git clang
 
-      - name: Nuke vDSO from Architecture
+      - name: Surgical vDSO Fix
         run: |
-          cd kernel
-          # 1. Scoatem vDSO din Makefile-ul de arhitectură arm64
-          # Aceasta oprește intrarea în folderul vdso în timpul compilării
-          sed -i 's/vdso//g' arch/arm64/kernel/Makefile
-          
-          # 2. Ștergem fizic conținutul Makefile-ului din vdso (ca failsafe)
-          echo "obj-y :=" > arch/arm64/kernel/vdso/Makefile
-          echo "install :=" >> arch/arm64/kernel/vdso/Makefile
+          cd kernel/arch/arm64/kernel/vdso
+          # Redenumim simbolurile conflictuale în sursele vDSO
+          sed -i 's/\bmemcpy\b/vdso_memcpy/g' *.[cS] || true
+          sed -i 's/\bmemset\b/vdso_memset/g' *.[cS] || true
+          sed -i 's/\bmemmove\b/vdso_memmove/g' *.[cS] || true
+          # Scoatem -static din Makefile-ul vDSO
+          sed -i 's/-static//g' Makefile || true
 
       - name: Build Kernel
         run: |
           cd kernel
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
-          MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=0 CC=clang LD=ld.lld CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- CLANG_TRIPLE=aarch64-linux-gnu- O=out"
+          # Proton Clang funcționează mai bine cu LLVM=1
+          MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- CLANG_TRIPLE=aarch64-linux-gnu- O=out"
           
           make $MAKE_ARGS r5q_defconfig
-          
-          # Dezactivăm explicit suportul de vDSO din config
-          ./scripts/config --file out/.config -d CONFIG_VDSO -d CONFIG_ARM64_SW_TTBR0_PAN
-          # Restul setărilor tale
           ./scripts/config --file out/.config -d CONFIG_SAMSUNG_RTIC -d CONFIG_WERROR -d CONFIG_LTO_CLANG -d CONFIG_CFI_CLANG -e CONFIG_BUILD_ARM64_DT_OVERLAY
-          
           make $MAKE_ARGS olddefconfig
 
-          (while true; do echo "[PROGRESS] Compiling... RAM: $(free -m | awk '/^Mem:/{print $3}')MB"; sleep 60; done) &
+          (while true; do echo "[LOG] Compiling with Proton... RAM: $(free -m | awk '/^Mem:/{print $3}')MB"; sleep 60; done) &
 
           make -j$(nproc --all) $MAKE_ARGS V=1 Image.gz dtbs \
             KCFLAGS="-w -fcommon -fno-builtin -D__NO_FORTIFY" \
-            LDFLAGS="--allow-multiple-definition --defsym=__aeabi_unwind_cpp_pr0=0 --defsym=__aeabi_unwind_cpp_pr1=0"
+            LDFLAGS="--allow-multiple-definition"
 
       - name: Assemble AnyKernel3
         run: |
@@ -76,14 +70,14 @@ jobs:
             DTB=$(find $OUT/dts -name "*r5q*.dtb" -o -name "*sm8150*.dtb" | head -n 1)
             [ -f "$DTB" ] && cat $OUT/Image.gz $DTB > AK3/Image.gz
             find kernel/out -name "dtbo.img" -exec cp {} AK3/dtbo.img \;
-            cd AK3 && zip -r9 ../R5Q_No_vDSO_V94.zip *
+            cd AK3 && zip -r9 ../R5Q_Proton_V96.zip *
           else
-            echo "Build failed. If it still complains about vDSO, some code has hard-dependencies on it."
+            echo "Build failed. Chiar și cu Proton Clang, vDSO face probleme."
             exit 1
           fi
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-R5Q-No-vDSO
-          path: R5Q_No_vDSO_V94.zip
+          name: Kernel-R5Q-Proton
+          path: R5Q_Proton_V96.zip
