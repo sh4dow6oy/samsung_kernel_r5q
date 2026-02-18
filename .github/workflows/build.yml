@@ -1,4 +1,4 @@
-name: Build R5Q - LineageOS V73 (Linker Fix)
+name: Build R5Q - LineageOS V74 (Assembly Fix)
 
 on:
   workflow_dispatch:
@@ -35,38 +35,40 @@ jobs:
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
 
-      - name: Build Kernel (Verbose & Symbol Fix)
+      - name: Build Kernel (Fix Assembly & Symbols)
         run: |
           cd kernel
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           
-          # Argumente de build cu LDFLAGS pentru a "păcăli" simbolurile lipsă
+          # Definim argumentele de build
+          # Adăugăm flag-uri pentru a ignora directivele de asamblare nefamiliare
           MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- CLANG_TRIPLE=aarch64-linux-gnu- O=out"
           
           make $MAKE_ARGS r5q_defconfig
           
-          # Dezactivăm ARM_UNWIND și alte opțiuni care generează simboluri problematice
+          # Patch agresiv pentru a scoate suportul de 32-bit/v7 care cauzează erori în Clang
           ./scripts/config --file out/.config \
             -d CONFIG_SAMSUNG_RTIC \
             -d CONFIG_WERROR \
             -d CONFIG_LTO_CLANG \
             -d CONFIG_CFI_CLANG \
             -d CONFIG_ARM_UNWIND \
-            -d CONFIG_STACKTRACE \
+            -d CONFIG_VFP \
+            -d CONFIG_NEON \
             -e CONFIG_BUILD_ARM64_DT_OVERLAY
             
           make $MAKE_ARGS olddefconfig
 
           # Monitorizare RAM
-          (while true; do echo "[MONITOR] RAM: $(free -m | awk '/^Mem:/{print $3}')MB"; sleep 60; done) &
+          (while true; do echo "[MONITOR] RAM Free: $(free -m | awk '/^Mem:/{print $4}')MB"; sleep 60; done) &
 
-          # Adăugăm flag-ul special --defsym pentru a ignora simbolul __aeabi_unwind_cpp_pr0
-          # Acest flag îi spune linkerului: "Dacă nu găsești simbolul ăsta, pune-l pe zero, e OK."
+          # KCFLAGS fix: -D__LINUX_ARM_ARCH__=8 forțează codul să creadă că e pe ARMv8 (64-bit)
+          # -fno-integrated-as (opțional, dar am păstrat LLVM_IAS=1 momentan pentru viteză)
           make -j$(nproc --all) $MAKE_ARGS V=1 Image.gz dtbs \
-            KCFLAGS="-w -fcommon" \
+            KCFLAGS="-w -fcommon -D__LINUX_ARM_ARCH__=8" \
             LDFLAGS="--allow-multiple-definition --defsym=__aeabi_unwind_cpp_pr0=0 --defsym=__aeabi_unwind_cpp_pr1=0"
 
-      - name: Assemble
+      - name: Assemble AnyKernel3
         run: |
           OUT="kernel/out/arch/arm64/boot"
           git clone https://github.com/osm0sis/AnyKernel3.git AK3
@@ -75,14 +77,14 @@ jobs:
             DTB=$(find $OUT/dts -name "*r5q*.dtb" -o -name "*sm8150*.dtb" | head -n 1)
             [ -f "$DTB" ] && cat $OUT/Image.gz $DTB > AK3/Image.gz
             find kernel/out -name "dtbo.img" -exec cp {} AK3/dtbo.img \;
-            cd AK3 && zip -r9 ../R5Q_Build_V73.zip *
+            cd AK3 && zip -r9 ../R5Q_Build_V74.zip *
           else
-            echo "Build failed at linking stage."
+            echo "Build failed again. Check the log for 'unknown directive' location."
             exit 1
           fi
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-R5Q-V73
-          path: R5Q_Build_V73.zip
+          name: Kernel-R5Q-V74
+          path: R5Q_Build_V74.zip
