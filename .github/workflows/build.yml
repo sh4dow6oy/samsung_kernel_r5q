@@ -1,4 +1,4 @@
-name: R5Q LumiBPF - V47 DTB Interceptor
+name: R5Q LumiBPF - V46 Final Success
 
 on:
   workflow_dispatch:
@@ -27,80 +27,66 @@ jobs:
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
 
-      - name: Build Kernel with Real-Time Interception
+      - name: Build Kernel
         run: |
           cd kernel
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
           
-          # Pregătim folderul de salvare (Safe Zone)
-          mkdir -p ../safe_zone
-
-          # 1. Configurare
+          # Configurare Defconfig (S10 Lite)
           make $MAKE_ARGS r5q_eur_open_defconfig
+          
+          # Setări Obligatorii pentru Android 15 & eBPF
           ./scripts/config --file out/.config \
             -e CONFIG_SEC_R5Q_PROJECT \
             -e CONFIG_BPF_JIT \
             -e CONFIG_BPF_JIT_ALWAYS_ON \
             -e CONFIG_BUILD_ARM64_DT_OVERLAY \
-            -d CONFIG_SAMSUNG_RTIC
+            -e CONFIG_OF_LIBFDT_OVERLAY \
+            -d CONFIG_SAMSUNG_RTIC \
+            -d CONFIG_WERROR
+            
           make $MAKE_ARGS olddefconfig
-
-          # 2. COMPILARE + INTERCEPTARE ÎN TIMP REAL
-          # Pornim compilarea în fundal, dar salvăm fișierele imediat ce apar
-          echo "Pornim interceptarea fișierelor hardware..."
           
-          # Rulăm compilarea
-          make -j$(nproc --all) $MAKE_ARGS Image.gz dtbs KCFLAGS="-w -fcommon" & 
-          BUILD_PID=$!
-
-          # Buclă de monitorizare: cât timp rulează build-ul, copiem tot ce apare
-          while ps -p $BUILD_PID > /dev/null; do
-            find out -name "*.dtbo" -o -name "sm8150*.dtb" -exec cp -u {} ../safe_zone/ \; 2>/dev/null
-            sleep 5
-          done
-
-          # O ultimă scanare după ce s-a terminat (în caz că au apărut în ultima secundă)
-          find out -name "*.dtbo" -o -name "sm8150*.dtb" -exec cp -u {} ../safe_zone/ \; 2>/dev/null
-          
-          echo "Build finalizat. Fișiere salvate în safe_zone: $(ls ../safe_zone | wc -l)"
+          # Compilare Kernel + DTBS (cu folderul renovation activat de tine)
+          make -j$(nproc --all) $MAKE_ARGS Image.gz dtbs KCFLAGS="-w -fcommon"
 
       - name: Assemble AnyKernel3
         run: |
           AK3_DIR="AK3"
           git clone https://github.com/osm0sis/AnyKernel3.git $AK3_DIR
           
-          # 1. Copiem Image.gz (care de obicei nu e șters)
+          # 1. Localizăm și copiem Image.gz
           IMAGE_PATH=$(find kernel/out -name "Image.gz" | head -n 1)
           [ -f "$IMAGE_PATH" ] && cp "$IMAGE_PATH" $AK3_DIR/
           
-          # 2. Restaurăm DTB-ul și DTBO-urile din SAFE ZONE (unde build-ul nu are acces să șteargă)
-          echo "Restaurăm hardware binary-urile din Safe Zone..."
+          # 2. Localizăm și copiem DTB-ul principal (sm8150-v2 pentru S10 Lite)
+          DTB_PATH=$(find kernel/out -name "sm8150-v2.dtb" -o -name "sm8150.dtb" | head -n 1)
+          [ -f "$DTB_PATH" ] && cp "$DTB_PATH" $AK3_DIR/dtb
           
-          # Căutăm DTB-ul principal în safe_zone
-          DTB_SAFE=$(find safe_zone -name "sm8150-v2.dtb" -o -name "sm8150.dtb" | head -n 1)
-          [ -f "$DTB_SAFE" ] && cp "$DTB_SAFE" $AK3_DIR/dtb
+          # 3. Localizăm și copiem TOATE DTBO-urile generate
+          # Le căutăm direct în out și le punem în AnyKernel3
+          echo "Căutăm fișierele hardware .dtbo..."
+          find kernel/out -name "*.dtbo" -exec cp {} $AK3_DIR/ \;
           
-          # Copiem toate DTBO-urile
-          cp safe_zone/*.dtbo $AK3_DIR/ 2>/dev/null || true
-          
-          # Verificare finală
+          # Verificare: Numărăm fișierele colectate
           COUNT=$(ls $AK3_DIR/*.dtbo 2>/dev/null | wc -l)
-          echo "Am reușit să salvăm $COUNT fișiere DTBO."
+          echo "Am colectat $COUNT fișiere DTBO pentru Android 15."
           
           if [ "$COUNT" -eq 0 ]; then
-             echo "CRITICAL ERROR: Nici interceptarea în timp real nu a găsit DTBO-uri!"
+             echo "EROARE: Niciun fișier DTBO nu a fost găsit în folderul de build!"
              exit 1
           fi
 
           cd $AK3_DIR
+          # Ajustări script AnyKernel pentru Samsung modern
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
           sed -i 's|block=/dev/block/platform/omap/omap_hsmmc.0/by-name/boot|block=auto|g' anykernel.sh
           
-          zip -r9 ../R5Q_A15_V47_Intercepted.zip *
+          zip -r9 ../R5Q_A15_Final_Success.zip *
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-A15-V47
-          path: R5Q_A15_V47_Intercepted.zip
+          name: Kernel-S10Lite-A15-V46
+          path: R5Q_A15_Final_Success.zip
