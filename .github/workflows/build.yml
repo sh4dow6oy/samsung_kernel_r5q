@@ -11,7 +11,7 @@ jobs:
       - name: Checkout Kernel
         uses: actions/checkout@v4
         with:
-          repository: sh4dow6oy/android_kernel_samsung_sm8150
+          repository: LumiPlayground/android_kernel_samsung_sm8150
           ref: rawr-bpf
           path: kernel
 
