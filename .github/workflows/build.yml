@@ -1,4 +1,4 @@
-name: Build Roynas R5Q - V68 Surgical
+name: Build Roynas R5Q - V69 TimeFix
 on:
   workflow_dispatch:
 
@@ -30,17 +30,16 @@ jobs:
           cd kernel
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           
-          # REVERT & FIX: Nu mai redenumim tot. 
-          # Folosim -fcommon pentru a permite definiții multiple și lăsăm Clang să gestioneze bit_count.
-          # Dacă eroarea de "conflicting types" revine, o ignorăm prin flag-uri, nu prin redenumire.
+          # FIX: timespec64 conflict (Neutron/Clang special)
+          # Eliminăm re-declarația structurii care blochează build-ul
+          sed -i 's/static struct timespec64/struct timespec64/g' include/linux/time64.h || true
 
-          # Cleanup flags problematice (Polly/LTO)
+          # Cleanup flags problematice
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
 
           MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
 
           make $MAKE_ARGS r5q_defconfig
-          
           ./scripts/config --file out/.config \
             -d CONFIG_LTO -d CONFIG_LTO_CLANG -e CONFIG_LTO_NONE \
             -e CONFIG_SEC_R5Q_PROJECT \
@@ -51,26 +50,29 @@ jobs:
             -d CONFIG_WERROR
           
           make $MAKE_ARGS olddefconfig
-          
-          # KCFLAGS: 
-          # -fcommon (permite variabile duplicate)
-          # -w (ascunde toate warning-urile care opresc build-ul)
-          # -fno-builtin (împiedică Clang să folosească versiunile sale interne de funcții care pot crea conflicte)
+          # Folosim -fno-builtin pentru a evita conflictele de functii standard
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -w -fno-builtin"
 
       - name: Package with AnyKernel3
         run: |
           git clone https://github.com/osm0sis/AnyKernel3.git AK3
+          
+          # Căutăm Image.gz
           find kernel/out/arch/arm64/boot -name "Image.gz*" -exec cp {} AK3/Image.gz \;
+          
+          # Căutăm DTB-ul principal și îl redenumim simplu 'dtb' (AnyKernel format)
+          find kernel/out/arch/arm64/boot/dts -name "sm8150.dtb" -exec cp {} AK3/dtb \;
+          
+          # DTBO Simple
           [ -f kernel/out/arch/arm64/boot/dtbo.img ] && cp kernel/out/arch/arm64/boot/dtbo.img AK3/dtbo.img
           
           cd AK3
           sed -i 's/device.name1=maguro/device.name1=r5q/g' anykernel.sh
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-          zip -r9 ../Kernel-S10Lite-R5Q-V68.zip *
+          zip -r9 ../Kernel-S10Lite-R5Q-V69.zip *
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-S10Lite-V68
-          path: Kernel-S10Lite-R5Q-V68.zip
+          name: Kernel-S10Lite-V69
+          path: Kernel-S10Lite-R5Q-V69.zip
