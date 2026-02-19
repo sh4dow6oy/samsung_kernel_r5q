@@ -82,21 +82,17 @@ jobs:
         run: |
           git clone https://github.com/osm0sis/AnyKernel3.git AK3
 
-          # Copiem kernelul (appended DTB)
+          # Copiem kernelul appended DTB
           find kernel/out -name "Image.gz-dtb" -exec cp {} AK3/Image.gz \;
 
-          # Copiem dtbo.img
-          cp kernel/out/dtbo.img AK3/
+          if [ ! -f AK3/Image.gz ]; then
+            echo "EROARE: Image.gz-dtb nu s-a găsit!"
+            exit 1
+          fi
 
-          # Fix AnyKernel config pentru Samsung
+          # Samsung auto-detect
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' AK3/anykernel.sh
           sed -i 's/block=.*/block=auto/g' AK3/anykernel.sh
 
           cd AK3
           zip -r9 ../R5Q_A15_V58_Final.zip *
-
-      - name: Upload
-        uses: actions/upload-artifact@v4
-        with:
-          name: R5Q-A15-V58
-          path: R5Q_A15_V58_Final.zip
