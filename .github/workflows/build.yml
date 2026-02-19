@@ -1,4 +1,4 @@
-name: R5Q LumiBPF - V57 Python Symlink Fix
+name: R5Q LumiBPF - V58 Modern Stack Fix
 
 on:
   workflow_dispatch:
@@ -14,16 +14,12 @@ jobs:
           ref: rawr-bpf
           path: kernel
 
-      - name: Install Build Tools & Manual Python2 Link
+      - name: Install Build Tools
         run: |
           sudo apt-get update
           sudo apt-get install -y bc build-essential flex bison lz4 libssl-dev libelf-dev \
-          ccache python2 python3 libarchive-tools wget zstd libtinfo5 zip \
+          ccache python3 python3-pip libarchive-tools wget zstd libtinfo5 zip \
           gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi device-tree-compiler rsync git
-          
-          # Creăm manual alias-ul pentru python -> python2
-          sudo ln -sf /usr/bin/python2 /usr/bin/python
-          python --version
 
       - name: Setup Toolchain (Proton Clang)
         run: |
@@ -31,7 +27,7 @@ jobs:
           wget -q https://github.com/kdrag0n/proton-clang/archive/refs/heads/master.tar.gz
           tar -xf master.tar.gz --strip-components=1 -C clang
 
-      - name: Build Kernel & DTBO
+      - name: Build Kernel
         run: |
           cd kernel
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
@@ -50,41 +46,42 @@ jobs:
           make $MAKE_ARGS olddefconfig
           make -j$(nproc --all) $MAKE_ARGS Image.gz dtbs KCFLAGS="-w -fcommon"
 
-          # Generare DTBO folosind noul link de python
-          echo "Asamblăm imaginea hardware..."
-          DTBO_FILES=$(find out/arch/arm64/boot/dts/samsung/renovation -name "*.dtbo")
-          MKDTBOIMG=$(find scripts -name "mkdtboimg.py" | head -n 1)
-          
-          if [ -n "$DTBO_FILES" ] && [ -n "$MKDTBOIMG" ]; then
-            python "$MKDTBOIMG" create out/arch/arm64/boot/dtbo.img $DTBO_FILES
-            echo "SUCCESS: dtbo.img creat!"
-          fi
-
-      - name: Assemble AnyKernel3
+      - name: Assemble AnyKernel3 & DTBO Fallback
         run: |
           AK3_DIR="AK3"
           git clone https://github.com/osm0sis/AnyKernel3.git $AK3_DIR
           
+          # 1. Copiem Kernel-ul
           find kernel/out -name "Image.gz" -exec cp {} $AK3_DIR/ \;
           
-          # Logică de captură DTBO
-          if [ -f "kernel/out/arch/arm64/boot/dtbo.img" ]; then
-            cp kernel/out/arch/arm64/boot/dtbo.img $AK3_DIR/
-          else
-            find kernel/out/arch/arm64/boot/dts/samsung/renovation -name "*.dtbo" -exec cp {} $AK3_DIR/ \;
-          fi
-          
+          # 2. Copiem DTB-ul principal (Header V2)
           DTB_PATH=$(find kernel/out -name "sm8150-v2.dtb" -o -name "sm8150.dtb" | head -n 1)
           [ -f "$DTB_PATH" ] && cp "$DTB_PATH" $AK3_DIR/dtb
           
+          # 3. REZOLVARE DTBO (Metoda sigură fără Python 2)
+          # Deoarece mkdtboimg.py eșuează pe Python 3, copiem fișierele .dtbo brute.
+          # AnyKernel3 va detecta automat fișierele .dtbo din rădăcina sa și le va 
+          # împacheta corect în timpul flash-ului pe telefon.
+          echo "Colectăm fișierele hardware .dtbo brute pentru AnyKernel3..."
+          find kernel/out/arch/arm64/boot/dts/samsung/renovation -name "*.dtbo" -exec cp {} $AK3_DIR/ \;
+          
+          # Verificare
+          COUNT=$(ls $AK3_DIR/*.dtbo 2>/dev/null | wc -l)
+          echo "Am găsit $COUNT fișiere DTBO."
+          
+          if [ "$COUNT" -eq 0 ]; then
+            echo "EROARE: Niciun DTBO găsit! Verifică dacă s-au compilat."
+            exit 1
+          fi
+
           cd $AK3_DIR
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
           sed -i 's|block=/dev/block/platform/omap/omap_hsmmc.0/by-name/boot|block=auto|g' anykernel.sh
           
-          zip -r9 ../R5Q_A15_V57_U22.zip *
+          zip -r9 ../R5Q_A15_V58_Final.zip *
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-A15-V57
-          path: R5Q_A15_V57_U22.zip
+          name: S10Lite-A15-V58
+          path: R5Q_A15_V58_Final.zip
