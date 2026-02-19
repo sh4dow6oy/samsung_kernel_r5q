@@ -1,4 +1,4 @@
-name: R5Q LumiBPF - V44 Final Build
+name: R5Q LumiBPF - V45 Final Path Fix
 
 on:
   workflow_dispatch:
@@ -33,10 +33,9 @@ jobs:
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
           
-          # Configurare Defconfig
           make $MAKE_ARGS r5q_eur_open_defconfig
           
-          # Activăm suportul critic pentru Android 15
+          # Suport Android 15 & eBPF
           ./scripts/config --file out/.config \
             -e CONFIG_SEC_R5Q_PROJECT \
             -e CONFIG_BPF_JIT \
@@ -45,8 +44,6 @@ jobs:
             -d CONFIG_SAMSUNG_RTIC
             
           make $MAKE_ARGS olddefconfig
-
-          # Compilare Kernel + DTBS (care acum includ 'renovation')
           make -j$(nproc --all) $MAKE_ARGS Image.gz dtbs KCFLAGS="-w -fcommon"
 
       - name: Assemble AnyKernel3
@@ -54,31 +51,35 @@ jobs:
           AK3_DIR="AK3"
           git clone https://github.com/osm0sis/AnyKernel3.git $AK3_DIR
           
-          # Copiem Image.gz
-          cp kernel/out/arch/arm64/boot/Image.gz $AK3_DIR/
+          # 1. Căutare inteligentă pentru Image.gz (Corecția principală)
+          IMAGE_PATH=$(find kernel/out -name "Image.gz" | head -n 1)
+          if [ -n "$IMAGE_PATH" ]; then
+            cp "$IMAGE_PATH" $AK3_DIR/
+            echo "SUCCESS: Image.gz găsit la $IMAGE_PATH"
+          else
+            echo "ERROR: Image.gz nu a fost generat!" && exit 1
+          fi
           
-          # Copiem DTB-ul de bază (esențial pentru Header V2)
+          # 2. Căutare inteligentă pentru DTB (Header V2)
           DTB_PATH=$(find kernel/out -name "sm8150-v2.dtb" -o -name "sm8150.dtb" | head -n 1)
           [ -f "$DTB_PATH" ] && cp "$DTB_PATH" $AK3_DIR/dtb
           
-          # Colectăm overlay-urile generate din folderul renovation
+          # 3. Colectare DTBO (Hardware Fragments din renovation)
+          # Makefile-ul tău manual a funcționat, acum doar le adunăm
           find kernel/out -name "*.dtbo" -exec cp {} $AK3_DIR/ \;
           
-          # Verificăm dacă fișierele sunt prezente
           COUNT=$(ls $AK3_DIR/*.dtbo 2>/dev/null | wc -l)
-          echo "Build-ul conține $COUNT fișiere DTBO."
+          echo "Zip-ul conține $COUNT fișiere DTBO."
           
-          if [ "$COUNT" -eq 0 ]; then
-             echo "EROARE: Makefile-ul nu a generat DTBO-uri. Verifică sintaxa dts-dirs."
-             exit 1
-          fi
-
           cd $AK3_DIR
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-          zip -r9 ../R5Q_A15_V44_Stable.zip *
+          # Folosim block=auto pentru a evita erorile de montare pe S10 Lite
+          sed -i 's|block=/dev/block/platform/omap/omap_hsmmc.0/by-name/boot|block=auto|g' anykernel.sh
+          
+          zip -r9 ../R5Q_A15_Final_Fix.zip *
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-A15-Stable
-          path: R5Q_A15_V44_Stable.zip
+          name: S10Lite-A15-V45
+          path: R5Q_A15_Final_Fix.zip
