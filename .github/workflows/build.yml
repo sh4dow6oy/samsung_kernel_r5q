@@ -1,4 +1,4 @@
-name: R5Q LumiBPF - V40 Deep Injector
+name: R5Q LumiBPF - V44 Final Build
 
 on:
   workflow_dispatch:
@@ -21,78 +21,64 @@ jobs:
           ccache python3 python-is-python3 libarchive-tools wget zstd libtinfo6 zip \
           gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi device-tree-compiler rsync git
 
-      - name: Setup Toolchain
+      - name: Setup Toolchain (Neutron Clang)
         run: |
           mkdir -p clang
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
 
-      - name: Build Kernel & Inject Subdir
+      - name: Build Kernel
         run: |
           cd kernel
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
           
-          # --- PASUL PE CARE L-AM OMIS: Injecția subdirectorului în ierarhia DTB ---
-          echo "Includem folderul renovation în procesul de build..."
-          # Adăugăm linia la finalul Makefile-ului părinte
-          echo "subdir-y += renovation" >> arch/arm64/boot/dts/samsung/Makefile
-
           # Configurare Defconfig
           make $MAKE_ARGS r5q_eur_open_defconfig
           
-          # Configurare Android 15 & Proiect R5Q
+          # Activăm suportul critic pentru Android 15
           ./scripts/config --file out/.config \
             -e CONFIG_SEC_R5Q_PROJECT \
             -e CONFIG_BPF_JIT \
             -e CONFIG_BPF_JIT_ALWAYS_ON \
             -e CONFIG_BUILD_ARM64_DT_OVERLAY \
-            -e CONFIG_OF_LIBFDT_OVERLAY \
-            -d CONFIG_SAMSUNG_RTIC \
-            -d CONFIG_WERROR
+            -d CONFIG_SAMSUNG_RTIC
             
           make $MAKE_ARGS olddefconfig
 
-          # Creăm folderul pentru salvarea DTBO-urilor înainte de cleanup
-          mkdir -p ../dtbo_salvate
-
-          # Compilăm Kernel + DTBS și capturăm fișierele imediat
+          # Compilare Kernel + DTBS (care acum includ 'renovation')
           make -j$(nproc --all) $MAKE_ARGS Image.gz dtbs KCFLAGS="-w -fcommon"
-          
-          # Căutăm și salvăm tot ce e .dtbo din out
-          find out/arch/arm64/boot/dts/samsung/renovation -name "*.dtbo" -exec cp {} ../dtbo_salvate/ \;
-          echo "Captură finalizată. Fișiere salvate: $(ls ../dtbo_salvate | wc -l)"
 
       - name: Assemble AnyKernel3
         run: |
           AK3_DIR="AK3"
           git clone https://github.com/osm0sis/AnyKernel3.git $AK3_DIR
           
-          # 1. Kernel
+          # Copiem Image.gz
           cp kernel/out/arch/arm64/boot/Image.gz $AK3_DIR/
           
-          # 2. DTB principal (pentru Samsung Header V2)
-          DTB_PATH=$(find kernel/out/arch/arm64/boot/dts -name "sm8150-v2.dtb" -o -name "sm8150.dtb" | head -n 1)
+          # Copiem DTB-ul de bază (esențial pentru Header V2)
+          DTB_PATH=$(find kernel/out -name "sm8150-v2.dtb" -o -name "sm8150.dtb" | head -n 1)
           [ -f "$DTB_PATH" ] && cp "$DTB_PATH" $AK3_DIR/dtb
           
-          # 3. Restaurăm DTBO-urile din folderul de salvare
-          echo "Punem fișierele hardware în zip..."
-          cp dtbo_salvate/*.dtbo $AK3_DIR/ 2>/dev/null || true
+          # Colectăm overlay-urile generate din folderul renovation
+          find kernel/out -name "*.dtbo" -exec cp {} $AK3_DIR/ \;
           
-          # Verificare finală obligatorie
+          # Verificăm dacă fișierele sunt prezente
           COUNT=$(ls $AK3_DIR/*.dtbo 2>/dev/null | wc -l)
+          echo "Build-ul conține $COUNT fișiere DTBO."
+          
           if [ "$COUNT" -eq 0 ]; then
-             echo "ERORRE: Folderul 'renovation' a fost injectat dar nu s-au generat fișiere DTBO!"
+             echo "EROARE: Makefile-ul nu a generat DTBO-uri. Verifică sintaxa dts-dirs."
              exit 1
           fi
-          echo "Succes! Zip-ul conține $COUNT fișiere DTBO."
 
           cd $AK3_DIR
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-          zip -r9 ../R5Q_A15_V40_Final.zip *
+          zip -r9 ../R5Q_A15_V44_Stable.zip *
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-A15-V40
-          path: R5Q_A15_V40_Final.zip
+          name: S10Lite-A15-Stable
+          path: R5Q_A15_V44_Stable.zip
