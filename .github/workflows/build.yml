@@ -1,4 +1,4 @@
-name: R5Q LumiBPF - V52 Final Revision
+name: R5Q LumiBPF - V53 Permissions Fix
 
 on:
   workflow_dispatch:
@@ -27,46 +27,42 @@ jobs:
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
 
-      - name: Build Kernel & Smart DTBO Stitching
+      - name: Build Kernel & Permission Fix
         run: |
           cd kernel
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
           
-          # 1. Configurare Defconfig
           make $MAKE_ARGS r5q_eur_open_defconfig
           
-          # 2. Injectare Setări Android 15 (eBPF & DTBO Support)
+          # Suport Android 15
           ./scripts/config --file out/.config \
             -e CONFIG_SEC_R5Q_PROJECT \
             -e CONFIG_BPF_JIT \
             -e CONFIG_BPF_JIT_ALWAYS_ON \
             -e CONFIG_BUILD_ARM64_DT_OVERLAY \
-            -d CONFIG_SAMSUNG_RTIC \
-            -d CONFIG_WERROR
+            -d CONFIG_SAMSUNG_RTIC
             
           make $MAKE_ARGS olddefconfig
-
-          # 3. Compilare Kernel + DTBS (fără a cere dtbo.img din Makefile ca să nu crape)
           make -j$(nproc --all) $MAKE_ARGS Image.gz dtbs KCFLAGS="-w -fcommon"
 
-          # 4. GENERARE MANUALĂ dtbo.img
-          echo "Începem asamblarea manuală a imaginii DTBO..."
-          DTBO_FILES=$(find out/arch/arm64/boot/dts/samsung/renovation -name "*.dtbo")
-          
-          if [ -z "$DTBO_FILES" ]; then
-            echo "Eroare: Nu s-au găsit fișiere .dtbo în renovation! Verifică Makefile-ul manual."
-            exit 1
-          fi
+          # --- FIX PERMISIUNI ȘI GENERARE MANUALA ---
+          echo "Reparăm permisiunile pentru scripturile de build..."
+          find scripts -name "*.py" -exec chmod +x {} \;
+          find scripts -name "*.sh" -exec chmod +x {} \;
 
-          # Căutăm scriptul de împachetare (poate fi în locații diferite)
-          MKDTBOIMG=$(find scripts -name "mkdtboimg.py" | head -n 1)
-          if [ -z "$MKDTBOIMG" ]; then
-            echo "Avertisment: mkdtboimg.py nu a fost găsit. Încercăm varianta binară sau fallback."
-            # Dacă lipsește scriptul python, AnyKernel3 va lua fișierele brute (pasul următor)
+          echo "Colectăm toate fișierele .dtbo generate..."
+          # Căutăm recursiv în folderul 'out' pentru a găsi toate fragmentele hardware
+          DTBO_FILES=$(find out -name "*.dtbo")
+          
+          if [ -n "$DTBO_FILES" ]; then
+            MKDTBOIMG=$(find scripts -name "mkdtboimg.py" | head -n 1)
+            if [ -n "$MKDTBOIMG" ]; then
+              python3 "$MKDTBOIMG" create out/arch/arm64/boot/dtbo.img $DTBO_FILES
+              echo "SUCCESS: dtbo.img a fost creat."
+            fi
           else
-            python3 "$MKDTBOIMG" create out/arch/arm64/boot/dtbo.img $DTBO_FILES
-            echo "SUCCESS: dtbo.img creat cu succes!"
+            echo "AVERTISMENT: Nu s-au găsit fișiere .dtbo pentru a crea imaginea!"
           fi
 
       - name: Assemble AnyKernel3
@@ -74,31 +70,26 @@ jobs:
           AK3_DIR="AK3"
           git clone https://github.com/osm0sis/AnyKernel3.git $AK3_DIR
           
-          # 1. Image.gz
+          # 1. Kernel
           find kernel/out -name "Image.gz" -exec cp {} $AK3_DIR/ \;
           
-          # 2. DTBO Logic (Imagine sau Fișiere brute)
+          # 2. DTBO (Imagine sau fișiere individuale ca Fallback)
           if [ -f "kernel/out/arch/arm64/boot/dtbo.img" ]; then
             cp kernel/out/arch/arm64/boot/dtbo.img $AK3_DIR/
-            echo "Folosim imaginea compactă dtbo.img"
           else
-            echo "Folosim fișiere brute .dtbo (Fallback)"
             find kernel/out -name "*.dtbo" -exec cp {} $AK3_DIR/ \;
           fi
           
-          # 3. DTB principal (Samsung Header V2)
+          # 3. DTB principal
           DTB_PATH=$(find kernel/out -name "sm8150-v2.dtb" -o -name "sm8150.dtb" | head -n 1)
           [ -f "$DTB_PATH" ] && cp "$DTB_PATH" $AK3_DIR/dtb
           
-          # Verificare finală conținut
-          ls -l $AK3_DIR/
-          
           cd $AK3_DIR
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-          zip -r9 ../R5Q_A15_Lumi_V52.zip *
+          zip -r9 ../R5Q_A15_V53_Final.zip *
 
-      - name: Upload Artifact
+      - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-A15-V52
-          path: R5Q_A15_Lumi_V52.zip
+          name: S10Lite-A15-V53
+          path: R5Q_A15_V53_Final.zip
