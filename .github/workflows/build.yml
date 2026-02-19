@@ -1,4 +1,33 @@
-- name: Build Kernel & Manual DTBO Stitching
+name: R5Q LumiBPF - V50 DTBO Master
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout Kernel
+        uses: actions/checkout@v4
+        with:
+          repository: sh4dow6oy/android_kernel_samsung_sm8150
+          ref: rawr-bpf
+          path: kernel
+
+      - name: Install Build Tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bc build-essential flex bison lz4 libssl-dev libelf-dev \
+          ccache python3 python-is-python3 libarchive-tools wget zstd libtinfo6 zip \
+          gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi device-tree-compiler rsync git
+
+      - name: Setup Toolchain (Neutron Clang)
+        run: |
+          mkdir -p clang
+          wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
+          tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
+
+      - name: Build Kernel & Manual DTBO Stitching
         run: |
           cd kernel
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
