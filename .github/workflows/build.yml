@@ -5,20 +5,19 @@ on:
 jobs:
   build:
     runs-on: ubuntu-24.04
-
     steps:
       - name: Checkout Source
         uses: actions/checkout@v4
         with:
           repository: sh4dow6oy/android_kernel_qcom_sm8150_419
           ref: master
-          fetch-depth: 1
+          path: kernel
 
       - name: Install Dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y bc build-essential flex bison lz4 libssl-dev libelf-dev \
-            ccache python3 python-is-python3 libarchive-tools wget zstd libtinfo6 zip
+          ccache python3 python-is-python3 libarchive-tools wget zstd libtinfo6 zip
 
       - name: Setup Neutron Clang
         run: |
@@ -28,81 +27,58 @@ jobs:
 
       - name: Build Kernel
         run: |
+          cd kernel
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
+          
+          # 1. FIX: CONFLICTING TYPES FOR 'bit_count'
+          # Redenumim variabila bit_count în kernel_bit_count pentru a evita conflictul cu Clang
+          grep -rl "bit_count" . | xargs sed -i 's/\bbit_count\b/kernel_bit_count/g' || true
 
-          # Cleanup Makefiles for LLVM flags
-          find . -type f \( -name "Makefile*" -o -name "*.mk" \) \
-            -exec sed -i 's/-mllvm -polly[^ ]*//g' {} + \
-            -exec sed -i 's/-mllvm//g' {} + \
-            -exec sed -i 's/-polly[^ ]*//g' {} +
-
-          # VDSO fix
+          # 2. NUCLEAR CLEANUP (Polly & LTO cleanup)
+          find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
+          find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm//g' {} +
+          
+          # 3. VDSO FIX
           if [ -f arch/arm64/kernel/vdso/Makefile ]; then
             sed -i 's/-static//g' arch/arm64/kernel/vdso/Makefile
-            sed -i 's/$(LDFLAGS)/$(filter-out -static,$(LDFLAGS))/g' arch/arm64/kernel/vdso/Makefile
           fi
 
-          # Remove Kernelsu references
-          sed -i '/kernelsu/d' drivers/android/Kconfig || true
-          sed -i '/kernelsu/d' drivers/android/Makefile || true
-          rm -rf drivers/kernelsu
+          # 4. Argumente Build
+          MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
 
-          # Prepare build args
-          MAKE_ARGS="ARCH=arm64 \
-            LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm \
-            OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip \
-            CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-            O=out"
-
-          # Defconfig
+          # 5. Configurare
           make $MAKE_ARGS r5q_defconfig
-
-          # Kernel config tweaks
           ./scripts/config --file out/.config \
             -d CONFIG_LTO -d CONFIG_LTO_CLANG -e CONFIG_LTO_NONE \
-            -d CONFIG_CC_STACKPROTECTOR_STRONG -e CONFIG_CC_STACKPROTECTOR_NONE \
-            -d CONFIG_SHADOW_CALL_STACK -d CONFIG_KNOX_KAP -d CONFIG_SECURITY_SAMSUNG_KNOX \
-            -d CONFIG_ASSIST_KSU -d CONFIG_KSU \
+            -d CONFIG_KNOX_KAP -d CONFIG_SECURITY_SAMSUNG_KNOX \
             -e CONFIG_SEC_R5Q_PROJECT \
             -e CONFIG_BPF_JIT \
             -e CONFIG_BPF_JIT_ALWAYS_ON \
             -e CONFIG_BUILD_ARM64_DT_OVERLAY \
-            -d CONFIG_SAMSUNG_RTIC \
-            -e CONFIG_DEBUG_INFO_BTF \
-            -e CONFIG_ANDROID_BINDER_IPC \
-            -e CONFIG_ANDROID_BINDERFS \
-            -e CONFIG_CGROUP_BPF
-
+            -d CONFIG_SAMSUNG_RTIC
+          
           make $MAKE_ARGS olddefconfig
-
-          # Compile kernel appended DTB
-          make -j$(nproc --all) $MAKE_ARGS Image.gz-dtb dtbs KCFLAGS="-fcommon -Wno-error -Wno-unknown-warning-option"
+          
+          # 6. Compilare (Am adăugat flag-uri de ignorare pentru cross-compilare)
+          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -Wno-error -Wno-implicit-function-declaration -Wno-conflicting-types"
 
       - name: Package with AnyKernel3
         run: |
-          IMAGE="$GITHUB_WORKSPACE/out/arch/arm64/boot/Image.gz-dtb"
-          if [ ! -f "$IMAGE" ]; then
-            echo "EROARE: Kernel Image.gz-dtb nu a fost găsit!"
-            exit 1
-          fi
-
-          # Clone AnyKernel3
           git clone https://github.com/osm0sis/AnyKernel3.git AK3
-          rm -rf AK3/.git
-
-          # Copy kernel
-          cp "$IMAGE" AK3/Image.gz
-
-          # Fix device config for R5Q
-          sed -i 's/do.devicecheck=1/do.devicecheck=0/g' AK3/anykernel.sh
-          sed -i 's/block=.*/block=auto/g' AK3/anykernel.sh
-
-          # Create final flashable zip
+          IMAGE="kernel/out/arch/arm64/boot/Image.gz"
+          [ -f "kernel/out/arch/arm64/boot/Image.gz-dtb" ] && IMAGE="kernel/out/arch/arm64/boot/Image.gz-dtb"
+          cp $IMAGE AK3/Image.gz
+          
+          # Colectăm modulele hardware (Battery Data)
+          find kernel/out/arch/arm64/boot/dts/samsung -name "*.dtbo" -exec cp {} AK3/ \;
+          
           cd AK3
-          zip -r9 ../R5Q_OneUI7_Kernel_Final.zip *
+          sed -i 's/device.name1=maguro/device.name1=r5q/g' anykernel.sh
+          sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
+          zip -r9 ../Kernel-S10Lite-R5Q-V63.zip *
 
-      - name: Upload Flashable Kernel
+      - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: R5Q_OneUI7_Kernel
-          path: R5Q_OneUI7_Kernel_Final.zip
+          name: Kernel-S10Lite-R5Q-V63
+          path: Kernel-S10Lite-R5Q-V63.zip
