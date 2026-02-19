@@ -1,4 +1,4 @@
-name: R5Q LumiBPF - V46 Final Success
+name: R5Q LumiBPF - V50 DTBO Master
 
 on:
   workflow_dispatch:
@@ -27,66 +27,56 @@ jobs:
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
 
-      - name: Build Kernel
+      - name: Build Kernel & DTBO Image
         run: |
           cd kernel
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
           
-          # Configurare Defconfig (S10 Lite)
+          # Configurare
           make $MAKE_ARGS r5q_eur_open_defconfig
           
-          # Setări Obligatorii pentru Android 15 & eBPF
+          # Suport critic Android 15 (eBPF JIT & Hardware Overlay)
           ./scripts/config --file out/.config \
             -e CONFIG_SEC_R5Q_PROJECT \
             -e CONFIG_BPF_JIT \
             -e CONFIG_BPF_JIT_ALWAYS_ON \
             -e CONFIG_BUILD_ARM64_DT_OVERLAY \
-            -e CONFIG_OF_LIBFDT_OVERLAY \
             -d CONFIG_SAMSUNG_RTIC \
             -d CONFIG_WERROR
             
           make $MAKE_ARGS olddefconfig
-          
-          # Compilare Kernel + DTBS (cu folderul renovation activat de tine)
-          make -j$(nproc --all) $MAKE_ARGS Image.gz dtbs KCFLAGS="-w -fcommon"
+
+          # Compilare: Acum Image.gz și dtbo.img sunt ambele în targets!
+          make -j$(nproc --all) $MAKE_ARGS Image.gz dtbs dtbo.img KCFLAGS="-w -fcommon"
 
       - name: Assemble AnyKernel3
         run: |
           AK3_DIR="AK3"
           git clone https://github.com/osm0sis/AnyKernel3.git $AK3_DIR
           
-          # 1. Localizăm și copiem Image.gz
-          IMAGE_PATH=$(find kernel/out -name "Image.gz" | head -n 1)
-          [ -f "$IMAGE_PATH" ] && cp "$IMAGE_PATH" $AK3_DIR/
+          # 1. Copiem Kernel-ul
+          find kernel/out -name "Image.gz" -exec cp {} $AK3_DIR/ \;
           
-          # 2. Localizăm și copiem DTB-ul principal (sm8150-v2 pentru S10 Lite)
+          # 2. Copiem imaginea DTBO (Noua ta țintă din Makefile)
+          DTBO_IMG=$(find kernel/out -name "dtbo.img" | head -n 1)
+          if [ -f "$DTBO_IMG" ]; then
+            cp "$DTBO_IMG" $AK3_DIR/
+            echo "SUCCESS: dtbo.img a fost găsit și adăugat!"
+          else
+            echo "ERROR: dtbo.img nu a fost generat de Makefile!" && exit 1
+          fi
+          
+          # 3. Copiem DTB-ul principal (Header V2)
           DTB_PATH=$(find kernel/out -name "sm8150-v2.dtb" -o -name "sm8150.dtb" | head -n 1)
           [ -f "$DTB_PATH" ] && cp "$DTB_PATH" $AK3_DIR/dtb
           
-          # 3. Localizăm și copiem TOATE DTBO-urile generate
-          # Le căutăm direct în out și le punem în AnyKernel3
-          echo "Căutăm fișierele hardware .dtbo..."
-          find kernel/out -name "*.dtbo" -exec cp {} $AK3_DIR/ \;
-          
-          # Verificare: Numărăm fișierele colectate
-          COUNT=$(ls $AK3_DIR/*.dtbo 2>/dev/null | wc -l)
-          echo "Am colectat $COUNT fișiere DTBO pentru Android 15."
-          
-          if [ "$COUNT" -eq 0 ]; then
-             echo "EROARE: Niciun fișier DTBO nu a fost găsit în folderul de build!"
-             exit 1
-          fi
-
           cd $AK3_DIR
-          # Ajustări script AnyKernel pentru Samsung modern
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-          sed -i 's|block=/dev/block/platform/omap/omap_hsmmc.0/by-name/boot|block=auto|g' anykernel.sh
-          
-          zip -r9 ../R5Q_A15_Final_Success.zip *
+          zip -r9 ../R5Q_A15_V50_Final.zip *
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-S10Lite-A15-V46
-          path: R5Q_A15_Final_Success.zip
+          name: S10Lite-A15-V50
+          path: R5Q_A15_V50_Final.zip
