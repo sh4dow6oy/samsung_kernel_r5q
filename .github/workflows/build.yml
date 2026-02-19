@@ -1,4 +1,4 @@
-name: R5Q LumiBPF - V31 Final JIT-DTBO
+name: R5Q LumiBPF - V37 Final Android 15
 
 on:
   workflow_dispatch:
@@ -7,10 +7,10 @@ jobs:
   build:
     runs-on: ubuntu-24.04
     steps:
-      - name: Checkout Lumi Kernel
+      - name: Checkout Kernel (rawr-bpf)
         uses: actions/checkout@v4
         with:
-          repository: LumiPlayground/android_kernel_samsung_sm8150
+          repository: sh4dow6oy/android_kernel_samsung_sm8150
           ref: rawr-bpf
           path: kernel
 
@@ -27,74 +27,62 @@ jobs:
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
 
-      - name: Build Kernel & DTBO
+      - name: Build Kernel & Fix DTBO Path
         run: |
           cd kernel
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
+          MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
           
-          # Argumente de compilare standard
-          MAKE_ARGS="ARCH=arm64 \
-                     LLVM=1 \
-                     LLVM_IAS=1 \
-                     CC=clang \
-                     LD=ld.lld \
-                     CROSS_COMPILE=aarch64-linux-gnu- \
-                     CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-                     O=out"
+          # 1. INJECȚIE SUBDIR: Forțăm intrarea în folderul renovation
+          echo "Injecție subdirector hardware..."
+          grep -q "renovation" arch/arm64/boot/dts/samsung/Makefile || echo "subdir-y += renovation" >> arch/arm64/boot/dts/samsung/Makefile
 
-          # 1. Aplicăm defconfig-ul nativ r5q
+          # 2. Configurare
           make $MAKE_ARGS r5q_eur_open_defconfig
-
-          # 2. HARD-ENFORCE eBPF JIT & PROJECT FLAGS
-          # Folosim flag-ul CONFIG_SEC_R5Q_PROJECT pentru a activa Makefile-ul de DTBO 
+          
+          # 3. Optimizări Android 15 (eBPF JIT & Security)
           ./scripts/config --file out/.config \
             -e CONFIG_SEC_R5Q_PROJECT \
-            -e CONFIG_BPF \
-            -e CONFIG_BPF_SYSCALL \
             -e CONFIG_BPF_JIT \
             -e CONFIG_BPF_JIT_ALWAYS_ON \
             -e CONFIG_HAVE_EBPF_JIT \
             -e CONFIG_NET_CLS_BPF \
-            -e CONFIG_NET_ACT_BPF \
-            -e CONFIG_CGROUP_BPF \
-            -e CONFIG_BPF_EVENTS \
             -e CONFIG_BUILD_ARM64_DT_OVERLAY \
-            -e CONFIG_OF_LIBFDT_OVERLAY \
-            -d CONFIG_UNMAP_KERNEL_AT_EL0 \
-            -d CONFIG_WERROR \
-            -e CONFIG_LTO_NONE
-
+            -d CONFIG_SAMSUNG_RTIC \
+            -d CONFIG_WERROR
+            
           make $MAKE_ARGS olddefconfig
-
-          # 3. Compilare efectivă
-          # Folosim -fcommon pentru a evita erorile de redefinire bool/true/false
+          
+          # 4. Compilare Image.gz și DTBS (Overlay-uri)
           make -j$(nproc --all) $MAKE_ARGS Image.gz dtbs KCFLAGS="-w -fcommon"
 
-      - name: Package with AnyKernel3
+      - name: Assemble AnyKernel3
         run: |
-          # Identificăm fișierele generate
-          IMAGE="$GITHUB_WORKSPACE/out/arch/arm64/boot/Image.gz-dtb"
-          if [ ! -f "$IMAGE" ]; then
-            IMAGE="$GITHUB_WORKSPACE/out/arch/arm64/boot/Image.gz"
-          fi
-          DTBO="$GITHUB_WORKSPACE/out/arch/arm64/boot/dtbo.img"
-          # Clonăm AnyKernel3 pentru ambalare
-          git clone https://github.com/osm0sis/AnyKernel3.git
-          rm -rf AnyKernel3/.git
+          BUILD_OUT="kernel/out/arch/arm64/boot"
+          AK3_DIR="AK3"
+          git clone https://github.com/osm0sis/AnyKernel3.git $AK3_DIR
           
-          # Copiem kernelul și DTBO în folderul AnyKernel
-          cp $IMAGE AnyKernel3/Image.gz
-          [ -f "$DTBO" ] && cp $DTBO AnyKernel3/dtbo.img
-          # Configurăm anykernel.sh pentru S10 Lite (r5q)
-          sed -i 's/device.name1=maguro/device.name1=r5q/g' AnyKernel3/anykernel.sh
-          sed -i 's/device.name2=toroplus/device.name2=SM-G770F/g' AnyKernel3/anykernel.sh
-          sed -i 's/device.name3=toro/device.name3=r5q/g' AnyKernel3/anykernel.sh
+          # Kernel principal
+          cp $BUILD_OUT/Image.gz $AK3_DIR/
           
-          # Creăm arhiva ZIP finală
-          cd AnyKernel3
-          zip -r9 ../Kernel-S10Lite-R5Q-Neutron.zip *
-      - name: Upload Flashable Kernel
+          # Extracție DTB pentru Header V2 (esențial pentru bootloader Samsung)
+          DTB=$(find kernel/out/arch/arm64/boot/dts -name "sm8150-v2.dtb" -o -name "sm8150.dtb" | head -n 1)
+          [ -f "$DTB" ] && cp "$DTB" $AK3_DIR/dtb
+          
+          # Colectare DTBO (Hardware fragments)
+          echo "Colectăm fragmentele DTBO din renovation..."
+          find kernel/out/arch/arm64/boot/dts/samsung/renovation -name "*.dtbo" -exec cp {} $AK3_DIR/ \;
+          
+          # Verificare finală
+          COUNT=$(ls $AK3_DIR/*.dtbo 2>/dev/null | wc -l)
+          echo "Finalizat! Am găsit $COUNT fișiere DTBO."
+          
+          cd $AK3_DIR
+          sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
+          zip -r9 ../R5Q_A15_Lumi_V37.zip *
+
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-S10Lite-R5Q
-          path: Kernel-S10Lite-R5Q-Neutron.zip
+          name: S10Lite-Android15-Kernel
+          path: R5Q_A15_Lumi_V37.zip
