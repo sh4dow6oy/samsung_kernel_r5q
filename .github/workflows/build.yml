@@ -1,4 +1,4 @@
-name: R5Q LumiBPF - V37 Final Android 15
+name: R5Q LumiBPF - V39 Rescue Mode
 
 on:
   workflow_dispatch:
@@ -7,7 +7,7 @@ jobs:
   build:
     runs-on: ubuntu-24.04
     steps:
-      - name: Checkout Kernel (rawr-bpf)
+      - name: Checkout Kernel
         uses: actions/checkout@v4
         with:
           repository: sh4dow6oy/android_kernel_samsung_sm8150
@@ -21,68 +21,73 @@ jobs:
           ccache python3 python-is-python3 libarchive-tools wget zstd libtinfo6 zip \
           gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi device-tree-compiler rsync git
 
-      - name: Setup Toolchain (Neutron Clang)
+      - name: Setup Toolchain
         run: |
           mkdir -p clang
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
 
-      - name: Build Kernel & Fix DTBO Path
+      - name: Build Kernel with Real-Time Rescue
         run: |
           cd kernel
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
           
-          # 1. INJECȚIE SUBDIR: Forțăm intrarea în folderul renovation
-          echo "Injecție subdirector hardware..."
-          grep -q "renovation" arch/arm64/boot/dts/samsung/Makefile || echo "subdir-y += renovation" >> arch/arm64/boot/dts/samsung/Makefile
+          # Injectăm subdirectorul hardware
+          echo "subdir-y += renovation" >> arch/arm64/boot/dts/samsung/Makefile
 
-          # 2. Configurare
           make $MAKE_ARGS r5q_eur_open_defconfig
           
-          # 3. Optimizări Android 15 (eBPF JIT & Security)
+          # Optimizări Android 15
           ./scripts/config --file out/.config \
             -e CONFIG_SEC_R5Q_PROJECT \
             -e CONFIG_BPF_JIT \
             -e CONFIG_BPF_JIT_ALWAYS_ON \
-            -e CONFIG_HAVE_EBPF_JIT \
-            -e CONFIG_NET_CLS_BPF \
             -e CONFIG_BUILD_ARM64_DT_OVERLAY \
             -d CONFIG_SAMSUNG_RTIC \
             -d CONFIG_WERROR
             
           make $MAKE_ARGS olddefconfig
+
+          # CREĂM UN FOLDER DE SALVARE
+          mkdir -p ../dtbo_backup
+
+          # Rulăm compilarea și imediat după 'dtbs', salvăm fișierele
+          # Folosim ';' pentru a rula salvarea chiar dacă restul build-ului continuă
+          make -j$(nproc --all) $MAKE_ARGS Image.gz dtbs KCFLAGS="-w -fcommon" ; \
+          find out/arch/arm64/boot/dts -name "*.dtbo" -exec cp {} ../dtbo_backup/ \;
           
-          # 4. Compilare Image.gz și DTBS (Overlay-uri)
-          make -j$(nproc --all) $MAKE_ARGS Image.gz dtbs KCFLAGS="-w -fcommon"
+          echo "Salvare de siguranță finalizată. Fișiere găsite: $(ls ../dtbo_backup | wc -l)"
 
       - name: Assemble AnyKernel3
         run: |
-          BUILD_OUT="kernel/out/arch/arm64/boot"
           AK3_DIR="AK3"
           git clone https://github.com/osm0sis/AnyKernel3.git $AK3_DIR
           
-          # Kernel principal
-          cp $BUILD_OUT/Image.gz $AK3_DIR/
+          # 1. Luăm Image.gz din folderul out
+          cp kernel/out/arch/arm64/boot/Image.gz $AK3_DIR/
           
-          # Extracție DTB pentru Header V2 (esențial pentru bootloader Samsung)
-          DTB=$(find kernel/out/arch/arm64/boot/dts -name "sm8150-v2.dtb" -o -name "sm8150.dtb" | head -n 1)
-          [ -f "$DTB" ] && cp "$DTB" $AK3_DIR/dtb
+          # 2. Luăm DTB-ul principal din folderul out
+          DTB_PATH=$(find kernel/out -name "sm8150-v2.dtb" -o -name "sm8150.dtb" | head -n 1)
+          [ -f "$DTB_PATH" ] && cp "$DTB_PATH" $AK3_DIR/dtb
           
-          # Colectare DTBO (Hardware fragments)
-          echo "Colectăm fragmentele DTBO din renovation..."
-          find kernel/out/arch/arm64/boot/dts/samsung/renovation -name "*.dtbo" -exec cp {} $AK3_DIR/ \;
+          # 3. Luăm DTBO-urile din folderul de BACKUP (unde nu pot fi șterse)
+          echo "Restaurăm DTBO-urile din backup..."
+          cp dtbo_backup/*.dtbo $AK3_DIR/ 2>/dev/null || echo "Niciun DTBO în backup!"
           
           # Verificare finală
           COUNT=$(ls $AK3_DIR/*.dtbo 2>/dev/null | wc -l)
-          echo "Finalizat! Am găsit $COUNT fișiere DTBO."
-          
+          if [ "$COUNT" -eq 0 ]; then
+             echo "Eroare FATALĂ: Fișierele DTBO nu au fost generate deloc!"
+             exit 1
+          fi
+
           cd $AK3_DIR
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-          zip -r9 ../R5Q_A15_Lumi_V37.zip *
+          zip -r9 ../R5Q_A15_Rescue_V39.zip *
 
-      - name: Upload Artifact
+      - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-Android15-Kernel
-          path: R5Q_A15_Lumi_V37.zip
+          name: S10Lite-A15-V39
+          path: R5Q_A15_Rescue_V39.zip
