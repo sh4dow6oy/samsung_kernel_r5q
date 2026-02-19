@@ -1,4 +1,4 @@
-name: Build Roynas R5Q - Neutron Clang Final
+name: Build Roynas R5Q - V66 Simple
 on:
   workflow_dispatch:
 
@@ -30,27 +30,14 @@ jobs:
           cd kernel
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           
-          # 1. FIX: CONFLICTING TYPES FOR 'bit_count'
-          # Redenumim variabila bit_count în kernel_bit_count pentru a evita conflictul cu Clang
+          # Fix conflict bit_count (necesar pentru Neutron)
           grep -rl "bit_count" . | xargs sed -i 's/\bbit_count\b/kernel_bit_count/g' || true
-
-          # 2. NUCLEAR CLEANUP (Polly & LTO cleanup)
-          find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
-          find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm//g' {} +
           
-          # 3. VDSO FIX
-          if [ -f arch/arm64/kernel/vdso/Makefile ]; then
-            sed -i 's/-static//g' arch/arm64/kernel/vdso/Makefile
-          fi
-
-          # 4. Argumente Build
           MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
 
-          # 5. Configurare
           make $MAKE_ARGS r5q_defconfig
           ./scripts/config --file out/.config \
             -d CONFIG_LTO -d CONFIG_LTO_CLANG -e CONFIG_LTO_NONE \
-            -d CONFIG_KNOX_KAP -d CONFIG_SECURITY_SAMSUNG_KNOX \
             -e CONFIG_SEC_R5Q_PROJECT \
             -e CONFIG_BPF_JIT \
             -e CONFIG_BPF_JIT_ALWAYS_ON \
@@ -59,26 +46,34 @@ jobs:
           
           make $MAKE_ARGS olddefconfig
           
-          # 6. Compilare (Am adăugat flag-uri de ignorare pentru cross-compilare)
-          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -Wno-error -Wno-implicit-function-declaration -Wno-conflicting-types"
+          # Compilăm totul (Image, DTB, DTBO) într-o singură comandă
+          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -Wno-error -Wno-conflicting-types"
 
       - name: Package with AnyKernel3
         run: |
           git clone https://github.com/osm0sis/AnyKernel3.git AK3
-          IMAGE="kernel/out/arch/arm64/boot/Image.gz"
-          [ -f "kernel/out/arch/arm64/boot/Image.gz-dtb" ] && IMAGE="kernel/out/arch/arm64/boot/Image.gz-dtb"
-          cp $IMAGE AK3/Image.gz
           
-          # Colectăm modulele hardware (Battery Data)
-          find kernel/out/arch/arm64/boot/dts/samsung -name "*.dtbo" -exec cp {} AK3/ \;
+          # Copiem Kernelul (Căutăm Image.gz-dtb sau Image.gz)
+          if [ -f kernel/out/arch/arm64/boot/Image.gz-dtb ]; then
+            cp kernel/out/arch/arm64/boot/Image.gz-dtb AK3/Image.gz
+          else
+            cp kernel/out/arch/arm64/boot/Image.gz AK3/Image.gz
+          fi
+          
+          # Copiem DTB-ul principal dacă AnyKernel îl cere
+          [ -f kernel/out/arch/arm64/boot/dts/qcom/sm8150.dtb ] && cp kernel/out/arch/arm64/boot/dts/qcom/sm8150.dtb AK3/dtb
+          
+          # DTBO SIMPLU: Luăm doar imaginea gata împachetată
+          # Dacă Makefile-ul a lucrat corect, o găsim aici:
+          [ -f kernel/out/arch/arm64/boot/dtbo.img ] && cp kernel/out/arch/arm64/boot/dtbo.img AK3/dtbo.img
           
           cd AK3
           sed -i 's/device.name1=maguro/device.name1=r5q/g' anykernel.sh
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-          zip -r9 ../Kernel-S10Lite-R5Q-V63.zip *
+          zip -r9 ../Kernel-S10Lite-R5Q-Simple.zip *
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-S10Lite-R5Q-V63
-          path: Kernel-S10Lite-R5Q-V63.zip
+          name: Kernel-S10Lite-Simple
+          path: Kernel-S10Lite-R5Q-Simple.zip
