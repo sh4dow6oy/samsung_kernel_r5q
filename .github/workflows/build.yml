@@ -1,4 +1,4 @@
-name: R5Q LumiBPF - V56 Ubuntu 22 Edition
+name: R5Q LumiBPF - V57 Python Symlink Fix
 
 on:
   workflow_dispatch:
@@ -14,17 +14,20 @@ jobs:
           ref: rawr-bpf
           path: kernel
 
-      - name: Install Build Tools (Legacy Support)
+      - name: Install Build Tools & Manual Python2 Link
         run: |
           sudo apt-get update
           sudo apt-get install -y bc build-essential flex bison lz4 libssl-dev libelf-dev \
-          ccache python2 python3 python-is-python2 libarchive-tools wget zstd libtinfo5 zip \
+          ccache python2 python3 libarchive-tools wget zstd libtinfo5 zip \
           gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi device-tree-compiler rsync git
+          
+          # Creăm manual alias-ul pentru python -> python2
+          sudo ln -sf /usr/bin/python2 /usr/bin/python
+          python --version
 
       - name: Setup Toolchain (Proton Clang)
         run: |
           mkdir -p clang
-          # Descarcă Proton Clang stabil
           wget -q https://github.com/kdrag0n/proton-clang/archive/refs/heads/master.tar.gz
           tar -xf master.tar.gz --strip-components=1 -C clang
 
@@ -34,10 +37,9 @@ jobs:
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
           
-          # 1. Defconfig
           make $MAKE_ARGS r5q_eur_open_defconfig
           
-          # 2. Configurații Android 15 (eBPF JIT & DTBO)
+          # Configurații Android 15
           ./scripts/config --file out/.config \
             -e CONFIG_SEC_R5Q_PROJECT \
             -e CONFIG_BPF_JIT \
@@ -46,17 +48,15 @@ jobs:
             -d CONFIG_SAMSUNG_RTIC
             
           make $MAKE_ARGS olddefconfig
-          
-          # 3. Compilare Image.gz și DTBS
           make -j$(nproc --all) $MAKE_ARGS Image.gz dtbs KCFLAGS="-w -fcommon"
 
-          # 4. Generare DTBO Image (Acum pe Ubuntu 22 cu Python 2 nativ)
+          # Generare DTBO folosind noul link de python
           echo "Asamblăm imaginea hardware..."
           DTBO_FILES=$(find out/arch/arm64/boot/dts/samsung/renovation -name "*.dtbo")
           MKDTBOIMG=$(find scripts -name "mkdtboimg.py" | head -n 1)
           
           if [ -n "$DTBO_FILES" ] && [ -n "$MKDTBOIMG" ]; then
-            python2 "$MKDTBOIMG" create out/arch/arm64/boot/dtbo.img $DTBO_FILES
+            python "$MKDTBOIMG" create out/arch/arm64/boot/dtbo.img $DTBO_FILES
             echo "SUCCESS: dtbo.img creat!"
           fi
 
@@ -65,18 +65,15 @@ jobs:
           AK3_DIR="AK3"
           git clone https://github.com/osm0sis/AnyKernel3.git $AK3_DIR
           
-          # 1. Adăugăm Kernel-ul
           find kernel/out -name "Image.gz" -exec cp {} $AK3_DIR/ \;
           
-          # 2. Adăugăm Hardware-ul (Imagine sau fișiere brute)
+          # Logică de captură DTBO
           if [ -f "kernel/out/arch/arm64/boot/dtbo.img" ]; then
             cp kernel/out/arch/arm64/boot/dtbo.img $AK3_DIR/
           else
-            # Căutăm direct în folderul renovation dacă imaginea a eșuat
             find kernel/out/arch/arm64/boot/dts/samsung/renovation -name "*.dtbo" -exec cp {} $AK3_DIR/ \;
           fi
           
-          # 3. Adăugăm DTB (Samsung Header V2)
           DTB_PATH=$(find kernel/out -name "sm8150-v2.dtb" -o -name "sm8150.dtb" | head -n 1)
           [ -f "$DTB_PATH" ] && cp "$DTB_PATH" $AK3_DIR/dtb
           
@@ -84,10 +81,10 @@ jobs:
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
           sed -i 's|block=/dev/block/platform/omap/omap_hsmmc.0/by-name/boot|block=auto|g' anykernel.sh
           
-          zip -r9 ../R5Q_A15_V56_U22.zip *
+          zip -r9 ../R5Q_A15_V57_U22.zip *
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-A15-V56
-          path: R5Q_A15_V56_U22.zip
+          name: S10Lite-A15-V57
+          path: R5Q_A15_V57_U22.zip
