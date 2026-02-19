@@ -6,6 +6,7 @@ on:
 jobs:
   build:
     runs-on: ubuntu-22.04
+
     steps:
       - name: Checkout Kernel
         uses: actions/checkout@v4
@@ -17,13 +18,15 @@ jobs:
       - name: Install Build Tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y bc build-essential flex bison lz4 libssl-dev libelf-dev \
-          ccache python3 python3-pip libarchive-tools wget zstd libtinfo5 zip \
-          gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi device-tree-compiler rsync git
+          sudo apt-get install -y \
+            bc build-essential flex bison lz4 libssl-dev libelf-dev \
+            ccache python3 python3-pip libarchive-tools wget zstd \
+            libtinfo5 zip gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi \
+            device-tree-compiler rsync git
 
-      - name: Setup Toolchain (Proton Clang)
+      - name: Setup Proton Clang
         run: |
-          mkdir -p clang
+          mkdir clang
           wget -q https://github.com/kdrag0n/proton-clang/archive/refs/heads/master.tar.gz
           tar -xf master.tar.gz --strip-components=1 -C clang
 
@@ -31,57 +34,69 @@ jobs:
         run: |
           cd kernel
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
-          MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
-          
+
+          MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 \
+          CC=clang LD=ld.lld \
+          CROSS_COMPILE=aarch64-linux-gnu- \
+          CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+          O=out"
+
           make $MAKE_ARGS r5q_eur_open_defconfig
-          
-          # Configurații Android 15
+
           ./scripts/config --file out/.config \
             -e CONFIG_SEC_R5Q_PROJECT \
             -e CONFIG_BPF_JIT \
             -e CONFIG_BPF_JIT_ALWAYS_ON \
             -e CONFIG_BUILD_ARM64_DT_OVERLAY \
             -d CONFIG_SAMSUNG_RTIC
-            
-          make $MAKE_ARGS olddefconfig
-          make -j$(nproc --all) $MAKE_ARGS Image.gz dtbs KCFLAGS="-w -fcommon"
 
-      - name: Assemble AnyKernel3 & DTBO Fallback
+          make $MAKE_ARGS olddefconfig
+
+          # IMPORTANT: build appended dtb
+          make -j$(nproc --all) $MAKE_ARGS Image.gz-dtb dtbs KCFLAGS="-w -fcommon"
+
+      - name: Create dtbo.img (Header v1)
         run: |
-          AK3_DIR="AK3"
-          git clone https://github.com/osm0sis/AnyKernel3.git $AK3_DIR
-          
-          # 1. Copiem Kernel-ul
-          find kernel/out -name "Image.gz" -exec cp {} $AK3_DIR/ \;
-          
-          # 2. Copiem DTB-ul principal (Header V2)
-          DTB_PATH=$(find kernel/out -name "sm8150-v2.dtb" -o -name "sm8150.dtb" | head -n 1)
-          [ -f "$DTB_PATH" ] && cp "$DTB_PATH" $AK3_DIR/dtb
-          
-          # 3. REZOLVARE DTBO (Metoda sigură fără Python 2)
-          # Deoarece mkdtboimg.py eșuează pe Python 3, copiem fișierele .dtbo brute.
-          # AnyKernel3 va detecta automat fișierele .dtbo din rădăcina sa și le va 
-          # împacheta corect în timpul flash-ului pe telefon.
-          echo "Colectăm fișierele hardware .dtbo brute pentru AnyKernel3..."
-          find kernel/out/arch/arm64/boot/dts/samsung/renovation -name "*.dtbo" -exec cp {} $AK3_DIR/ \;
-          
-          # Verificare
-          COUNT=$(ls $AK3_DIR/*.dtbo 2>/dev/null | wc -l)
-          echo "Am găsit $COUNT fișiere DTBO."
-          
-          if [ "$COUNT" -eq 0 ]; then
-            echo "EROARE: Niciun DTBO găsit! Verifică dacă s-au compilat."
+          cd kernel
+
+          DTBO_FILES=$(find out -name "*.dtbo")
+
+          if [ -z "$DTBO_FILES" ]; then
+            echo "EROARE: Niciun DTBO găsit!"
             exit 1
           fi
 
-          cd $AK3_DIR
-          sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-          sed -i 's|block=/dev/block/platform/omap/omap_hsmmc.0/by-name/boot|block=auto|g' anykernel.sh
-          
+          echo "Se creează dtbo.img..."
+
+          python3 scripts/mkdtboimg.py create out/dtbo.img \
+            --page_size=4096 \
+            --header_version=1 \
+            $DTBO_FILES
+
+          if [ ! -f out/dtbo.img ]; then
+            echo "EROARE: dtbo.img nu s-a generat!"
+            exit 1
+          fi
+
+      - name: Assemble AnyKernel3
+        run: |
+          git clone https://github.com/osm0sis/AnyKernel3.git AK3
+
+          # Copiem kernelul (appended DTB)
+          find kernel/out -name "Image.gz-dtb" -exec cp {} AK3/Image.gz \;
+
+          # Copiem dtbo.img
+          cp kernel/out/dtbo.img AK3/
+
+          # Fix AnyKernel config pentru Samsung
+          sed -i 's/do.devicecheck=1/do.devicecheck=0/g' AK3/anykernel.sh
+          sed -i 's/block=.*/block=auto/g' AK3/anykernel.sh
+
+          cd AK3
           zip -r9 ../R5Q_A15_V58_Final.zip *
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-A15-V58
+          name: R5Q-A15-V58
           path: R5Q_A15_V58_Final.zip
