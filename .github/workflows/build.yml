@@ -27,7 +27,6 @@ jobs:
           git merge -X theirs bpf_source/bpf-5.4 -m "Integrate BPF 5.4 Backports" || true
           
           # FORȚARE FIȘIERE CRITICE (The Big Port Fix)
-          # Rescriem subsistemul BPF și header-ele de networking pentru a evita erorile de structură
           git checkout bpf_source/bpf-5.4 -- kernel/bpf/
           git checkout bpf_source/bpf-5.4 -- net/core/filter.c
           git checkout bpf_source/bpf-5.4 -- include/linux/bpf.h
@@ -37,15 +36,13 @@ jobs:
           git checkout bpf_source/bpf-5.4 -- include/uapi/linux/bpf_common.h
           git checkout bpf_source/bpf-5.4 -- arch/arm64/net/bpf_jit_comp.c
           
-          # Păstrăm defconfig-ul r5q pentru driverele Snapdragon 855
           git checkout --ours arch/arm64/configs/r5q_defconfig || echo "No config conflict"
-          
           git add .
           git commit -m "BPF Hybrid: Forced BPF 5.4 and Networking headers" || echo "No changes"
 
       - name: Setup Neutron Clang
         run: |
-          sudo apt-get update && sudo apt-get install -y zstd
+          sudo apt-get update && sudo apt-get install -y zstd libssl-dev
           mkdir clang
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
@@ -56,7 +53,15 @@ jobs:
           cd kernel
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           
-          # FIX: Eliminăm referințele reziduale la KernelSU care blochează r5q_defconfig
+          # 1. FIX OPENSSL 3.0 (Rezolvă erorile de compilare la scripts/extract-cert)
+          # Ștergem definițiile conflictuale din fișierele .c pentru a folosi ssl-common.h
+          sed -i '/static void drain_openssl_errors(void)/,/}/d' scripts/extract-cert.c
+          sed -i '/static void drain_openssl_errors(void)/,/}/d' scripts/sign-file.c
+          # Eliminăm redefinirea macro-ului ERR
+          sed -i '/#define ERR(cond, fmt, ...)/,/\\/d' scripts/extract-cert.c
+          sed -i '/#define ERR(cond, fmt, ...)/,/\\/d' scripts/sign-file.c
+
+          # 2. FIX KERNELSU (Eliminăm referințele care blochează defconfig)
           sed -i '/kernelsu/d' drivers/android/Kconfig
           sed -i '/kernelsu/d' drivers/android/Makefile
           
@@ -75,10 +80,11 @@ jobs:
 
           mkdir -p out
           
-          # 1. Aplicăm configurația originală
+          # Generăm configurarea originală
           make $MAKE_ARGS r5q_defconfig
 
-          # 2. Activăm eBPF modern pentru Android 15 / OneUI 7
+          # 3. CONFIGURARE BPF & SECURITATE
+          # Dezactivăm și semnarea modulelor pentru a evita alte erori OpenSSL
           ./scripts/config --file out/.config \
             -e CONFIG_BPF \
             -e CONFIG_BPF_SYSCALL \
@@ -91,15 +97,17 @@ jobs:
             -d CONFIG_SECURITY_RKP \
             -d CONFIG_SECURITY_DEFEX \
             -d CONFIG_KSU \
+            -d CONFIG_MODULE_SIG \
             -d CONFIG_WERROR
 
           make $MAKE_ARGS olddefconfig
 
-          # 3. Compilare Image.gz
-          # fcommon ajută la evitarea erorilor de "multiple definition" între Samsung și Phoenix/Cat
+          # 4. COMPILARE
+          # Folosim HOSTCFLAGS="-w" pentru a ignora deprecările OpenSSL în scripturile gazdă
           make -j$(nproc --all) $MAKE_ARGS Image.gz \
             DTC_FLAGS="-i" \
-            KCFLAGS="-w -fcommon"
+            KCFLAGS="-w -fcommon" \
+            HOSTCFLAGS="-w"
 
       - name: Package with AnyKernel3
         run: |
@@ -110,9 +118,9 @@ jobs:
             cd AK3
             sed -i 's/device.name1=maguro/device.name1=r5q/g' anykernel.sh
             sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-            zip -r9 ../R5Q-BPF-OneUI7.zip *
+            zip -r9 ../R5Q-BPF-OneUI7-Lumi.zip *
           else
-            echo "Kernel Image.gz not found! Compilation failed."
+            echo "Build failed - Image.gz not found!"
             exit 1
           fi
 
@@ -120,4 +128,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: S10Lite-OneUI7-Kernel
-          path: R5Q-BPF-OneUI7.zip
+          path: R5Q-BPF-OneUI7-Lumi.zip
