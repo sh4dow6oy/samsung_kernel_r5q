@@ -1,4 +1,4 @@
-name: Build Roynas R5Q - Neutron OpenELA 4.14.356
+name: Build Roynas R5Q - OpenELA 4.14.356 Upstream
 
 on:
   workflow_dispatch:
@@ -12,32 +12,25 @@ jobs:
         with:
           repository: Roynas-Android-Playground/kernel_samsung_r3q
           ref: master
-          fetch-depth: 0 # Avem nevoie de istoric pentru merge
+          fetch-depth: 1
 
       - name: Install Dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y bc build-essential flex bison lz4 libssl-dev libelf-dev \
-          ccache python3 python-is-python3 libarchive-tools wget zstd libtinfo6 zip git
+          ccache python3 python-is-python3 libarchive-tools wget zstd libtinfo6 zip tar
 
-      - name: Upstream with OpenELA 4.14.356
+      - name: Inject OpenELA 4.14.356 Upstream
         run: |
-          git config --global user.email "bot@github.com"
-          git config --global user.name "OpenELA-Upstream-Bot"
+          echo "Descarcăm sursa OpenELA..."
+          wget https://github.com/openela/kernel-lts/archive/refs/tags/v4.14.356-openela.tar.gz
           
-          # Adăugăm repo-ul OpenELA ca sursă de upstream
-          git remote add openela https://github.com/openela/kernel-lts.git
-          git fetch openela v4.14.356-openela
+          echo "Extragem peste sursa Samsung (Overwrite)..."
+          # Extragem arhiva și folosim --strip-components=1 pentru a pune fișierele direct în root
+          tar -xzf v4.14.356-openela.tar.gz --strip-components=1
           
-          echo "Merging OpenELA v4.14.356 into Samsung Source..."
-          # Strategia '-X ours' protejează modificările specifice Samsung (drivers/sensors/etc)
-          if git merge v4.14.356-openela -X ours --no-edit; then
-            echo "Merge OpenELA reușit!"
-          else
-            echo "Erori la merge - Se încearcă rezolvarea automată..."
-            git add .
-            git commit -m "Manual merge fix for OpenELA 4.14.356"
-          fi
+          # Restaurăm defconfig-ul Samsung (OpenELA îl va suprascrie cu unul generic)
+          git checkout arch/arm64/configs/r5q_defconfig || echo "Folosim defconfig-ul existent"
 
       - name: Setup Neutron Clang
         run: |
@@ -49,20 +42,23 @@ jobs:
         run: |
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           
-          # 1. CLEANUP LLVM/POLLY (Specific Neutron)
+          # 1. NUCLEAR CLEANUP (Fix erori LLVM/Polly specifice Samsung)
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm//g' {} +
           
-          # 2. FIX VDSO & WRAPPERS
-          [ -f arch/arm64/kernel/vdso/Makefile ] && sed -i 's/-static//g' arch/arm64/kernel/vdso/Makefile
-          sed -i 's/ifneq ($(wildcard $(srctree)\/scripts\/gcc-wrapper.py),)/ifeq (0,1)/g' Makefile
+          # 2. VDSO FIX
+          if [ -f arch/arm64/kernel/vdso/Makefile ]; then
+            sed -i 's/-static//g' arch/arm64/kernel/vdso/Makefile
+          fi
 
-          # 3. KERNELSU CLEANUP
+          # 3. KERNELSU & SAMSUNG CLEANUP
           sed -i '/kernelsu/d' drivers/android/Kconfig || true
           sed -i '/kernelsu/d' drivers/android/Makefile || true
           rm -rf drivers/kernelsu
+          sed -i 's/ifneq ($(wildcard $(srctree)\/scripts\/gcc-wrapper.py),)/ifeq (0,1)/g' Makefile
 
           # 4. ARGUMENTE BUILD
+          # Am adăugat optimizări pentru SD855 (Cortex-A76/A55)
           MAKE_ARGS="ARCH=arm64 \
             LLVM=1 \
             LLVM_IAS=1 \
@@ -88,14 +84,16 @@ jobs:
             
           make $MAKE_ARGS olddefconfig
 
-          # 6. COMPILARE
-          # Folosim -fcommon pentru a evita erorile de tip "multiple definition" din OpenELA/Clang
+          # 6. COMPILARE PROPRIU-ZISĂ
+          # Folosim -fcommon pentru compatibilitate cu OpenELA headers
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -Wno-error -Wno-unknown-warning-option -Wno-unused-command-line-argument"
 
       - name: Package with AnyKernel3
         run: |
           IMAGE="$GITHUB_WORKSPACE/out/arch/arm64/boot/Image.gz-dtb"
-          [ ! -f "$IMAGE" ] && IMAGE="$GITHUB_WORKSPACE/out/arch/arm64/boot/Image.gz"
+          if [ ! -f "$IMAGE" ]; then
+            IMAGE="$GITHUB_WORKSPACE/out/arch/arm64/boot/Image.gz"
+          fi
           DTBO="$GITHUB_WORKSPACE/out/arch/arm64/boot/dtbo.img"
 
           git clone https://github.com/osm0sis/AnyKernel3.git
@@ -104,7 +102,7 @@ jobs:
           cp $IMAGE AnyKernel3/Image.gz
           [ -f "$DTBO" ] && cp $DTBO AnyKernel3/dtbo.img
 
-          # Configurare Device
+          # Config AnyKernel pentru R5Q
           sed -i 's/device.name1=maguro/device.name1=r5q/g' AnyKernel3/anykernel.sh
           sed -i 's/device.name2=toroplus/device.name2=SM-G770F/g' AnyKernel3/anykernel.sh
           
@@ -114,5 +112,5 @@ jobs:
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-OpenELA-R5Q
+          name: Kernel-R5Q-OpenELA
           path: Kernel-S10Lite-OpenELA-4.14.356.zip
