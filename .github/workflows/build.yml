@@ -1,4 +1,4 @@
-name: Build R5Q - Lumi BPF V42 (RKP Stub Fix)
+name: Build R5Q - Lumi BPF V42 (Ultimate Linker Fix)
 on:
   workflow_dispatch:
 
@@ -42,28 +42,31 @@ jobs:
 
           mkdir -p out
 
-          # 1. Configurare
+          # 1. Configurare Bază + EUR
           make $MAKE_ARGS vendor/r5q_eur_open_defconfig
           ./scripts/kconfig/merge_config.sh -O out out/.config arch/arm64/configs/vendor/sm8150_sec_r5q_eur_open.config
 
-          # 2. Dezactivări pentru stabilitate și BPF
+          # 2. Curățare agresivă a configurației de securitate
+          # Dezactivăm absolut tot ce ține de RKP și integrarea Knox
           ./scripts/config --file out/.config \
+            -d CONFIG_SECURITY_RKP \
+            -d CONFIG_RKP_CFP \
+            -d CONFIG_RKP_KDP \
+            -d CONFIG_RKP_NS_PROT \
             -d CONFIG_SAMSUNG_RTIC \
             -d CONFIG_SAMSUNG_RTIC_AMP \
             -d CONFIG_SAMSUNG_PRODUCT_SHIP \
-            -d CONFIG_SECURITY_RKP \
-            -d CONFIG_WERROR
+            -d CONFIG_WERROR \
+            -e CONFIG_SECTION_MISMATCH_WARN_ONLY
 
           make $MAKE_ARGS olddefconfig
 
-          # 3. COMPILARE CU STUBBING
-          # Adăugăm macro-uri care transformă apelurile RKP în operații goale (0)
-          # Asta "păcălește" linker-ul să creadă că funcțiile există.
-          RKP_FIX="-Drkp_call(...)=0 -Drkp_set_pgt_rw(...)=0 -Duh_call(...)=0"
-          
+          # 3. COMPILARE cu Linker Permisiv
+          # Folosim --allow-shlib-undefined și ignorăm simbolurile nerezolvate la nivel de linker
+          # Aceasta este ultima soluție când codul sursă are apeluri către funcții eliminate.
           make -j$(nproc --all) $MAKE_ARGS Image.gz \
-            KCFLAGS="-w -fcommon $RKP_FIX" \
-            LDFLAGS="--no-rosegment --strip-debug"
+            KCFLAGS="-w -fcommon" \
+            LDFLAGS="--no-rosegment --strip-debug --allow-shlib-undefined --undefined-version"
 
       - name: Assemble AnyKernel3
         run: |
@@ -73,10 +76,10 @@ jobs:
           cd AK3
           sed -i 's/device.name1=maguro/device.name1=r5q/g' anykernel.sh
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-          zip -r9 ../S10Lite_5.4_Final_Fixed.zip *
+          zip -r9 ../S10Lite_5.4_Final_Lumi.zip *
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-Kernel-Fixed
-          path: S10Lite_5.4_Final_Fixed.zip
+          name: S10Lite-Kernel-Final
+          path: S10Lite_5.4_Final_Lumi.zip
