@@ -24,10 +24,9 @@ jobs:
           git fetch bpf_source bpf-5.4
           
           echo "Merging BPF-5.4 branch..."
-          # Folosim -X theirs pentru a prioritiza codul BPF nou
           git merge -X theirs bpf_source/bpf-5.4 -m "Integrate BPF 5.4 Backports" || true
           
-          # 1. FORȚARE BPF MODERNI (Nucleul portării pentru OneUI 7)
+          # 1. FORȚARE BPF MODERNI
           git checkout bpf_source/bpf-5.4 -- kernel/bpf/
           git checkout bpf_source/bpf-5.4 -- net/core/filter.c
           git checkout bpf_source/bpf-5.4 -- include/linux/bpf.h
@@ -37,14 +36,13 @@ jobs:
           git checkout bpf_source/bpf-5.4 -- include/uapi/linux/bpf_common.h
           git checkout bpf_source/bpf-5.4 -- arch/arm64/net/bpf_jit_comp.c
           
-          # 2. REPARARE CORUPȚIE (Fix pentru eroarea mm/rv din fs/proc/base.c)
-          # Readucem fișierul la varianta originală Samsung pentru a evita conflictele de structură mm
-          git checkout --ours fs/proc/base.c
+          # 2. REPARARE ULTRA-AGRESIVĂ FS/PROC
+          # Restaurăm fișierul direct din ramura ta originală, ignorând orice merge
+          git checkout origin/master -- fs/proc/base.c
           
-          # 3. CONFIG & COMMIT
           git checkout --ours arch/arm64/configs/r5q_defconfig || echo "No config conflict"
           git add .
-          git commit -m "BPF Hybrid: Forced BPF 5.4 and Fixed fs/proc corruption" || echo "No changes"
+          git commit -m "BPF Hybrid: Hard Reset fs/proc/base.c to Samsung Stock" || echo "No changes"
 
       - name: Setup Neutron Clang
         run: |
@@ -59,22 +57,20 @@ jobs:
           cd kernel
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           
-          # 1. NUCLEAR CLEANUP (Dezactivăm Polly pentru stabilitate)
+          # NUCLEAR CLEANUP
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm//g' {} +
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-polly[^ ]*//g' {} +
 
-          # 2. VDSO FIX (Anti-static lld error)
+          # VDSO FIX
           if [ -f arch/arm64/kernel/vdso/Makefile ]; then
             sed -i 's/-static//g' arch/arm64/kernel/vdso/Makefile
             sed -i 's/$(LDFLAGS)/$(filter-out -static,$(LDFLAGS))/g' arch/arm64/kernel/vdso/Makefile
           fi
 
-          # 3. KERNELSU & OPENSSL BYPASS
+          # KERNELSU & SECURITY BYPASS
           sed -i '/kernelsu/d' drivers/android/Kconfig
           sed -i '/kernelsu/d' drivers/android/Makefile
-          
-          # Dezactivăm semnarea modulelor (OpenSSL 3.0 fix)
           sed -i 's/CONFIG_SYSTEM_TRUSTED_KEYRING=y/CONFIG_SYSTEM_TRUSTED_KEYRING=n/g' arch/arm64/configs/r5q_defconfig
           sed -i 's/CONFIG_MODULE_SIG=y/CONFIG_MODULE_SIG=n/g' arch/arm64/configs/r5q_defconfig
           
@@ -94,7 +90,7 @@ jobs:
           mkdir -p out
           make $MAKE_ARGS r5q_defconfig
 
-          # 4. CONFIGURARE BPF PENTRU ANDROID 15 / ONEUI 7
+          # CONFIGURARE BPF PENTRU ONEUI 7
           ./scripts/config --file out/.config \
             -e CONFIG_BPF \
             -e CONFIG_BPF_SYSCALL \
@@ -112,29 +108,27 @@ jobs:
 
           make $MAKE_ARGS olddefconfig
 
-          # 5. COMPILARE FINALĂ
+          # COMPILARE FINALĂ
           make -j$(nproc --all) $MAKE_ARGS Image.gz \
             DTC_FLAGS="-i" \
             KCFLAGS="-w -fcommon" \
             HOSTCFLAGS="-w"
 
-      - name: Package with AnyKernel3
+      - name: Package & Upload
         run: |
           if [ -f kernel/out/arch/arm64/boot/Image.gz ]; then
-            IMAGE="kernel/out/arch/arm64/boot/Image.gz"
             git clone https://github.com/osm0sis/AnyKernel3.git AK3
-            cp "$IMAGE" AK3/
+            cp kernel/out/arch/arm64/boot/Image.gz AK3/
             cd AK3
             sed -i 's/device.name1=maguro/device.name1=r5q/g' anykernel.sh
             sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-            zip -r9 ../R5Q-BPF-OneUI7-Lumi.zip *
+            zip -r9 ../R5Q-OneUI7-Kernel.zip *
           else
-            echo "Build failed! Image.gz not found."
             exit 1
           fi
 
-      - name: Upload Artifact
+      - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-OneUI7-Kernel
-          path: R5Q-BPF-OneUI7-Lumi.zip
+          name: S10Lite-Final-Kernel
+          path: R5Q-OneUI7-Kernel.zip
