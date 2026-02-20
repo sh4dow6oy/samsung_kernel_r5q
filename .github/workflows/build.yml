@@ -26,7 +26,7 @@ jobs:
           echo "Merging BPF-5.4 branch..."
           git merge -X theirs bpf_source/bpf-5.4 -m "Integrate BPF 5.4 Backports" || true
           
-          # 1. FORȚARE BPF MODERNI
+          # FORȚARE BPF MODERNI
           git checkout bpf_source/bpf-5.4 -- kernel/bpf/
           git checkout bpf_source/bpf-5.4 -- net/core/filter.c
           git checkout bpf_source/bpf-5.4 -- include/linux/bpf.h
@@ -35,14 +35,18 @@ jobs:
           git checkout bpf_source/bpf-5.4 -- include/uapi/linux/bpf.h
           git checkout bpf_source/bpf-5.4 -- include/uapi/linux/bpf_common.h
           git checkout bpf_source/bpf-5.4 -- arch/arm64/net/bpf_jit_comp.c
+
+          # 1. INJECTARE MM_STRUCT FIX (Backport arg_lock)
+          # Căutăm câmpul start_data și inserăm arg_lock după el pentru a satisface fork.c/base.c
+          sed -i '/unsigned long start_data, end_data, start_stack;/a \		spinlock_t arg_lock;' include/linux/mm_types.h
           
-          # 2. REPARARE ULTRA-AGRESIVĂ FS/PROC
-          # Restaurăm fișierul direct din ramura ta originală, ignorând orice merge
-          git checkout origin/master -- fs/proc/base.c
-          
+          # 2. FIX PENTRU FORK.C (Inițializare spinlock în 4.14)
+          # Dacă merge-ul a adus cod care folosește arg_lock dar nu și inițializarea, o forțăm
+          sed -i '/spin_lock_init(&mm->page_table_lock);/a \	spin_lock_init(&mm->arg_lock);' kernel/fork.c
+
           git checkout --ours arch/arm64/configs/r5q_defconfig || echo "No config conflict"
           git add .
-          git commit -m "BPF Hybrid: Hard Reset fs/proc/base.c to Samsung Stock" || echo "No changes"
+          git commit -m "BPF Hybrid: Injected arg_lock into mm_types.h" || echo "No changes"
 
       - name: Setup Neutron Clang
         run: |
@@ -103,14 +107,12 @@ jobs:
             -d CONFIG_SECURITY_RKP \
             -d CONFIG_SECURITY_DEFEX \
             -d CONFIG_KSU \
-            -d CONFIG_MODULE_SIG \
             -d CONFIG_WERROR
 
           make $MAKE_ARGS olddefconfig
 
           # COMPILARE FINALĂ
           make -j$(nproc --all) $MAKE_ARGS Image.gz \
-            DTC_FLAGS="-i" \
             KCFLAGS="-w -fcommon" \
             HOSTCFLAGS="-w"
 
@@ -130,5 +132,5 @@ jobs:
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-Final-Kernel
+          name: S10Lite-BPF-Final
           path: R5Q-OneUI7-Kernel.zip
