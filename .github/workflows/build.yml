@@ -1,4 +1,4 @@
-name: Build Roynas R5Q - Pascua eBPF Full Engine
+name: Build Roynas R5Q - Pascua eBPF Engine Final
 on:
   workflow_dispatch:
 
@@ -25,7 +25,7 @@ jobs:
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
 
-      - name: Full Surgical Sync (Engine + Structs)
+      - name: Full Surgical Sync (eBPF Engine + Infrastructure)
         run: |
           git config --global user.email "bot@github.com"
           git config --global user.name "Kernel-Builder"
@@ -33,32 +33,35 @@ jobs:
           git remote add pascua https://github.com/pascua28/android_kernel_samsung_sm8250.git
           git fetch pascua sixteen --depth=1
           
-          echo "Sincronizare Structuri și Engine eBPF..."
+          echo "Sincronizare Engine eBPF și infrastructură (Fix bpfptr.h)..."
           
-          # 1. Core Logic & Verifier
+          # 1. Logică Core (Verifier, Helpers, JIT)
           git checkout pascua/sixteen -- kernel/bpf/
           
-          # 2. Toate Headerele de Structuri (Rezolvă 'incomplete type')
+          # 2. Headere Linux (Infrastructură critică pentru structuri)
           git checkout pascua/sixteen -- include/linux/bpf.h
           git checkout pascua/sixteen -- include/linux/bpf_types.h
           git checkout pascua/sixteen -- include/linux/bpf_verifier.h
           git checkout pascua/sixteen -- include/linux/filter.h
-          git checkout pascua/sixteen -- include/linux/bpfptr.h || true
+          git checkout pascua/sixteen -- include/linux/bpfptr.h
+          git checkout pascua/sixteen -- include/linux/btf.h
           
-          # 3. UAPI Headers (Interfața cu User-space)
+          # 3. UAPI Headers (Interfața cu User-space/Android)
           git checkout pascua/sixteen -- include/uapi/linux/bpf.h
           git checkout pascua/sixteen -- include/uapi/linux/bpf_common.h
           git checkout pascua/sixteen -- include/uapi/linux/filter.h
+          git checkout pascua/sixteen -- include/uapi/linux/btf.h
           
-          # 4. Networking Hooks
+          # 4. Networking Hooks (Clat/Traffic Controller)
           git checkout pascua/sixteen -- net/core/filter.c
           
-          # FIX: Curățare KernelSU care bloca defconfig
+          # FIX: Curățare KernelSU (Prevenire eroare Kconfig)
+          echo "Eliminare referințe moarte KernelSU..."
           sed -i '/kernelsu/d' drivers/android/Kconfig || true
           sed -i '/kernelsu/d' drivers/android/Makefile || true
           
           git add .
-          git commit -m "eBPF: Full structural sync from Pascua" || echo "No changes"
+          git commit -m "eBPF: Full engine port with bpfptr infrastructure" || echo "No changes"
 
       - name: Build Kernel
         run: |
@@ -66,7 +69,7 @@ jobs:
           export KBUILD_BUILD_USER="Roynas"
           export KBUILD_BUILD_HOST="Neutron-CI"
           
-          # Fix-uri Neutron & vDSO
+          # 1. Pregătire (Polly removal & vDSO fix)
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
           [ -f arch/arm64/kernel/vdso/Makefile ] && sed -i 's/-static//g' arch/arm64/kernel/vdso/Makefile
 
@@ -84,7 +87,7 @@ jobs:
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             O=out"
 
-          # Configurare
+          # 2. Configurare r5q
           mkdir -p out
           make $MAKE_ARGS r5q_defconfig
           
@@ -98,24 +101,25 @@ jobs:
             
           make $MAKE_ARGS olddefconfig
 
-          # Compilare cu toleranță maximă pentru structuri redefinite sau incomplete
-          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -Wno-error -Wno-implicit-function-declaration -Wno-unused-command-line-argument -Wno-incompatible-pointer-types -Wno-int-conversion -Wno-macro-redefined -Wno-typedef-redefinition"
+          # 3. Compilare cu toleranță maximă (Neutron Clang 18+)
+          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -Wno-error -Wno-implicit-function-declaration -Wno-unused-command-line-argument -Wno-incompatible-pointer-types -Wno-int-conversion -Wno-macro-redefined -Wno-typedef-redefinition -Wno-unused-but-set-variable"
 
       - name: Package with AnyKernel3
         run: |
           IMAGE="$GITHUB_WORKSPACE/out/arch/arm64/boot/Image.gz-dtb"
           [ ! -f "$IMAGE" ] && IMAGE="$GITHUB_WORKSPACE/out/arch/arm64/boot/Image.gz"
+          DTBO="$GITHUB_WORKSPACE/out/arch/arm64/boot/dtbo.img"
           
           git clone https://github.com/osm0sis/AnyKernel3.git
           rm -rf AnyKernel3/.git
           cp $IMAGE AnyKernel3/Image.gz
-          [ -f "$GITHUB_WORKSPACE/out/arch/arm64/boot/dtbo.img" ] && cp "$GITHUB_WORKSPACE/out/arch/arm64/boot/dtbo.img" AnyKernel3/dtbo.img
+          [ -f "$DTBO" ] && cp $DTBO AnyKernel3/dtbo.img
           
           sed -i 's/device.name1=maguro/device.name1=r5q/g' AnyKernel3/anykernel.sh
-          cd AnyKernel3 && zip -r9 ../Kernel-R5Q-Full-eBPF.zip *
+          cd AnyKernel3 && zip -r9 ../Kernel-R5Q-eBPF-Complete.zip *
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: Kernel-S10Lite-R5Q
-          path: Kernel-R5Q-Full-eBPF.zip
+          path: Kernel-R5Q-eBPF-Complete.zip
