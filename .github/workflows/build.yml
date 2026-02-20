@@ -1,4 +1,4 @@
-name: Build R5Q - Lumi BPF V42 (Ultimate Linker Fix)
+name: Build R5Q - Lumi BPF V42 (Source Patch Fix)
 on:
   workflow_dispatch:
 
@@ -25,6 +25,17 @@ jobs:
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
 
+      - name: Patch Source (Remove RKP Calls)
+        run: |
+          cd kernel
+          # Această comandă caută toate apelurile rkp_call și le transformă în operații nule (0)
+          # direct în fișierele header și sursă.
+          find . -type f -name "*.c" -o -name "*.h" | xargs sed -i 's/rkp_call(/0; \/\/rkp_call(/g'
+          find . -type f -name "*.c" -o -name "*.h" | xargs sed -i 's/rkp_set_pgt_rw(/0; \/\/rkp_set_pgt_rw(/g'
+          # Eliminăm și alte derivate care au cauzat erori anterior
+          find . -type f -name "*.c" -o -name "*.h" | xargs sed -i 's/rkp_ro_pgt_free(/0; \/\/rkp_ro_pgt_free(/g'
+          find . -type f -name "*.c" -o -name "*.h" | xargs sed -i 's/rkp_deferred_free(/0; \/\/rkp_deferred_free(/g'
+
       - name: Build Kernel
         run: |
           cd kernel
@@ -41,32 +52,21 @@ jobs:
             O=out"
 
           mkdir -p out
-
-          # 1. Configurare Bază + EUR
           make $MAKE_ARGS vendor/r5q_eur_open_defconfig
           ./scripts/kconfig/merge_config.sh -O out out/.config arch/arm64/configs/vendor/sm8150_sec_r5q_eur_open.config
 
-          # 2. Curățare agresivă a configurației de securitate
-          # Dezactivăm absolut tot ce ține de RKP și integrarea Knox
+          # Dezactivări Config
           ./scripts/config --file out/.config \
-            -d CONFIG_SECURITY_RKP \
-            -d CONFIG_RKP_CFP \
-            -d CONFIG_RKP_KDP \
-            -d CONFIG_RKP_NS_PROT \
-            -d CONFIG_SAMSUNG_RTIC \
-            -d CONFIG_SAMSUNG_RTIC_AMP \
-            -d CONFIG_SAMSUNG_PRODUCT_SHIP \
-            -d CONFIG_WERROR \
+            -d CONFIG_SECURITY_RKP -d CONFIG_SAMSUNG_RTIC \
+            -d CONFIG_SAMSUNG_PRODUCT_SHIP -d CONFIG_WERROR \
             -e CONFIG_SECTION_MISMATCH_WARN_ONLY
 
           make $MAKE_ARGS olddefconfig
 
-          # 3. COMPILARE cu Linker Permisiv
-          # Folosim --allow-shlib-undefined și ignorăm simbolurile nerezolvate la nivel de linker
-          # Aceasta este ultima soluție când codul sursă are apeluri către funcții eliminate.
+          # Compilare
           make -j$(nproc --all) $MAKE_ARGS Image.gz \
             KCFLAGS="-w -fcommon" \
-            LDFLAGS="--no-rosegment --strip-debug --allow-shlib-undefined --undefined-version"
+            LDFLAGS="--no-rosegment --strip-debug"
 
       - name: Assemble AnyKernel3
         run: |
@@ -76,10 +76,10 @@ jobs:
           cd AK3
           sed -i 's/device.name1=maguro/device.name1=r5q/g' anykernel.sh
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-          zip -r9 ../S10Lite_5.4_Final_Lumi.zip *
+          zip -r9 ../S10Lite_5.4_Patched_BPF.zip *
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-Kernel-Final
-          path: S10Lite_5.4_Final_Lumi.zip
+          name: S10Lite-Kernel-Patched
+          path: S10Lite_5.4_Patched_BPF.zip
