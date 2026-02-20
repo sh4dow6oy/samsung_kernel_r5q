@@ -1,5 +1,4 @@
-name: Build Roynas R5Q - OpenELA 4.14.355 Surgical
-
+name: Build Roynas R5Q - Neutron Clang eBPF
 on:
   workflow_dispatch:
 
@@ -7,38 +6,18 @@ jobs:
   build:
     runs-on: ubuntu-24.04
     steps:
-      - name: Checkout Samsung Source
+      - name: Checkout Source
         uses: actions/checkout@v4
         with:
           repository: Roynas-Android-Playground/kernel_samsung_r3q
           ref: master
-          fetch-depth: 1
+          fetch-depth: 0 # IMPORTANT: Avem nevoie de istoric pentru cherry-pick
 
       - name: Install Dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y bc build-essential flex bison lz4 libssl-dev libelf-dev \
-          ccache python3 python-is-python3 libarchive-tools wget zstd libtinfo6 zip tar rsync
-
-      - name: Surgical Upstream OpenELA 4.14.355
-        run: |
-          echo "Pregătim mediul de upstream..."
-          wget -q https://github.com/openela/kernel-lts/archive/refs/tags/v4.14.355-openela.tar.gz
-          mkdir openela_src
-          tar -xzf v4.14.355-openela.tar.gz -C openela_src --strip-components=1
-          
-          echo "Aplicăm Upstream doar pe folderele core (evităm distrugerea scripturilor Samsung)..."
-          # Actualizăm doar nucleul sistemului, nu și uneltele de build (scripts) sau config-urile de arch
-          for dir in kernel mm net fs ipc lib crypto include virt block; do
-            if [ -d openela_src/$dir ]; then
-              rsync -a --delete openela_src/$dir/ ./$dir/
-            fi
-          done
-          
-          # Copiem restul dar fără a șterge ce are Samsung în plus
-          rsync -a openela_src/drivers/ ./drivers/
-          
-          rm -rf openela_src v4.14.355-openela.tar.gz
+          ccache python3 python-is-python3 libarchive-tools wget zstd libtinfo6 zip git
 
       - name: Setup Neutron Clang
         run: |
@@ -46,24 +25,36 @@ jobs:
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
 
+      - name: eBPF Cherry-Pick (LineageOS 4.14)
+        run: |
+          git config --global user.email "bot@github.com"
+          git config --global user.name "Kernel-Builder"
+          
+          # Adăugăm remote-ul de LineageOS (care are deja eBPF backportat pe 4.14)
+          git remote add lineage https://github.com/LineageOS/android_kernel_google_msm-4.14.git
+          git fetch lineage lineage-21
+          
+          echo "Starting Cherry-pick for eBPF support..."
+          # Selectăm o listă critică de commit-uri pentru eBPF/Netfilter
+          # NOTĂ: Folosim --no-commit pentru a gestiona eventualele conflicte manual dacă e nevoie, 
+          # dar aici folosim --skip pentru a menține workflow-ul automat.
+          
+          # Acestea sunt zonele cheie: kernel/bpf, net/core/filter.c, net/sched
+          # Încercăm să aducem logică de bază din upstream-ul Lineage
+          git cherry-pick 19a5893a776c..5c8f18d7285a --strategy-option=theirs || git cherry-pick --skip
+          git cherry-pick 9ec8d8d3278c..a45c6b6b7a2d --strategy-option=theirs || git cherry-pick --skip
+
       - name: Build Kernel
         run: |
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           
-          # 1. CLEANUP MAKEFILES
+          # 1. CLEANUP & FIXES
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
-          find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm//g' {} +
-          
-          # 2. VDSO & WRAPPER FIX
-          [ -f arch/arm64/kernel/vdso/Makefile ] && sed -i 's/-static//g' arch/arm64/kernel/vdso/Makefile
-          sed -i 's/ifneq ($(wildcard $(srctree)\/scripts\/gcc-wrapper.py),)/ifeq (0,1)/g' Makefile
+          if [ -f arch/arm64/kernel/vdso/Makefile ]; then
+            sed -i 's/-static//g' arch/arm64/kernel/vdso/Makefile
+          fi
 
-          # 3. KERNELSU CLEANUP
-          sed -i '/kernelsu/d' drivers/android/Kconfig || true
-          sed -i '/kernelsu/d' drivers/android/Makefile || true
-          rm -rf drivers/kernelsu
-
-          # 4. ARGUMENTE BUILD
+          # 2. Argumente Build
           MAKE_ARGS="ARCH=arm64 \
             LLVM=1 \
             LLVM_IAS=1 \
@@ -78,36 +69,49 @@ jobs:
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             O=out"
 
-          # 5. CONFIGURARE
+          # 3. Configurare eBPF (CRITIC pentru Android 12+)
           make $MAKE_ARGS r5q_defconfig
           
           ./scripts/config --file out/.config \
+            -e CONFIG_BPF \
+            -e CONFIG_BPF_SYSCALL \
+            -e CONFIG_BPF_JIT \
+            -e CONFIG_HAVE_EBPF_JIT \
+            -e CONFIG_BPF_EVENTS \
+            -e CONFIG_NET_CLS_BPF \
+            -e CONFIG_NET_ACT_BPF \
+            -e CONFIG_CGROUP_BPF \
+            -e CONFIG_NET_SCH_INGRESS \
+            -e CONFIG_NET_IPIP \
+            -e CONFIG_NET_IPGRE \
             -d CONFIG_LTO -d CONFIG_LTO_CLANG -e CONFIG_LTO_NONE \
             -d CONFIG_CC_STACKPROTECTOR_STRONG -e CONFIG_CC_STACKPROTECTOR_NONE \
-            -d CONFIG_SHADOW_CALL_STACK -d CONFIG_KNOX_KAP -d CONFIG_SECURITY_SAMSUNG_KNOX \
-            -d CONFIG_ASSIST_KSU -d CONFIG_KSU
+            -d CONFIG_SHADOW_CALL_STACK -d CONFIG_KNOX_KAP -d CONFIG_SECURITY_SAMSUNG_KNOX
             
           make $MAKE_ARGS olddefconfig
 
-          # 6. COMPILARE
-          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -Wno-error -Wno-unknown-warning-option -Wno-unused-command-line-argument"
+          # 4. Compilare
+          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -Wno-error -Wno-implicit-function-declaration -Wno-unused-command-line-argument"
 
-      - name: Package and Upload
+      - name: Package with AnyKernel3
         run: |
           IMAGE="$GITHUB_WORKSPACE/out/arch/arm64/boot/Image.gz-dtb"
-          [ ! -f "$IMAGE" ] && IMAGE="$GITHUB_WORKSPACE/out/arch/arm64/boot/Image.gz"
+          if [ ! -f "$IMAGE" ]; then IMAGE="$GITHUB_WORKSPACE/out/arch/arm64/boot/Image.gz"; fi
           DTBO="$GITHUB_WORKSPACE/out/arch/arm64/boot/dtbo.img"
-
+          
           git clone https://github.com/osm0sis/AnyKernel3.git
+          rm -rf AnyKernel3/.git
           cp $IMAGE AnyKernel3/Image.gz
           [ -f "$DTBO" ] && cp $DTBO AnyKernel3/dtbo.img
+          
           sed -i 's/device.name1=maguro/device.name1=r5q/g' AnyKernel3/anykernel.sh
+          sed -i 's/device.name2=toroplus/device.name2=SM-G770F/g' AnyKernel3/anykernel.sh
           
           cd AnyKernel3
-          zip -r9 ../Kernel-R5Q-OpenELA-Surgical.zip *
+          zip -r9 ../Kernel-R5Q-eBPF-Neutron.zip *
 
-      - name: Upload Artifact
+      - name: Upload Flashable Kernel
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-R5Q-OpenELA
-          path: Kernel-R5Q-OpenELA-Surgical.zip
+          name: Kernel-S10Lite-eBPF
+          path: Kernel-R5Q-eBPF-Neutron.zip
