@@ -12,26 +12,34 @@ jobs:
         with:
           repository: Roynas-Android-Playground/kernel_samsung_r3q
           ref: master
-          fetch-depth: 1
+          fetch-depth: 0 # Necesar pentru a putea face merge
 
       - name: Install Dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y bc build-essential flex bison lz4 libssl-dev libelf-dev \
-          ccache python3 python-is-python3 libarchive-tools wget zstd libtinfo6 zip tar
+          ccache python3 python-is-python3 libarchive-tools wget zstd libtinfo6 zip git
 
-      - name: Inject Kernel.org 4.14.356 Upstream
+      - name: Upstream to 4.14.356 via Git
         run: |
-          echo "Descarcăm sursa oficială v4.14.356 de pe Kernel.org..."
-          wget https://mirrors.edge.kernel.org/pub/linux/kernel/v4.x/linux-4.14.356.tar.gz
+          git config --global user.email "bot@github.com"
+          git config --global user.name "Kernel-Upstream-Bot"
           
-          echo "Aplicăm Upstream-ul peste sursa Samsung..."
-          # Extragem arhiva peste codul existent. 
-          # Fișierele noi le vor înlocui pe cele vechi, dar driverele Samsung rămân intacte.
-          tar -xzf linux-4.14.356.tar.gz --strip-components=1
+          # Adăugăm sursa oficială ca remote
+          git remote add stable https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git
           
-          # Restaurăm defconfig-ul Samsung pentru a nu fi suprascris de cel generic
-          git checkout arch/arm64/configs/r5q_defconfig || echo "Păstrăm config-ul existent."
+          echo "Tragem tag-ul v4.14.356 direct din Git..."
+          git fetch stable v4.14.356 --depth=1
+          
+          echo "Aplicăm schimburile peste codul Samsung..."
+          # Folosim 'git merge' cu strategia 'ours' pentru a evita stricarea driverelor Samsung
+          if git merge FETCH_HEAD -X ours --no-edit; then
+            echo "Merge v4.14.356 reușit!"
+          else
+            echo "Conflict detectat, forțăm commit-ul..."
+            git add .
+            git commit -m "Merge v4.14.356 with conflict resolution"
+          fi
 
       - name: Setup Neutron Clang
         run: |
@@ -43,7 +51,7 @@ jobs:
         run: |
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           
-          # 1. FIX-URI CRITICE PENTRU CLANG (Polly & LLVM cleanup)
+          # 1. CLEANUP (Polly & LLVM Fix)
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm//g' {} +
           
@@ -74,7 +82,6 @@ jobs:
           # 5. CONFIGURARE
           make $MAKE_ARGS r5q_defconfig
           
-          # Optimizări pentru boot și Clang
           ./scripts/config --file out/.config \
             -d CONFIG_LTO -d CONFIG_LTO_CLANG -e CONFIG_LTO_NONE \
             -d CONFIG_CC_STACKPROTECTOR_STRONG -e CONFIG_CC_STACKPROTECTOR_NONE \
@@ -84,9 +91,25 @@ jobs:
           make $MAKE_ARGS olddefconfig
 
           # 6. COMPILARE
-          # Folosim -fcommon pentru a gestiona posibilele coliziuni de definiții între Kernel.org și Samsung
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -Wno-error -Wno-unknown-warning-option -Wno-unused-command-line-argument"
 
-      - name: Package with AnyKernel3
+      - name: Package and Upload
         run: |
-          IMAGE="$GITHUB_WORKSPACE/out/arch/
+          IMAGE="$GITHUB_WORKSPACE/out/arch/arm64/boot/Image.gz-dtb"
+          [ ! -f "$IMAGE" ] && IMAGE="$GITHUB_WORKSPACE/out/arch/arm64/boot/Image.gz"
+          DTBO="$GITHUB_WORKSPACE/out/arch/arm64/boot/dtbo.img"
+
+          git clone https://github.com/osm0sis/AnyKernel3.git
+          cp $IMAGE AnyKernel3/Image.gz
+          [ -f "$DTBO" ] && cp $DTBO AnyKernel3/dtbo.img
+
+          sed -i 's/device.name1=maguro/device.name1=r5q/g' AnyKernel3/anykernel.sh
+          
+          cd AnyKernel3
+          zip -r9 ../Kernel-R5Q-4.14.356.zip *
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Kernel-R5Q-Upstream
+          path: Kernel-R5Q-4.14.356.zip
