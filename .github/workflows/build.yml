@@ -1,4 +1,4 @@
-name: Build Roynas R5Q - Kernel.org 4.14.356 Full Upstream
+name: Build Roynas R5Q - OpenELA 4.14.355 Upstream
 
 on:
   workflow_dispatch:
@@ -12,35 +12,25 @@ jobs:
         with:
           repository: Roynas-Android-Playground/kernel_samsung_r3q
           ref: master
-          fetch-depth: 0 # Esențial pentru a permite operațiunile de merge
+          fetch-depth: 1
 
       - name: Install Dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y bc build-essential flex bison lz4 libssl-dev libelf-dev \
-          ccache python3 python-is-python3 libarchive-tools wget zstd libtinfo6 zip git tar
+          ccache python3 python-is-python3 libarchive-tools wget zstd libtinfo6 zip tar
 
-      - name: Upstream to 4.14.356 via Git
+      - name: Inject OpenELA 4.14.355 Upstream
         run: |
-          # Configurare identitate pentru commit-ul de merge
-          git config --global user.email "bot@github.com"
-          git config --global user.name "Kernel-Upstream-Bot"
+          echo "Descarcăm arhiva OpenELA v4.14.355..."
+          wget https://github.com/openela/kernel-lts/archive/refs/tags/v4.14.355-openela.tar.gz
           
-          # Adăugăm sursa oficială de kernel stable
-          git remote add stable https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git
+          echo "Extragem upstream peste sursa Samsung..."
+          # --strip-components=1 scoate fișierele din folderul radacină al arhivei direct în folderul curent
+          tar -xzf v4.14.355-openela.tar.gz --strip-components=1
           
-          echo "Tragem toate tag-urile din upstream (soluție pentru eroarea 128)..."
-          git fetch stable --tags --depth=50
-          
-          echo "Începem procesul de merge pentru v4.14.356..."
-          # Folosim -X ours pentru a prioritiza driverele Samsung în caz de conflict
-          if git merge v4.14.356 -X ours --no-edit; then
-            echo "Merge v4.14.356 finalizat cu succes!"
-          else
-            echo "Conflicte detectate; se forțează commit-ul de rezolvare..."
-            git add .
-            git commit -m "Merge v4.14.356 with conflict resolution (favoring local drivers)"
-          fi
+          # Restaurăm config-ul Samsung (foarte important pentru r5q)
+          git checkout arch/arm64/configs/r5q_defconfig || echo "Folosim config-ul existent"
 
       - name: Setup Neutron Clang
         run: |
@@ -52,24 +42,20 @@ jobs:
         run: |
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           
-          # 1. NUCLEAR CLEANUP (Prevenim erorile LLVM Polly specifice codului Samsung)
+          # 1. FIX-URI CLANG / POLLY (Eliminăm flag-urile problematice din Makefiles)
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm//g' {} +
           
-          # 2. VDSO FIX (Anti-static linking error)
-          if [ -f arch/arm64/kernel/vdso/Makefile ]; then
-            sed -i 's/-static//g' arch/arm64/kernel/vdso/Makefile
-          fi
+          # 2. VDSO & GCC WRAPPER FIX
+          [ -f arch/arm64/kernel/vdso/Makefile ] && sed -i 's/-static//g' arch/arm64/kernel/vdso/Makefile
+          sed -i 's/ifneq ($(wildcard $(srctree)\/scripts\/gcc-wrapper.py),)/ifeq (0,1)/g' Makefile
 
-          # 3. KERNELSU & SAMSUNG SPECIFIC CLEANUP
+          # 3. KERNELSU & SAMSUNG CLEANUP
           sed -i '/kernelsu/d' drivers/android/Kconfig || true
           sed -i '/kernelsu/d' drivers/android/Makefile || true
           rm -rf drivers/kernelsu
-          
-          # Dezactivăm wrapper-ul de GCC care poate interfera cu Clang
-          sed -i 's/ifneq ($(wildcard $(srctree)\/scripts\/gcc-wrapper.py),)/ifeq (0,1)/g' Makefile
 
-          # 4. ARGUMENTE BUILD (Neutron LLVM)
+          # 4. ARGUMENTE BUILD
           MAKE_ARGS="ARCH=arm64 \
             LLVM=1 \
             LLVM_IAS=1 \
@@ -84,10 +70,10 @@ jobs:
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             O=out"
 
-          # 5. CONFIGURARE (r5q_defconfig)
+          # 5. CONFIGURARE
           make $MAKE_ARGS r5q_defconfig
           
-          # Ajustări config pentru bootability și securitate Knox
+          # Dezactivăm LTO și Knox pentru stabilitate pe Clang
           ./scripts/config --file out/.config \
             -d CONFIG_LTO -d CONFIG_LTO_CLANG -e CONFIG_LTO_NONE \
             -d CONFIG_CC_STACKPROTECTOR_STRONG -e CONFIG_CC_STACKPROTECTOR_NONE \
@@ -96,17 +82,14 @@ jobs:
             
           make $MAKE_ARGS olddefconfig
 
-          # 6. COMPILARE PROPRIU-ZISĂ
-          # -fcommon este necesar pentru a ignora redefinirile de variabile între upstream și Samsung
+          # 6. COMPILARE
+          # -fcommon rezolvă conflictele de "multiple definition" între Samsung și OpenELA
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -Wno-error -Wno-unknown-warning-option -Wno-unused-command-line-argument"
 
       - name: Package with AnyKernel3
         run: |
-          # Detectare imagine kernel (Image.gz-dtb sau Image.gz simplu)
           IMAGE="$GITHUB_WORKSPACE/out/arch/arm64/boot/Image.gz-dtb"
-          if [ ! -f "$IMAGE" ]; then
-            IMAGE="$GITHUB_WORKSPACE/out/arch/arm64/boot/Image.gz"
-          fi
+          [ ! -f "$IMAGE" ] && IMAGE="$GITHUB_WORKSPACE/out/arch/arm64/boot/Image.gz"
           DTBO="$GITHUB_WORKSPACE/out/arch/arm64/boot/dtbo.img"
 
           git clone https://github.com/osm0sis/AnyKernel3.git
@@ -115,16 +98,15 @@ jobs:
           cp $IMAGE AnyKernel3/Image.gz
           [ -f "$DTBO" ] && cp $DTBO AnyKernel3/dtbo.img
 
-          # Configurare AnyKernel pentru S10 Lite (r5q)
+          # Config AnyKernel
           sed -i 's/device.name1=maguro/device.name1=r5q/g' AnyKernel3/anykernel.sh
           sed -i 's/device.name2=toroplus/device.name2=SM-G770F/g' AnyKernel3/anykernel.sh
-          sed -i 's/device.name3=toro/device.name3=r5q/g' AnyKernel3/anykernel.sh
           
           cd AnyKernel3
-          zip -r9 ../Kernel-S10Lite-4.14.356-Upstream.zip *
+          zip -r9 ../Kernel-S10Lite-OpenELA-4.14.355.zip *
 
-      - name: Upload Flashable Kernel
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-S10Lite-R5Q-4.14.356
-          path: Kernel-S10Lite-4.14.356-Upstream.zip
+          name: Kernel-OpenELA-R5Q
+          path: Kernel-S10Lite-OpenELA-4.14.355.zip
