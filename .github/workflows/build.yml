@@ -1,4 +1,4 @@
-name: Build R5Q - Phoenix BPF Final (OneUI 7 Ready)
+name: Build R5Q - Ultimate BPF 5.4 Hybrid
 on:
   workflow_dispatch:
 
@@ -14,28 +14,32 @@ jobs:
           path: kernel
           fetch-depth: 0
 
-      - name: Merge Phoenix BPF-5.10 (Commit 724a255)
+      - name: Force Merge BPF 5.4 Logic
         run: |
           cd kernel
           git config user.name "GitHub Action"
           git config user.email "action@github.com"
           
-          git remote add phoenix https://github.com/PhoenixKernel/linux.git
-          git fetch android-4.14-phoenix
+          # Adăugăm sursa BPF și facem fetch
+          git remote add bpf_source https://github.com/cat658011/linux-bpf.git
+          git fetch bpf_source bpf-5.4
           
-          echo "Merging Phoenix BPF-5.10 branch..."
-          # Folosim strategia 'theirs' pentru a ne asigura că primim tot codul BPF nou
-          git merge -X theirs phoenix/android-4.14-phoenix -m "Merge Phoenix BPF-5.10 for OneUI 7" || true
+          echo "Merging BPF-5.4 branch with 'theirs' strategy..."
+          git merge -X theirs bpf_source/bpf-5.4 -m "Integrate BPF 5.4 Backports" || true
           
-          # Fix-uri obligatorii:
-          # 1. Păstrăm r5q_defconfig pentru a nu pierde driverele de display/camera Snapdragon
+          # FORȚARE FIȘIERE CRITICE (Conform commit 724a255 logic)
+          # Rescriem subsistemele Samsung cu cele de BPF modern
+          git checkout bpf_source/bpf-5.4 -- kernel/bpf/
+          git checkout bpf_source/bpf-5.4 -- net/core/filter.c
+          git checkout bpf_source/bpf-5.4 -- include/linux/bpf.h
+          git checkout bpf_source/bpf-5.4 -- include/uapi/linux/bpf.h
+          git checkout bpf_source/bpf-5.4 -- arch/arm64/net/bpf_jit_comp.c
+          
+          # Păstrăm configurația ta de bază pentru Snapdragon 855
           git checkout --ours arch/arm64/configs/r5q_defconfig || echo "No config conflict"
           
-          # 2. Ne asigurăm că fișierele din commit-ul 724a255 sunt prezente
-          git checkout phoenix/bpf-5.10 -- kernel/bpf/ include/linux/bpf.h net/core/filter.c
-          
           git add .
-          git commit -m "Finalize BPF merge with focus on Phoenix helpers" || echo "No changes"
+          git commit -m "BPF Hybrid: Forced Phoenix/Cat BPF over Samsung R3Q" || echo "No changes"
 
       - name: Install Build Essentials
         run: |
@@ -67,7 +71,8 @@ jobs:
           mkdir -p out
           make $MAKE_ARGS r5q_defconfig
 
-          # Configurare BPF pentru Android 15
+          # Configurare BPF (OneUI 7 / Android 15 Ready)
+          # Eliminăm tot ce înseamnă Samsung Security/KSU
           ./scripts/config --file out/.config \
             -e CONFIG_BPF \
             -e CONFIG_BPF_SYSCALL \
@@ -80,11 +85,13 @@ jobs:
             -d CONFIG_SECURITY_RKP \
             -d CONFIG_SECURITY_DEFEX \
             -d CONFIG_KSU \
+            -d CONFIG_ASSIST_KSU \
             -d CONFIG_WERROR
 
           make $MAKE_ARGS olddefconfig
 
-          # Compilare
+          # Compilare Image.gz
+          # Folosim -j$(nproc) pentru viteză maximă
           make -j$(nproc --all) $MAKE_ARGS Image.gz \
             DTC_FLAGS="-i" \
             KCFLAGS="-w -fcommon"
@@ -97,10 +104,10 @@ jobs:
           cd AK3
           sed -i 's/device.name1=maguro/device.name1=r5q/g' anykernel.sh
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-          zip -r9 ../R5Q-OneUI7-Lumi.zip *
+          zip -r9 ../R5Q-OneUI7-Final.zip *
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: R5Q-OneUI7-Kernel
-          path: R5Q-OneUI7-Lumi.zip
+          name: S10Lite-Final-Kernel
+          path: R5Q-OneUI7-Final.zip
