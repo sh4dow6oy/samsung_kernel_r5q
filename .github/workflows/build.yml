@@ -1,4 +1,4 @@
-name: Build R5Q - Proton Clang BPF Hybrid
+name: Build R5Q - Neutron BPF 5.4 Hybrid
 on:
   workflow_dispatch:
 
@@ -14,7 +14,7 @@ jobs:
           path: kernel
           fetch-depth: 0
 
-      - name: Force Merge BPF 5.4 from Cat658011
+      - name: Force Merge BPF 5.4 Logic
         run: |
           cd kernel
           git config user.name "GitHub Action"
@@ -23,41 +23,37 @@ jobs:
           git remote add bpf_source https://github.com/cat658011/linux-bpf.git
           git fetch bpf_source bpf-5.4
           
-          echo "Merging BPF-5.4 branch..."
+          echo "Merging BPF-5.4..."
           git merge -X theirs bpf_source/bpf-5.4 -m "Integrate BPF 5.4 Backports" || true
           
-          # FORȚARE FIȘIERE CRITICE
+          # APLICARE FIX-URI DIN COMMIT (Forțăm fișierele cheie pentru Android 15)
           git checkout bpf_source/bpf-5.4 -- kernel/bpf/
           git checkout bpf_source/bpf-5.4 -- net/core/filter.c
           git checkout bpf_source/bpf-5.4 -- include/linux/bpf.h
           git checkout bpf_source/bpf-5.4 -- include/uapi/linux/bpf.h
+          git checkout bpf_source/bpf-5.4 -- include/linux/bpf_types.h
           git checkout bpf_source/bpf-5.4 -- arch/arm64/net/bpf_jit_comp.c
           
+          # Păstrăm defconfig-ul tău pentru S10 Lite
           git checkout --ours arch/arm64/configs/r5q_defconfig || echo "No config conflict"
           
           git add .
-          git commit -m "BPF Hybrid: Forced BPF 5.4 logic over Samsung R3Q" || echo "No changes"
+          git commit -m "BPF Hybrid: Forced BPF 5.4 fixes over Samsung R3Q" || echo "No changes"
 
-      - name: Setup Proton Clang (kdrag0n)
+      - name: Setup Neutron Clang
         run: |
-          mkdir -p proton-clang
-          cd proton-clang
-          # Descarcă ultima versiune stabilă de Proton Clang
-          curl -LO https://github.com/kdrag0n/proton-clang/archive/refs/heads/master.tar.gz
-          tar -xf master.tar.gz --strip-components=1
-          echo "$GITHUB_WORKSPACE/proton-clang/bin" >> $GITHUB_PATH
+          sudo apt-get update && sudo apt-get install -y zstd
+          mkdir clang
+          wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
+          tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
+          echo "$GITHUB_WORKSPACE/clang/bin" >> $GITHUB_PATH
 
-      - name: Install Build Essentials
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y bc libssl-dev flex bison libelf-dev pahole zstd python3 llvm lld
-
-      - name: Build Kernel (r5q)
+      - name: Build Kernel
         run: |
           cd kernel
-          export PATH="$GITHUB_WORKSPACE/proton-clang/bin:$PATH"
+          export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           
-          # Argumente optimizate pentru Proton Clang
+          # Toolchain setup pentru Neutron
           MAKE_ARGS="ARCH=arm64 \
             CC=clang \
             LD=ld.lld \
@@ -68,12 +64,13 @@ jobs:
             STRIP=llvm-strip \
             CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
             O=out"
 
           mkdir -p out
           make $MAKE_ARGS r5q_defconfig
 
-          # Configurare BPF (OneUI 7 / Android 15 Ready)
+          # Configurare BPF + Disable Samsung Security / KSU
           ./scripts/config --file out/.config \
             -e CONFIG_BPF \
             -e CONFIG_BPF_SYSCALL \
@@ -89,29 +86,24 @@ jobs:
             -d CONFIG_WERROR
 
           make $MAKE_ARGS olddefconfig
+          make -j$(nproc --all) $MAKE_ARGS Image.gz KCFLAGS="-w -fcommon"
 
-          # Compilare
-          make -j$(nproc --all) $MAKE_ARGS Image.gz \
-            DTC_FLAGS="-i" \
-            KCFLAGS="-w -fcommon"
-
-      - name: Package with AnyKernel3
+      - name: Package & Upload
         run: |
           if [ -f kernel/out/arch/arm64/boot/Image.gz ]; then
-            IMAGE="kernel/out/arch/arm64/boot/Image.gz"
             git clone https://github.com/osm0sis/AnyKernel3.git AK3
-            cp "$IMAGE" AK3/
+            cp kernel/out/arch/arm64/boot/Image.gz AK3/
             cd AK3
             sed -i 's/device.name1=maguro/device.name1=r5q/g' anykernel.sh
             sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-            zip -r9 ../R5Q-Proton-BPF.zip *
+            zip -r9 ../R5Q-Neutron-BPF.zip *
           else
-            echo "Build failed!"
+            echo "Kernel not found! Check logs for compilation errors."
             exit 1
           fi
 
-      - name: Upload Artifact
+      - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-Proton-Kernel
-          path: R5Q-Proton-BPF.zip
+          name: Kernel-R5Q-Neutron
+          path: R5Q-Neutron-BPF.zip
