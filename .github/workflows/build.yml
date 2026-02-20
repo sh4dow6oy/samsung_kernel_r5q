@@ -1,4 +1,4 @@
-name: Build R5Q - Neutron BPF Hybrid (OneUI 7 Ready)
+name: Build R5Q - Neutron BPF 5.4 Ultimate
 on:
   workflow_dispatch:
 
@@ -23,22 +23,25 @@ jobs:
           git remote add bpf_source https://github.com/cat658011/linux-bpf.git
           git fetch bpf_source bpf-5.4
           
-          echo "Merging BPF-5.4..."
+          echo "Merging BPF-5.4 branch..."
           git merge -X theirs bpf_source/bpf-5.4 -m "Integrate BPF 5.4 Backports" || true
           
-          # FORȚARE FIȘIERE CRITICE (Fixurile menționate în commit)
+          # FORȚARE FIȘIERE CRITICE (The Big Port Fix)
+          # Rescriem subsistemul BPF și header-ele de networking pentru a evita erorile de structură
           git checkout bpf_source/bpf-5.4 -- kernel/bpf/
           git checkout bpf_source/bpf-5.4 -- net/core/filter.c
           git checkout bpf_source/bpf-5.4 -- include/linux/bpf.h
-          git checkout bpf_source/bpf-5.4 -- include/uapi/linux/bpf.h
           git checkout bpf_source/bpf-5.4 -- include/linux/bpf_types.h
+          git checkout bpf_source/bpf-5.4 -- include/linux/filter.h
+          git checkout bpf_source/bpf-5.4 -- include/uapi/linux/bpf.h
+          git checkout bpf_source/bpf-5.4 -- include/uapi/linux/bpf_common.h
           git checkout bpf_source/bpf-5.4 -- arch/arm64/net/bpf_jit_comp.c
           
-          # Păstrăm defconfig-ul r5q
+          # Păstrăm defconfig-ul r5q pentru driverele Snapdragon 855
           git checkout --ours arch/arm64/configs/r5q_defconfig || echo "No config conflict"
           
           git add .
-          git commit -m "BPF Hybrid: Forced BPF 5.4 fixes over Samsung R3Q" || echo "No changes"
+          git commit -m "BPF Hybrid: Forced BPF 5.4 and Networking headers" || echo "No changes"
 
       - name: Setup Neutron Clang
         run: |
@@ -53,11 +56,10 @@ jobs:
           cd kernel
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           
-          # FIX: Eliminăm liniile care caută KernelSU în fișierele de configurare
+          # FIX: Eliminăm referințele reziduale la KernelSU care blochează r5q_defconfig
           sed -i '/kernelsu/d' drivers/android/Kconfig
           sed -i '/kernelsu/d' drivers/android/Makefile
           
-          # Toolchain setup pentru Neutron
           MAKE_ARGS="ARCH=arm64 \
             CC=clang \
             LD=ld.lld \
@@ -73,10 +75,10 @@ jobs:
 
           mkdir -p out
           
-          # 1. Configurare defconfig
+          # 1. Aplicăm configurația originală
           make $MAKE_ARGS r5q_defconfig
 
-          # 2. Configurare BPF + Dezactivare Security/KSU
+          # 2. Activăm eBPF modern pentru Android 15 / OneUI 7
           ./scripts/config --file out/.config \
             -e CONFIG_BPF \
             -e CONFIG_BPF_SYSCALL \
@@ -89,12 +91,12 @@ jobs:
             -d CONFIG_SECURITY_RKP \
             -d CONFIG_SECURITY_DEFEX \
             -d CONFIG_KSU \
-            -d CONFIG_ASSIST_KSU \
             -d CONFIG_WERROR
 
           make $MAKE_ARGS olddefconfig
 
           # 3. Compilare Image.gz
+          # fcommon ajută la evitarea erorilor de "multiple definition" între Samsung și Phoenix/Cat
           make -j$(nproc --all) $MAKE_ARGS Image.gz \
             DTC_FLAGS="-i" \
             KCFLAGS="-w -fcommon"
@@ -108,9 +110,9 @@ jobs:
             cd AK3
             sed -i 's/device.name1=maguro/device.name1=r5q/g' anykernel.sh
             sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-            zip -r9 ../R5Q-OneUI7-Lumi.zip *
+            zip -r9 ../R5Q-BPF-OneUI7.zip *
           else
-            echo "Build failed - Image.gz not found!"
+            echo "Kernel Image.gz not found! Compilation failed."
             exit 1
           fi
 
@@ -118,4 +120,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: S10Lite-OneUI7-Kernel
-          path: R5Q-OneUI7-Lumi.zip
+          path: R5Q-BPF-OneUI7.zip
