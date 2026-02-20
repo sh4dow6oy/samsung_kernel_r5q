@@ -1,4 +1,4 @@
-name: Build R5Q - Lumi BPF V42 (Kernel 5.4 - r5q_eur)
+name: Build R5Q - Lumi BPF V42 (Kernel 5.4 Final Fix)
 on:
   workflow_dispatch:
 
@@ -25,12 +25,12 @@ jobs:
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
 
-      - name: Build Kernel (r5q_eur_open)
+      - name: Build Kernel
         run: |
           cd kernel
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           
-          # Parametrii de build pentru LLVM/Clang
+          # Argumente Build pentru LLVM
           MAKE_ARGS="ARCH=arm64 \
             LLVM=1 \
             LLVM_IAS=1 \
@@ -43,49 +43,56 @@ jobs:
 
           mkdir -p out
 
-          # 1. Aplicăm defconfig-ul din folderul vendor
+          # 1. Încărcăm baza defconfig
           make $MAKE_ARGS vendor/r5q_eur_open_defconfig
 
-          # 2. Eliminare blocaje Samsung (RTIC, RKP, DEFEX)
-          # Menținem aceste modificări pentru ca BPF să poată funcționa nestingherit
+          # 2. Fuzionăm fragmentul Samsung (sm8150_sec_r5q_eur_open.config)
+          # Aceasta este piesa lipsă care activează tot ce e specific S10 Lite EUR
+          ./scripts/kconfig/merge_config.sh -O out out/.config arch/arm64/configs/vendor/sm8150_sec_r5q_eur_open.config
+
+          # 3. Dezactivare Knox/Security (Esențial pentru ca BPF să ruleze)
           ./scripts/config --file out/.config \
             -d CONFIG_SAMSUNG_RTIC -d CONFIG_SAMSUNG_RTIC_AMP \
             -d CONFIG_SECURITY_DEFEX -d CONFIG_SECURITY_RKP \
             -d CONFIG_SAMSUNG_PRODUCT_SHIP \
             -d CONFIG_WERROR
 
-          # 3. Validare config
+          # 4. Finalizare Config
           make $MAKE_ARGS olddefconfig
 
-          # 4. Compilare Image.gz + DTB-uri
-          # LDFLAGS rezolvă problema de "Read-only segments" pe bootloaderele Samsung
+          # 5. Compilare Image.gz și DTBs
+          # DTC_FLAGS="-i" ignoră eroarea "slim_aud not found" (unresolved label)
+          # LDFLAGS rezolvă segmentele Read-Only pentru bootloader-ul Samsung
           make -j$(nproc --all) $MAKE_ARGS Image.gz dtbs \
             KCFLAGS="-w -fcommon" \
-            LDFLAGS="--no-rosegment --strip-debug"
+            LDFLAGS="--no-rosegment --strip-debug" \
+            DTC_FLAGS="-i"
 
       - name: Assemble AnyKernel3
         run: |
           OUT="kernel/out/arch/arm64/boot"
           IMAGE="$OUT/Image.gz"
-          # Căutăm DTB-ul specific r5q generat în out
+          # Căutăm DTB-ul corect pentru r5q
           DTB=$(find $OUT/dts -name "*r5q*.dtb" -type f | head -n 1)
           
           git clone https://github.com/osm0sis/AnyKernel3.git AK3
           
-          # Pregătim imaginea finală
+          # Concatenăm Image.gz + DTB (Metoda standard pentru bootloader Samsung SM8150)
           if [ -f "$DTB" ]; then
             cat "$IMAGE" "$DTB" > AK3/Image.gz
           else
+            echo "DTB not found, using only Image.gz"
             cp "$IMAGE" AK3/Image.gz
           fi
           
           cd AK3
+          # Setăm numele dispozitivului în scriptul de instalare
           sed -i 's/device.name1=maguro/device.name1=r5q/g' anykernel.sh
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-          zip -r9 ../S10Lite_5.4_r5q_Lumi.zip *
+          zip -r9 ../S10Lite_5.4_Final_BPF.zip *
 
-      - name: Upload Artifact
+      - name: Upload Build
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-5.4-r5q
-          path: S10Lite_5.4_r5q_Lumi.zip
+          name: S10Lite-Lumi-Kernel
+          path: S10Lite_5.4_Final_BPF.zip
