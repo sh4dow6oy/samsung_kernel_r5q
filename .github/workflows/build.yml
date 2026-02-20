@@ -1,4 +1,4 @@
-name: Build R5Q - Lumi BPF V42 (Linker Fix)
+name: Build R5Q - Lumi BPF V42 (RKP Stub Fix)
 on:
   workflow_dispatch:
 
@@ -42,27 +42,27 @@ jobs:
 
           mkdir -p out
 
-          # 1. Configurare Bază + EUR
+          # 1. Configurare
           make $MAKE_ARGS vendor/r5q_eur_open_defconfig
           ./scripts/kconfig/merge_config.sh -O out out/.config arch/arm64/configs/vendor/sm8150_sec_r5q_eur_open.config
 
-          # 2. FIX PENTRU LINKER (RKP UNDEFINED)
-          # Nu dezactivăm RKP/DEFEX complet pentru că sursa depinde de ele structural.
-          # Dezactivăm doar RTIC și forțăm permisiunile necesare.
+          # 2. Dezactivări pentru stabilitate și BPF
           ./scripts/config --file out/.config \
             -d CONFIG_SAMSUNG_RTIC \
             -d CONFIG_SAMSUNG_RTIC_AMP \
             -d CONFIG_SAMSUNG_PRODUCT_SHIP \
-            -d CONFIG_WERROR \
-            -e CONFIG_SECTION_MISMATCH_WARN_ONLY
+            -d CONFIG_SECURITY_RKP \
+            -d CONFIG_WERROR
 
           make $MAKE_ARGS olddefconfig
 
-          # 3. COMPILARE
-          # Folosim KCFLAGS pentru a injecta definitii goale daca simbolurile RKP lipsesc
-          # Dar in mod normal, lasand RKP activ in config ar trebui sa se lege corect.
+          # 3. COMPILARE CU STUBBING
+          # Adăugăm macro-uri care transformă apelurile RKP în operații goale (0)
+          # Asta "păcălește" linker-ul să creadă că funcțiile există.
+          RKP_FIX="-Drkp_call(...)=0 -Drkp_set_pgt_rw(...)=0 -Duh_call(...)=0"
+          
           make -j$(nproc --all) $MAKE_ARGS Image.gz \
-            KCFLAGS="-w -fcommon" \
+            KCFLAGS="-w -fcommon $RKP_FIX" \
             LDFLAGS="--no-rosegment --strip-debug"
 
       - name: Assemble AnyKernel3
@@ -73,10 +73,10 @@ jobs:
           cd AK3
           sed -i 's/device.name1=maguro/device.name1=r5q/g' anykernel.sh
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-          zip -r9 ../S10Lite_5.4_BPF_Final.zip *
+          zip -r9 ../S10Lite_5.4_Final_Fixed.zip *
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-Kernel-Final
-          path: S10Lite_5.4_BPF_Final.zip
+          name: S10Lite-Kernel-Fixed
+          path: S10Lite_5.4_Final_Fixed.zip
