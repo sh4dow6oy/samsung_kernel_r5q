@@ -30,7 +30,6 @@ jobs:
           cd kernel
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           
-          # Argumente Build pentru LLVM
           MAKE_ARGS="ARCH=arm64 \
             LLVM=1 \
             LLVM_IAS=1 \
@@ -43,56 +42,45 @@ jobs:
 
           mkdir -p out
 
-          # 1. Încărcăm baza defconfig
+          # 1. Aplicăm baza și fuzionăm fragmentul EUR
           make $MAKE_ARGS vendor/r5q_eur_open_defconfig
-
-          # 2. Fuzionăm fragmentul Samsung (sm8150_sec_r5q_eur_open.config)
-          # Aceasta este piesa lipsă care activează tot ce e specific S10 Lite EUR
           ./scripts/kconfig/merge_config.sh -O out out/.config arch/arm64/configs/vendor/sm8150_sec_r5q_eur_open.config
 
-          # 3. Dezactivare Knox/Security (Esențial pentru ca BPF să ruleze)
+          # 2. Curățăm Security (Knox/RKP/DEFEX) pentru suport BPF
           ./scripts/config --file out/.config \
             -d CONFIG_SAMSUNG_RTIC -d CONFIG_SAMSUNG_RTIC_AMP \
             -d CONFIG_SECURITY_DEFEX -d CONFIG_SECURITY_RKP \
             -d CONFIG_SAMSUNG_PRODUCT_SHIP \
             -d CONFIG_WERROR
 
-          # 4. Finalizare Config
           make $MAKE_ARGS olddefconfig
 
-          # 5. Compilare Image.gz și DTBs
-          # DTC_FLAGS="-i" ignoră eroarea "slim_aud not found" (unresolved label)
-          # LDFLAGS rezolvă segmentele Read-Only pentru bootloader-ul Samsung
-          make -j$(nproc --all) $MAKE_ARGS Image.gz dtbs \
+          # 3. COMPILARE: Ne concentrăm pe Image.gz pentru a evita erorile de DTB (slim_aud)
+          # Dacă DTB-ul eșuează, scriptul continuă oricum.
+          make -j$(nproc --all) $MAKE_ARGS Image.gz \
             KCFLAGS="-w -fcommon" \
-            LDFLAGS="--no-rosegment --strip-debug" \
-            DTC_FLAGS="-i"
+            LDFLAGS="--no-rosegment --strip-debug" || exit 1
 
       - name: Assemble AnyKernel3
         run: |
-          OUT="kernel/out/arch/arm64/boot"
-          IMAGE="$OUT/Image.gz"
-          # Căutăm DTB-ul corect pentru r5q
-          DTB=$(find $OUT/dts -name "*r5q*.dtb" -type f | head -n 1)
+          IMAGE="kernel/out/arch/arm64/boot/Image.gz"
           
           git clone https://github.com/osm0sis/AnyKernel3.git AK3
-          
-          # Concatenăm Image.gz + DTB (Metoda standard pentru bootloader Samsung SM8150)
-          if [ -f "$DTB" ]; then
-            cat "$IMAGE" "$DTB" > AK3/Image.gz
-          else
-            echo "DTB not found, using only Image.gz"
-            cp "$IMAGE" AK3/Image.gz
-          fi
+          cp "$IMAGE" AK3/
           
           cd AK3
-          # Setăm numele dispozitivului în scriptul de instalare
+          # Configurare AnyKernel3 pentru r5q (S10 Lite)
+          # Deoarece nu punem DTB, AnyKernel3 va face "kernel-only" flash
           sed -i 's/device.name1=maguro/device.name1=r5q/g' anykernel.sh
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-          zip -r9 ../S10Lite_5.4_Final_BPF.zip *
+          
+          # Instruim AnyKernel3 să păstreze DTB-ul original al telefonului
+          sed -i 's/block=\/dev\/block\/platform\/omap\/omap_hsmmc.0\/by-name\/boot;/block=auto;/g' anykernel.sh
+          
+          zip -r9 ../S10Lite_5.4_BPF_Final.zip *
 
-      - name: Upload Build
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-Lumi-Kernel
-          path: S10Lite_5.4_Final_BPF.zip
+          name: S10Lite-Kernel
+          path: S10Lite_5.4_BPF_Final.zip
