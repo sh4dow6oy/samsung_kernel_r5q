@@ -1,4 +1,4 @@
-name: Build Roynas R5Q - Neutron Clang eBPF Dynamic
+name: Build Roynas R5Q - Pascua eBPF Support
 on:
   workflow_dispatch:
 
@@ -11,7 +11,7 @@ jobs:
         with:
           repository: Roynas-Android-Playground/kernel_samsung_r3q
           ref: master
-          fetch-depth: 0 # Necesar pentru a putea face cherry-pick din alte ramuri
+          fetch-depth: 0
 
       - name: Install Dependencies
         run: |
@@ -25,33 +25,27 @@ jobs:
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
 
-      - name: Dynamic eBPF Cherry-Pick
+      - name: Merge Pascua eBPF (SM8250 Optimization)
         run: |
           git config --global user.email "bot@github.com"
           git config --global user.name "Kernel-Builder"
           
-          # Adăugăm remote-ul LineageOS 23.2 (Kernel 4.14 Google MSM)
-          git remote add lineage https://github.com/LineageOS/android_kernel_google_msm-4.14.git
-          git fetch lineage lineage-23.2
+          # Adăugăm sursa lui pascua28 ca remote
+          git remote add pascua https://github.com/pascua28/android_kernel_samsung_sm8250.git
+          git fetch pascua sixteen
           
-          echo "Detecting eBPF & Networking commits..."
+          echo "Merging eBPF and Netfilter changes from pascua28..."
           
-          # Extragem ultimele 60 de commit-uri legate de BPF pentru a asigura compatibilitatea Android 12-14
-          # Le aplicăm în ordine inversă (cronologică) pentru a evita erorile de dependență
-          BPF_COMMITS=$(git log lineage/lineage-23.2 --grep="bpf" --oneline --reverse -n 60 | awk '{print $1}')
+          # Încercăm un merge strategic. Folosim 'squash' pentru a nu polua istoricul
+          # și pentru a gestiona mai ușor conflictele.
+          git merge pascua/sixteen --no-commit --allow-unrelated-histories -X theirs || true
           
-          for commit in $BPF_COMMITS; do
-            echo "Applying: $commit"
-            git cherry-pick $commit --strategy-option=theirs || git cherry-pick --skip
-          done
-
-          # Extragem și patch-urile de netfilter/xt_quota necesare pentru monitorizarea datelor
-          NET_COMMITS=$(git log lineage/lineage-23.2 --grep="netfilter" --oneline --reverse -n 20 | awk '{print $1}')
+          # Curățăm fișierele Samsung specifice care nu au legătură cu eBPF
+          git checkout HEAD -- drivers/soc/samsung/
+          git checkout HEAD -- arch/arm64/configs/
           
-          for commit in $NET_COMMITS; do
-            echo "Applying Net: $commit"
-            git cherry-pick $commit --strategy-option=theirs || git cherry-pick --skip
-          done
+          git add .
+          git commit -m "Integrate eBPF support from pascua28 sm8250" || echo "Nothing to commit"
 
       - name: Build Kernel
         run: |
@@ -59,11 +53,10 @@ jobs:
           export KBUILD_BUILD_USER="Roynas"
           export KBUILD_BUILD_HOST="Neutron-CI"
           
-          # 1. CLEANUP (Polly removal & vDSO Fix)
+          # Fix-uri obligatorii pentru Neutron + Samsung
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
           [ -f arch/arm64/kernel/vdso/Makefile ] && sed -i 's/-static//g' arch/arm64/kernel/vdso/Makefile
 
-          # 2. Argumente Build
           MAKE_ARGS="ARCH=arm64 \
             LLVM=1 \
             LLVM_IAS=1 \
@@ -78,7 +71,7 @@ jobs:
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             O=out"
 
-          # 3. Configurare eBPF & Safety Disables
+          # Configurare eBPF (Activăm flag-urile portate de pascua)
           make $MAKE_ARGS r5q_defconfig
           
           ./scripts/config --file out/.config \
@@ -92,13 +85,12 @@ jobs:
             -e CONFIG_CGROUP_BPF \
             -e CONFIG_NET_SCH_INGRESS \
             -d CONFIG_LTO -d CONFIG_LTO_CLANG -e CONFIG_LTO_NONE \
-            -d CONFIG_KNOX_KAP -d CONFIG_SECURITY_SAMSUNG_KNOX \
-            -d CONFIG_ASSIST_KSU -d CONFIG_KSU
+            -d CONFIG_KNOX_KAP -d CONFIG_SECURITY_SAMSUNG_KNOX
             
           make $MAKE_ARGS olddefconfig
 
-          # 4. Compilare (Adăugat ignore pentru pointer types și declarații implicite pentru Neutron)
-          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -Wno-error -Wno-implicit-function-declaration -Wno-unused-command-line-argument -Wno-incompatible-pointer-types -Wno-unused-but-set-variable"
+          # Compilare cu toleranță pentru Clang 18+
+          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -Wno-error -Wno-implicit-function-declaration -Wno-unused-command-line-argument -Wno-incompatible-pointer-types -Wno-int-conversion"
 
       - name: Package with AnyKernel3
         run: |
@@ -110,14 +102,13 @@ jobs:
           cp $IMAGE AnyKernel3/Image.gz
           [ -f "$GITHUB_WORKSPACE/out/arch/arm64/boot/dtbo.img" ] && cp "$GITHUB_WORKSPACE/out/arch/arm64/boot/dtbo.img" AnyKernel3/dtbo.img
           
-          # Configurare pentru S10 Lite (r5q)
           sed -i 's/device.name1=maguro/device.name1=r5q/g' AnyKernel3/anykernel.sh
           sed -i 's/device.name2=toroplus/device.name2=SM-G770F/g' AnyKernel3/anykernel.sh
           
-          cd AnyKernel3 && zip -r9 ../Kernel-R5Q-eBPF-Dynamic.zip *
+          cd AnyKernel3 && zip -r9 ../Kernel-R5Q-Pascua-eBPF.zip *
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: Kernel-S10Lite-R5Q
-          path: Kernel-R5Q-eBPF-Dynamic.zip
+          path: Kernel-R5Q-Pascua-eBPF.zip
