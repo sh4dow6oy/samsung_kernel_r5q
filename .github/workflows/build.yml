@@ -21,11 +21,11 @@ jobs:
           git config user.email "action@github.com"
           
           git remote add phoenix https://github.com/PhoenixKernel/linux.git
-          git fetch phoenix bpf-5.10
+          git fetch android-4.14-phoenix
           
           echo "Merging Phoenix BPF-5.10 branch..."
           # Folosim strategia 'theirs' pentru a ne asigura că primim tot codul BPF nou
-          git merge -X theirs phoenix/bpf-5.10 -m "Merge Phoenix BPF-5.10 for OneUI 7" || true
+          git merge -X theirs phoenix/android-4.14-phoenix -m "Merge Phoenix BPF-5.10 for OneUI 7" || true
           
           # Fix-uri obligatorii:
           # 1. Păstrăm r5q_defconfig pentru a nu pierde driverele de display/camera Snapdragon
