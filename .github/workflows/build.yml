@@ -1,4 +1,4 @@
-name: Build Roynas R5Q - Pascua eBPF Hybrid Final
+name: Build Roynas R5Q - Pascua eBPF Hybrid V3
 on:
   workflow_dispatch:
 
@@ -25,7 +25,7 @@ jobs:
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
 
-      - name: Surgical Sync & Hybrid Fixes
+      - name: Surgical Sync & Hybrid Pointer Fixes
         run: |
           git config --global user.email "bot@github.com"
           git config --global user.name "Kernel-Builder"
@@ -45,30 +45,32 @@ jobs:
           git checkout pascua/sixteen -- include/uapi/linux/filter.h
           git checkout pascua/sixteen -- net/core/filter.c
 
-          echo "Aplicare fix-uri de compatibilitate Samsung 4.14..."
+          echo "Aplicare fix-uri de pointeri și redefiniri (Samsung 4.14 Bridge)..."
           
-          # 1. Fix thread_info: Samsung 4.14 nu are current->thread_info
-          # Folosim macro-ul task_thread_info care este standard în 4.14
-          find kernel/bpf/ -type f -exec sed -i 's/current->thread_info/task_thread_info(current)/g' {} +
-          find kernel/bpf/ -type f -exec sed -i 's/thread_info/task_thread_info/g' {} + # Acoperire extinsă
-
-          # 2. Rezolvare redefiniri: Eliminăm macro-urile care există deja în arhitectura ta
-          # Acestea cauzau erorile de "redefinition of BPF_ADD"
+          # 1. FIX: Pointer mismatch in core.c (The Casting Bridge)
+          # Transformăm current->thread_info în (struct thread_info *)task_thread_info(current)
+          # Aceasta rezolvă eroarea de "incompatible type" observată în log
+          find kernel/bpf/ -type f -name "*.c" -exec sed -i 's/current->thread_info/((struct thread_info *)task_thread_info(current))/g' {} +
+          
+          # 2. Rezolvare redefiniri critice în filter.h
+          # Eliminăm duplicatele care se bat cap în cap cu macro-urile arhitecturii Samsung
           sed -i '/#define BPF_ADD/d' include/linux/filter.h || true
           sed -i '/#define BPF_SUB/d' include/linux/filter.h || true
           sed -i '/#define BPF_AND/d' include/linux/filter.h || true
           sed -i '/#define BPF_OR/d' include/linux/filter.h || true
           sed -i '/#define BPF_XOR/d' include/linux/filter.h || true
+          sed -i '/#define BPF_LSH/d' include/linux/filter.h || true
+          sed -i '/#define BPF_RSH/d' include/linux/filter.h || true
 
-          # 3. Eliminare dependențe fantomă (bpfptr.h)
+          # 3. Eliminare dependențe moarte de bpfptr.h
           grep -rl "bpfptr.h" . | xargs sed -i '/bpfptr.h/d' || true
           
-          # 4. Cleanup KernelSU (prevenire Error 1 la defconfig)
+          # 4. Cleanup KernelSU (prevenire Error 1 la configurare)
           sed -i '/kernelsu/d' drivers/android/Kconfig || true
           sed -i '/kernelsu/d' drivers/android/Makefile || true
           
           git add .
-          git commit -m "eBPF: Apply hybrid bridge for Samsung 4.14 compatibility" || echo "No changes"
+          git commit -m "eBPF: Explicit pointer casting and macro cleanup" || echo "No changes"
 
       - name: Build Kernel
         run: |
@@ -76,7 +78,7 @@ jobs:
           export KBUILD_BUILD_USER="Roynas"
           export KBUILD_BUILD_HOST="Neutron-CI"
           
-          # Fix-uri Makefile & Polly
+          # Curățare Makefile-uri (eliminare Polly pentru stabilitate)
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
           [ -f arch/arm64/kernel/vdso/Makefile ] && sed -i 's/-static//g' arch/arm64/kernel/vdso/Makefile
 
@@ -97,7 +99,7 @@ jobs:
           mkdir -p out
           make $MAKE_ARGS r5q_defconfig
           
-          # Forțăm activarea eBPF în config
+          # Configurare eBPF (Necesare pentru Android 12+)
           ./scripts/config --file out/.config \
             -e CONFIG_BPF -e CONFIG_BPF_SYSCALL -e CONFIG_BPF_JIT \
             -e CONFIG_HAVE_EBPF_JIT -e CONFIG_BPF_EVENTS \
@@ -108,7 +110,7 @@ jobs:
             
           make $MAKE_ARGS olddefconfig
 
-          # KCFLAGS cu suprimare agresivă pentru a trece de orice incompatibilitate de tip pointer/enum
+          # KCFLAGS optimizate pentru a trece de orice conflict de tipuri sau adrese
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -Wno-error -Wno-implicit-function-declaration -Wno-unused-command-line-argument -Wno-incompatible-pointer-types -Wno-int-conversion -Wno-macro-redefined -Wno-typedef-redefinition -Wno-unused-but-set-variable -Wno-enum-conversion -Wno-return-type -Wno-address-of-packed-member"
 
       - name: Package with AnyKernel3
@@ -120,10 +122,10 @@ jobs:
           rm -rf AnyKernel3/.git
           cp $IMAGE AnyKernel3/Image.gz
           sed -i 's/device.name1=maguro/device.name1=r5q/g' AnyKernel3/anykernel.sh
-          cd AnyKernel3 && zip -r9 ../Kernel-R5Q-eBPF-Hybrid.zip *
+          cd AnyKernel3 && zip -r9 ../Kernel-R5Q-eBPF-Hybrid-V3.zip *
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: Kernel-S10Lite-R5Q
-          path: Kernel-R5Q-eBPF-Hybrid.zip
+          path: Kernel-R5Q-eBPF-Hybrid-V3.zip
