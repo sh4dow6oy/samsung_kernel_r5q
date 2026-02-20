@@ -1,4 +1,4 @@
-name: Build R5Q - Phoenix Merge BPF (OneUI 7 Ready)
+name: Build R5Q - Phoenix Merge (No KSU + OneUI 7 BPF)
 on:
   workflow_dispatch:
 
@@ -20,34 +20,21 @@ jobs:
           git config user.name "GitHub Action"
           git config user.email "action@github.com"
           
-          echo "Adding Phoenix remote..."
           git remote add phoenix https://github.com/PhoenixKernel/linux.git
           git fetch phoenix 4.14
           
-          echo "Starting merge - bringing BPF logic from Phoenix"
-          # Încercăm un merge. Dacă sunt conflicte (ceea ce e sigur), le rezolvăm manual mai jos.
-          git merge phoenix/4.14 -m "Merge Phoenix Kernel BPF backports" || true
+          # Merge cu strategie de rezolvare automată a conflictelor minore
+          git merge phoenix/4.14 -m "Merge Phoenix BPF" || true
           
-          # REZOLVARE CONFLICTE CRITICE
-          # 1. Păstrăm defconfig-ul tău exact așa cum este (r5q_defconfig)
+          # REZOLVARE CONFLICTE
           git checkout --ours arch/arm64/configs/r5q_defconfig
-          
-          # 2. Forțăm subsistemul BPF și Networking de la Phoenix
-          # Acesta este "creierul" necesar pentru Android 15
           git checkout --theirs kernel/bpf/
           git checkout --theirs include/linux/bpf.h
           git checkout --theirs include/uapi/linux/bpf.h
           git checkout --theirs net/core/filter.c
           
-          # 3. Finalizăm merge-ul
           git add .
-          git commit -m "Fix merge conflicts: Kept r5q_defconfig, updated BPF from Phoenix" || echo "No conflicts to commit"
-
-      - name: Install Build Essentials
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu \
-          bc libssl-dev flex bison libelf-dev pahole zstd python3 llvm
+          git commit -m "Fix conflicts: BPF updated, r5q_defconfig kept" || echo "No conflicts"
 
       - name: Setup AOSP Clang
         run: |
@@ -71,12 +58,10 @@ jobs:
             O=out"
 
           mkdir -p out
-          
-          # 1. Configurare folosind calea indicată de tine
           make $MAKE_ARGS r5q_defconfig
 
-          # 2. Injectare flag-uri BPF pentru OneUI 7 / Android 15
-          # Dezactivăm și protecțiile Samsung care ar putea bloca noile apeluri BPF
+          # 1. ACTIVARE BPF (PENTRU ONEUI 7)
+          # 2. DEZACTIVARE KERNELSU SI SECURITATE SAMSUNG
           ./scripts/config --file out/.config \
             -e CONFIG_BPF \
             -e CONFIG_BPF_SYSCALL \
@@ -87,12 +72,16 @@ jobs:
             -d CONFIG_SAMSUNG_RTIC \
             -d CONFIG_SECURITY_DEFEX \
             -d CONFIG_SECURITY_RKP \
+            -d CONFIG_KSU \
+            -d CONFIG_ASSIST_KSU \
             -d CONFIG_WERROR
+
+          # Stergem manual directorul KSU daca exista in out pentru a preveni linkarea
+          rm -rf out/drivers/kernelsu || true
 
           make $MAKE_ARGS olddefconfig
 
-          # 3. Compilare Image.gz
-          # Folosim -i în DTC_FLAGS în caz că merge-ul a afectat DT-urile (deși nu ar trebui)
+          # Compilare
           make -j$(nproc --all) $MAKE_ARGS Image.gz \
             DTC_FLAGS="-i" \
             KCFLAGS="-w -fcommon"
@@ -105,10 +94,10 @@ jobs:
           cd AK3
           sed -i 's/device.name1=maguro/device.name1=r5q/g' anykernel.sh
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-          zip -r9 ../R5Q-Phoenix-BPF-V42.zip *
+          zip -r9 ../R5Q-Phoenix-Final.zip *
 
-      - name: Upload Artifact
+      - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: R5Q-Lumi-Phoenix
-          path: R5Q-Phoenix-BPF-V42.zip
+          name: R5Q-Lumi-Kernel
+          path: R5Q-Phoenix-Final.zip
