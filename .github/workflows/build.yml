@@ -1,4 +1,4 @@
-name: Build R5Q - Phoenix Merge (No KSU + OneUI 7 BPF)
+name: Build R5Q - Phoenix BPF Final (OneUI 7 Ready)
 on:
   workflow_dispatch:
 
@@ -14,27 +14,34 @@ jobs:
           path: kernel
           fetch-depth: 0
 
-      - name: Merge Phoenix Kernel (BPF Backports)
+      - name: Merge Phoenix BPF-5.10 (Commit 724a255)
         run: |
           cd kernel
           git config user.name "GitHub Action"
           git config user.email "action@github.com"
           
           git remote add phoenix https://github.com/PhoenixKernel/linux.git
-          git fetch phoenix 4.14
+          git fetch phoenix bpf-5.10
           
-          # Merge cu strategie de rezolvare automată a conflictelor minore
-          git merge phoenix/4.14 -m "Merge Phoenix BPF" || true
+          echo "Merging Phoenix BPF-5.10 branch..."
+          # Folosim strategia 'theirs' pentru a ne asigura că primim tot codul BPF nou
+          git merge -X theirs phoenix/bpf-5.10 -m "Merge Phoenix BPF-5.10 for OneUI 7" || true
           
-          # REZOLVARE CONFLICTE
-          git checkout --ours arch/arm64/configs/r5q_defconfig
-          git checkout --theirs kernel/bpf/
-          git checkout --theirs include/linux/bpf.h
-          git checkout --theirs include/uapi/linux/bpf.h
-          git checkout --theirs net/core/filter.c
+          # Fix-uri obligatorii:
+          # 1. Păstrăm r5q_defconfig pentru a nu pierde driverele de display/camera Snapdragon
+          git checkout --ours arch/arm64/configs/r5q_defconfig || echo "No config conflict"
+          
+          # 2. Ne asigurăm că fișierele din commit-ul 724a255 sunt prezente
+          git checkout phoenix/bpf-5.10 -- kernel/bpf/ include/linux/bpf.h net/core/filter.c
           
           git add .
-          git commit -m "Fix conflicts: BPF updated, r5q_defconfig kept" || echo "No conflicts"
+          git commit -m "Finalize BPF merge with focus on Phoenix helpers" || echo "No changes"
+
+      - name: Install Build Essentials
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu \
+          bc libssl-dev flex bison libelf-dev pahole zstd python3 llvm
 
       - name: Setup AOSP Clang
         run: |
@@ -44,7 +51,7 @@ jobs:
           tar -xf clang-r487747c.tar.gz
           echo "$GITHUB_WORKSPACE/aosp-clang/bin" >> $GITHUB_PATH
 
-      - name: Build Kernel
+      - name: Build Kernel (r5q)
         run: |
           cd kernel
           export PATH="$GITHUB_WORKSPACE/aosp-clang/bin:$PATH"
@@ -60,24 +67,20 @@ jobs:
           mkdir -p out
           make $MAKE_ARGS r5q_defconfig
 
-          # 1. ACTIVARE BPF (PENTRU ONEUI 7)
-          # 2. DEZACTIVARE KERNELSU SI SECURITATE SAMSUNG
+          # Configurare BPF pentru Android 15
           ./scripts/config --file out/.config \
             -e CONFIG_BPF \
             -e CONFIG_BPF_SYSCALL \
             -e CONFIG_BPF_JIT \
+            -e CONFIG_BPF_EVENTS \
             -e CONFIG_CGROUP_BPF \
             -e CONFIG_NET_CLS_BPF \
             -e CONFIG_NET_ACT_BPF \
             -d CONFIG_SAMSUNG_RTIC \
-            -d CONFIG_SECURITY_DEFEX \
             -d CONFIG_SECURITY_RKP \
+            -d CONFIG_SECURITY_DEFEX \
             -d CONFIG_KSU \
-            -d CONFIG_ASSIST_KSU \
             -d CONFIG_WERROR
-
-          # Stergem manual directorul KSU daca exista in out pentru a preveni linkarea
-          rm -rf out/drivers/kernelsu || true
 
           make $MAKE_ARGS olddefconfig
 
@@ -94,10 +97,10 @@ jobs:
           cd AK3
           sed -i 's/device.name1=maguro/device.name1=r5q/g' anykernel.sh
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-          zip -r9 ../R5Q-Phoenix-Final.zip *
+          zip -r9 ../R5Q-OneUI7-Lumi.zip *
 
-      - name: Upload
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: R5Q-Lumi-Kernel
-          path: R5Q-Phoenix-Final.zip
+          name: R5Q-OneUI7-Kernel
+          path: R5Q-OneUI7-Lumi.zip
