@@ -1,4 +1,4 @@
-name: Build Roynas R5Q - Pascua eBPF Fixed
+name: Build Roynas R5Q - Pascua eBPF Surgical Fixed
 on:
   workflow_dispatch:
 
@@ -11,7 +11,7 @@ jobs:
         with:
           repository: Roynas-Android-Playground/kernel_samsung_r3q
           ref: master
-          fetch-depth: 0
+          fetch-depth: 1
 
       - name: Install Dependencies
         run: |
@@ -25,37 +25,37 @@ jobs:
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
 
-      - name: Surgical Cherry-Pick from Pascua
+      - name: Surgical Sync eBPF from Pascua
         run: |
           git config --global user.email "bot@github.com"
           git config --global user.name "Kernel-Builder"
           
+          # Adăugăm sursa lui pascua28
           git remote add pascua https://github.com/pascua28/android_kernel_samsung_sm8250.git
-          git fetch pascua sixteen
+          git fetch pascua sixteen --depth=1
           
-          echo "Extracting eBPF logic..."
-          # Luăm commit-urile cheie din subsystemul BPF
-          PASCUA_COMMITS=$(git log pascua/sixteen --grep="bpf" --oneline --reverse -n 40 | awk '{print $1}')
+          echo "Sincronizare chirurgicală subsistem eBPF..."
           
-          for commit in $PASCUA_COMMITS; do
-            git cherry-pick -n $commit || true
-            # Protejăm driverele și config-urile de R5Q
-            git checkout HEAD -- drivers/
-            git checkout HEAD -- arch/arm64/configs/
-            git add .
-            git commit -m "eBPF Port: $commit" || echo "Skip"
-          done
+          # Extragem DOAR fișierele critice pentru eBPF și Networking de la Pascua
+          # Această metodă evită erorile de tip "bad revision"
+          git checkout pascua/sixteen -- kernel/bpf/
+          git checkout pascua/sixteen -- net/core/filter.c
+          git checkout pascua/sixteen -- include/linux/filter.h
+          git checkout pascua/sixteen -- include/uapi/linux/bpf.h
+          git checkout pascua/sixteen -- include/linux/bpf.h
+          git checkout pascua/sixteen -- samples/bpf/
+          
+          # Adăugăm modificările și facem commit
+          git add .
+          git commit -m "Surgical Sync: eBPF logic from Pascua" || echo "No changes to commit"
 
       - name: Build Kernel
         run: |
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
+          export KBUILD_BUILD_USER="Roynas"
+          export KBUILD_BUILD_HOST="Neutron-CI"
           
-          # 1. NUCLEAR FIX FOR REDEFINITIONS
-          # Eliminăm manual implementările parțiale de BPF ale Samsung care cauzează "redefinition"
-          # Aceasta este partea care lipsea în rularea anterioară
-          find include/uapi/linux/ -name "bpf*.h" -exec sed -i '/#ifndef __LINUX_BPF_H/I,/#endif/d' {} + || true
-
-          # 2. Cleanup Polly & vDSO
+          # Fix-uri Neutron Clang & vDSO
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
           [ -f arch/arm64/kernel/vdso/Makefile ] && sed -i 's/-static//g' arch/arm64/kernel/vdso/Makefile
 
@@ -73,7 +73,7 @@ jobs:
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             O=out"
 
-          # 3. Configurare
+          # Configurare
           make $MAKE_ARGS r5q_defconfig
           ./scripts/config --file out/.config \
             -e CONFIG_BPF -e CONFIG_BPF_SYSCALL -e CONFIG_BPF_JIT \
@@ -84,11 +84,10 @@ jobs:
             
           make $MAKE_ARGS olddefconfig
 
-          # 4. Compilare cu flag-uri de suprimare a erorilor de redefinire
-          # Am adăugat -Wno-error=reorder și -fpermit-multiple-definition (unde e posibil)
+          # Compilare cu flag-uri pentru a ignora redefinirile și pointerii
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -Wno-error -Wno-implicit-function-declaration -Wno-unused-command-line-argument -Wno-incompatible-pointer-types -Wno-int-conversion -Wno-macro-redefined"
 
-      - name: Package with AnyKernel3
+      - name: Package and Upload
         run: |
           IMAGE="$GITHUB_WORKSPACE/out/arch/arm64/boot/Image.gz-dtb"
           [ ! -f "$IMAGE" ] && IMAGE="$GITHUB_WORKSPACE/out/arch/arm64/boot/Image.gz"
@@ -99,10 +98,10 @@ jobs:
           [ -f "$GITHUB_WORKSPACE/out/arch/arm64/boot/dtbo.img" ] && cp "$GITHUB_WORKSPACE/out/arch/arm64/boot/dtbo.img" AnyKernel3/dtbo.img
           
           sed -i 's/device.name1=maguro/device.name1=r5q/g' AnyKernel3/anykernel.sh
-          cd AnyKernel3 && zip -r9 ../Kernel-R5Q-eBPF-Pascua.zip *
+          cd AnyKernel3 && zip -r9 ../Kernel-R5Q-Surgical-eBPF.zip *
 
-      - name: Upload
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: Kernel-S10Lite-R5Q
-          path: Kernel-R5Q-eBPF-Pascua.zip
+          path: Kernel-R5Q-Surgical-eBPF.zip
