@@ -1,4 +1,4 @@
-name: Build Roynas R5Q - Pascua eBPF Hybrid V3
+name: Build R5Q - Lumi BPF V42 (Kernel 5.4.233)
 on:
   workflow_dispatch:
 
@@ -6,126 +6,80 @@ jobs:
   build:
     runs-on: ubuntu-24.04
     steps:
-      - name: Checkout Source
+      - name: Checkout Kernel Source
         uses: actions/checkout@v4
         with:
-          repository: Roynas-Android-Playground/kernel_samsung_r3q
+          repository: sh4dow6oy/android_kernel_samsung_sm8150-5.4
           ref: master
-          fetch-depth: 1
+          path: kernel
 
-      - name: Install Dependencies
+      - name: Install Build Essentials
         run: |
           sudo apt-get update
-          sudo apt-get install -y bc build-essential flex bison lz4 libssl-dev libelf-dev \
-          ccache python3 python-is-python3 libarchive-tools wget zstd libtinfo6 zip git
+          sudo apt-get install -y gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu \
+          bc libssl-dev flex bison libelf-dev pahole zstd python3 llvm
 
       - name: Setup Neutron Clang
         run: |
-          mkdir clang
+          mkdir -p clang
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
 
-      - name: Surgical Sync & Hybrid Pointer Fixes
+      - name: Build Kernel (5.4.233)
         run: |
-          git config --global user.email "bot@github.com"
-          git config --global user.name "Kernel-Builder"
-          
-          git remote add pascua https://github.com/pascua28/android_kernel_samsung_sm8250.git
-          git fetch pascua sixteen --depth=1
-          
-          echo "Sincronizare fișiere eBPF..."
-          rm -rf kernel/bpf/
-          git checkout pascua/sixteen -- kernel/bpf/
-          git checkout pascua/sixteen -- include/linux/bpf.h
-          git checkout pascua/sixteen -- include/linux/bpf_types.h
-          git checkout pascua/sixteen -- include/linux/bpf_verifier.h
-          git checkout pascua/sixteen -- include/linux/filter.h
-          git checkout pascua/sixteen -- include/uapi/linux/bpf.h
-          git checkout pascua/sixteen -- include/uapi/linux/bpf_common.h
-          git checkout pascua/sixteen -- include/uapi/linux/filter.h
-          git checkout pascua/sixteen -- net/core/filter.c
-
-          echo "Aplicare fix-uri de pointeri și redefiniri (Samsung 4.14 Bridge)..."
-          
-          # 1. FIX: Pointer mismatch in core.c (The Casting Bridge)
-          # Transformăm current->thread_info în (struct thread_info *)task_thread_info(current)
-          # Aceasta rezolvă eroarea de "incompatible type" observată în log
-          find kernel/bpf/ -type f -name "*.c" -exec sed -i 's/current->thread_info/((struct thread_info *)task_thread_info(current))/g' {} +
-          
-          # 2. Rezolvare redefiniri critice în filter.h
-          # Eliminăm duplicatele care se bat cap în cap cu macro-urile arhitecturii Samsung
-          sed -i '/#define BPF_ADD/d' include/linux/filter.h || true
-          sed -i '/#define BPF_SUB/d' include/linux/filter.h || true
-          sed -i '/#define BPF_AND/d' include/linux/filter.h || true
-          sed -i '/#define BPF_OR/d' include/linux/filter.h || true
-          sed -i '/#define BPF_XOR/d' include/linux/filter.h || true
-          sed -i '/#define BPF_LSH/d' include/linux/filter.h || true
-          sed -i '/#define BPF_RSH/d' include/linux/filter.h || true
-
-          # 3. Eliminare dependențe moarte de bpfptr.h
-          grep -rl "bpfptr.h" . | xargs sed -i '/bpfptr.h/d' || true
-          
-          # 4. Cleanup KernelSU (prevenire Error 1 la configurare)
-          sed -i '/kernelsu/d' drivers/android/Kconfig || true
-          sed -i '/kernelsu/d' drivers/android/Makefile || true
-          
-          git add .
-          git commit -m "eBPF: Explicit pointer casting and macro cleanup" || echo "No changes"
-
-      - name: Build Kernel
-        run: |
+          cd kernel
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
-          export KBUILD_BUILD_USER="Roynas"
-          export KBUILD_BUILD_HOST="Neutron-CI"
           
-          # Curățare Makefile-uri (eliminare Polly pentru stabilitate)
-          find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
-          [ -f arch/arm64/kernel/vdso/Makefile ] && sed -i 's/-static//g' arch/arm64/kernel/vdso/Makefile
-
           MAKE_ARGS="ARCH=arm64 \
             LLVM=1 \
             LLVM_IAS=1 \
             CC=clang \
             LD=ld.lld \
-            AR=llvm-ar \
-            NM=llvm-nm \
-            OBJCOPY=llvm-objcopy \
-            OBJDUMP=llvm-objdump \
-            STRIP=llvm-strip \
             CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
             O=out"
 
-          mkdir -p out
-          make $MAKE_ARGS r5q_defconfig
-          
-          # Configurare eBPF (Necesare pentru Android 12+)
+          # Folosim config-ul specific menționat de tine
+          make $MAKE_ARGS vendor/sm8150_sec_r5q_eur_open.config
+
+          # ELIMINARE RESTRICȚII SAMSUNG (Crucial pentru stabilitate pe 5.4)
+          # Nu activăm BPF manual (e deja acolo), doar curățăm ce îl poate bloca
           ./scripts/config --file out/.config \
-            -e CONFIG_BPF -e CONFIG_BPF_SYSCALL -e CONFIG_BPF_JIT \
-            -e CONFIG_HAVE_EBPF_JIT -e CONFIG_BPF_EVENTS \
-            -e CONFIG_NET_CLS_BPF -e CONFIG_NET_ACT_BPF -e CONFIG_CGROUP_BPF \
-            -e CONFIG_NET_SCH_INGRESS \
-            -d CONFIG_LTO -d CONFIG_LTO_CLANG -e CONFIG_LTO_NONE \
-            -d CONFIG_KNOX_KAP -d CONFIG_SECURITY_SAMSUNG_KNOX
-            
+            -d CONFIG_SAMSUNG_RTIC -d CONFIG_SAMSUNG_RTIC_AMP \
+            -d CONFIG_SECURITY_DEFEX -d CONFIG_SECURITY_RKP \
+            -d CONFIG_SAMSUNG_PRODUCT_SHIP \
+            -d CONFIG_WERROR
+
           make $MAKE_ARGS olddefconfig
 
-          # KCFLAGS optimizate pentru a trece de orice conflict de tipuri sau adrese
-          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -Wno-error -Wno-implicit-function-declaration -Wno-unused-command-line-argument -Wno-incompatible-pointer-types -Wno-int-conversion -Wno-macro-redefined -Wno-typedef-redefinition -Wno-unused-but-set-variable -Wno-enum-conversion -Wno-return-type -Wno-address-of-packed-member"
+          # Compilare cu Linker Fix
+          make -j$(nproc --all) $MAKE_ARGS Image.gz dtbs \
+            KCFLAGS="-w -fcommon" \
+            LDFLAGS="--no-rosegment --strip-debug"
 
-      - name: Package with AnyKernel3
+      - name: Assemble AnyKernel3
         run: |
-          IMAGE="$GITHUB_WORKSPACE/out/arch/arm64/boot/Image.gz-dtb"
-          [ ! -f "$IMAGE" ] && IMAGE="$GITHUB_WORKSPACE/out/arch/arm64/boot/Image.gz"
+          OUT="kernel/out/arch/arm64/boot"
+          IMAGE="$OUT/Image.gz"
+          DTB=$(find $OUT/dts -name "*r5q*.dtb" -type f | head -n 1)
           
-          git clone https://github.com/osm0sis/AnyKernel3.git
-          rm -rf AnyKernel3/.git
-          cp $IMAGE AnyKernel3/Image.gz
-          sed -i 's/device.name1=maguro/device.name1=r5q/g' AnyKernel3/anykernel.sh
-          cd AnyKernel3 && zip -r9 ../Kernel-R5Q-eBPF-Hybrid-V3.zip *
+          git clone https://github.com/osm0sis/AnyKernel3.git AK3
+          
+          # Verificăm dacă DTB-ul a fost generat și îl concatenăm
+          if [ -f "$DTB" ]; then
+            cat "$IMAGE" "$DTB" > AK3/Image.gz
+          else
+            cp "$IMAGE" AK3/Image.gz
+          fi
+          
+          cd AK3
+          sed -i 's/device.name1=maguro/device.name1=r5q/g' anykernel.sh
+          sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
+          zip -r9 ../S10Lite_5.4.233_Lumi.zip *
 
-      - name: Upload Artifact
+      - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-S10Lite-R5Q
-          path: Kernel-R5Q-eBPF-Hybrid-V3.zip
+          name: S10Lite-5.4.233
+          path: S10Lite_5.4.233_Lumi.zip
