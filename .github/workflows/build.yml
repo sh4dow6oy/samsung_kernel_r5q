@@ -1,4 +1,4 @@
-name: Build R5Q - Lumi BPF V42 (Kernel 5.4 Final)
+name: Build R5Q - Lumi BPF V42 (Kernel 5.4 - r5q_eur)
 on:
   workflow_dispatch:
 
@@ -25,11 +25,12 @@ jobs:
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
 
-      - name: Build Kernel
+      - name: Build Kernel (r5q_eur_open)
         run: |
           cd kernel
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           
+          # Parametrii de build pentru LLVM/Clang
           MAKE_ARGS="ARCH=arm64 \
             LLVM=1 \
             LLVM_IAS=1 \
@@ -42,22 +43,22 @@ jobs:
 
           mkdir -p out
 
-          # Pasul crucial: Încărcăm config-ul din folderul vendor
-          # Kbuild va căuta automat în arch/arm64/configs/vendor/
-          make $MAKE_ARGS vendor/sm8150_sec_r5q_eur_open.config
+          # 1. Aplicăm defconfig-ul din folderul vendor
+          make $MAKE_ARGS vendor/r5q_eur_open_defconfig
 
-          # Curățăm setările Samsung care pot intra în conflict cu BPF
+          # 2. Eliminare blocaje Samsung (RTIC, RKP, DEFEX)
+          # Menținem aceste modificări pentru ca BPF să poată funcționa nestingherit
           ./scripts/config --file out/.config \
             -d CONFIG_SAMSUNG_RTIC -d CONFIG_SAMSUNG_RTIC_AMP \
             -d CONFIG_SECURITY_DEFEX -d CONFIG_SECURITY_RKP \
             -d CONFIG_SAMSUNG_PRODUCT_SHIP \
             -d CONFIG_WERROR
 
-          # Validăm noul .config generat
+          # 3. Validare config
           make $MAKE_ARGS olddefconfig
 
-          # Compilare Image.gz și Device Tree Blobs
-          # Adăugăm LDFLAGS pentru a rezolva problemele de linker pe Samsung
+          # 4. Compilare Image.gz + DTB-uri
+          # LDFLAGS rezolvă problema de "Read-only segments" pe bootloaderele Samsung
           make -j$(nproc --all) $MAKE_ARGS Image.gz dtbs \
             KCFLAGS="-w -fcommon" \
             LDFLAGS="--no-rosegment --strip-debug"
@@ -66,12 +67,12 @@ jobs:
         run: |
           OUT="kernel/out/arch/arm64/boot"
           IMAGE="$OUT/Image.gz"
-          # Căutăm DTB-ul generat pentru r5q
+          # Căutăm DTB-ul specific r5q generat în out
           DTB=$(find $OUT/dts -name "*r5q*.dtb" -type f | head -n 1)
           
           git clone https://github.com/osm0sis/AnyKernel3.git AK3
           
-          # Combinăm Kernel-ul cu DTB-ul pentru bootloader-ul S10 Lite
+          # Pregătim imaginea finală
           if [ -f "$DTB" ]; then
             cat "$IMAGE" "$DTB" > AK3/Image.gz
           else
@@ -79,13 +80,12 @@ jobs:
           fi
           
           cd AK3
-          # Configurăm scriptul de instalare pentru r5q
           sed -i 's/device.name1=maguro/device.name1=r5q/g' anykernel.sh
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-          zip -r9 ../S10Lite_5.4_Lumi_V42.zip *
+          zip -r9 ../S10Lite_5.4_r5q_Lumi.zip *
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-5.4-Final
-          path: S10Lite_5.4_Lumi_V42.zip
+          name: S10Lite-5.4-r5q
+          path: S10Lite_5.4_r5q_Lumi.zip
