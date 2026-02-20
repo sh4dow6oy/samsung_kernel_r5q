@@ -1,4 +1,4 @@
-name: Build R5Q - Ultimate BPF 5.4 Hybrid
+name: Build R5Q - Neutron BPF Hybrid (OneUI 7 Ready)
 on:
   workflow_dispatch:
 
@@ -14,65 +14,68 @@ jobs:
           path: kernel
           fetch-depth: 0
 
-      - name: Force Merge BPF 5.4 Logic
+      - name: Force Merge BPF 5.4 from Cat658011
         run: |
           cd kernel
           git config user.name "GitHub Action"
           git config user.email "action@github.com"
           
-          # Adăugăm sursa BPF și facem fetch
+          # Adăugăm sursa BPF modernă
           git remote add bpf_source https://github.com/cat658011/linux-bpf.git
           git fetch bpf_source bpf-5.4
           
-          echo "Merging BPF-5.4 branch with 'theirs' strategy..."
+          echo "Merging BPF-5.4 branch..."
           git merge -X theirs bpf_source/bpf-5.4 -m "Integrate BPF 5.4 Backports" || true
           
-          # FORȚARE FIȘIERE CRITICE (Conform commit 724a255 logic)
-          # Rescriem subsistemele Samsung cu cele de BPF modern
+          # FORȚARE FIȘIERE CRITICE (Rescriem codul Samsung vechi)
           git checkout bpf_source/bpf-5.4 -- kernel/bpf/
           git checkout bpf_source/bpf-5.4 -- net/core/filter.c
           git checkout bpf_source/bpf-5.4 -- include/linux/bpf.h
           git checkout bpf_source/bpf-5.4 -- include/uapi/linux/bpf.h
           git checkout bpf_source/bpf-5.4 -- arch/arm64/net/bpf_jit_comp.c
           
-          # Păstrăm configurația ta de bază pentru Snapdragon 855
+          # Păstrăm defconfig-ul tău original pentru hardware-ul r5q
           git checkout --ours arch/arm64/configs/r5q_defconfig || echo "No config conflict"
           
           git add .
-          git commit -m "BPF Hybrid: Forced Phoenix/Cat BPF over Samsung R3Q" || echo "No changes"
+          git commit -m "BPF Hybrid: Forced Phoenix/Cat BPF over Samsung R3Q" || echo "No changes to commit"
 
       - name: Install Build Essentials
         run: |
           sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu \
-          bc libssl-dev flex bison libelf-dev pahole zstd python3 llvm
+          sudo apt-get install -y bc libssl-dev flex bison libelf-dev pahole zstd python3 llvm lld
 
-      - name: Setup AOSP Clang
+      - name: Setup Neutron Clang
         run: |
-          mkdir -p aosp-clang
-          cd aosp-clang
-          wget -q https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/master/clang-r487747c.tar.gz
-          tar -xf clang-r487747c.tar.gz
-          echo "$GITHUB_WORKSPACE/aosp-clang/bin" >> $GITHUB_PATH
+          mkdir -p clang
+          cd clang
+          curl -LO "https://raw.githubusercontent.com/Neutron-Clang/antman/main/antman"
+          chmod +x antman
+          ./antman -S
+          # Adăugăm folderul bin în PATH-ul GitHub Actions
+          echo "$GITHUB_WORKSPACE/clang/bin" >> $GITHUB_PATH
 
       - name: Build Kernel (r5q)
         run: |
           cd kernel
-          export PATH="$GITHUB_WORKSPACE/aosp-clang/bin:$PATH"
+          # Ne asigurăm că PATH-ul este actualizat în acest shell
+          export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           
           MAKE_ARGS="ARCH=arm64 \
             LLVM=1 \
             LLVM_IAS=1 \
-            CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
             O=out"
 
           mkdir -p out
+          
+          # 1. Aplicăm configurația de bază
           make $MAKE_ARGS r5q_defconfig
 
-          # Configurare BPF (OneUI 7 / Android 15 Ready)
-          # Eliminăm tot ce înseamnă Samsung Security/KSU
+          # 2. Injectăm flag-urile BPF pentru Android 15
+          # Dezactivăm securitatea Samsung care blochează BPF-ul nou
           ./scripts/config --file out/.config \
             -e CONFIG_BPF \
             -e CONFIG_BPF_SYSCALL \
@@ -90,24 +93,29 @@ jobs:
 
           make $MAKE_ARGS olddefconfig
 
-          # Compilare Image.gz
-          # Folosim -j$(nproc) pentru viteză maximă
+          # 3. Compilarea Image.gz
+          # KCFLAGS="-w" ignoră avertismentele de tip 'redefined' apărute după merge
           make -j$(nproc --all) $MAKE_ARGS Image.gz \
             DTC_FLAGS="-i" \
             KCFLAGS="-w -fcommon"
 
-      - name: Package AnyKernel3
+      - name: Package with AnyKernel3
         run: |
-          IMAGE="kernel/out/arch/arm64/boot/Image.gz"
-          git clone https://github.com/osm0sis/AnyKernel3.git AK3
-          cp "$IMAGE" AK3/
-          cd AK3
-          sed -i 's/device.name1=maguro/device.name1=r5q/g' anykernel.sh
-          sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-          zip -r9 ../R5Q-OneUI7-Final.zip *
+          if [ -f kernel/out/arch/arm64/boot/Image.gz ]; then
+            IMAGE="kernel/out/arch/arm64/boot/Image.gz"
+            git clone https://github.com/osm0sis/AnyKernel3.git AK3
+            cp "$IMAGE" AK3/
+            cd AK3
+            sed -i 's/device.name1=maguro/device.name1=r5q/g' anykernel.sh
+            sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
+            zip -r9 ../R5Q-BPF-OneUI7-Kernel.zip *
+          else
+            echo "Kernel Image.gz not found! Compilation failed."
+            exit 1
+          fi
 
-      - name: Upload Artifact
+      - name: Upload Kernel
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-Final-Kernel
-          path: R5Q-OneUI7-Final.zip
+          name: S10Lite-OneUI7-Kernel
+          path: R5Q-BPF-OneUI7-Kernel.zip
