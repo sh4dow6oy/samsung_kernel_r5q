@@ -1,4 +1,4 @@
-name: Build Roynas R5Q - Pascua eBPF Surgical Final
+name: Build Roynas R5Q - Pascua eBPF Full Engine
 on:
   workflow_dispatch:
 
@@ -25,29 +25,40 @@ jobs:
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
 
-      - name: Surgical Sync eBPF & KernelSU Cleanup
+      - name: Full Surgical Sync (Engine + Structs)
         run: |
           git config --global user.email "bot@github.com"
           git config --global user.name "Kernel-Builder"
           
-          # 1. Portăm eBPF chirurgical de la Pascua (Samsung-optimized)
           git remote add pascua https://github.com/pascua28/android_kernel_samsung_sm8250.git
           git fetch pascua sixteen --depth=1
           
-          echo "Sincronizare fișiere critice eBPF..."
-          git checkout pascua/sixteen -- kernel/bpf/
-          git checkout pascua/sixteen -- net/core/filter.c
-          git checkout pascua/sixteen -- include/linux/filter.h
-          git checkout pascua/sixteen -- include/uapi/linux/bpf.h
-          git checkout pascua/sixteen -- include/linux/bpf.h
+          echo "Sincronizare Structuri și Engine eBPF..."
           
-          # 2. FIX CRITIC: Eliminăm referințele moarte către KernelSU care opresc 'make defconfig'
-          echo "Curățare referințe KernelSU din Kconfig și Makefile..."
+          # 1. Core Logic & Verifier
+          git checkout pascua/sixteen -- kernel/bpf/
+          
+          # 2. Toate Headerele de Structuri (Rezolvă 'incomplete type')
+          git checkout pascua/sixteen -- include/linux/bpf.h
+          git checkout pascua/sixteen -- include/linux/bpf_types.h
+          git checkout pascua/sixteen -- include/linux/bpf_verifier.h
+          git checkout pascua/sixteen -- include/linux/filter.h
+          git checkout pascua/sixteen -- include/linux/bpfptr.h || true
+          
+          # 3. UAPI Headers (Interfața cu User-space)
+          git checkout pascua/sixteen -- include/uapi/linux/bpf.h
+          git checkout pascua/sixteen -- include/uapi/linux/bpf_common.h
+          git checkout pascua/sixteen -- include/uapi/linux/filter.h
+          
+          # 4. Networking Hooks
+          git checkout pascua/sixteen -- net/core/filter.c
+          
+          # FIX: Curățare KernelSU care bloca defconfig
           sed -i '/kernelsu/d' drivers/android/Kconfig || true
           sed -i '/kernelsu/d' drivers/android/Makefile || true
           
           git add .
-          git commit -m "eBPF Surgical Sync & Kconfig Cleanup" || echo "No changes to commit"
+          git commit -m "eBPF: Full structural sync from Pascua" || echo "No changes"
 
       - name: Build Kernel
         run: |
@@ -55,7 +66,7 @@ jobs:
           export KBUILD_BUILD_USER="Roynas"
           export KBUILD_BUILD_HOST="Neutron-CI"
           
-          # 1. Pregătire mediu (Polly removal & vDSO fix)
+          # Fix-uri Neutron & vDSO
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
           [ -f arch/arm64/kernel/vdso/Makefile ] && sed -i 's/-static//g' arch/arm64/kernel/vdso/Makefile
 
@@ -73,50 +84,38 @@ jobs:
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             O=out"
 
-          # 2. Generare Configurație
+          # Configurare
           mkdir -p out
           make $MAKE_ARGS r5q_defconfig
           
-          # Activăm suportul eBPF necesar pentru Android 12-14+
           ./scripts/config --file out/.config \
-            -e CONFIG_BPF \
-            -e CONFIG_BPF_SYSCALL \
-            -e CONFIG_BPF_JIT \
-            -e CONFIG_HAVE_EBPF_JIT \
-            -e CONFIG_BPF_EVENTS \
-            -e CONFIG_NET_CLS_BPF \
-            -e CONFIG_NET_ACT_BPF \
-            -e CONFIG_CGROUP_BPF \
+            -e CONFIG_BPF -e CONFIG_BPF_SYSCALL -e CONFIG_BPF_JIT \
+            -e CONFIG_HAVE_EBPF_JIT -e CONFIG_BPF_EVENTS \
+            -e CONFIG_NET_CLS_BPF -e CONFIG_NET_ACT_BPF -e CONFIG_CGROUP_BPF \
             -e CONFIG_NET_SCH_INGRESS \
             -d CONFIG_LTO -d CONFIG_LTO_CLANG -e CONFIG_LTO_NONE \
             -d CONFIG_KNOX_KAP -d CONFIG_SECURITY_SAMSUNG_KNOX
             
           make $MAKE_ARGS olddefconfig
 
-          # 3. Compilare (Ignorăm warning-urile stricte ale Clang 18/19)
-          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -Wno-error -Wno-implicit-function-declaration -Wno-unused-command-line-argument -Wno-incompatible-pointer-types -Wno-int-conversion -Wno-macro-redefined"
+          # Compilare cu toleranță maximă pentru structuri redefinite sau incomplete
+          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -Wno-error -Wno-implicit-function-declaration -Wno-unused-command-line-argument -Wno-incompatible-pointer-types -Wno-int-conversion -Wno-macro-redefined -Wno-typedef-redefinition"
 
       - name: Package with AnyKernel3
         run: |
-          # Identificăm imaginea kernelului
           IMAGE="$GITHUB_WORKSPACE/out/arch/arm64/boot/Image.gz-dtb"
           [ ! -f "$IMAGE" ] && IMAGE="$GITHUB_WORKSPACE/out/arch/arm64/boot/Image.gz"
-          DTBO="$GITHUB_WORKSPACE/out/arch/arm64/boot/dtbo.img"
           
           git clone https://github.com/osm0sis/AnyKernel3.git
           rm -rf AnyKernel3/.git
-          
           cp $IMAGE AnyKernel3/Image.gz
-          [ -f "$DTBO" ] && cp $DTBO AnyKernel3/dtbo.img
+          [ -f "$GITHUB_WORKSPACE/out/arch/arm64/boot/dtbo.img" ] && cp "$GITHUB_WORKSPACE/out/arch/arm64/boot/dtbo.img" AnyKernel3/dtbo.img
           
-          # Configurare AnyKernel pentru R5Q
           sed -i 's/device.name1=maguro/device.name1=r5q/g' AnyKernel3/anykernel.sh
-          sed -i 's/device.name2=toroplus/device.name2=SM-G770F/g' AnyKernel3/anykernel.sh
-          
-          cd AnyKernel3 && zip -r9 ../Kernel-R5Q-eBPF-Final.zip *
+          cd AnyKernel3 && zip -r9 ../Kernel-R5Q-Full-eBPF.zip *
 
-      - name: Upload Flashable Kernel
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: Kernel-S10Lite-R5Q
-          path: Kernel-R5Q-eBPF-Final.zip
+          path: Kernel-R5Q-Full-eBPF.zip
