@@ -1,4 +1,4 @@
-name: Build R5Q - Lumi BPF V42 (Source Patch Fix)
+name: Build R5Q - Phoenix Merge BPF (OneUI 7 Ready)
 on:
   workflow_dispatch:
 
@@ -6,12 +6,42 @@ jobs:
   build:
     runs-on: ubuntu-24.04
     steps:
-      - name: Checkout Kernel Source
+      - name: Checkout Your Kernel (r5q)
         uses: actions/checkout@v4
         with:
-          repository: sh4dow6oy/android_kernel_samsung_sm8150-5.4
+          repository: Roynas-Android-Playground/kernel_samsung_r3q
           ref: master
           path: kernel
+          fetch-depth: 0
+
+      - name: Merge Phoenix Kernel (BPF Backports)
+        run: |
+          cd kernel
+          git config user.name "GitHub Action"
+          git config user.email "action@github.com"
+          
+          echo "Adding Phoenix remote..."
+          git remote add phoenix https://github.com/PhoenixKernel/linux.git
+          git fetch phoenix 4.14
+          
+          echo "Starting merge - bringing BPF logic from Phoenix"
+          # Încercăm un merge. Dacă sunt conflicte (ceea ce e sigur), le rezolvăm manual mai jos.
+          git merge phoenix/4.14 -m "Merge Phoenix Kernel BPF backports" || true
+          
+          # REZOLVARE CONFLICTE CRITICE
+          # 1. Păstrăm defconfig-ul tău exact așa cum este (r5q_defconfig)
+          git checkout --ours arch/arm64/configs/r5q_defconfig
+          
+          # 2. Forțăm subsistemul BPF și Networking de la Phoenix
+          # Acesta este "creierul" necesar pentru Android 15
+          git checkout --theirs kernel/bpf/
+          git checkout --theirs include/linux/bpf.h
+          git checkout --theirs include/uapi/linux/bpf.h
+          git checkout --theirs net/core/filter.c
+          
+          # 3. Finalizăm merge-ul
+          git add .
+          git commit -m "Fix merge conflicts: Kept r5q_defconfig, updated BPF from Phoenix" || echo "No conflicts to commit"
 
       - name: Install Build Essentials
         run: |
@@ -19,56 +49,55 @@ jobs:
           sudo apt-get install -y gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu \
           bc libssl-dev flex bison libelf-dev pahole zstd python3 llvm
 
-      - name: Setup Neutron Clang
+      - name: Setup AOSP Clang
         run: |
-          mkdir -p clang
-          wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
-          tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
-
-      - name: Patch Source (Remove RKP Calls)
-        run: |
-          cd kernel
-          # Această comandă caută toate apelurile rkp_call și le transformă în operații nule (0)
-          # direct în fișierele header și sursă.
-          find . -type f -name "*.c" -o -name "*.h" | xargs sed -i 's/rkp_call(/0; \/\/rkp_call(/g'
-          find . -type f -name "*.c" -o -name "*.h" | xargs sed -i 's/rkp_set_pgt_rw(/0; \/\/rkp_set_pgt_rw(/g'
-          # Eliminăm și alte derivate care au cauzat erori anterior
-          find . -type f -name "*.c" -o -name "*.h" | xargs sed -i 's/rkp_ro_pgt_free(/0; \/\/rkp_ro_pgt_free(/g'
-          find . -type f -name "*.c" -o -name "*.h" | xargs sed -i 's/rkp_deferred_free(/0; \/\/rkp_deferred_free(/g'
+          mkdir -p aosp-clang
+          cd aosp-clang
+          wget -q https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/master/clang-r487747c.tar.gz
+          tar -xf clang-r487747c.tar.gz
+          echo "$GITHUB_WORKSPACE/aosp-clang/bin" >> $GITHUB_PATH
 
       - name: Build Kernel
         run: |
           cd kernel
-          export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
+          export PATH="$GITHUB_WORKSPACE/aosp-clang/bin:$PATH"
           
           MAKE_ARGS="ARCH=arm64 \
             LLVM=1 \
             LLVM_IAS=1 \
-            CC=clang \
-            LD=ld.lld \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-            CLANG_TRIPLE=aarch64-linux-gnu- \
             O=out"
 
           mkdir -p out
-          make $MAKE_ARGS vendor/r5q_eur_open_defconfig
-          ./scripts/kconfig/merge_config.sh -O out out/.config arch/arm64/configs/vendor/sm8150_sec_r5q_eur_open.config
+          
+          # 1. Configurare folosind calea indicată de tine
+          make $MAKE_ARGS r5q_defconfig
 
-          # Dezactivări Config
+          # 2. Injectare flag-uri BPF pentru OneUI 7 / Android 15
+          # Dezactivăm și protecțiile Samsung care ar putea bloca noile apeluri BPF
           ./scripts/config --file out/.config \
-            -d CONFIG_SECURITY_RKP -d CONFIG_SAMSUNG_RTIC \
-            -d CONFIG_SAMSUNG_PRODUCT_SHIP -d CONFIG_WERROR \
-            -e CONFIG_SECTION_MISMATCH_WARN_ONLY
+            -e CONFIG_BPF \
+            -e CONFIG_BPF_SYSCALL \
+            -e CONFIG_BPF_JIT \
+            -e CONFIG_CGROUP_BPF \
+            -e CONFIG_NET_CLS_BPF \
+            -e CONFIG_NET_ACT_BPF \
+            -d CONFIG_SAMSUNG_RTIC \
+            -d CONFIG_SECURITY_DEFEX \
+            -d CONFIG_SECURITY_RKP \
+            -d CONFIG_WERROR
 
           make $MAKE_ARGS olddefconfig
 
-          # Compilare
+          # 3. Compilare Image.gz
+          # Folosim -i în DTC_FLAGS în caz că merge-ul a afectat DT-urile (deși nu ar trebui)
           make -j$(nproc --all) $MAKE_ARGS Image.gz \
-            KCFLAGS="-w -fcommon" \
-            LDFLAGS="--no-rosegment --strip-debug"
+            DTC_FLAGS="-i" \
+            KCFLAGS="-w -fcommon"
 
-      - name: Assemble AnyKernel3
+      - name: Package AnyKernel3
         run: |
           IMAGE="kernel/out/arch/arm64/boot/Image.gz"
           git clone https://github.com/osm0sis/AnyKernel3.git AK3
@@ -76,10 +105,10 @@ jobs:
           cd AK3
           sed -i 's/device.name1=maguro/device.name1=r5q/g' anykernel.sh
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-          zip -r9 ../S10Lite_5.4_Patched_BPF.zip *
+          zip -r9 ../R5Q-Phoenix-BPF-V42.zip *
 
-      - name: Upload
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-Kernel-Patched
-          path: S10Lite_5.4_Patched_BPF.zip
+          name: R5Q-Lumi-Phoenix
+          path: R5Q-Phoenix-BPF-V42.zip
