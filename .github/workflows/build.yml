@@ -1,4 +1,4 @@
-name: Build Roynas R5Q - Pascua eBPF Support
+name: Build Roynas R5Q - Pascua eBPF Surgical
 on:
   workflow_dispatch:
 
@@ -25,27 +25,30 @@ jobs:
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
 
-      - name: Merge Pascua eBPF (SM8250 Optimization)
+      - name: Surgical Cherry-Pick from Pascua
         run: |
           git config --global user.email "bot@github.com"
           git config --global user.name "Kernel-Builder"
           
-          # Adăugăm sursa lui pascua28 ca remote
+          # Adăugăm sursa lui pascua28
           git remote add pascua https://github.com/pascua28/android_kernel_samsung_sm8250.git
           git fetch pascua sixteen
           
-          echo "Merging eBPF and Netfilter changes from pascua28..."
+          echo "Extracting Samsung-specific eBPF logic..."
           
-          # Încercăm un merge strategic. Folosim 'squash' pentru a nu polua istoricul
-          # și pentru a gestiona mai ușor conflictele.
-          git merge pascua/sixteen --no-commit --allow-unrelated-histories -X theirs || true
+          # Căutăm commit-urile care au modificat subsistemele BPF și Net în branch-ul lui Pascua
+          # Filtrăm să luăm doar ce e relevant pentru eBPF
+          PASCUA_COMMITS=$(git log pascua/sixteen --grep="bpf" --oneline --reverse -n 50 | awk '{print $1}')
           
-          # Curățăm fișierele Samsung specifice care nu au legătură cu eBPF
-          git checkout HEAD -- drivers/soc/samsung/
-          git checkout HEAD -- arch/arm64/configs/
-          
-          git add .
-          git commit -m "Integrate eBPF support from pascua28 sm8250" || echo "Nothing to commit"
+          for commit in $PASCUA_COMMITS; do
+            echo "Surgical picking: $commit"
+            # Aplicăm commit-ul dar resetăm orice modificare care atinge folderele de hardware/drivers
+            git cherry-pick -n $commit || true
+            git checkout HEAD -- drivers/
+            git checkout HEAD -- arch/arm64/boot/dts/
+            git add .
+            git commit -m "Pascua eBPF Port: $commit" || echo "Nothing to commit for $commit"
+          done
 
       - name: Build Kernel
         run: |
@@ -53,10 +56,11 @@ jobs:
           export KBUILD_BUILD_USER="Roynas"
           export KBUILD_BUILD_HOST="Neutron-CI"
           
-          # Fix-uri obligatorii pentru Neutron + Samsung
+          # 1. Fix-uri Neutron Clang
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
           [ -f arch/arm64/kernel/vdso/Makefile ] && sed -i 's/-static//g' arch/arm64/kernel/vdso/Makefile
 
+          # 2. Argumente Build
           MAKE_ARGS="ARCH=arm64 \
             LLVM=1 \
             LLVM_IAS=1 \
@@ -71,7 +75,7 @@ jobs:
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             O=out"
 
-          # Configurare eBPF (Activăm flag-urile portate de pascua)
+          # 3. Configurare eBPF (Folosim setările optimizate pentru Samsung)
           make $MAKE_ARGS r5q_defconfig
           
           ./scripts/config --file out/.config \
@@ -85,30 +89,32 @@ jobs:
             -e CONFIG_CGROUP_BPF \
             -e CONFIG_NET_SCH_INGRESS \
             -d CONFIG_LTO -d CONFIG_LTO_CLANG -e CONFIG_LTO_NONE \
-            -d CONFIG_KNOX_KAP -d CONFIG_SECURITY_SAMSUNG_KNOX
+            -d CONFIG_KNOX_KAP -d CONFIG_SECURITY_SAMSUNG_KNOX \
+            -d CONFIG_ASSIST_KSU -d CONFIG_KSU
             
           make $MAKE_ARGS olddefconfig
 
-          # Compilare cu toleranță pentru Clang 18+
+          # 4. Compilare
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -Wno-error -Wno-implicit-function-declaration -Wno-unused-command-line-argument -Wno-incompatible-pointer-types -Wno-int-conversion"
 
       - name: Package with AnyKernel3
         run: |
           IMAGE="$GITHUB_WORKSPACE/out/arch/arm64/boot/Image.gz-dtb"
           [ ! -f "$IMAGE" ] && IMAGE="$GITHUB_WORKSPACE/out/arch/arm64/boot/Image.gz"
+          DTBO="$GITHUB_WORKSPACE/out/arch/arm64/boot/dtbo.img"
           
           git clone https://github.com/osm0sis/AnyKernel3.git
           rm -rf AnyKernel3/.git
           cp $IMAGE AnyKernel3/Image.gz
-          [ -f "$GITHUB_WORKSPACE/out/arch/arm64/boot/dtbo.img" ] && cp "$GITHUB_WORKSPACE/out/arch/arm64/boot/dtbo.img" AnyKernel3/dtbo.img
+          [ -f "$DTBO" ] && cp $DTBO AnyKernel3/dtbo.img
           
           sed -i 's/device.name1=maguro/device.name1=r5q/g' AnyKernel3/anykernel.sh
           sed -i 's/device.name2=toroplus/device.name2=SM-G770F/g' AnyKernel3/anykernel.sh
           
-          cd AnyKernel3 && zip -r9 ../Kernel-R5Q-Pascua-eBPF.zip *
+          cd AnyKernel3 && zip -r9 ../Kernel-R5Q-Samsung-eBPF.zip *
 
-      - name: Upload Artifact
+      - name: Upload Flashable Kernel
         uses: actions/upload-artifact@v4
         with:
           name: Kernel-S10Lite-R5Q
-          path: Kernel-R5Q-Pascua-eBPF.zip
+          path: Kernel-R5Q-Samsung-eBPF.zip
