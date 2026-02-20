@@ -1,4 +1,4 @@
-name: Build Roynas R5Q - OpenELA 4.14.355 Hybrid
+name: Build Roynas R5Q - OpenELA 4.14.355 Surgical
 
 on:
   workflow_dispatch:
@@ -20,19 +20,24 @@ jobs:
           sudo apt-get install -y bc build-essential flex bison lz4 libssl-dev libelf-dev \
           ccache python3 python-is-python3 libarchive-tools wget zstd libtinfo6 zip tar rsync
 
-      - name: Hybrid Inject OpenELA 4.14.355
+      - name: Surgical Upstream OpenELA 4.14.355
         run: |
-          echo "Descarcăm și pregătim OpenELA..."
+          echo "Pregătim mediul de upstream..."
           wget -q https://github.com/openela/kernel-lts/archive/refs/tags/v4.14.355-openela.tar.gz
           mkdir openela_src
           tar -xzf v4.14.355-openela.tar.gz -C openela_src --strip-components=1
           
-          echo "Aplicăm Upstream-ul hibrid (Update only, no delete)..."
-          # Folosim rsync pentru a copia doar fișierele de kernel, 
-          # protejând structura de drivere Samsung
-          rsync -a --verbose openela_src/ ./ --exclude=.git --exclude=arch/arm64/configs/
+          echo "Aplicăm Upstream doar pe folderele core (evităm distrugerea scripturilor Samsung)..."
+          # Actualizăm doar nucleul sistemului, nu și uneltele de build (scripts) sau config-urile de arch
+          for dir in kernel mm net fs ipc lib crypto include virt block; do
+            if [ -d openela_src/$dir ]; then
+              rsync -a --delete openela_src/$dir/ ./$dir/
+            fi
+          done
           
-          # Curățăm spațiul
+          # Copiem restul dar fără a șterge ce are Samsung în plus
+          rsync -a openela_src/drivers/ ./drivers/
+          
           rm -rf openela_src v4.14.355-openela.tar.gz
 
       - name: Setup Neutron Clang
@@ -45,14 +50,12 @@ jobs:
         run: |
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           
-          # 1. FIX-URI MAKEFILE (Polly/LLVM)
+          # 1. CLEANUP MAKEFILES
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm//g' {} +
           
-          # 2. VDSO FIX
+          # 2. VDSO & WRAPPER FIX
           [ -f arch/arm64/kernel/vdso/Makefile ] && sed -i 's/-static//g' arch/arm64/kernel/vdso/Makefile
-          
-          # Fix GCC wrapper issue
           sed -i 's/ifneq ($(wildcard $(srctree)\/scripts\/gcc-wrapper.py),)/ifeq (0,1)/g' Makefile
 
           # 3. KERNELSU CLEANUP
@@ -89,24 +92,22 @@ jobs:
           # 6. COMPILARE
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -Wno-error -Wno-unknown-warning-option -Wno-unused-command-line-argument"
 
-      - name: Package with AnyKernel3
+      - name: Package and Upload
         run: |
           IMAGE="$GITHUB_WORKSPACE/out/arch/arm64/boot/Image.gz-dtb"
           [ ! -f "$IMAGE" ] && IMAGE="$GITHUB_WORKSPACE/out/arch/arm64/boot/Image.gz"
           DTBO="$GITHUB_WORKSPACE/out/arch/arm64/boot/dtbo.img"
 
           git clone https://github.com/osm0sis/AnyKernel3.git
-          rm -rf AnyKernel3/.git
           cp $IMAGE AnyKernel3/Image.gz
           [ -f "$DTBO" ] && cp $DTBO AnyKernel3/dtbo.img
-
           sed -i 's/device.name1=maguro/device.name1=r5q/g' AnyKernel3/anykernel.sh
           
           cd AnyKernel3
-          zip -r9 ../Kernel-R5Q-OpenELA-Hybrid.zip *
+          zip -r9 ../Kernel-R5Q-OpenELA-Surgical.zip *
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: Kernel-R5Q-OpenELA
-          path: Kernel-R5Q-OpenELA-Hybrid.zip
+          path: Kernel-R5Q-OpenELA-Surgical.zip
