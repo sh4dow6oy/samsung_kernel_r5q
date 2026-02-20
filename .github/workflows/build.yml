@@ -38,7 +38,7 @@ jobs:
           
           git checkout --ours arch/arm64/configs/r5q_defconfig || echo "No config conflict"
           git add .
-          git commit -m "BPF Hybrid: Forced BPF 5.4 and Networking headers" || echo "No changes"
+          git commit -m "BPF Hybrid: Forced BPF 5.4 fixes" || echo "No changes"
 
       - name: Setup Neutron Clang
         run: |
@@ -53,17 +53,24 @@ jobs:
           cd kernel
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           
-          # 1. FIX OPENSSL 3.0 (Rezolvă erorile de compilare la scripts/extract-cert)
-          # Ștergem definițiile conflictuale din fișierele .c pentru a folosi ssl-common.h
-          sed -i '/static void drain_openssl_errors(void)/,/}/d' scripts/extract-cert.c
-          sed -i '/static void drain_openssl_errors(void)/,/}/d' scripts/sign-file.c
-          # Eliminăm redefinirea macro-ului ERR
-          sed -i '/#define ERR(cond, fmt, ...)/,/\\/d' scripts/extract-cert.c
-          sed -i '/#define ERR(cond, fmt, ...)/,/\\/d' scripts/sign-file.c
+          # 1. NUCLEAR CLEANUP (Prevenim erorile de optimizare Polly)
+          find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
+          find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm//g' {} +
+          find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-polly[^ ]*//g' {} +
 
-          # 2. FIX KERNELSU (Eliminăm referințele care blochează defconfig)
+          # 2. VDSO FIX (Rezolvăm eroarea de linkare statică)
+          if [ -f arch/arm64/kernel/vdso/Makefile ]; then
+            sed -i 's/-static//g' arch/arm64/kernel/vdso/Makefile
+            sed -i 's/$(LDFLAGS)/$(filter-out -static,$(LDFLAGS))/g' arch/arm64/kernel/vdso/Makefile
+          fi
+
+          # 3. KERNELSU & SECURITY BYPASS
           sed -i '/kernelsu/d' drivers/android/Kconfig
           sed -i '/kernelsu/d' drivers/android/Makefile
+          
+          # Dezactivăm module signing pentru a evita OpenSSL 3.0 errors
+          sed -i 's/CONFIG_SYSTEM_TRUSTED_KEYRING=y/CONFIG_SYSTEM_TRUSTED_KEYRING=n/g' arch/arm64/configs/r5q_defconfig
+          sed -i 's/CONFIG_MODULE_SIG=y/CONFIG_MODULE_SIG=n/g' arch/arm64/configs/r5q_defconfig
           
           MAKE_ARGS="ARCH=arm64 \
             CC=clang \
@@ -79,12 +86,9 @@ jobs:
             O=out"
 
           mkdir -p out
-          
-          # Generăm configurarea originală
           make $MAKE_ARGS r5q_defconfig
 
-          # 3. CONFIGURARE BPF & SECURITATE
-          # Dezactivăm și semnarea modulelor pentru a evita alte erori OpenSSL
+          # 4. CONFIGURARE BPF PENTRU ONEUI 7
           ./scripts/config --file out/.config \
             -e CONFIG_BPF \
             -e CONFIG_BPF_SYSCALL \
@@ -98,12 +102,14 @@ jobs:
             -d CONFIG_SECURITY_DEFEX \
             -d CONFIG_KSU \
             -d CONFIG_MODULE_SIG \
+            -d CONFIG_MODULE_SIG_ALL \
+            -d CONFIG_MODULE_SIG_FORCE \
+            -d CONFIG_SYSTEM_TRUSTED_KEYRING \
             -d CONFIG_WERROR
 
           make $MAKE_ARGS olddefconfig
 
-          # 4. COMPILARE
-          # Folosim HOSTCFLAGS="-w" pentru a ignora deprecările OpenSSL în scripturile gazdă
+          # 5. COMPILARE FINALĂ
           make -j$(nproc --all) $MAKE_ARGS Image.gz \
             DTC_FLAGS="-i" \
             KCFLAGS="-w -fcommon" \
@@ -118,9 +124,9 @@ jobs:
             cd AK3
             sed -i 's/device.name1=maguro/device.name1=r5q/g' anykernel.sh
             sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-            zip -r9 ../R5Q-BPF-OneUI7-Lumi.zip *
+            zip -r9 ../R5Q-BPF-OneUI7-Kernel.zip *
           else
-            echo "Build failed - Image.gz not found!"
+            echo "Build failed!"
             exit 1
           fi
 
@@ -128,4 +134,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: S10Lite-OneUI7-Kernel
-          path: R5Q-BPF-OneUI7-Lumi.zip
+          path: R5Q-BPF-OneUI7-Kernel.zip
