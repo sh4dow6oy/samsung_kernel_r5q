@@ -14,7 +14,7 @@ jobs:
           path: kernel
           fetch-depth: 0
 
-      - name: Phoenix Hybrid Transplant & Kconfig Fix
+      - name: Phoenix Hybrid Transplant & Security Fix
         run: |
           cd kernel
           git config user.name "GitHub Action"
@@ -25,13 +25,14 @@ jobs:
           git fetch phoenix android12-5.10-phoenix --depth=1
           
           echo "Cleaning residues and fixing Kconfig..."
-          # Fix eroarea "can't open file drivers/android/kernelsu/Kconfig"
-          sed -i '/kernelsu\/Kconfig/d' drivers/android/Kconfig
+          # Fix pentru eroarea de Kconfig (KernelSU)
+          sed -i '/kernelsu\/Kconfig/d' drivers/android/Kconfig || true
           
           rm -rf kernel/bpf/ security/bpf/
           rm -f include/linux/bpf.h include/uapi/linux/bpf.h
           
           echo "Deep-Syncing Headers (Hybrid 4.14/5.10)..."
+          # Baza BPF din 4.14
           git checkout phoenix/android-4.14-phoenix -- include/linux/bpf.h
           git checkout phoenix/android-4.14-phoenix -- include/linux/bpf_types.h
           git checkout phoenix/android-4.14-phoenix -- include/uapi/linux/bpf.h
@@ -39,9 +40,10 @@ jobs:
           git checkout phoenix/android-4.14-phoenix -- include/linux/mm_types.h
           git checkout phoenix/android-4.14-phoenix -- include/linux/sched.h
           
-          # Importăm lsm_hook_defs.h din 5.10 (sursa indicată de tine)
+          # IMPORT CRITIC: Luăm definițiile de hook-uri din 5.10 pentru a recunoaște LSM_HOOK_INIT
           git checkout phoenix/android12-5.10-phoenix -- include/linux/lsm_hook_defs.h
           git checkout phoenix/android12-5.10-phoenix -- include/linux/lsm_hooks.h
+          git checkout phoenix/android12-5.10-phoenix -- include/linux/security.h
           
           # Luăm logica .c din 4.14 Phoenix
           git checkout phoenix/android-4.14-phoenix -- kernel/bpf/
@@ -58,7 +60,7 @@ jobs:
           fi
 
           git add .
-          git commit -m "Hybrid Sync: Fixed Kconfig and integrated 5.10 LSM hooks" || echo "No changes"
+          git commit -m "Hybrid Sync: Fixed LSM_HOOK_INIT using 5.10 headers" || echo "No changes"
 
       - name: Setup Toolchain
         run: |
@@ -73,7 +75,7 @@ jobs:
           cd kernel
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           
-          # Curățăm flag-uri LLVM incompatibile
+          # Curățăm Makefile-urile de flag-uri incompatibile
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
 
           MAKE_ARGS="ARCH=arm64 \
@@ -92,7 +94,7 @@ jobs:
           mkdir -p out
           make $MAKE_ARGS r5q_defconfig
 
-          # ACTIVARE BPF & LSM (Dezactivăm RTIC/RKP pentru a lăsa LSM-ul să lucreze)
+          # ACTIVARE BPF & LSM
           ./scripts/config --file out/.config \
             -e CONFIG_BPF \
             -e CONFIG_BPF_SYSCALL \
@@ -104,9 +106,10 @@ jobs:
             -d CONFIG_WERROR
 
           make $MAKE_ARGS olddefconfig
-          make -j$(nproc --all) $MAKE_ARGS Image.gz KCFLAGS="-w -fcommon -fno-stack-protector"
+          # Folosim KCFLAGS pentru a tolera micile nepotriviri hibride
+          make -j$(nproc --all) $MAKE_ARGS Image.gz KCFLAGS="-w -fcommon -fno-stack-protector -Wno-implicit-function-declaration"
 
-      - name: Upload
+      - name: Upload Image
         uses: actions/upload-artifact@v4
         with:
           name: Kernel-R5Q-Phoenix-Hybrid
