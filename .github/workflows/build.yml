@@ -24,11 +24,8 @@ jobs:
           git fetch phoenix android-4.14-phoenix --depth=1
           git fetch phoenix android12-5.10-phoenix --depth=1
           
-          echo "Cleaning residues and fixing Kconfig..."
-          # Eliminăm orice referință la KernelSU care ar putea bloca build-ul
+          echo "Cleaning residues..."
           sed -i '/kernelsu/d' drivers/android/Kconfig
-          # Asigurăm că fișierul se termină corect
-          echo "source \"drivers/android/Kconfig\"" > drivers/Kconfig.tmp
           
           echo "Syncing Headers (Backports from 5.10)..."
           git checkout phoenix/android12-5.10-phoenix -- \
@@ -42,7 +39,6 @@ jobs:
             include/linux/page-flags.h \
             include/linux/mmzone.h \
             include/linux/kbuild.h \
-            include/linux/lockdep_types.h \
             include/linux/spinlock_types.h \
             include/linux/printk.h \
             include/uapi/linux/rseq.h \
@@ -55,14 +51,18 @@ jobs:
           git checkout phoenix/android-4.14-phoenix -- include/linux/kernel_read_file.h || \
           git checkout phoenix/android12-5.10-phoenix -- include/linux/kernel_read_file.h
 
+          echo "Reinstate 'frozen' member into task_struct (Fixing 5.10 header for 4.14 base)..."
+          # Căutăm locul unde începe task_struct și injectăm 'frozen' înapoi pentru compatibilitate Samsung
+          sed -i '/struct task_struct {/a \	unsigned int frozen:1; /* reinstate for 4.14 compatibility */' include/linux/sched.h
+
           echo "Syncing Core Logic (4.14)..."
           git checkout phoenix/android-4.14-phoenix -- kernel/bpf/ security/ kernel/fork.c fs/proc/base.c
           
-          # Rezolvare eroare pointeri pagină pentru Clang
+          # Fix Clang compliance
           sed -i 's/char \*page = (char \*)__get_free_page/struct page *page_ptr; char *page = (char *)__get_free_page/g' fs/proc/base.c || true
           
           git add .
-          git commit -m "Hybrid Sync V6: Fix Kconfig and BPF" || echo "No changes"
+          git commit -m "Hybrid Sync V6: Reinstate frozen in task_struct" || echo "No changes"
 
       - name: Setup Toolchain & Legacy Libs
         run: |
@@ -101,8 +101,6 @@ jobs:
             O=out"
 
           mkdir -p out
-          
-          # Forțăm regenerarea configurației fără erori de fișiere lipsă
           make $MAKE_ARGS r5q_defconfig || (sed -i '/kernelsu/d' drivers/android/Kconfig && make $MAKE_ARGS r5q_defconfig)
 
           ./scripts/config --file out/.config \
