@@ -1,4 +1,4 @@
-name: Build R5Q - Phoenix Hybrid BPF
+name: Build R5Q - Phoenix Hybrid BPF V6
 on:
   workflow_dispatch:
 
@@ -14,7 +14,7 @@ jobs:
           path: kernel
           fetch-depth: 0
 
-      - name: Phoenix Hybrid Transplant (V5)
+      - name: Phoenix Hybrid Transplant (Deep Structural Sync)
         run: |
           cd kernel
           git config user.name "GitHub Action"
@@ -24,33 +24,35 @@ jobs:
           git fetch phoenix android-4.14-phoenix --depth=1
           git fetch phoenix android12-5.10-phoenix --depth=1
           
-          echo "Cleaning residues and fixing Kconfig..."
+          echo "Cleaning residues..."
           sed -i '/kernelsu\/Kconfig/d' drivers/android/Kconfig || true
-          
           rm -rf kernel/bpf/ security/bpf/
-          rm -f include/linux/bpf.h include/uapi/linux/bpf.h
           
-          echo "Deep-Syncing Headers (Targeting 5.10 for BPF/LSM)..."
-          git checkout phoenix/android12-5.10-phoenix -- include/linux/bpf.h
-          git checkout phoenix/android12-5.10-phoenix -- include/linux/bpf_types.h
-          git checkout phoenix/android12-5.10-phoenix -- include/uapi/linux/bpf.h
-          git checkout phoenix/android12-5.10-phoenix -- include/linux/lsm_hook_defs.h
-          git checkout phoenix/android12-5.10-phoenix -- include/linux/lsm_hooks.h
+          echo "Syncing Core Structures from 5.10 (To fix vm_sequence/frozen errors)..."
+          # Sincronizăm structurile de bază pentru a suporta noile headere
+          git checkout phoenix/android12-5.10-phoenix -- include/linux/mm_types.h
+          git checkout phoenix/android12-5.10-phoenix -- include/linux/sched.h
+          git checkout phoenix/android12-5.10-phoenix -- include/linux/mm.h
           git checkout phoenix/android12-5.10-phoenix -- include/linux/security.h
+          git checkout phoenix/android12-5.10-phoenix -- include/linux/lsm_hooks.h
+          git checkout phoenix/android12-5.10-phoenix -- include/linux/lsm_hook_defs.h
+          git checkout phoenix/android12-5.10-phoenix -- include/linux/bpf.h
+          git checkout phoenix/android12-5.10-phoenix -- include/uapi/linux/bpf.h
           
-          git checkout phoenix/android-4.14-phoenix -- include/linux/mm_types.h
-          git checkout phoenix/android-4.14-phoenix -- include/linux/sched.h
-          git checkout phoenix/android-4.14-phoenix -- include/linux/filter.h
+          # Aducem fișierul lipsă care a cauzat fatal error
+          git checkout phoenix/android12-5.10-phoenix -- include/linux/kernel_read_file.h || touch include/linux/kernel_read_file.h
           
+          echo "Syncing Logic from 4.14..."
           git checkout phoenix/android-4.14-phoenix -- kernel/bpf/
           git checkout phoenix/android-4.14-phoenix -- security/
           git checkout phoenix/android-4.14-phoenix -- kernel/fork.c
           git checkout phoenix/android-4.14-phoenix -- fs/proc/base.c
 
+          # Fix Clang compliance
           sed -i 's/page = (char \*)__get_free_page/struct page *page_ptr; page = (char *)__get_free_page/g' fs/proc/base.c || true
           
           git add .
-          git commit -m "Hybrid Sync V5: Fixed BPF structs and cleaned residues" || echo "No changes"
+          git commit -m "Hybrid Sync V6: Deep structural alignment with 5.10" || echo "No changes"
 
       - name: Setup Toolchain
         run: |
@@ -64,9 +66,6 @@ jobs:
         run: |
           cd kernel
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
-          
-          # Fix pentru Clang asamblor (elimină eroarea -EL)
-          export CLANG_FLAGS="-fintegrated-as"
 
           MAKE_ARGS="ARCH=arm64 \
             LLVM=1 \
@@ -91,20 +90,19 @@ jobs:
             -e CONFIG_BPF_SYSCALL \
             -e CONFIG_BPF_JIT \
             -e CONFIG_BPF_LSM \
-            -e CONFIG_CGROUP_BPF \
             -d CONFIG_SAMSUNG_RTIC \
             -d CONFIG_SECURITY_RKP \
             -d CONFIG_WERROR
 
           make $MAKE_ARGS olddefconfig
           
-          # Adăugăm flag-urile necesare pentru a evita eroarea de asamblor și mismatch-uri hibride
+          # Ignorăm warning-urile de redefinire/mismatch tipuri cauzate de mix-ul 4.14/5.10
           make -j$(nproc --all) $MAKE_ARGS Image.gz \
-            KCFLAGS="-w -fcommon -fno-stack-protector -Wno-implicit-function-declaration -Wno-int-conversion $CLANG_FLAGS" \
+            KCFLAGS="-w -fcommon -fno-stack-protector -Wno-implicit-function-declaration -Wno-int-conversion -fintegrated-as" \
             HOSTCFLAGS="-w"
 
-      - name: Upload Image
+      - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-R5Q-Phoenix-V5-Fixed
+          name: Kernel-R5Q-V6-Final
           path: kernel/out/arch/arm64/boot/Image.gz
