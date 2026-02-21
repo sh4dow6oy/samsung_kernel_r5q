@@ -35,6 +35,11 @@ jobs:
           git checkout phoenix/android12-5.10-phoenix -- include/linux/android_kabi.h
           git checkout phoenix/android12-5.10-phoenix -- include/linux/sched/task_stack.h
           git checkout phoenix/android12-5.10-phoenix -- include/linux/mm.h
+          git checkout phoenix/android12-5.10-phoenix -- arch/arm64/include/asm/current.h
+          git checkout phoenix/android12-5.10-phoenix -- include/linux/ratelimit.h
+          git checkout phoenix/android12-5.10-phoenix -- include/linux/printk.h
+          git checkout phoenix/android12-5.10-phoenix -- arch/arm64/include/asm/uaccess.h
+          git checkout phoenix/android12-5.10-phoenix -- include/uapi/linux/rseq.h
           git checkout phoenix/android12-5.10-phoenix -- include/linux/security.h
           git checkout phoenix/android12-5.10-phoenix -- include/linux/lsm_hooks.h
           git checkout phoenix/android12-5.10-phoenix -- include/linux/lsm_hook_defs.h
