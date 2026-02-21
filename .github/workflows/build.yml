@@ -24,6 +24,12 @@ jobs:
           git fetch phoenix android-4.14-phoenix --depth=1
           git fetch phoenix android12-5.10-phoenix --depth=1
           
+          echo "Cleaning residues and fixing Kconfig..."
+          # Eliminăm orice referință la KernelSU care ar putea bloca build-ul
+          sed -i '/kernelsu/d' drivers/android/Kconfig
+          # Asigurăm că fișierul se termină corect
+          echo "source \"drivers/android/Kconfig\"" > drivers/Kconfig.tmp
+          
           echo "Syncing Headers (Backports from 5.10)..."
           git checkout phoenix/android12-5.10-phoenix -- \
             include/linux/mm_types.h \
@@ -45,7 +51,6 @@ jobs:
             include/linux/bpf.h \
             include/uapi/linux/bpf.h
           
-          # Fix pentru kernel_read_file.h (esențial pentru BPF)
           git checkout phoenix/android-4.14-phoenix -- include/linux/kernel_read_file.h || \
           git checkout phoenix/android12-5.10-phoenix -- include/linux/kernel_read_file.h
 
@@ -56,14 +61,13 @@ jobs:
           sed -i 's/char \*page = (char \*)__get_free_page/struct page *page_ptr; char *page = (char *)__get_free_page/g' fs/proc/base.c || true
           
           git add .
-          git commit -m "Hybrid Sync V6: BPF Implementation" || echo "No changes"
+          git commit -m "Hybrid Sync V6: Fix Kconfig and BPF" || echo "No changes"
 
       - name: Setup Toolchain & Legacy Libs
         run: |
           sudo apt-get update
           sudo apt-get install -y zstd libssl-dev bc bison flex python3
           
-          # Instalare libtinfo5 și libncurses5 folosind repo-ul Jammy (pentru compatibilitate toolchain)
           echo "deb http://azure.archive.ubuntu.com/ubuntu/ jammy universe" | sudo tee /etc/apt/sources.list.d/jammy.list
           sudo apt-get update
           sudo apt-get install -y libtinfo5 libncurses5
@@ -96,9 +100,10 @@ jobs:
             O=out"
 
           mkdir -p out
-          make $MAKE_ARGS r5q_defconfig
+          
+          # Forțăm regenerarea configurației fără erori de fișiere lipsă
+          make $MAKE_ARGS r5q_defconfig || (sed -i '/kernelsu/d' drivers/android/Kconfig && make $MAKE_ARGS r5q_defconfig)
 
-          # Activare BPF și eliminare blocaje Samsung
           ./scripts/config --file out/.config \
             -e CONFIG_BPF \
             -e CONFIG_BPF_SYSCALL \
@@ -112,7 +117,6 @@ jobs:
 
           make $MAKE_ARGS olddefconfig
           
-          # Compilare cu ignorare avertismente de tip pointer (necesar pentru hibrid)
           make -j$(nproc --all) $MAKE_ARGS Image.gz \
             KCFLAGS="-w -fcommon -fno-stack-protector -Wno-error -Wno-incompatible-pointer-types -Wno-implicit-function-declaration" \
             HOSTCFLAGS="-w"
