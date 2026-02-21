@@ -32,7 +32,7 @@ jobs:
           # Sincronizăm structurile de bază pentru a suporta noile headere
           git checkout phoenix/android12-5.10-phoenix -- include/linux/mm_types.h
           git checkout phoenix/android12-5.10-phoenix -- include/linux/sched.h
-          git checkout phoenix/android12-5.10-phoenix -- linux/android_kabi.h
+          git checkout phoenix/android12-5.10-phoenix -- include/linux/android_kabi.h
           git checkout phoenix/android12-5.10-phoenix -- include/linux/sched/task_stack.h
           git checkout phoenix/android12-5.10-phoenix -- include/linux/mm.h
           git checkout phoenix/android12-5.10-phoenix -- include/linux/security.h
