@@ -1,4 +1,4 @@
-name: Build R5Q - Neutron BPF 5.4 Ultimate
+name: Build R5Q - Mega Upstream BPF Universal
 on:
   workflow_dispatch:
 
@@ -14,37 +14,35 @@ jobs:
           path: kernel
           fetch-depth: 0
 
-      - name: Force Merge BPF 5.4 Logic
+      - name: Hard Upstream from Universal9611 (Commit bd7d649)
         run: |
           cd kernel
           git config user.name "GitHub Action"
           git config user.email "action@github.com"
           
-          git remote add bpf_source https://github.com/cat658011/linux-bpf.git
-          git fetch bpf_source bpf-5.4
+          # 1. Adăugăm sursa upstream ca remote
+          git remote add upstream https://github.com/Exynos9611Development/android_kernel_samsung_universal9611.git
+          git fetch upstream master
           
-          echo "Merging BPF-5.4 branch..."
-          git merge -X theirs bpf_source/bpf-5.4 -m "Integrate BPF 5.4 Backports" || true
+          echo "Applying Total Upstream from commit bd7d649..."
           
-          # 1. FORȚARE SINCRONIZARE (BPF + MEMORY STRUCTURES)
-          git checkout bpf_source/bpf-5.4 -- kernel/bpf/
-          git checkout bpf_source/bpf-5.4 -- net/core/filter.c
-          git checkout bpf_source/bpf-5.4 -- include/linux/bpf.h
-          git checkout bpf_source/bpf-5.4 -- include/linux/mm_types.h
-          git checkout bpf_source/bpf-5.4 -- fs/proc/base.c
-          git checkout bpf_source/bpf-5.4 -- kernel/fork.c
+          # 2. Transplantează toate fișierele modificate în acel commit peste codul tău
+          # Această comandă forțează 'starea' fișierelor să fie identică cu cea din upstream
+          git checkout bd7d6490a278cea619f533e7eb7a1056fb01e02e -- .
           
-          # 2. FIX CLANG COMPLIANCE (Rezolvăm eroarea "must use struct tag to refer to type page")
-          # Înlocuim 'page = (char *)' cu 'struct page *page_ptr = (struct page *)' sau simplu forțăm tag-ul struct
-          sed -i 's/page = (char \*)__get_free_page/struct page *page_ptr; char *page = (char *)__get_free_page/g' fs/proc/base.c
+          # 3. REPARARE COMPILATOR (Clang specific)
+          # Commit-ul bd7d649 are câteva linii pe care Clang le respinge în 4.14
+          # Fix pentru 'struct page' în fs/proc/base.c
+          sed -i 's/page = (char \*)__get_free_page/struct page *page_ptr; page = (char *)__get_free_page/g' fs/proc/base.c || true
           
-          # 3. FIX UNDECLARED 'rv' / 'mm'
-          # Adăugăm definițiile lipsă în funcția proc_pid_cmdline_read dacă merge-ul le-a omis
-          sed -i '/proc_pid_cmdline_read/a \	struct mm_struct *mm; int rv;' fs/proc/base.c
+          # 4. Sincronizarea finală a structurilor de memorie
+          # Ne asigurăm că mm_struct și task_struct sunt cele noi care au arg_lock
+          git checkout bd7d6490a278cea619f533e7eb7a1056fb01e02e -- include/linux/mm_types.h
+          git checkout bd7d6490a278cea619f533e7eb7a1056fb01e02e -- include/linux/sched.h
+          git checkout bd7d6490a278cea619f533e7eb7a1056fb01e02e -- kernel/fork.c
 
-          git checkout --ours arch/arm64/configs/r5q_defconfig || echo "No config conflict"
           git add .
-          git commit -m "BPF Hybrid: Fixed Clang compliance and synchronized structures" || echo "No changes"
+          git commit -m "Upstream Sync: Applied all files from Universal9611 bd7d649" || echo "No changes"
 
       - name: Setup Neutron Clang
         run: |
@@ -59,17 +57,10 @@ jobs:
           cd kernel
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           
-          # NUCLEAR CLEANUP & VDSO FIX
+          # Curățăm flag-urile problematice care pot apărea la import
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
-          find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm//g' {} +
-          if [ -f arch/arm64/kernel/vdso/Makefile ]; then
-            sed -i 's/-static//g' arch/arm64/kernel/vdso/Makefile
-          fi
+          find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-fstack-protector-strong//g' {} +
 
-          # KERNELSU & SECURITY BYPASS
-          sed -i '/kernelsu/d' drivers/android/Kconfig
-          sed -i '/kernelsu/d' drivers/android/Makefile
-          
           MAKE_ARGS="ARCH=arm64 \
             CC=clang \
             LD=ld.lld \
@@ -86,34 +77,44 @@ jobs:
           mkdir -p out
           make $MAKE_ARGS r5q_defconfig
 
-          # CONFIGURARE BPF PENTRU ONEUI 7
+          # ACTIVARE BPF & LSM (Configurația necesară pentru ca transplantul să funcționeze)
           ./scripts/config --file out/.config \
-            -e CONFIG_BPF -e CONFIG_BPF_SYSCALL -e CONFIG_BPF_JIT -e CONFIG_BPF_EVENTS \
-            -e CONFIG_CGROUP_BPF -e CONFIG_NET_CLS_BPF -e CONFIG_NET_ACT_BPF \
-            -d CONFIG_SAMSUNG_RTIC -d CONFIG_SECURITY_RKP -d CONFIG_KSU -d CONFIG_WERROR
+            -e CONFIG_BPF \
+            -e CONFIG_BPF_SYSCALL \
+            -e CONFIG_BPF_JIT \
+            -e CONFIG_BPF_LSM \
+            -e CONFIG_BPF_EVENTS \
+            -e CONFIG_CGROUP_BPF \
+            -e CONFIG_NET_CLS_BPF \
+            -e CONFIG_NET_ACT_BPF \
+            -e CONFIG_LSM_MMAP_MIN_ADDR \
+            -d CONFIG_SAMSUNG_RTIC \
+            -d CONFIG_SECURITY_RKP \
+            -d CONFIG_WERROR
 
           make $MAKE_ARGS olddefconfig
 
-          # COMPILARE
+          # Compilare finală
+          # Folosim KCFLAGS pentru a ignora avertismentele ce pot apărea din cauza codului hibrid
           make -j$(nproc --all) $MAKE_ARGS Image.gz \
-            KCFLAGS="-w -fcommon" \
+            KCFLAGS="-w -fcommon -fno-stack-protector" \
             HOSTCFLAGS="-w"
 
-      - name: Package & Upload
+      - name: Package with AnyKernel3
         run: |
           if [ -f kernel/out/arch/arm64/boot/Image.gz ]; then
             git clone https://github.com/osm0sis/AnyKernel3.git AK3
             cp kernel/out/arch/arm64/boot/Image.gz AK3/
             cd AK3
-            sed -i 's/device.name1=maguro/device.name1=r5q/g' anykernel.sh
             sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-            zip -r9 ../R5Q-BPF-OneUI7.zip *
+            zip -r9 ../R5Q-BPF-Mega-Upstream.zip *
           else
+            echo "Build failed! Check the logs above for C errors."
             exit 1
           fi
 
-      - name: Upload
+      - name: Upload Kernel
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-OneUI7-Kernel
-          path: R5Q-BPF-OneUI7.zip
+          name: R5Q-OneUI7-Upstream
+          path: R5Q-BPF-Mega-Upstream.zip
