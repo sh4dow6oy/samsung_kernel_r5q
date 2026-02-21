@@ -42,6 +42,7 @@ jobs:
             include/linux/page-flags.h \
             include/linux/mmzone.h \
             include/linux/kbuild.h \
+            include/linux/lockdep_types.h \
             include/linux/spinlock_types.h \
             include/linux/printk.h \
             include/uapi/linux/rseq.h \
