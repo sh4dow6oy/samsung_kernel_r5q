@@ -1,4 +1,4 @@
-name: Build R5Q - Phoenix BPF Mega-Sync
+name: Build R5Q - Phoenix Hybrid BPF
 on:
   workflow_dispatch:
 
@@ -14,132 +14,73 @@ jobs:
           path: kernel
           fetch-depth: 0
 
-      - name: Phoenix Kernel Total Transplant (Nuclear Clean)
+      - name: Phoenix Hybrid Transplant
         run: |
           cd kernel
           git config user.name "GitHub Action"
           git config user.email "action@github.com"
           
-          # 1. Adăugăm Phoenix ca sursă upstream
           git remote add phoenix https://github.com/PhoenixKernel/linux.git
+          # Fetch ambele ramuri pentru a avea acces la fișierele de 5.10 și 4.14
           git fetch phoenix android-4.14-phoenix --depth=1
+          git fetch phoenix android12-5.10-phoenix --depth=1
           
-          echo "Cleaning Samsung BPF residues to prevent redefinitions..."
-          # Ștergem folderele și headerele vechi care cauzează erorile de tip 'redefinition' sau 'member not found'
-          rm -rf kernel/bpf/
-          rm -rf security/bpf/
-          rm -f include/linux/bpf.h
-          rm -f include/linux/bpf_types.h
-          rm -f include/uapi/linux/bpf.h
-          rm -f include/linux/filter.h
+          echo "Cleaning residues..."
+          rm -rf kernel/bpf/ security/bpf/
+          rm -f include/linux/bpf.h include/uapi/linux/bpf.h
           
-          echo "Deep-Syncing Phoenix BPF/LSM Subsystems..."
-          # 2. IMPORTĂM HEADERELE CURATE (Definițiile fundamentale)
+          echo "Deep-Syncing Headers (Hybrid 4.14/5.10)..."
+          # Luăm baza BPF din 4.14 Phoenix
           git checkout phoenix/android-4.14-phoenix -- include/linux/bpf.h
           git checkout phoenix/android-4.14-phoenix -- include/linux/bpf_types.h
           git checkout phoenix/android-4.14-phoenix -- include/uapi/linux/bpf.h
           git checkout phoenix/android-4.14-phoenix -- include/linux/filter.h
           git checkout phoenix/android-4.14-phoenix -- include/linux/mm_types.h
           git checkout phoenix/android-4.14-phoenix -- include/linux/sched.h
-          git checkout phoenix/android-4.14-phoenix -- include/linux/security.h
-          git checkout phoenix/android-4.14-phoenix -- include/linux/lsm_hook_defs.h
-          git checkout phoenix/android-4.14-phoenix -- include/linux/lsm_hooks.h
-
-          # 3. IMPORTĂM LOGICA (Codul sursă Phoenix .c)
+          
+          # IMPORTĂM SPECIAL lsm_hook_defs.h din ramura de 5.10 pe care ai găsit-o
+          git checkout phoenix/android12-5.10-phoenix -- include/linux/lsm_hook_defs.h
+          git checkout phoenix/android12-5.10-phoenix -- include/linux/lsm_hooks.h
+          
+          # Luăm logica .c din 4.14 Phoenix (pentru a evita erori de compatibilitate CPU)
           git checkout phoenix/android-4.14-phoenix -- kernel/bpf/
           git checkout phoenix/android-4.14-phoenix -- security/
           git checkout phoenix/android-4.14-phoenix -- kernel/fork.c
-          git checkout phoenix/android-4.14-phoenix -- kernel/exit.c
           git checkout phoenix/android-4.14-phoenix -- fs/proc/base.c
-          git checkout phoenix/android-4.14-phoenix -- net/core/filter.c
-          git checkout phoenix/android-4.14-phoenix -- arch/arm64/net/bpf_jit_comp.c
 
-          # 4. FIX CLANG COMPLIANCE & SPINLOCKS
-          # Fix pentru tag-ul 'struct page' cerut de Clang în base.c
+          # Fix Clang
           sed -i 's/page = (char \*)__get_free_page/struct page *page_ptr; page = (char *)__get_free_page/g' fs/proc/base.c || true
           
-          # Injectăm manual definirea BPF_PROG_TYPE_LSM în uapi/bpf.h dacă importul a fost parțial
+          # Patch manual pentru BPF_PROG_TYPE_LSM (esențial pentru syscall.c)
           if ! grep -q "BPF_PROG_TYPE_LSM" include/uapi/linux/bpf.h; then
             sed -i '/BPF_PROG_TYPE_EXT,/a \	BPF_PROG_TYPE_LSM,' include/uapi/linux/bpf.h
           fi
 
-          # Inițializăm arg_lock în fork.c (necesar pentru noul mm_struct)
-          if grep -q "arg_lock" include/linux/mm_types.h; then
-            sed -i '/spin_lock_init(&mm->page_table_lock);/a \	spin_lock_init(&mm->arg_lock);' kernel/fork.c || true
-          fi
-
           git add .
-          git commit -m "Phoenix Mega-Sync: Total BPF/LSM transplant and clean slate" || echo "No changes"
+          git commit -m "Hybrid Sync: Integrated 5.10 LSM hooks into 4.14 BPF" || echo "No changes"
 
-      - name: Setup Neutron Clang
+      - name: Setup Toolchain & Build
         run: |
+          # Setup Neutron Clang
           sudo apt-get update && sudo apt-get install -y zstd libssl-dev
-          mkdir clang
-          wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
+          mkdir clang && wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
-          echo "$GITHUB_WORKSPACE/clang/bin" >> $GITHUB_PATH
-
-      - name: Build Kernel
-        run: |
+          
           cd kernel
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           
-          # Curățăm Makefile-urile de flag-uri Polly/LLVM care pot strica JIT-ul BPF
-          find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
-
-          MAKE_ARGS="ARCH=arm64 \
-            CC=clang \
-            LD=ld.lld \
-            AR=llvm-ar \
-            NM=llvm-nm \
-            OBJCOPY=llvm-objcopy \
-            OBJDUMP=llvm-objdump \
-            STRIP=llvm-strip \
-            CROSS_COMPILE=aarch64-linux-gnu- \
-            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-            CLANG_TRIPLE=aarch64-linux-gnu- \
-            O=out"
-
-          mkdir -p out
+          MAKE_ARGS="ARCH=arm64 CC=clang LD=ld.lld CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
+          
           make $MAKE_ARGS r5q_defconfig
-
-          # ACTIVARE BPF PENTRU ONEUI 7 (Configurație Phoenix-style)
-          ./scripts/config --file out/.config \
-            -e CONFIG_BPF \
-            -e CONFIG_BPF_SYSCALL \
-            -e CONFIG_BPF_JIT \
-            -e CONFIG_BPF_LSM \
-            -e CONFIG_BPF_EVENTS \
-            -e CONFIG_CGROUP_BPF \
-            -e CONFIG_NET_CLS_BPF \
-            -e CONFIG_NET_ACT_BPF \
-            -d CONFIG_SAMSUNG_RTIC \
-            -d CONFIG_SECURITY_RKP \
-            -d CONFIG_WERROR
-
+          
+          # Activăm BPF/LSM
+          ./scripts/config --file out/.config -e CONFIG_BPF -e CONFIG_BPF_SYSCALL -e CONFIG_BPF_JIT -e CONFIG_BPF_LSM -e CONFIG_CGROUP_BPF -d CONFIG_SAMSUNG_RTIC -d CONFIG_WERROR
+          
           make $MAKE_ARGS olddefconfig
+          make -j$(nproc --all) $MAKE_ARGS Image.gz KCFLAGS="-w -fcommon -fno-stack-protector"
 
-          # Compilare finală cu ignorarea warning-urilor de tip mismatch și redefinire
-          # Adăugăm -fno-stack-protector pentru a evita erorile de linking în security/
-          make -j$(nproc --all) $MAKE_ARGS Image.gz \
-            KCFLAGS="-w -fcommon -fno-stack-protector -Wno-implicit-function-declaration -Wno-int-conversion" \
-            HOSTCFLAGS="-w"
-
-      - name: Package & Upload
-        run: |
-          if [ -f kernel/out/arch/arm64/boot/Image.gz ]; then
-            git clone https://github.com/osm0sis/AnyKernel3.git AK3
-            cp kernel/out/arch/arm64/boot/Image.gz AK3/
-            cd AK3
-            sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-            zip -r9 ../R5Q-Phoenix-Final-Sync.zip *
-          else
-            echo "Build failed! Check the logs for C errors."
-            exit 1
-          fi
-
-      - name: Upload Artifact
+      - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-OneUI7-Phoenix-Final
-          path: R5Q-Phoenix-Final-Sync.zip
+          name: Kernel-R5Q-Phoenix-Hybrid
+          path: kernel/out/arch/arm64/boot/Image.gz
