@@ -24,30 +24,51 @@ jobs:
           git fetch phoenix android-4.14-phoenix --depth=1
           git fetch phoenix android12-5.10-phoenix --depth=1
           
-          echo "Syncing Headers..."
-          git checkout phoenix/android12-5.10-phoenix -- include/linux/mm_types.h include/linux/sched.h include/linux/android_kabi.h include/linux/sched/task_stack.h include/linux/mm.h include/linux/ratelimit.h include/linux/ratelimit_types.h include/linux/page-flags.h include/linux/mmzone.h include/linux/kbuild.h include/linux/spinlock_types.h include/linux/printk.h include/uapi/linux/rseq.h include/linux/security.h include/linux/lsm_hooks.h include/linux/lsm_hook_defs.h include/linux/bpf.h include/uapi/linux/bpf.h
+          echo "Syncing Headers (Backports from 5.10)..."
+          git checkout phoenix/android12-5.10-phoenix -- \
+            include/linux/mm_types.h \
+            include/linux/sched.h \
+            include/linux/android_kabi.h \
+            include/linux/sched/task_stack.h \
+            include/linux/mm.h \
+            include/linux/ratelimit.h \
+            include/linux/ratelimit_types.h \
+            include/linux/page-flags.h \
+            include/linux/mmzone.h \
+            include/linux/kbuild.h \
+            include/linux/spinlock_types.h \
+            include/linux/printk.h \
+            include/uapi/linux/rseq.h \
+            include/linux/security.h \
+            include/linux/lsm_hooks.h \
+            include/linux/lsm_hook_defs.h \
+            include/linux/bpf.h \
+            include/uapi/linux/bpf.h
           
-          git checkout phoenix/android-4.14-phoenix -- include/linux/kernel_read_file.h || echo "Falling back"
+          # Fix pentru kernel_read_file.h (esențial pentru BPF)
+          git checkout phoenix/android-4.14-phoenix -- include/linux/kernel_read_file.h || \
+          git checkout phoenix/android12-5.10-phoenix -- include/linux/kernel_read_file.h
 
-          echo "Syncing Core Logic..."
+          echo "Syncing Core Logic (4.14)..."
           git checkout phoenix/android-4.14-phoenix -- kernel/bpf/ security/ kernel/fork.c fs/proc/base.c
           
-          # Fix Clang compliance
+          # Rezolvare eroare pointeri pagină pentru Clang
           sed -i 's/char \*page = (char \*)__get_free_page/struct page *page_ptr; char *page = (char *)__get_free_page/g' fs/proc/base.c || true
           
           git add .
-          git commit -m "Hybrid Sync V6" || echo "No changes"
+          git commit -m "Hybrid Sync V6: BPF Implementation" || echo "No changes"
 
       - name: Setup Toolchain & Legacy Libs
         run: |
           sudo apt-get update
           sudo apt-get install -y zstd libssl-dev bc bison flex python3
           
-          # Workaround pentru libtinfo5/libncurses5 pe Ubuntu 24.04
-          wget http://azure.archive.ubuntu.com/ubuntu/pool/universe/n/ncurses/libtinfo5_6.4-2_amd64.deb
-          wget http://azure.archive.ubuntu.com/ubuntu/pool/universe/n/ncurses/libncurses5_6.4-2_amd64.deb
-          sudo dpkg -i libtinfo5_6.4-2_amd64.deb
-          sudo dpkg -i libncurses5_6.4-2_amd64.deb
+          # Instalare libtinfo5 și libncurses5 folosind repo-ul Jammy (pentru compatibilitate toolchain)
+          echo "deb http://azure.archive.ubuntu.com/ubuntu/ jammy universe" | sudo tee /etc/apt/sources.list.d/jammy.list
+          sudo apt-get update
+          sudo apt-get install -y libtinfo5 libncurses5
+          sudo rm /etc/apt/sources.list.d/jammy.list
+          sudo apt-get update
 
           mkdir clang
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
@@ -77,19 +98,28 @@ jobs:
           mkdir -p out
           make $MAKE_ARGS r5q_defconfig
 
+          # Activare BPF și eliminare blocaje Samsung
           ./scripts/config --file out/.config \
-            -e CONFIG_BPF -e CONFIG_BPF_SYSCALL -e CONFIG_BPF_JIT -e CONFIG_BPF_LSM \
-            -d CONFIG_SAMSUNG_RTIC -d CONFIG_SECURITY_RKP -d CONFIG_SECURITY_RKP_KDP -d CONFIG_UH_RKP -d CONFIG_WERROR
+            -e CONFIG_BPF \
+            -e CONFIG_BPF_SYSCALL \
+            -e CONFIG_BPF_JIT \
+            -e CONFIG_BPF_LSM \
+            -d CONFIG_SAMSUNG_RTIC \
+            -d CONFIG_SECURITY_RKP \
+            -d CONFIG_SECURITY_RKP_KDP \
+            -d CONFIG_UH_RKP \
+            -d CONFIG_WERROR
 
           make $MAKE_ARGS olddefconfig
           
-          # Build cu ignorare erori de structură
+          # Compilare cu ignorare avertismente de tip pointer (necesar pentru hibrid)
           make -j$(nproc --all) $MAKE_ARGS Image.gz \
-            KCFLAGS="-w -fcommon -fno-stack-protector -Wno-error -Wno-incompatible-pointer-types" \
+            KCFLAGS="-w -fcommon -fno-stack-protector -Wno-error -Wno-incompatible-pointer-types -Wno-implicit-function-declaration" \
             HOSTCFLAGS="-w"
 
-      - name: Upload
+      - name: Upload Artifact
+        if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-R5Q-V6
+          name: Kernel-R5Q-BPF-V6
           path: kernel/out/arch/arm64/boot/Image.gz
