@@ -30,8 +30,7 @@ jobs:
           rm -rf kernel/bpf/ security/bpf/
           rm -f include/linux/bpf.h include/uapi/linux/bpf.h
           
-          echo "Deep-Syncing Headers (Targeting 5.10 for BPF/LSM Consistency)..."
-          # IMPORT CRITIC: Toată definiția BPF și LSM din 5.10 pentru a avea structurile complete
+          echo "Deep-Syncing Headers (Targeting 5.10 for BPF/LSM)..."
           git checkout phoenix/android12-5.10-phoenix -- include/linux/bpf.h
           git checkout phoenix/android12-5.10-phoenix -- include/linux/bpf_types.h
           git checkout phoenix/android12-5.10-phoenix -- include/uapi/linux/bpf.h
@@ -39,31 +38,23 @@ jobs:
           git checkout phoenix/android12-5.10-phoenix -- include/linux/lsm_hooks.h
           git checkout phoenix/android12-5.10-phoenix -- include/linux/security.h
           
-          # Păstrăm mm și sched din 4.14 pentru stabilitatea sistemului Samsung
           git checkout phoenix/android-4.14-phoenix -- include/linux/mm_types.h
           git checkout phoenix/android-4.14-phoenix -- include/linux/sched.h
           git checkout phoenix/android-4.14-phoenix -- include/linux/filter.h
           
-          # Luăm logica .c (sursele)
           git checkout phoenix/android-4.14-phoenix -- kernel/bpf/
           git checkout phoenix/android-4.14-phoenix -- security/
           git checkout phoenix/android-4.14-phoenix -- kernel/fork.c
           git checkout phoenix/android-4.14-phoenix -- fs/proc/base.c
 
-          # Fix Clang compliance
           sed -i 's/page = (char \*)__get_free_page/struct page *page_ptr; page = (char *)__get_free_page/g' fs/proc/base.c || true
           
-          # Patch manual pentru BPF_PROG_TYPE_LSM dacă lipsește din uapi
-          if ! grep -q "BPF_PROG_TYPE_LSM" include/uapi/linux/bpf.h; then
-            sed -i '/BPF_PROG_TYPE_EXT,/a \	BPF_PROG_TYPE_LSM,' include/uapi/linux/bpf.h
-          fi
-
           git add .
-          git commit -m "Hybrid Sync V5: Synced BPF structs with 5.10 headers" || echo "No changes"
+          git commit -m "Hybrid Sync V5: Fixed BPF structs and cleaned residues" || echo "No changes"
 
       - name: Setup Toolchain
         run: |
-          sudo apt-get update && sudo apt-get install -y zstd libssl-dev
+          sudo apt-get update && sudo apt-get install -y zstd libssl-dev bc bison flex
           mkdir clang
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
@@ -74,9 +65,12 @@ jobs:
           cd kernel
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           
-          find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
+          # Fix pentru Clang asamblor (elimină eroarea -EL)
+          export CLANG_FLAGS="-fintegrated-as"
 
           MAKE_ARGS="ARCH=arm64 \
+            LLVM=1 \
+            LLVM_IAS=1 \
             CC=clang \
             LD=ld.lld \
             AR=llvm-ar \
@@ -103,11 +97,14 @@ jobs:
             -d CONFIG_WERROR
 
           make $MAKE_ARGS olddefconfig
-          # Adăugăm flag-uri pentru a ignora erorile de tip mismatch cauzate de headerele de 5.10 în 4.14
-          make -j$(nproc --all) $MAKE_ARGS Image.gz KCFLAGS="-w -fcommon -fno-stack-protector -Wno-implicit-function-declaration -Wno-int-conversion"
+          
+          # Adăugăm flag-urile necesare pentru a evita eroarea de asamblor și mismatch-uri hibride
+          make -j$(nproc --all) $MAKE_ARGS Image.gz \
+            KCFLAGS="-w -fcommon -fno-stack-protector -Wno-implicit-function-declaration -Wno-int-conversion $CLANG_FLAGS" \
+            HOSTCFLAGS="-w"
 
       - name: Upload Image
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-R5Q-Phoenix-Hybrid-V5
+          name: Kernel-R5Q-Phoenix-V5-Fixed
           path: kernel/out/arch/arm64/boot/Image.gz
