@@ -1,4 +1,4 @@
-name: Build R5Q - Phoenix BPF Final
+name: Build R5Q - Phoenix BPF Mega-Sync
 on:
   workflow_dispatch:
 
@@ -14,20 +14,27 @@ jobs:
           path: kernel
           fetch-depth: 0
 
-      - name: Phoenix Kernel Total Transplant (Deep Sync)
+      - name: Phoenix Kernel Total Transplant (Nuclear Clean)
         run: |
           cd kernel
           git config user.name "GitHub Action"
           git config user.email "action@github.com"
           
-          # 1. Adăugăm sursa Phoenix
+          # 1. Adăugăm Phoenix ca sursă upstream
           git remote add phoenix https://github.com/PhoenixKernel/linux.git
           git fetch phoenix android-4.14-phoenix --depth=1
           
-          echo "Deep-Syncing BPF Headers & Logic from Phoenix..."
+          echo "Cleaning Samsung BPF residues to prevent redefinitions..."
+          # Ștergem folderele și headerele vechi care cauzează erorile de tip 'redefinition' sau 'member not found'
+          rm -rf kernel/bpf/
+          rm -rf security/bpf/
+          rm -f include/linux/bpf.h
+          rm -f include/linux/bpf_types.h
+          rm -f include/uapi/linux/bpf.h
+          rm -f include/linux/filter.h
           
-          # 2. TRANSPLANT HEADERE CRITICE (Rezolvă eroarea BPF_PROG_TYPE_LSM)
-          # Importăm atât versiunea de kernel cât și cea de user-space (uapi)
+          echo "Deep-Syncing Phoenix BPF/LSM Subsystems..."
+          # 2. IMPORTĂM HEADERELE CURATE (Definițiile fundamentale)
           git checkout phoenix/android-4.14-phoenix -- include/linux/bpf.h
           git checkout phoenix/android-4.14-phoenix -- include/linux/bpf_types.h
           git checkout phoenix/android-4.14-phoenix -- include/uapi/linux/bpf.h
@@ -38,7 +45,7 @@ jobs:
           git checkout phoenix/android-4.14-phoenix -- include/linux/lsm_hook_defs.h
           git checkout phoenix/android-4.14-phoenix -- include/linux/lsm_hooks.h
 
-          # 3. TRANSPLANT SUBSISTEME (Codul sursă .c)
+          # 3. IMPORTĂM LOGICA (Codul sursă Phoenix .c)
           git checkout phoenix/android-4.14-phoenix -- kernel/bpf/
           git checkout phoenix/android-4.14-phoenix -- security/
           git checkout phoenix/android-4.14-phoenix -- kernel/fork.c
@@ -47,17 +54,22 @@ jobs:
           git checkout phoenix/android-4.14-phoenix -- net/core/filter.c
           git checkout phoenix/android-4.14-phoenix -- arch/arm64/net/bpf_jit_comp.c
 
-          # 4. FIX CLANG COMPLIANCE (Struct tags & Spinlocks)
-          # Corectăm eroarea 'page' fără tag 'struct' în base.c
+          # 4. FIX CLANG COMPLIANCE & SPINLOCKS
+          # Fix pentru tag-ul 'struct page' cerut de Clang în base.c
           sed -i 's/page = (char \*)__get_free_page/struct page *page_ptr; page = (char *)__get_free_page/g' fs/proc/base.c || true
           
-          # Inițializăm noul lock arg_lock în fork.c (necesar pentru noul mm_struct)
+          # Injectăm manual definirea BPF_PROG_TYPE_LSM în uapi/bpf.h dacă importul a fost parțial
+          if ! grep -q "BPF_PROG_TYPE_LSM" include/uapi/linux/bpf.h; then
+            sed -i '/BPF_PROG_TYPE_EXT,/a \	BPF_PROG_TYPE_LSM,' include/uapi/linux/bpf.h
+          fi
+
+          # Inițializăm arg_lock în fork.c (necesar pentru noul mm_struct)
           if grep -q "arg_lock" include/linux/mm_types.h; then
             sed -i '/spin_lock_init(&mm->page_table_lock);/a \	spin_lock_init(&mm->arg_lock);' kernel/fork.c || true
           fi
 
           git add .
-          git commit -m "Phoenix Final: Synced BPF/LSM headers and fixed LSM types" || echo "No changes"
+          git commit -m "Phoenix Mega-Sync: Total BPF/LSM transplant and clean slate" || echo "No changes"
 
       - name: Setup Neutron Clang
         run: |
@@ -72,7 +84,7 @@ jobs:
           cd kernel
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           
-          # Curățare flag-uri LLVM incompatibile cu backport-ul BPF
+          # Curățăm Makefile-urile de flag-uri Polly/LLVM care pot strica JIT-ul BPF
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
 
           MAKE_ARGS="ARCH=arm64 \
@@ -91,7 +103,7 @@ jobs:
           mkdir -p out
           make $MAKE_ARGS r5q_defconfig
 
-          # ACTIVARE BPF MODERNI (Ajustat pentru Android 15 / OneUI 7)
+          # ACTIVARE BPF PENTRU ONEUI 7 (Configurație Phoenix-style)
           ./scripts/config --file out/.config \
             -e CONFIG_BPF \
             -e CONFIG_BPF_SYSCALL \
@@ -107,26 +119,27 @@ jobs:
 
           make $MAKE_ARGS olddefconfig
 
-          # Compilare cu ignorarea warning-urilor de redefinire
+          # Compilare finală cu ignorarea warning-urilor de tip mismatch și redefinire
+          # Adăugăm -fno-stack-protector pentru a evita erorile de linking în security/
           make -j$(nproc --all) $MAKE_ARGS Image.gz \
-            KCFLAGS="-w -fcommon -fno-stack-protector -Wno-implicit-function-declaration" \
+            KCFLAGS="-w -fcommon -fno-stack-protector -Wno-implicit-function-declaration -Wno-int-conversion" \
             HOSTCFLAGS="-w"
 
-      - name: Package with AnyKernel3
+      - name: Package & Upload
         run: |
           if [ -f kernel/out/arch/arm64/boot/Image.gz ]; then
             git clone https://github.com/osm0sis/AnyKernel3.git AK3
             cp kernel/out/arch/arm64/boot/Image.gz AK3/
             cd AK3
             sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-            zip -r9 ../R5Q-OneUI7-Phoenix-Final.zip *
+            zip -r9 ../R5Q-Phoenix-Final-Sync.zip *
           else
-            echo "Build failed! Analizează erorile de compilare de mai sus."
+            echo "Build failed! Check the logs for C errors."
             exit 1
           fi
 
-      - name: Upload
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-R5Q-Phoenix-Final
-          path: R5Q-OneUI7-Phoenix-Final.zip
+          name: S10Lite-OneUI7-Phoenix-Final
+          path: R5Q-Phoenix-Final-Sync.zip
