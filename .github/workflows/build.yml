@@ -4,7 +4,7 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout Your Kernel (r5q)
         uses: actions/checkout@v4
@@ -14,7 +14,7 @@ jobs:
           path: kernel
           fetch-depth: 0
 
-      - name: Phoenix Hybrid Transplant (Deep Structural Sync)
+      - name: Phoenix Hybrid Transplant
         run: |
           cd kernel
           git config user.name "GitHub Action"
@@ -24,53 +24,31 @@ jobs:
           git fetch phoenix android-4.14-phoenix --depth=1
           git fetch phoenix android12-5.10-phoenix --depth=1
           
-          echo "Cleaning residues..."
-          sed -i '/kernelsu\/Kconfig/d' drivers/android/Kconfig || true
-          rm -rf kernel/bpf/ security/bpf/
+          echo "Syncing Headers..."
+          git checkout phoenix/android12-5.10-phoenix -- include/linux/mm_types.h include/linux/sched.h include/linux/android_kabi.h include/linux/sched/task_stack.h include/linux/mm.h include/linux/ratelimit.h include/linux/ratelimit_types.h include/linux/page-flags.h include/linux/mmzone.h include/linux/kbuild.h include/linux/spinlock_types.h include/linux/printk.h include/uapi/linux/rseq.h include/linux/security.h include/linux/lsm_hooks.h include/linux/lsm_hook_defs.h include/linux/bpf.h include/uapi/linux/bpf.h
           
-          echo "Syncing Core Structures (Backports)..."
-          # Sincronizăm structurile critice
-          git checkout phoenix/android12-5.10-phoenix -- include/linux/mm_types.h
-          git checkout phoenix/android12-5.10-phoenix -- include/linux/sched.h
-          git checkout phoenix/android12-5.10-phoenix -- include/linux/android_kabi.h
-          git checkout phoenix/android12-5.10-phoenix -- include/linux/sched/task_stack.h
-          git checkout phoenix/android12-5.10-phoenix -- include/linux/mm.h
-          git checkout phoenix/android12-5.10-phoenix -- arch/arm64/include/asm/current.h
-          git checkout phoenix/android12-5.10-phoenix -- include/linux/ratelimit.h
-          git checkout phoenix/android12-5.10-phoenix -- include/linux/ratelimit_types.h
-          git checkout phoenix/android12-5.10-phoenix -- kernel/bounds.c
-          git checkout phoenix/android12-5.10-phoenix -- include/linux/page-flags.h
-          git checkout phoenix/android12-5.10-phoenix -- include/linux/mmzone.h
-          git checkout phoenix/android12-5.10-phoenix -- include/linux/kbuild.h
-          git checkout phoenix/android12-5.10-phoenix -- include/linux/spinlock_types.h
-          git checkout phoenix/android12-5.10-phoenix -- include/linux/printk.h
-          git checkout phoenix/android12-5.10-phoenix -- arch/arm64/include/asm/uaccess.h
-          git checkout phoenix/android12-5.10-phoenix -- include/uapi/linux/rseq.h
-          git checkout phoenix/android12-5.10-phoenix -- include/linux/security.h
-          git checkout phoenix/android12-5.10-phoenix -- include/linux/lsm_hooks.h
-          git checkout phoenix/android12-5.10-phoenix -- include/linux/lsm_hook_defs.h
-          git checkout phoenix/android12-5.10-phoenix -- include/linux/bpf.h
-          git checkout phoenix/android12-5.10-phoenix -- include/uapi/linux/bpf.h
-          
-          # Fix: Pull kernel_read_file.h direct din sursa, nu facem touch
-          git checkout phoenix/android-4.14-phoenix -- include/linux/kernel_read_file.h || git checkout phoenix/android12-5.10-phoenix -- include/linux/kernel_read_file.h
-          
-          echo "Syncing Logic from 4.14-phoenix..."
-          git checkout phoenix/android-4.14-phoenix -- kernel/bpf/
-          git checkout phoenix/android-4.14-phoenix -- security/
-          git checkout phoenix/android-4.14-phoenix -- kernel/fork.c
-          git checkout phoenix/android-4.14-phoenix -- fs/proc/base.c
+          git checkout phoenix/android-4.14-phoenix -- include/linux/kernel_read_file.h || echo "Falling back"
 
-          # Fix Clang compliance - Sursa originală are adesea probleme cu pointerii de pagină
+          echo "Syncing Core Logic..."
+          git checkout phoenix/android-4.14-phoenix -- kernel/bpf/ security/ kernel/fork.c fs/proc/base.c
+          
+          # Fix Clang compliance
           sed -i 's/char \*page = (char \*)__get_free_page/struct page *page_ptr; char *page = (char *)__get_free_page/g' fs/proc/base.c || true
           
           git add .
-          git commit -m "Hybrid Sync V6: Optimized for Ubuntu 22.04" || echo "No changes"
+          git commit -m "Hybrid Sync V6" || echo "No changes"
 
-      - name: Setup Toolchain
+      - name: Setup Toolchain & Legacy Libs
         run: |
           sudo apt-get update
-          sudo apt-get install -y zstd libssl-dev bc bison flex libncurses5 libtinfo5 python3
+          sudo apt-get install -y zstd libssl-dev bc bison flex python3
+          
+          # Workaround pentru libtinfo5/libncurses5 pe Ubuntu 24.04
+          wget http://azure.archive.ubuntu.com/ubuntu/pool/universe/n/ncurses/libtinfo5_6.4-2_amd64.deb
+          wget http://azure.archive.ubuntu.com/ubuntu/pool/universe/n/ncurses/libncurses5_6.4-2_amd64.deb
+          sudo dpkg -i libtinfo5_6.4-2_amd64.deb
+          sudo dpkg -i libncurses5_6.4-2_amd64.deb
+
           mkdir clang
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
@@ -97,37 +75,21 @@ jobs:
             O=out"
 
           mkdir -p out
-          # Verificăm dacă r5q_defconfig există, altfel folosim fallback
-          if [ -f arch/arm64/configs/r5q_defconfig ]; then
-            make $MAKE_ARGS r5q_defconfig
-          else
-            echo "r5q_defconfig not found, listing configs..."
-            ls arch/arm64/configs/
-            exit 1
-          fi
+          make $MAKE_ARGS r5q_defconfig
 
-          # Configurare BPF și dezactivare Samsung Security care blochează mm_types
           ./scripts/config --file out/.config \
-            -e CONFIG_BPF \
-            -e CONFIG_BPF_SYSCALL \
-            -e CONFIG_BPF_JIT \
-            -e CONFIG_BPF_LSM \
-            -d CONFIG_SAMSUNG_RTIC \
-            -d CONFIG_SECURITY_RKP \
-            -d CONFIG_SECURITY_RKP_KDP \
-            -d CONFIG_UH_RKP \
-            -d CONFIG_WERROR
+            -e CONFIG_BPF -e CONFIG_BPF_SYSCALL -e CONFIG_BPF_JIT -e CONFIG_BPF_LSM \
+            -d CONFIG_SAMSUNG_RTIC -d CONFIG_SECURITY_RKP -d CONFIG_SECURITY_RKP_KDP -d CONFIG_UH_RKP -d CONFIG_WERROR
 
           make $MAKE_ARGS olddefconfig
           
-          # Compilare cu ignorarea erorilor de pointer incompatibil (cauzate de mixul 4.14/5.10)
+          # Build cu ignorare erori de structură
           make -j$(nproc --all) $MAKE_ARGS Image.gz \
-            KCFLAGS="-w -fcommon -fno-stack-protector -Wno-implicit-function-declaration -Wno-int-conversion -Wno-incompatible-pointer-types -fintegrated-as" \
+            KCFLAGS="-w -fcommon -fno-stack-protector -Wno-error -Wno-incompatible-pointer-types" \
             HOSTCFLAGS="-w"
 
-      - name: Upload Artifacts
-        if: success()
+      - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-R5Q-Phoenix-V6
+          name: Kernel-R5Q-V6
           path: kernel/out/arch/arm64/boot/Image.gz
