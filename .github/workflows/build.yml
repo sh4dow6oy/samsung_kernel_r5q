@@ -69,7 +69,7 @@ jobs:
 
       - name: Setup Toolchain
         run: |
-          sudo apt-get update && sudo apt-get install -y zstd libssl-dev bc bison flex
+          sudo apt-get update && sudo apt-get install -y zstd libssl-dev bc bison flex libtinfo5 libncurses5
           mkdir clang
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
