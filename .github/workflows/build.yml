@@ -14,23 +14,24 @@ jobs:
           path: kernel
           fetch-depth: 0
 
-      - name: Phoenix Hybrid Transplant
+      - name: Phoenix Hybrid Transplant & Kconfig Fix
         run: |
           cd kernel
           git config user.name "GitHub Action"
           git config user.email "action@github.com"
           
           git remote add phoenix https://github.com/PhoenixKernel/linux.git
-          # Fetch ambele ramuri pentru a avea acces la fișierele de 5.10 și 4.14
           git fetch phoenix android-4.14-phoenix --depth=1
           git fetch phoenix android12-5.10-phoenix --depth=1
           
-          echo "Cleaning residues..."
+          echo "Cleaning residues and fixing Kconfig..."
+          # Fix eroarea "can't open file drivers/android/kernelsu/Kconfig"
+          sed -i '/kernelsu\/Kconfig/d' drivers/android/Kconfig
+          
           rm -rf kernel/bpf/ security/bpf/
           rm -f include/linux/bpf.h include/uapi/linux/bpf.h
           
           echo "Deep-Syncing Headers (Hybrid 4.14/5.10)..."
-          # Luăm baza BPF din 4.14 Phoenix
           git checkout phoenix/android-4.14-phoenix -- include/linux/bpf.h
           git checkout phoenix/android-4.14-phoenix -- include/linux/bpf_types.h
           git checkout phoenix/android-4.14-phoenix -- include/uapi/linux/bpf.h
@@ -38,44 +39,70 @@ jobs:
           git checkout phoenix/android-4.14-phoenix -- include/linux/mm_types.h
           git checkout phoenix/android-4.14-phoenix -- include/linux/sched.h
           
-          # IMPORTĂM SPECIAL lsm_hook_defs.h din ramura de 5.10 pe care ai găsit-o
+          # Importăm lsm_hook_defs.h din 5.10 (sursa indicată de tine)
           git checkout phoenix/android12-5.10-phoenix -- include/linux/lsm_hook_defs.h
           git checkout phoenix/android12-5.10-phoenix -- include/linux/lsm_hooks.h
           
-          # Luăm logica .c din 4.14 Phoenix (pentru a evita erori de compatibilitate CPU)
+          # Luăm logica .c din 4.14 Phoenix
           git checkout phoenix/android-4.14-phoenix -- kernel/bpf/
           git checkout phoenix/android-4.14-phoenix -- security/
           git checkout phoenix/android-4.14-phoenix -- kernel/fork.c
           git checkout phoenix/android-4.14-phoenix -- fs/proc/base.c
 
-          # Fix Clang
+          # Fix Clang compliance
           sed -i 's/page = (char \*)__get_free_page/struct page *page_ptr; page = (char *)__get_free_page/g' fs/proc/base.c || true
           
-          # Patch manual pentru BPF_PROG_TYPE_LSM (esențial pentru syscall.c)
+          # Patch manual pentru BPF_PROG_TYPE_LSM
           if ! grep -q "BPF_PROG_TYPE_LSM" include/uapi/linux/bpf.h; then
             sed -i '/BPF_PROG_TYPE_EXT,/a \	BPF_PROG_TYPE_LSM,' include/uapi/linux/bpf.h
           fi
 
           git add .
-          git commit -m "Hybrid Sync: Integrated 5.10 LSM hooks into 4.14 BPF" || echo "No changes"
+          git commit -m "Hybrid Sync: Fixed Kconfig and integrated 5.10 LSM hooks" || echo "No changes"
 
-      - name: Setup Toolchain & Build
+      - name: Setup Toolchain
         run: |
-          # Setup Neutron Clang
           sudo apt-get update && sudo apt-get install -y zstd libssl-dev
-          mkdir clang && wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
+          mkdir clang
+          wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
-          
+          echo "$GITHUB_WORKSPACE/clang/bin" >> $GITHUB_PATH
+
+      - name: Build Kernel
+        run: |
           cd kernel
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           
-          MAKE_ARGS="ARCH=arm64 CC=clang LD=ld.lld CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
-          
+          # Curățăm flag-uri LLVM incompatibile
+          find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
+
+          MAKE_ARGS="ARCH=arm64 \
+            CC=clang \
+            LD=ld.lld \
+            AR=llvm-ar \
+            NM=llvm-nm \
+            OBJCOPY=llvm-objcopy \
+            OBJDUMP=llvm-objdump \
+            STRIP=llvm-strip \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            O=out"
+
+          mkdir -p out
           make $MAKE_ARGS r5q_defconfig
-          
-          # Activăm BPF/LSM
-          ./scripts/config --file out/.config -e CONFIG_BPF -e CONFIG_BPF_SYSCALL -e CONFIG_BPF_JIT -e CONFIG_BPF_LSM -e CONFIG_CGROUP_BPF -d CONFIG_SAMSUNG_RTIC -d CONFIG_WERROR
-          
+
+          # ACTIVARE BPF & LSM (Dezactivăm RTIC/RKP pentru a lăsa LSM-ul să lucreze)
+          ./scripts/config --file out/.config \
+            -e CONFIG_BPF \
+            -e CONFIG_BPF_SYSCALL \
+            -e CONFIG_BPF_JIT \
+            -e CONFIG_BPF_LSM \
+            -e CONFIG_CGROUP_BPF \
+            -d CONFIG_SAMSUNG_RTIC \
+            -d CONFIG_SECURITY_RKP \
+            -d CONFIG_WERROR
+
           make $MAKE_ARGS olddefconfig
           make -j$(nproc --all) $MAKE_ARGS Image.gz KCFLAGS="-w -fcommon -fno-stack-protector"
 
