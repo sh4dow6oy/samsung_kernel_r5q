@@ -1,4 +1,4 @@
-name: Build R5Q - Phoenix BPF V9
+name: Build R5Q - Phoenix BPF V10
 on:
   workflow_dispatch:
 
@@ -14,7 +14,7 @@ jobs:
           path: kernel
           fetch-depth: 0
 
-      - name: Phoenix Surgical Transplant (V9)
+      - name: Phoenix Surgical Transplant (V10)
         run: |
           cd kernel
           git config user.name "GitHub Action"
@@ -24,40 +24,41 @@ jobs:
           git fetch phoenix android-4.14-phoenix --depth=1
           git fetch phoenix android12-5.10-phoenix --depth=1
           
-          echo "Cleaning unstable hybrid files..."
+          echo "Cleaning residues..."
           sed -i '/kernelsu\/Kconfig/d' drivers/android/Kconfig || true
           
-          # Resetăm fișierele de bază la 4.14 Phoenix (pentru stabilitate)
+          # 1. Resetăm la 4.14 Phoenix pentru stabilitate generală
           git checkout phoenix/android-4.14-phoenix -- kernel/fork.c
           git checkout phoenix/android-4.14-phoenix -- kernel/exit.c
           git checkout phoenix/android-4.14-phoenix -- include/linux/sched.h
           git checkout phoenix/android-4.14-phoenix -- include/linux/mm_types.h
           
-          echo "Injecting BPF-LSM Requirements into 4.14 Headers..."
-          # 1. Adăugăm membrii lipsă în struct mm_struct (ceruți de codul nou de BPF)
-          sed -i '/struct task_struct \*owner;/a \	spinlock_t arg_lock;\n\tunsigned long saved_auxv[AT_VECTOR_SIZE];' include/linux/mm_types.h
-          
-          # 2. Sincronizăm headerele de BPF/LSM cu 5.10 (Sursa ta de încredere)
+          # 2. IMPORTĂM LOGICA DE SECURITATE DIN 5.10 (Fix pentru bpf_lsm_hooks)
+          git checkout phoenix/android12-5.10-phoenix -- security/security.c
           git checkout phoenix/android12-5.10-phoenix -- include/linux/lsm_hook_defs.h
           git checkout phoenix/android12-5.10-phoenix -- include/linux/lsm_hooks.h
           git checkout phoenix/android12-5.10-phoenix -- include/linux/security.h
           git checkout phoenix/android12-5.10-phoenix -- include/linux/bpf.h
           git checkout phoenix/android12-5.10-phoenix -- include/uapi/linux/bpf.h
-          git checkout phoenix/android12-5.10-phoenix -- include/linux/kernel_read_file.h || touch include/linux/kernel_read_file.h
 
-          echo "Syncing Logic..."
-          git checkout phoenix/android-4.14-phoenix -- kernel/bpf/
-          git checkout phoenix/android-4.14-phoenix -- security/
-          git checkout phoenix/android-4.14-phoenix -- fs/proc/base.c
-
-          # 3. Patch manual pentru inițializarea arg_lock în fork.c (4.14 style)
+          # 3. FIX STRUCTURI MEMORIE (Injectăm manual în 4.14)
+          # Adăugăm include pentru AT_VECTOR_SIZE
+          sed -i '1i #include <uapi/linux/auxvec.h>' include/linux/mm_types.h
+          # Injectăm membrii necesari în mm_struct
+          sed -i '/struct task_struct \*owner;/a \	spinlock_t arg_lock;\n\tunsigned long saved_auxv[AT_VECTOR_SIZE];' include/linux/mm_types.h
+          # Inițializare arg_lock în fork.c
           sed -i '/spin_lock_init(&mm->page_table_lock);/a \	spin_lock_init(&mm->arg_lock);' kernel/fork.c
 
-          # Fix Clang - Tag struct page
+          echo "Syncing BPF Subsystem..."
+          git checkout phoenix/android-4.14-phoenix -- kernel/bpf/
+          git checkout phoenix/android-4.14-phoenix -- security/bpf/ || true
+          git checkout phoenix/android-4.14-phoenix -- fs/proc/base.c
+
+          # Fix Clang compliance
           sed -i 's/page = (char \*)__get_free_page/struct page *page_ptr; page = (char *)__get_free_page/g' fs/proc/base.c || true
 
           git add .
-          git commit -m "Surgical Sync V9: 4.14 logic with injected 5.10 BPF structs" || echo "No changes"
+          git commit -m "Surgical Sync V10: Synced security.c with 5.10 and fixed mm_struct" || echo "No changes"
 
       - name: Setup Toolchain
         run: |
@@ -101,7 +102,6 @@ jobs:
 
           make $MAKE_ARGS olddefconfig
           
-          # KCFLAGS pentru a tolera diferențele hibride
           make -j$(nproc --all) $MAKE_ARGS Image.gz \
             KCFLAGS="-w -fcommon -fno-stack-protector -Wno-implicit-function-declaration -Wno-int-conversion -fintegrated-as" \
             HOSTCFLAGS="-w"
@@ -109,5 +109,5 @@ jobs:
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-R5Q-V9-Surgical
+          name: Kernel-R5Q-V10-Surgical
           path: kernel/out/arch/arm64/boot/Image.gz
