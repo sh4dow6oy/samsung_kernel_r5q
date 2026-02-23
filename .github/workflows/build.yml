@@ -1,4 +1,4 @@
-name: Build R5Q - Phoenix Hybrid BPF V7
+name: Build R5Q - Phoenix BPF V8
 on:
   workflow_dispatch:
 
@@ -14,7 +14,7 @@ jobs:
           path: kernel
           fetch-depth: 0
 
-      - name: Phoenix Hybrid Transplant (Logic Alignment)
+      - name: Phoenix Hybrid Transplant (V8 - Full Struct Alignment)
         run: |
           cd kernel
           git config user.name "GitHub Action"
@@ -24,16 +24,17 @@ jobs:
           git fetch phoenix android-4.14-phoenix --depth=1
           git fetch phoenix android12-5.10-phoenix --depth=1
           
-          echo "Cleaning residues..."
+          echo "Deep Cleaning..."
           sed -i '/kernelsu\/Kconfig/d' drivers/android/Kconfig || true
-          rm -rf kernel/bpf/ security/bpf/
+          # Ștergem fișierele care cauzează conflicte pentru a forța versiunile noi
+          rm -f include/linux/mm_types.h include/linux/sched.h include/linux/mm.h
           
-          echo "Syncing 5.10 Foundations..."
-          # Luăm structurile de bază din 5.10 pentru consistență cu BPF LSM
+          echo "Syncing 5.10 Foundations (The Big Three)..."
+          # 1. STRUCTURI (Headere) - Esențiale pentru fork.c de 5.10
           git checkout phoenix/android12-5.10-phoenix -- include/linux/mm_types.h
           git checkout phoenix/android12-5.10-phoenix -- include/linux/sched.h
-          git checkout phoenix/android12-5.10-phoenix -- include/linux/sched/task.h
           git checkout phoenix/android12-5.10-phoenix -- include/linux/mm.h
+          git checkout phoenix/android12-5.10-phoenix -- include/linux/sched/task.h
           git checkout phoenix/android12-5.10-phoenix -- include/linux/security.h
           git checkout phoenix/android12-5.10-phoenix -- include/linux/lsm_hooks.h
           git checkout phoenix/android12-5.10-phoenix -- include/linux/lsm_hook_defs.h
@@ -41,25 +42,24 @@ jobs:
           git checkout phoenix/android12-5.10-phoenix -- include/uapi/linux/bpf.h
           git checkout phoenix/android12-5.10-phoenix -- include/linux/kernel_read_file.h || touch include/linux/kernel_read_file.h
           
-          echo "Syncing Process Logic (Aligning fork/exit with 5.10 structs)..."
-          # Importăm logica de procese din 5.10 ca să se potrivească cu task_struct redenumit
+          echo "Syncing Core Logic..."
+          # 2. LOGICĂ (Cod Sursă)
           git checkout phoenix/android12-5.10-phoenix -- kernel/fork.c
           git checkout phoenix/android12-5.10-phoenix -- kernel/exit.c
-          
-          # Păstrăm totuși BPF-ul din Phoenix 4.14 pentru compatibilitate JIT/ARM64
           git checkout phoenix/android-4.14-phoenix -- kernel/bpf/
           git checkout phoenix/android-4.14-phoenix -- security/
           git checkout phoenix/android-4.14-phoenix -- fs/proc/base.c
 
-          # Fix Clang compliance
+          # Fix Clang - Tag struct page
           sed -i 's/page = (char \*)__get_free_page/struct page *page_ptr; page = (char *)__get_free_page/g' fs/proc/base.c || true
           
-          # Fix redenumire state -> __state pentru orice fișier .c rămas pe model vechi
-          find . -name "*.c" -exec sed -i 's/\btask->state\b/task->__state/g' {} +
-          find . -name "*.c" -exec sed -i 's/\bp->state\b/p->__state/g' {} +
+          # Fix global pentru redenumirea task->state (4.14) în task->__state (5.10)
+          # Asta previne erorile de compilare în restul kernelului Samsung
+          grep -rl "task->state" . | xargs sed -i 's/task->state/task->__state/g' || true
+          grep -rl "p->state" . | xargs sed -i 's/p->state/p->__state/g' || true
 
           git add .
-          git commit -m "Hybrid Sync V7: Aligned task_struct state and process logic" || echo "No changes"
+          git commit -m "Hybrid Sync V8: Full structural alignment with 5.10" || echo "No changes"
 
       - name: Setup Toolchain
         run: |
@@ -103,7 +103,7 @@ jobs:
 
           make $MAKE_ARGS olddefconfig
           
-          # KCFLAGS agresive pentru a ignora diferențele de tip hibride
+          # KCFLAGS agresive pentru compatibilitate hibridă
           make -j$(nproc --all) $MAKE_ARGS Image.gz \
             KCFLAGS="-w -fcommon -fno-stack-protector -Wno-implicit-function-declaration -Wno-int-conversion -fintegrated-as" \
             HOSTCFLAGS="-w"
@@ -111,5 +111,5 @@ jobs:
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-R5Q-V7-Hybrid
+          name: Kernel-R5Q-V8-Final
           path: kernel/out/arch/arm64/boot/Image.gz
