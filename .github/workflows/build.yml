@@ -1,4 +1,4 @@
-name: Build R5Q - Phoenix BPF V8
+name: Build R5Q - Phoenix BPF V9
 on:
   workflow_dispatch:
 
@@ -14,7 +14,7 @@ jobs:
           path: kernel
           fetch-depth: 0
 
-      - name: Phoenix Hybrid Transplant (V8 - Full Struct Alignment)
+      - name: Phoenix Surgical Transplant (V9)
         run: |
           cd kernel
           git config user.name "GitHub Action"
@@ -24,42 +24,40 @@ jobs:
           git fetch phoenix android-4.14-phoenix --depth=1
           git fetch phoenix android12-5.10-phoenix --depth=1
           
-          echo "Deep Cleaning..."
+          echo "Cleaning unstable hybrid files..."
           sed -i '/kernelsu\/Kconfig/d' drivers/android/Kconfig || true
-          # Ștergem fișierele care cauzează conflicte pentru a forța versiunile noi
-          rm -f include/linux/mm_types.h include/linux/sched.h include/linux/mm.h
           
-          echo "Syncing 5.10 Foundations (The Big Three)..."
-          # 1. STRUCTURI (Headere) - Esențiale pentru fork.c de 5.10
-          git checkout phoenix/android12-5.10-phoenix -- include/linux/mm_types.h
-          git checkout phoenix/android12-5.10-phoenix -- include/linux/sched.h
-          git checkout phoenix/android12-5.10-phoenix -- include/linux/mm.h
-          git checkout phoenix/android12-5.10-phoenix -- include/linux/sched/task.h
-          git checkout phoenix/android12-5.10-phoenix -- include/linux/security.h
-          git checkout phoenix/android12-5.10-phoenix -- include/linux/lsm_hooks.h
+          # Resetăm fișierele de bază la 4.14 Phoenix (pentru stabilitate)
+          git checkout phoenix/android-4.14-phoenix -- kernel/fork.c
+          git checkout phoenix/android-4.14-phoenix -- kernel/exit.c
+          git checkout phoenix/android-4.14-phoenix -- include/linux/sched.h
+          git checkout phoenix/android-4.14-phoenix -- include/linux/mm_types.h
+          
+          echo "Injecting BPF-LSM Requirements into 4.14 Headers..."
+          # 1. Adăugăm membrii lipsă în struct mm_struct (ceruți de codul nou de BPF)
+          sed -i '/struct task_struct \*owner;/a \	spinlock_t arg_lock;\n\tunsigned long saved_auxv[AT_VECTOR_SIZE];' include/linux/mm_types.h
+          
+          # 2. Sincronizăm headerele de BPF/LSM cu 5.10 (Sursa ta de încredere)
           git checkout phoenix/android12-5.10-phoenix -- include/linux/lsm_hook_defs.h
+          git checkout phoenix/android12-5.10-phoenix -- include/linux/lsm_hooks.h
+          git checkout phoenix/android12-5.10-phoenix -- include/linux/security.h
           git checkout phoenix/android12-5.10-phoenix -- include/linux/bpf.h
           git checkout phoenix/android12-5.10-phoenix -- include/uapi/linux/bpf.h
           git checkout phoenix/android12-5.10-phoenix -- include/linux/kernel_read_file.h || touch include/linux/kernel_read_file.h
-          
-          echo "Syncing Core Logic..."
-          # 2. LOGICĂ (Cod Sursă)
-          git checkout phoenix/android12-5.10-phoenix -- kernel/fork.c
-          git checkout phoenix/android12-5.10-phoenix -- kernel/exit.c
+
+          echo "Syncing Logic..."
           git checkout phoenix/android-4.14-phoenix -- kernel/bpf/
           git checkout phoenix/android-4.14-phoenix -- security/
           git checkout phoenix/android-4.14-phoenix -- fs/proc/base.c
 
+          # 3. Patch manual pentru inițializarea arg_lock în fork.c (4.14 style)
+          sed -i '/spin_lock_init(&mm->page_table_lock);/a \	spin_lock_init(&mm->arg_lock);' kernel/fork.c
+
           # Fix Clang - Tag struct page
           sed -i 's/page = (char \*)__get_free_page/struct page *page_ptr; page = (char *)__get_free_page/g' fs/proc/base.c || true
-          
-          # Fix global pentru redenumirea task->state (4.14) în task->__state (5.10)
-          # Asta previne erorile de compilare în restul kernelului Samsung
-          grep -rl "task->state" . | xargs sed -i 's/task->state/task->__state/g' || true
-          grep -rl "p->state" . | xargs sed -i 's/p->state/p->__state/g' || true
 
           git add .
-          git commit -m "Hybrid Sync V8: Full structural alignment with 5.10" || echo "No changes"
+          git commit -m "Surgical Sync V9: 4.14 logic with injected 5.10 BPF structs" || echo "No changes"
 
       - name: Setup Toolchain
         run: |
@@ -103,7 +101,7 @@ jobs:
 
           make $MAKE_ARGS olddefconfig
           
-          # KCFLAGS agresive pentru compatibilitate hibridă
+          # KCFLAGS pentru a tolera diferențele hibride
           make -j$(nproc --all) $MAKE_ARGS Image.gz \
             KCFLAGS="-w -fcommon -fno-stack-protector -Wno-implicit-function-declaration -Wno-int-conversion -fintegrated-as" \
             HOSTCFLAGS="-w"
@@ -111,5 +109,5 @@ jobs:
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-R5Q-V8-Final
+          name: Kernel-R5Q-V9-Surgical
           path: kernel/out/arch/arm64/boot/Image.gz
