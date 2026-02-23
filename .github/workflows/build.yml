@@ -1,4 +1,4 @@
-name: Build R5Q - Android 15 Shim BPF V18
+name: Build R5Q - Android 15 Shim BPF V19
 on:
   workflow_dispatch:
 
@@ -14,7 +14,7 @@ jobs:
           path: kernel
           fetch-depth: 0
 
-      - name: Android 15 BPF Shim Surgery (V18)
+      - name: Android 15 BPF Shim Surgery (V19)
         run: |
           cd kernel
           git config user.name "GitHub Action"
@@ -25,43 +25,26 @@ jobs:
           git fetch phoenix android12-5.10-phoenix --depth=1
           
           echo "Nuclear Clean of KernelSU references..."
-          # Ștergem orice linie care încearcă să încarce Kconfig-ul KernelSU
           find . -name "Kconfig" -type f -exec sed -i '/kernelsu/d' {} +
           
-          echo "Syncing 5.10 BPF Subsystem..."
+          echo "Syncing 5.10 BPF Infrastructure..."
           git checkout phoenix/android12-5.10-phoenix -- kernel/bpf/
           git checkout phoenix/android12-5.10-phoenix -- include/linux/bpf.h
           git checkout phoenix/android12-5.10-phoenix -- include/linux/bpf_types.h
+          git checkout phoenix/android12-5.10-phoenix -- include/linux/bpf_lsm.h || touch include/linux/bpf_lsm.h
+          git checkout phoenix/android12-5.10-phoenix -- include/linux/bpf_verifier.h
+          git checkout phoenix/android12-5.10-phoenix -- include/linux/btf.h
           git checkout phoenix/android12-5.10-phoenix -- include/uapi/linux/bpf.h
           git checkout phoenix/android12-5.10-phoenix -- include/linux/lsm_hook_defs.h
 
-          echo "Updating BPF-to-4.14 Shim..."
-          # Am rafinat Shim-ul pentru a evita conflictele de redefinire
-          cat <<EOF > kernel/bpf/bpf_shim.h
-          #ifndef __BPF_SHIM_H
-          #define __BPF_SHIM_H
+          echo "Applying Hardcoded API Bridge..."
+          # Fix NF_HOOK direct în header-ul de rețea pentru a preveni redefinirea
+          # Modificăm NF_HOOK să accepte 7 argumente dar să folosească doar 5 (standard 4.14)
+          sed -i 's/NF_HOOK(plat, hook, in, out, okfn)/NF_HOOK(plat, hook, net, sk, in, out, okfn)/g' include/linux/netfilter.h
+          sed -i 's/nf_hook(plat, hook, in, out, okfn)/nf_hook(plat, hook, in, out, okfn) \/\/ shimmed/g' include/linux/netfilter.h
 
-          #include <linux/netfilter.h>
-          #include <linux/netdevice.h>
-
-          /* Shim pentru NF_HOOK: Adaptăm apelul 5.10 la structura 4.14 */
-          #ifdef NF_HOOK
-          #undef NF_HOOK
-          #endif
-          #define NF_HOOK(pf, hook, net, sk, in, out, okfn) \\
-                  nf_hook(pf, hook, in, out, okfn)
-
-          /* Fix pentru lipsa bpf_jit_charge din 4.14 */
-          struct bpf_prog;
-          static inline int bpf_jit_charge_modmem(struct bpf_prog *prog, int size) { return 0; }
-          static inline void bpf_jit_uncharge_modmem(struct bpf_prog *prog, int size) { }
-
-          #endif
-          EOF
-
-          # Injectăm Shim-ul
-          sed -i '1i #include "bpf_shim.h"' kernel/bpf/cgroup.c
-          sed -i '1i #include "bpf_shim.h"' kernel/bpf/core.c
+          # Fix bpf_jit_charge direct în bpf.h
+          sed -i '/struct bpf_prog_aux {/i static inline int bpf_jit_charge_modmem(void *prog, int size) { return 0; }\nstatic inline void bpf_jit_uncharge_modmem(void *prog, int size) { }' include/linux/bpf.h
 
           echo "Injecting LSM Hooks into 4.14 Core..."
           git checkout phoenix/android-4.14-phoenix -- security/security.c
@@ -74,12 +57,8 @@ jobs:
           sed -i '/struct task_struct \*owner;/a \	spinlock_t arg_lock;\n\tunsigned long saved_auxv[AT_VECTOR_SIZE];' include/linux/mm_types.h
           sed -i '/spin_lock_init(&mm->page_table_lock);/a \	spin_lock_init(&mm->arg_lock);' kernel/fork.c
 
-          # Fix Clang proc base
-          git checkout phoenix/android-4.14-phoenix -- fs/proc/base.c
-          sed -i 's/page = (char \*)__get_free_page/struct page *page_ptr; page = (char *)__get_free_page/g' fs/proc/base.c || true
-
           git add .
-          git commit -m "Hybrid V18: Fixed Kconfig and refined BPF shim" || echo "No changes"
+          git commit -m "Hybrid V19: Hardcoded NF_HOOK bridge and synced verifier headers" || echo "No changes"
 
       - name: Setup Toolchain
         run: |
@@ -96,11 +75,9 @@ jobs:
 
           mkdir -p out
           make $MAKE_ARGS r5q_defconfig
-
           ./scripts/config --file out/.config \
             -e CONFIG_BPF -e CONFIG_BPF_SYSCALL -e CONFIG_BPF_JIT -e CONFIG_BPF_LSM \
             -d CONFIG_SAMSUNG_RTIC -d CONFIG_SECURITY_RKP -d CONFIG_WERROR
-
           make $MAKE_ARGS olddefconfig
           make -j$(nproc --all) $MAKE_ARGS Image.gz \
-            KCFLAGS="-w -fcommon -fno-stack-protector -Wno-implicit-function-declaration -Wno-int-conversion -fintegrated-as"
+            KCFLAGS="-w -fcommon -fno-stack-protector -fintegrated-as -Wno-implicit-function-declaration"
