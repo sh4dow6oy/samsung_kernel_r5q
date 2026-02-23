@@ -1,4 +1,4 @@
-name: Build R5Q - Phoenix BPF V13
+name: Build R5Q - Phoenix BPF V14
 on:
   workflow_dispatch:
 
@@ -14,7 +14,7 @@ jobs:
           path: kernel
           fetch-depth: 0
 
-      - name: Phoenix Surgical Transplant (V13)
+      - name: Phoenix Surgical Transplant (V14)
         run: |
           cd kernel
           git config user.name "GitHub Action"
@@ -30,19 +30,19 @@ jobs:
           git checkout phoenix/android-4.14-phoenix -- kernel/fork.c
           git checkout phoenix/android-4.14-phoenix -- include/linux/lsm_hooks.h
           
-          # 2. Sincronizare Headere BPF din 5.10
+          # 2. SINCRONIZARE TOTALĂ BPF DIN 5.10 (Fix pentru core.c / btf_module)
+          echo "Syncing Total BPF Subsystem from 5.10..."
+          git checkout phoenix/android12-5.10-phoenix -- kernel/bpf/
           git checkout phoenix/android12-5.10-phoenix -- include/linux/bpf.h
+          git checkout phoenix/android12-5.10-phoenix -- include/linux/bpf_types.h
           git checkout phoenix/android12-5.10-phoenix -- include/uapi/linux/bpf.h
           git checkout phoenix/android12-5.10-phoenix -- include/linux/lsm_hook_defs.h
 
-          echo "Surgery on include/linux/bpf.h..."
-          # Forțăm includerea lsm_hook_defs.h și definirea membrului lsm_hook
-          # Eliminăm #ifdef CONFIG_BPF_LSM pentru a fi siguri că structura e completă
-          sed -i 's/#ifdef CONFIG_BPF_LSM/if 1/g' include/linux/bpf.h
-          sed -i '/struct bpf_prog_aux {/i struct lsm_hook_defs;' include/linux/bpf.h
+          # 3. Patch pentru compatibilitate JIT (Alocare memorie 4.14 style)
+          # În 4.14 nu avem bpf_jit_charge_modmem, așa că îl facem un "no-op"
+          sed -i 's/return bpf_jit_charge_modmem/return 0; \/\/ bpf_jit_charge_modmem/g' kernel/bpf/core.c || true
 
           echo "Injecting BPF Support into LSM (4.14)..."
-          # Adăugăm bpf_lsm_hooks în struct lsm_info
           sed -i '/struct lsm_id \*id;/a \	void *bpf_lsm_hooks;' include/linux/lsm_hooks.h || true
           
           echo "Fixing MM and Fork..."
@@ -50,19 +50,15 @@ jobs:
           sed -i '/struct task_struct \*owner;/a \	spinlock_t arg_lock;\n\tunsigned long saved_auxv[AT_VECTOR_SIZE];' include/linux/mm_types.h
           sed -i '/spin_lock_init(&mm->page_table_lock);/a \	spin_lock_init(&mm->arg_lock);' kernel/fork.c
 
-          echo "Syncing BPF Logic..."
-          git checkout phoenix/android-4.14-phoenix -- kernel/bpf/
+          echo "Final Logic Adjustments..."
           git checkout phoenix/android-4.14-phoenix -- security/bpf/ || true
           git checkout phoenix/android-4.14-phoenix -- fs/proc/base.c
-
-          # Fix specific pentru syscall.c (incomplete type)
-          sed -i '1i #include <linux/lsm_hook_defs.h>' kernel/bpf/syscall.c
-
+          
           # Fix Clang compliance
           sed -i 's/page = (char \*)__get_free_page/struct page *page_ptr; page = (char *)__get_free_page/g' fs/proc/base.c || true
 
           git add .
-          git commit -m "Surgical Sync V13: Forced BPF LSM structure members" || echo "No changes"
+          git commit -m "Surgical Sync V14: Full BPF subsystem alignment with 5.10" || echo "No changes"
 
       - name: Setup Toolchain
         run: |
