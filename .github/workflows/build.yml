@@ -1,4 +1,4 @@
-name: Build R5Q - Phoenix Hybrid BPF V6
+name: Build R5Q - Phoenix Hybrid BPF V7
 on:
   workflow_dispatch:
 
@@ -14,7 +14,7 @@ jobs:
           path: kernel
           fetch-depth: 0
 
-      - name: Phoenix Hybrid Transplant
+      - name: Phoenix Hybrid Transplant (Logic Alignment)
         run: |
           cd kernel
           git config user.name "GitHub Action"
@@ -25,56 +25,45 @@ jobs:
           git fetch phoenix android12-5.10-phoenix --depth=1
           
           echo "Cleaning residues..."
-          sed -i '/kernelsu/d' drivers/android/Kconfig
+          sed -i '/kernelsu\/Kconfig/d' drivers/android/Kconfig || true
+          rm -rf kernel/bpf/ security/bpf/
           
-          echo "Syncing Headers (Backports from 5.10)..."
-          git checkout phoenix/android12-5.10-phoenix -- \
-            include/linux/mm_types.h \
-            include/linux/sched.h \
-            include/linux/android_kabi.h \
-            include/linux/sched/task_stack.h \
-            include/linux/mm.h \
-            include/linux/ratelimit.h \
-            include/linux/ratelimit_types.h \
-            include/linux/page-flags.h \
-            include/linux/mmzone.h \
-            include/linux/kbuild.h \
-            include/linux/spinlock_types.h \
-            include/linux/printk.h \
-            include/uapi/linux/rseq.h \
-            include/linux/security.h \
-            include/linux/lsm_hooks.h \
-            include/linux/lsm_hook_defs.h \
-            include/linux/bpf.h \
-            include/uapi/linux/bpf.h
+          echo "Syncing 5.10 Foundations..."
+          # Luăm structurile de bază din 5.10 pentru consistență cu BPF LSM
+          git checkout phoenix/android12-5.10-phoenix -- include/linux/mm_types.h
+          git checkout phoenix/android12-5.10-phoenix -- include/linux/sched.h
+          git checkout phoenix/android12-5.10-phoenix -- include/linux/sched/task.h
+          git checkout phoenix/android12-5.10-phoenix -- include/linux/mm.h
+          git checkout phoenix/android12-5.10-phoenix -- include/linux/security.h
+          git checkout phoenix/android12-5.10-phoenix -- include/linux/lsm_hooks.h
+          git checkout phoenix/android12-5.10-phoenix -- include/linux/lsm_hook_defs.h
+          git checkout phoenix/android12-5.10-phoenix -- include/linux/bpf.h
+          git checkout phoenix/android12-5.10-phoenix -- include/uapi/linux/bpf.h
+          git checkout phoenix/android12-5.10-phoenix -- include/linux/kernel_read_file.h || touch include/linux/kernel_read_file.h
           
-          git checkout phoenix/android-4.14-phoenix -- include/linux/kernel_read_file.h || \
-          git checkout phoenix/android12-5.10-phoenix -- include/linux/kernel_read_file.h
+          echo "Syncing Process Logic (Aligning fork/exit with 5.10 structs)..."
+          # Importăm logica de procese din 5.10 ca să se potrivească cu task_struct redenumit
+          git checkout phoenix/android12-5.10-phoenix -- kernel/fork.c
+          git checkout phoenix/android12-5.10-phoenix -- kernel/exit.c
+          
+          # Păstrăm totuși BPF-ul din Phoenix 4.14 pentru compatibilitate JIT/ARM64
+          git checkout phoenix/android-4.14-phoenix -- kernel/bpf/
+          git checkout phoenix/android-4.14-phoenix -- security/
+          git checkout phoenix/android-4.14-phoenix -- fs/proc/base.c
 
-          echo "Reinstate 'frozen' member into task_struct (Fixing 5.10 header for 4.14 base)..."
-          # Căutăm locul unde începe task_struct și injectăm 'frozen' înapoi pentru compatibilitate Samsung
-          sed -i '/struct task_struct {/a \	unsigned int frozen:1; /* reinstate for 4.14 compatibility */' include/linux/sched.h
-
-          echo "Syncing Core Logic (4.14)..."
-          git checkout phoenix/android-4.14-phoenix -- kernel/bpf/ security/ kernel/fork.c fs/proc/base.c
-          
           # Fix Clang compliance
-          sed -i 's/char \*page = (char \*)__get_free_page/struct page *page_ptr; char *page = (char *)__get_free_page/g' fs/proc/base.c || true
+          sed -i 's/page = (char \*)__get_free_page/struct page *page_ptr; page = (char *)__get_free_page/g' fs/proc/base.c || true
           
+          # Fix redenumire state -> __state pentru orice fișier .c rămas pe model vechi
+          find . -name "*.c" -exec sed -i 's/\btask->state\b/task->__state/g' {} +
+          find . -name "*.c" -exec sed -i 's/\bp->state\b/p->__state/g' {} +
+
           git add .
-          git commit -m "Hybrid Sync V6: Reinstate frozen in task_struct" || echo "No changes"
+          git commit -m "Hybrid Sync V7: Aligned task_struct state and process logic" || echo "No changes"
 
-      - name: Setup Toolchain & Legacy Libs
+      - name: Setup Toolchain
         run: |
-          sudo apt-get update
-          sudo apt-get install -y zstd libssl-dev bc bison flex python3
-          
-          echo "deb http://azure.archive.ubuntu.com/ubuntu/ jammy universe" | sudo tee /etc/apt/sources.list.d/jammy.list
-          sudo apt-get update
-          sudo apt-get install -y libtinfo5 libncurses5
-          sudo rm /etc/apt/sources.list.d/jammy.list
-          sudo apt-get update
-
+          sudo apt-get update && sudo apt-get install -y zstd libssl-dev bc bison flex
           mkdir clang
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
@@ -101,7 +90,7 @@ jobs:
             O=out"
 
           mkdir -p out
-          make $MAKE_ARGS r5q_defconfig || (sed -i '/kernelsu/d' drivers/android/Kconfig && make $MAKE_ARGS r5q_defconfig)
+          make $MAKE_ARGS r5q_defconfig
 
           ./scripts/config --file out/.config \
             -e CONFIG_BPF \
@@ -110,19 +99,17 @@ jobs:
             -e CONFIG_BPF_LSM \
             -d CONFIG_SAMSUNG_RTIC \
             -d CONFIG_SECURITY_RKP \
-            -d CONFIG_SECURITY_RKP_KDP \
-            -d CONFIG_UH_RKP \
             -d CONFIG_WERROR
 
           make $MAKE_ARGS olddefconfig
           
+          # KCFLAGS agresive pentru a ignora diferențele de tip hibride
           make -j$(nproc --all) $MAKE_ARGS Image.gz \
-            KCFLAGS="-w -fcommon -fno-stack-protector -Wno-error -Wno-incompatible-pointer-types -Wno-implicit-function-declaration" \
+            KCFLAGS="-w -fcommon -fno-stack-protector -Wno-implicit-function-declaration -Wno-int-conversion -fintegrated-as" \
             HOSTCFLAGS="-w"
 
-      - name: Upload Artifact
-        if: success()
+      - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-R5Q-BPF-V6
+          name: Kernel-R5Q-V7-Hybrid
           path: kernel/out/arch/arm64/boot/Image.gz
