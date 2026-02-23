@@ -1,4 +1,4 @@
-name: Build R5Q - Android 15 Shim BPF V22
+name: Build R5Q - Android 15 Shim BPF V23
 on:
   workflow_dispatch:
 
@@ -14,7 +14,7 @@ jobs:
           path: kernel
           fetch-depth: 0
 
-      - name: Android 15 BPF Memory Bridge (V22)
+      - name: Android 15 BPF Memory Bridge (V23)
         run: |
           cd kernel
           git config user.name "GitHub Action"
@@ -27,25 +27,32 @@ jobs:
           echo "Nuclear Clean of KernelSU..."
           find . -name "Kconfig" -type f -exec sed -i '/kernelsu/d' {} +
           
-          echo "Syncing 5.10 BPF Verifier & BTF Support..."
+          echo "Syncing 5.10 BPF Subsystem..."
           git checkout phoenix/android12-5.10-phoenix -- kernel/bpf/
           git checkout phoenix/android12-5.10-phoenix -- include/linux/bpf.h
           git checkout phoenix/android12-5.10-phoenix -- include/linux/btf.h
           git checkout phoenix/android12-5.10-phoenix -- include/uapi/linux/bpf.h
           
-          echo "Refining Shim for bpf_map and Memory..."
+          echo "Refining Shim for Memory Locking (4.14 vs 5.10)..."
           cat <<EOF > bpf_mem_shim.h
           #ifndef __BPF_MEM_SHIM_H
           #define __BPF_MEM_SHIM_H
           #include <linux/mm.h>
           #include <linux/vmalloc.h>
+          #include <linux/mmap_lock.h>
+
+          /* Map mmap_lock (5.10) to mmap_sem (4.14) */
+          #define mmap_lock mmap_sem
+          #define mmap_read_lock(mm) down_read(&(mm)->mmap_sem)
+          #define mmap_read_unlock(mm) up_read(&(mm)->mmap_sem)
+          #define mmap_write_lock(mm) down_write(&(mm)->mmap_sem)
+          #define mmap_write_unlock(mm) up_write(&(mm)->mmap_sem)
 
           #define vfree_atomic(addr) vfree(addr)
-          #ifndef MODULES_VADDR
-          #define MODULES_VADDR 0
-          #endif
+          
+          /* Dummy struct for bpf_map_memory if missing */
+          struct bpf_map_memory { uint32_t pages; void *user; };
 
-          /* Dummy functions for missing 5.10 map logic */
           static inline void bpf_map_put_uref(void *map) { }
           static inline int bpf_jit_charge_modmem(void *prog, int size) { return 0; }
           static inline void bpf_jit_uncharge_modmem(void *prog, int size) { }
@@ -55,28 +62,25 @@ jobs:
           # Injectăm shim-ul în bpf.h
           sed -i '1i #include "../../bpf_mem_shim.h"' include/linux/bpf.h
           
-          # Injectăm membrii lipsă în struct bpf_map (pentru btf.c și offload.c)
-          sed -i '/struct bpf_map {/a \	void *memcg;\n\tvoid *offload;' include/linux/bpf.h
-          
-          # Injectăm membrul 'vm' în struct bpf_prog_aux
+          # Injectăm membrii lipsă în structuri
+          sed -i '/struct bpf_map {/a \	void *memcg;\n\tvoid *offload;\n\tstruct bpf_map_memory memory;' include/linux/bpf.h
           sed -i '/struct bpf_prog \*prog;/a \	void *vm;' include/linux/bpf.h
 
-          echo "Hardcoding Network API Bridge..."
-          sed -i 's/NF_HOOK(plat, hook, in, out, okfn)/NF_HOOK(plat, hook, net, sk, in, out, okfn)/g' include/linux/netfilter.h
-
-          echo "Injecting LSM Hooks into 4.14 Core..."
+          echo "Fixing MM Structs & LSM Hooks..."
           git checkout phoenix/android-4.14-phoenix -- security/security.c
           git checkout phoenix/android-4.14-phoenix -- kernel/fork.c
           git checkout phoenix/android-4.14-phoenix -- include/linux/lsm_hooks.h
           sed -i '/struct lsm_id \*id;/a \	void *bpf_lsm_hooks;' include/linux/lsm_hooks.h
-
-          echo "Fixing MM Structs..."
+          
           sed -i '1i #include <uapi/linux/auxvec.h>' include/linux/mm_types.h
           sed -i '/struct task_struct \*owner;/a \	spinlock_t arg_lock;\n\tunsigned long saved_auxv[AT_VECTOR_SIZE];' include/linux/mm_types.h
           sed -i '/spin_lock_init(&mm->page_table_lock);/a \	spin_lock_init(&mm->arg_lock);' kernel/fork.c
 
+          echo "Hardcoding Network API Bridge..."
+          sed -i 's/NF_HOOK(plat, hook, in, out, okfn)/NF_HOOK(plat, hook, net, sk, in, out, okfn)/g' include/linux/netfilter.h
+
           git add .
-          git commit -m "Hybrid V22: Expanded bpf_map struct and added uref shims" || echo "No changes"
+          git commit -m "Hybrid V23: Mapped mmap_lock to mmap_sem and added map_memory shim" || echo "No changes"
 
       - name: Setup Toolchain
         run: |
@@ -99,4 +103,4 @@ jobs:
           make $MAKE_ARGS olddefconfig
           
           make -j$(nproc --all) $MAKE_ARGS Image.gz \
-            KCFLAGS="-w -fcommon -fno-stack-protector -fintegrated-as -Wno-implicit-function-declaration -Wno-error=int-conversion -Wno-error=return-type -Wno-unused-variable"
+            KCFLAGS="-w -fcommon -fno-stack-protector -fintegrated-as -Wno-implicit-function-declaration -Wno-error=int-conversion -Wno-error=return-type -Wno-unused-variable -Wno-unused-function"
