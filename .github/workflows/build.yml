@@ -1,4 +1,4 @@
-name: Build R5Q - Phoenix BPF V14
+name: Build R5Q - Android 15 Shim BPF
 on:
   workflow_dispatch:
 
@@ -14,7 +14,7 @@ jobs:
           path: kernel
           fetch-depth: 0
 
-      - name: Phoenix Surgical Transplant (V14)
+      - name: Android 15 BPF Shim Surgery (V17)
         run: |
           cd kernel
           git config user.name "GitHub Action"
@@ -24,41 +24,57 @@ jobs:
           git fetch phoenix android-4.14-phoenix --depth=1
           git fetch phoenix android12-5.10-phoenix --depth=1
           
-          # 1. Resetare la baza 4.14 Phoenix
-          sed -i '/kernelsu\/Kconfig/d' drivers/android/Kconfig || true
-          git checkout phoenix/android-4.14-phoenix -- security/security.c
-          git checkout phoenix/android-4.14-phoenix -- kernel/fork.c
-          git checkout phoenix/android-4.14-phoenix -- include/linux/lsm_hooks.h
-          
-          # 2. SINCRONIZARE TOTALĂ BPF DIN 5.10 (Fix pentru core.c / btf_module)
-          echo "Syncing Total BPF Subsystem from 5.10..."
+          echo "Syncing 5.10 BPF Subsystem..."
           git checkout phoenix/android12-5.10-phoenix -- kernel/bpf/
           git checkout phoenix/android12-5.10-phoenix -- include/linux/bpf.h
           git checkout phoenix/android12-5.10-phoenix -- include/linux/bpf_types.h
           git checkout phoenix/android12-5.10-phoenix -- include/uapi/linux/bpf.h
           git checkout phoenix/android12-5.10-phoenix -- include/linux/lsm_hook_defs.h
 
-          # 3. Patch pentru compatibilitate JIT (Alocare memorie 4.14 style)
-          # În 4.14 nu avem bpf_jit_charge_modmem, așa că îl facem un "no-op"
-          sed -i 's/return bpf_jit_charge_modmem/return 0; \/\/ bpf_jit_charge_modmem/g' kernel/bpf/core.c || true
+          echo "Creating BPF-to-4.14 Compatibility Shim..."
+          # Creăm un fișier de tip bridge pentru a gestiona diferențele de API
+          cat <<EOF > kernel/bpf/bpf_shim.h
+          #ifndef __BPF_SHIM_H
+          #define __BPF_SHIM_H
 
-          echo "Injecting BPF Support into LSM (4.14)..."
-          sed -i '/struct lsm_id \*id;/a \	void *bpf_lsm_hooks;' include/linux/lsm_hooks.h || true
+          #include <linux/netfilter.h>
+
+          /* Shim pentru NF_HOOK: 5.10 (7 args) -> 4.14 (5 args) */
+          /* Ignorăm 'net' și 'sk' care nu există în semnătura NF_HOOK din 4.14 */
+          #undef NF_HOOK
+          #define NF_HOOK(pf, hook, net, sk, in, out, okfn) \\
+                  nf_hook(pf, hook, in, out, okfn)
+
+          /* Shim pentru bpf_jit_charge_modmem (nu există în 4.14) */
+          static inline int bpf_jit_charge_modmem(struct bpf_prog *prog, int size) { return 0; }
+          static inline void bpf_jit_uncharge_modmem(struct bpf_prog *prog, int size) { }
+
+          #endif
+          EOF
+
+          # Injectăm Shim-ul în fișierele critice din kernel/bpf/
+          sed -i '1i #include "bpf_shim.h"' kernel/bpf/cgroup.c
+          sed -i '1i #include "bpf_shim.h"' kernel/bpf/core.c
+
+          echo "Injecting LSM Hooks into 4.14 Core..."
+          git checkout phoenix/android-4.14-phoenix -- security/security.c
+          git checkout phoenix/android-4.14-phoenix -- kernel/fork.c
+          git checkout phoenix/android-4.14-phoenix -- include/linux/lsm_hooks.h
           
-          echo "Fixing MM and Fork..."
+          # Adăugăm câmpul bpf_lsm_hooks cerut de înregistrarea BPF
+          sed -i '/struct lsm_id \*id;/a \	void *bpf_lsm_hooks;' include/linux/lsm_hooks.h
+
+          echo "Fixing MM Structs for 5.10 Compatibility..."
           sed -i '1i #include <uapi/linux/auxvec.h>' include/linux/mm_types.h
           sed -i '/struct task_struct \*owner;/a \	spinlock_t arg_lock;\n\tunsigned long saved_auxv[AT_VECTOR_SIZE];' include/linux/mm_types.h
           sed -i '/spin_lock_init(&mm->page_table_lock);/a \	spin_lock_init(&mm->arg_lock);' kernel/fork.c
 
-          echo "Final Logic Adjustments..."
-          git checkout phoenix/android-4.14-phoenix -- security/bpf/ || true
+          # Fix Clang page cast
           git checkout phoenix/android-4.14-phoenix -- fs/proc/base.c
-          
-          # Fix Clang compliance
           sed -i 's/page = (char \*)__get_free_page/struct page *page_ptr; page = (char *)__get_free_page/g' fs/proc/base.c || true
 
           git add .
-          git commit -m "Surgical Sync V14: Full BPF subsystem alignment with 5.10" || echo "No changes"
+          git commit -m "Hybrid V17: Implemented BPF Shim for 4.14/5.10 API bridge" || echo "No changes"
 
       - name: Setup Toolchain
         run: |
