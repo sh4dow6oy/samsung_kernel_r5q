@@ -1,4 +1,4 @@
-name: Build R5Q - Phoenix BPF V12
+name: Build R5Q - Phoenix BPF V13
 on:
   workflow_dispatch:
 
@@ -14,7 +14,7 @@ jobs:
           path: kernel
           fetch-depth: 0
 
-      - name: Phoenix Surgical Transplant (V12)
+      - name: Phoenix Surgical Transplant (V13)
         run: |
           cd kernel
           git config user.name "GitHub Action"
@@ -30,20 +30,21 @@ jobs:
           git checkout phoenix/android-4.14-phoenix -- kernel/fork.c
           git checkout phoenix/android-4.14-phoenix -- include/linux/lsm_hooks.h
           
-          # 2. Sincronizare Headere BPF din 5.10 (Pentru struct bpf_prog_aux)
+          # 2. Sincronizare Headere BPF din 5.10
           git checkout phoenix/android12-5.10-phoenix -- include/linux/bpf.h
           git checkout phoenix/android12-5.10-phoenix -- include/uapi/linux/bpf.h
           git checkout phoenix/android12-5.10-phoenix -- include/linux/lsm_hook_defs.h
 
-          echo "Injecting BPF Support into LSM (4.14)..."
-          # Adăugăm bpf_lsm_hooks în struct lsm_info (în lsm_hooks.h)
-          sed -i '/struct lsm_id \*id;/a \	struct lsm_hook_defs *bpf_lsm_hooks;' include/linux/lsm_hooks.h || true
-          
-          # Injectăm definiția LSM_ID_BPF dacă lipsește
-          if ! grep -q "LSM_ID_BPF" include/linux/lsm_hooks.h; then
-            sed -i '/enum lsm_event {/i #define LSM_ID_BPF 99' include/linux/lsm_hooks.h
-          fi
+          echo "Surgery on include/linux/bpf.h..."
+          # Forțăm includerea lsm_hook_defs.h și definirea membrului lsm_hook
+          # Eliminăm #ifdef CONFIG_BPF_LSM pentru a fi siguri că structura e completă
+          sed -i 's/#ifdef CONFIG_BPF_LSM/if 1/g' include/linux/bpf.h
+          sed -i '/struct bpf_prog_aux {/i struct lsm_hook_defs;' include/linux/bpf.h
 
+          echo "Injecting BPF Support into LSM (4.14)..."
+          # Adăugăm bpf_lsm_hooks în struct lsm_info
+          sed -i '/struct lsm_id \*id;/a \	void *bpf_lsm_hooks;' include/linux/lsm_hooks.h || true
+          
           echo "Fixing MM and Fork..."
           sed -i '1i #include <uapi/linux/auxvec.h>' include/linux/mm_types.h
           sed -i '/struct task_struct \*owner;/a \	spinlock_t arg_lock;\n\tunsigned long saved_auxv[AT_VECTOR_SIZE];' include/linux/mm_types.h
@@ -54,11 +55,14 @@ jobs:
           git checkout phoenix/android-4.14-phoenix -- security/bpf/ || true
           git checkout phoenix/android-4.14-phoenix -- fs/proc/base.c
 
+          # Fix specific pentru syscall.c (incomplete type)
+          sed -i '1i #include <linux/lsm_hook_defs.h>' kernel/bpf/syscall.c
+
           # Fix Clang compliance
           sed -i 's/page = (char \*)__get_free_page/struct page *page_ptr; page = (char *)__get_free_page/g' fs/proc/base.c || true
 
           git add .
-          git commit -m "Surgical Sync V12: Injected BPF LSM hooks into 4.14" || echo "No changes"
+          git commit -m "Surgical Sync V13: Forced BPF LSM structure members" || echo "No changes"
 
       - name: Setup Toolchain
         run: |
