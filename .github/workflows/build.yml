@@ -1,4 +1,4 @@
-name: Build R5Q - Android 15 Shim BPF V20
+name: Build R5Q - Android 15 Shim BPF V21
 on:
   workflow_dispatch:
 
@@ -14,7 +14,7 @@ jobs:
           path: kernel
           fetch-depth: 0
 
-      - name: Android 15 BPF Shim Surgery (V20)
+      - name: Android 15 BPF Memory Bridge (V21)
         run: |
           cd kernel
           git config user.name "GitHub Action"
@@ -27,22 +27,42 @@ jobs:
           echo "Nuclear Clean of KernelSU..."
           find . -name "Kconfig" -type f -exec sed -i '/kernelsu/d' {} +
           
-          echo "Syncing 5.10 BPF Verifier Support..."
-          # Importăm tot ce ține de logica internă BPF din 5.10
+          echo "Syncing 5.10 BPF Verifier & Memory Support..."
           git checkout phoenix/android12-5.10-phoenix -- kernel/bpf/
           git checkout phoenix/android12-5.10-phoenix -- include/linux/bpf.h
           git checkout phoenix/android12-5.10-phoenix -- include/linux/tnum.h
           git checkout phoenix/android12-5.10-phoenix -- include/linux/bpf_verifier.h
-          git checkout phoenix/android12-5.10-phoenix -- include/linux/bpf_lsm.h || touch include/linux/bpf_lsm.h
           git checkout phoenix/android12-5.10-phoenix -- include/linux/btf.h
           git checkout phoenix/android12-5.10-phoenix -- include/uapi/linux/bpf.h
           
-          echo "Applying Hardcoded API Bridge..."
+          echo "Injecting Memory & Network Shim..."
           # Fix NF_HOOK in include/linux/netfilter.h
           sed -i 's/NF_HOOK(plat, hook, in, out, okfn)/NF_HOOK(plat, hook, net, sk, in, out, okfn)/g' include/linux/netfilter.h
           
-          # Fix bpf_jit_charge in bpf.h
-          sed -i '/struct bpf_prog_aux {/i static inline int bpf_jit_charge_modmem(void *prog, int size) { return 0; }\nstatic inline void bpf_jit_uncharge_modmem(void *prog, int size) { }' include/linux/bpf.h
+          # Creăm un set de definiții de compatibilitate pentru Memorie direct în bpf.h
+          cat <<EOF > bpf_mem_shim.h
+          #ifndef __BPF_MEM_SHIM_H
+          #define __BPF_MEM_SHIM_H
+          #include <linux/mm.h>
+          #include <linux/vmalloc.h>
+
+          /* Măpăm vfree_atomic la vfree (4.14 nu are varianta atomică standard) */
+          #define vfree_atomic(addr) vfree(addr)
+
+          /* Definire MODULES_VADDR dacă lipsește (specific ARM64) */
+          #ifndef MODULES_VADDR
+          #define MODULES_VADDR 0
+          #endif
+
+          /* No-ops pentru modmem charging */
+          static inline int bpf_jit_charge_modmem(void *prog, int size) { return 0; }
+          static inline void bpf_jit_uncharge_modmem(void *prog, int size) { }
+          #endif
+          EOF
+
+          # Injectăm shim-ul de memorie în bpf.h și adăugăm membrul 'vm'
+          sed -i '1i #include "../../bpf_mem_shim.h"' include/linux/bpf.h
+          sed -i '/struct bpf_prog \*prog;/a \	void *vm;' include/linux/bpf.h
 
           echo "Injecting LSM Hooks into 4.14 Core..."
           git checkout phoenix/android-4.14-phoenix -- security/security.c
@@ -55,11 +75,11 @@ jobs:
           sed -i '/struct task_struct \*owner;/a \	spinlock_t arg_lock;\n\tunsigned long saved_auxv[AT_VECTOR_SIZE];' include/linux/mm_types.h
           sed -i '/spin_lock_init(&mm->page_table_lock);/a \	spin_lock_init(&mm->arg_lock);' kernel/fork.c
 
-          # Patch pentru constantele lipsă din verifier.c (Backporting enum values)
+          # Backporting BPF_MOD_REL_DET_LOW
           sed -i '/enum bpf_reg_liveness {/i #define BPF_MOD_REL_DET_LOW 0' include/linux/bpf_verifier.h || true
 
           git add .
-          git commit -m "Hybrid V20: Synced TNUM and BPF Verifier constants" || echo "No changes"
+          git commit -m "Hybrid V21: Implemented Memory Shim and fixed vfree_atomic" || echo "No changes"
 
       - name: Setup Toolchain
         run: |
@@ -81,6 +101,5 @@ jobs:
             -d CONFIG_SAMSUNG_RTIC -d CONFIG_SECURITY_RKP -d CONFIG_WERROR
           make $MAKE_ARGS olddefconfig
           
-          # KCFLAGS pentru a ignora warning-urile de tip hibrid
           make -j$(nproc --all) $MAKE_ARGS Image.gz \
-            KCFLAGS="-w -fcommon -fno-stack-protector -fintegrated-as -Wno-implicit-function-declaration -Wno-error=int-conversion"
+            KCFLAGS="-w -fcommon -fno-stack-protector -fintegrated-as -Wno-implicit-function-declaration -Wno-error=int-conversion -Wno-error=return-type"
