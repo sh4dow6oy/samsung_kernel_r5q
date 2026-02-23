@@ -1,4 +1,4 @@
-name: Build R5Q - Phoenix BPF V10
+name: Build R5Q - Phoenix BPF V11
 on:
   workflow_dispatch:
 
@@ -14,7 +14,7 @@ jobs:
           path: kernel
           fetch-depth: 0
 
-      - name: Phoenix Surgical Transplant (V10)
+      - name: Phoenix Surgical Transplant (V11)
         run: |
           cd kernel
           git config user.name "GitHub Action"
@@ -24,47 +24,48 @@ jobs:
           git fetch phoenix android-4.14-phoenix --depth=1
           git fetch phoenix android12-5.10-phoenix --depth=1
           
-          echo "Cleaning residues..."
+          echo "Resetting to Stable Phoenix 4.14..."
           sed -i '/kernelsu\/Kconfig/d' drivers/android/Kconfig || true
           
-          # 1. Resetăm la 4.14 Phoenix pentru stabilitate generală
+          # Revenim la security.c din 4.14 care nu cere lsm_count.h
+          git checkout phoenix/android-4.14-phoenix -- security/security.c
           git checkout phoenix/android-4.14-phoenix -- kernel/fork.c
-          git checkout phoenix/android-4.14-phoenix -- kernel/exit.c
           git checkout phoenix/android-4.14-phoenix -- include/linux/sched.h
           git checkout phoenix/android-4.14-phoenix -- include/linux/mm_types.h
           
-          # 2. IMPORTĂM LOGICA DE SECURITATE DIN 5.10 (Fix pentru bpf_lsm_hooks)
-          git checkout phoenix/android12-5.10-phoenix -- security/security.c
+          echo "Injecting 5.10 BPF Structures into 4.14..."
+          # Importăm doar headerele necesare pentru definiții
           git checkout phoenix/android12-5.10-phoenix -- include/linux/lsm_hook_defs.h
           git checkout phoenix/android12-5.10-phoenix -- include/linux/lsm_hooks.h
           git checkout phoenix/android12-5.10-phoenix -- include/linux/security.h
           git checkout phoenix/android12-5.10-phoenix -- include/linux/bpf.h
           git checkout phoenix/android12-5.10-phoenix -- include/uapi/linux/bpf.h
 
-          # 3. FIX STRUCTURI MEMORIE (Injectăm manual în 4.14)
-          # Adăugăm include pentru AT_VECTOR_SIZE
+          echo "Fixing MM and Fork..."
+          # Fix AT_VECTOR_SIZE și struct mm
           sed -i '1i #include <uapi/linux/auxvec.h>' include/linux/mm_types.h
-          # Injectăm membrii necesari în mm_struct
           sed -i '/struct task_struct \*owner;/a \	spinlock_t arg_lock;\n\tunsigned long saved_auxv[AT_VECTOR_SIZE];' include/linux/mm_types.h
-          # Inițializare arg_lock în fork.c
           sed -i '/spin_lock_init(&mm->page_table_lock);/a \	spin_lock_init(&mm->arg_lock);' kernel/fork.c
 
-          echo "Syncing BPF Subsystem..."
+          echo "Bypassing 5.10 specific LSM requirements in security.c..."
+          # Eliminăm referințele către lsm_id sau alte structuri care nu există în 4.14
+          sed -i 's/struct lsm_id/int/g' security/security.c || true
+          
+          echo "Syncing BPF Logic..."
           git checkout phoenix/android-4.14-phoenix -- kernel/bpf/
           git checkout phoenix/android-4.14-phoenix -- security/bpf/ || true
           git checkout phoenix/android-4.14-phoenix -- fs/proc/base.c
 
-          # Fix Clang compliance
+          # Fix Clang page cast
           sed -i 's/page = (char \*)__get_free_page/struct page *page_ptr; page = (char *)__get_free_page/g' fs/proc/base.c || true
 
           git add .
-          git commit -m "Surgical Sync V10: Synced security.c with 5.10 and fixed mm_struct" || echo "No changes"
+          git commit -m "Surgical Sync V11: Fixed security.c dependencies and mm_struct" || echo "No changes"
 
       - name: Setup Toolchain
         run: |
           sudo apt-get update && sudo apt-get install -y zstd libssl-dev bc bison flex
-          mkdir clang
-          wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
+          mkdir clang && wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
           echo "$GITHUB_WORKSPACE/clang/bin" >> $GITHUB_PATH
 
@@ -73,41 +74,15 @@ jobs:
           cd kernel
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
 
-          MAKE_ARGS="ARCH=arm64 \
-            LLVM=1 \
-            LLVM_IAS=1 \
-            CC=clang \
-            LD=ld.lld \
-            AR=llvm-ar \
-            NM=llvm-nm \
-            OBJCOPY=llvm-objcopy \
-            OBJDUMP=llvm-objdump \
-            STRIP=llvm-strip \
-            CROSS_COMPILE=aarch64-linux-gnu- \
-            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-            CLANG_TRIPLE=aarch64-linux-gnu- \
-            O=out"
+          MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
 
           mkdir -p out
           make $MAKE_ARGS r5q_defconfig
 
           ./scripts/config --file out/.config \
-            -e CONFIG_BPF \
-            -e CONFIG_BPF_SYSCALL \
-            -e CONFIG_BPF_JIT \
-            -e CONFIG_BPF_LSM \
-            -d CONFIG_SAMSUNG_RTIC \
-            -d CONFIG_SECURITY_RKP \
-            -d CONFIG_WERROR
+            -e CONFIG_BPF -e CONFIG_BPF_SYSCALL -e CONFIG_BPF_JIT -e CONFIG_BPF_LSM \
+            -d CONFIG_SAMSUNG_RTIC -d CONFIG_SECURITY_RKP -d CONFIG_WERROR
 
           make $MAKE_ARGS olddefconfig
-          
           make -j$(nproc --all) $MAKE_ARGS Image.gz \
-            KCFLAGS="-w -fcommon -fno-stack-protector -Wno-implicit-function-declaration -Wno-int-conversion -fintegrated-as" \
-            HOSTCFLAGS="-w"
-
-      - name: Upload
-        uses: actions/upload-artifact@v4
-        with:
-          name: Kernel-R5Q-V10-Surgical
-          path: kernel/out/arch/arm64/boot/Image.gz
+            KCFLAGS="-w -fcommon -fno-stack-protector -Wno-implicit-function-declaration -Wno-int-conversion -fintegrated-as"
