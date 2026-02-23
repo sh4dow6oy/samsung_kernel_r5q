@@ -1,4 +1,4 @@
-name: Build R5Q - Android 15 Shim BPF V21
+name: Build R5Q - Android 15 Shim BPF V22
 on:
   workflow_dispatch:
 
@@ -14,7 +14,7 @@ jobs:
           path: kernel
           fetch-depth: 0
 
-      - name: Android 15 BPF Memory Bridge (V21)
+      - name: Android 15 BPF Memory Bridge (V22)
         run: |
           cd kernel
           git config user.name "GitHub Action"
@@ -27,42 +27,42 @@ jobs:
           echo "Nuclear Clean of KernelSU..."
           find . -name "Kconfig" -type f -exec sed -i '/kernelsu/d' {} +
           
-          echo "Syncing 5.10 BPF Verifier & Memory Support..."
+          echo "Syncing 5.10 BPF Verifier & BTF Support..."
           git checkout phoenix/android12-5.10-phoenix -- kernel/bpf/
           git checkout phoenix/android12-5.10-phoenix -- include/linux/bpf.h
-          git checkout phoenix/android12-5.10-phoenix -- include/linux/tnum.h
-          git checkout phoenix/android12-5.10-phoenix -- include/linux/bpf_verifier.h
           git checkout phoenix/android12-5.10-phoenix -- include/linux/btf.h
           git checkout phoenix/android12-5.10-phoenix -- include/uapi/linux/bpf.h
           
-          echo "Injecting Memory & Network Shim..."
-          # Fix NF_HOOK in include/linux/netfilter.h
-          sed -i 's/NF_HOOK(plat, hook, in, out, okfn)/NF_HOOK(plat, hook, net, sk, in, out, okfn)/g' include/linux/netfilter.h
-          
-          # Creăm un set de definiții de compatibilitate pentru Memorie direct în bpf.h
+          echo "Refining Shim for bpf_map and Memory..."
           cat <<EOF > bpf_mem_shim.h
           #ifndef __BPF_MEM_SHIM_H
           #define __BPF_MEM_SHIM_H
           #include <linux/mm.h>
           #include <linux/vmalloc.h>
 
-          /* Măpăm vfree_atomic la vfree (4.14 nu are varianta atomică standard) */
           #define vfree_atomic(addr) vfree(addr)
-
-          /* Definire MODULES_VADDR dacă lipsește (specific ARM64) */
           #ifndef MODULES_VADDR
           #define MODULES_VADDR 0
           #endif
 
-          /* No-ops pentru modmem charging */
+          /* Dummy functions for missing 5.10 map logic */
+          static inline void bpf_map_put_uref(void *map) { }
           static inline int bpf_jit_charge_modmem(void *prog, int size) { return 0; }
           static inline void bpf_jit_uncharge_modmem(void *prog, int size) { }
           #endif
           EOF
 
-          # Injectăm shim-ul de memorie în bpf.h și adăugăm membrul 'vm'
+          # Injectăm shim-ul în bpf.h
           sed -i '1i #include "../../bpf_mem_shim.h"' include/linux/bpf.h
+          
+          # Injectăm membrii lipsă în struct bpf_map (pentru btf.c și offload.c)
+          sed -i '/struct bpf_map {/a \	void *memcg;\n\tvoid *offload;' include/linux/bpf.h
+          
+          # Injectăm membrul 'vm' în struct bpf_prog_aux
           sed -i '/struct bpf_prog \*prog;/a \	void *vm;' include/linux/bpf.h
+
+          echo "Hardcoding Network API Bridge..."
+          sed -i 's/NF_HOOK(plat, hook, in, out, okfn)/NF_HOOK(plat, hook, net, sk, in, out, okfn)/g' include/linux/netfilter.h
 
           echo "Injecting LSM Hooks into 4.14 Core..."
           git checkout phoenix/android-4.14-phoenix -- security/security.c
@@ -75,11 +75,8 @@ jobs:
           sed -i '/struct task_struct \*owner;/a \	spinlock_t arg_lock;\n\tunsigned long saved_auxv[AT_VECTOR_SIZE];' include/linux/mm_types.h
           sed -i '/spin_lock_init(&mm->page_table_lock);/a \	spin_lock_init(&mm->arg_lock);' kernel/fork.c
 
-          # Backporting BPF_MOD_REL_DET_LOW
-          sed -i '/enum bpf_reg_liveness {/i #define BPF_MOD_REL_DET_LOW 0' include/linux/bpf_verifier.h || true
-
           git add .
-          git commit -m "Hybrid V21: Implemented Memory Shim and fixed vfree_atomic" || echo "No changes"
+          git commit -m "Hybrid V22: Expanded bpf_map struct and added uref shims" || echo "No changes"
 
       - name: Setup Toolchain
         run: |
@@ -102,4 +99,4 @@ jobs:
           make $MAKE_ARGS olddefconfig
           
           make -j$(nproc --all) $MAKE_ARGS Image.gz \
-            KCFLAGS="-w -fcommon -fno-stack-protector -fintegrated-as -Wno-implicit-function-declaration -Wno-error=int-conversion -Wno-error=return-type"
+            KCFLAGS="-w -fcommon -fno-stack-protector -fintegrated-as -Wno-implicit-function-declaration -Wno-error=int-conversion -Wno-error=return-type -Wno-unused-variable"
