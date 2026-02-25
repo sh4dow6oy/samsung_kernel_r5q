@@ -1,4 +1,4 @@
-name: Build R5Q - Android 15 Hybrid V27
+name: Build R5Q - Android 15 Hybrid V29 (Total Import)
 on:
   workflow_dispatch:
 
@@ -14,7 +14,7 @@ jobs:
           path: kernel
           fetch-depth: 0
 
-      - name: Android 15 BPF Surgical Injection (V27)
+      - name: Massive BPF & LSM Porting (V29)
         run: |
           cd kernel
           git config user.name "GitHub Action"
@@ -24,47 +24,64 @@ jobs:
           git fetch phoenix android-4.14-phoenix --depth=1
           git fetch phoenix android12-5.10-phoenix --depth=1
           
-          echo "Nuclear Clean of KernelSU..."
-          find . -name "Kconfig" -type f -exec sed -i '/kernelsu/d' {} +
-          
-          echo "Syncing 5.10 BPF Subsystem..."
+          echo "Syncing Entire BPF Subsystem from 5.10..."
+          # Luăm tot folderul și headerele core
           git checkout phoenix/android12-5.10-phoenix -- kernel/bpf/
           git checkout phoenix/android12-5.10-phoenix -- include/linux/bpf.h
-          git checkout phoenix/android12-5.10-phoenix -- include/linux/btf.h
+          git checkout phoenix/android12-5.10-phoenix -- include/linux/bpf_types.h
           git checkout phoenix/android12-5.10-phoenix -- include/uapi/linux/bpf.h
-          git checkout phoenix/android12-5.10-phoenix -- include/linux/tnum.h
           git checkout phoenix/android12-5.10-phoenix -- include/linux/bpf_verifier.h
+          git checkout phoenix/android12-5.10-phoenix -- include/linux/bpf_lsm.h
+          git checkout phoenix/android12-5.10-phoenix -- include/linux/btf.h
+          git checkout phoenix/android12-5.10-phoenix -- include/linux/tnum.h
+          git checkout phoenix/android12-5.10-phoenix -- include/uapi/linux/btf.h
 
-          echo "Injecting Hardcoded Compat into bpf.h..."
-          # Folosim u32 (kernel-style) si evitam header-ul extern
-          sed -i '1i #include <linux/mm.h>\n#include <linux/rwsem.h>\nstruct bpf_map_memory { u32 pages; void *user; };\n#ifndef mmap_lock\n#define mmap_lock mmap_sem\n#endif\n#define mmap_read_lock(mm) down_read(&(mm)->mmap_sem)\n#define mmap_read_unlock(mm) up_read(&(mm)->mmap_sem)\n#define mmap_write_lock(mm) down_write(&(mm)->mmap_sem)\n#define mmap_write_unlock(mm) up_write(&(mm)->mmap_sem)\n#ifndef vfree_atomic\n#define vfree_atomic(addr) vfree(addr)\n#endif' include/linux/bpf.h
+          echo "Syncing LSM & Security Infrastructure..."
+          git checkout phoenix/android-4.14-phoenix -- security/security.c
+          git checkout phoenix/android-4.14-phoenix -- include/linux/lsm_hooks.h
+          git checkout phoenix/android-4.14-phoenix -- include/linux/lsm_hook_defs.h
 
-          echo "Expanding BPF Structs..."
-          sed -i '/struct bpf_map {/a \	void *memcg;\n\tvoid *offload;\n\tstruct bpf_map_memory memory;' include/linux/bpf.h
-          sed -i '/struct bpf_prog_aux {/a \	void *vm;' include/linux/bpf.h
+          echo "Applying Global Memory Alias (The Bridge)..."
+          # Deoarece importăm cod de 5.10, trebuie să facem MM de 4.14 să pară 5.10
+          cat <<EOF > include/linux/android_15_bridge.h
+          #ifndef _A15_BRIDGE_H
+          #define _A15_BRIDGE_H
+          #include <linux/mm.h>
+          #include <linux/rwsem.h>
 
-          echo "Fixing Missing Constants for Android 15..."
-          cat <<EOF >> include/linux/btf.h
-          #ifndef BTF_KIND_FLOAT
-          #define BTF_KIND_FLOAT 16
-          #define BTF_KIND_DECL_TAG 17
-          #define BTF_KIND_TYPE_TAG 18
+          /* Alias pentru mmap_lock -> mmap_sem */
+          #define mmap_lock mmap_sem
+          static inline void mmap_read_lock(struct mm_struct *mm) { down_read(&mm->mmap_sem); }
+          static inline void mmap_read_unlock(struct mm_struct *mm) { up_read(&mm->mmap_sem); }
+          static inline void mmap_write_lock(struct mm_struct *mm) { down_write(&mm->mmap_sem); }
+          static inline void mmap_write_unlock(struct mm_struct *mm) { up_write(&mm->mmap_sem); }
+
+          /* BPF Memory Shim */
+          #ifndef vfree_atomic
+          #define vfree_atomic(addr) vfree(addr)
+          #endif
+          
+          /* Prototipuri pt functii care vor lipsi la link-uire */
+          static inline void bpf_map_put_uref(void *map) {}
           #endif
           EOF
 
-          echo "Fixing Network & Security..."
+          # Injectăm bridge-ul în bpf.h-ul nou importat
+          sed -i '1i #include <linux/android_15_bridge.h>' include/linux/bpf.h
+
+          echo "Fixing Network Hook Signature..."
+          # 5.10 vrea 7 argumente, 4.14 are 5. Modificăm definiția globală.
           sed -i 's/NF_HOOK(plat, hook, in, out, okfn)/NF_HOOK(plat, hook, net, sk, in, out, okfn)/g' include/linux/netfilter.h
-          
-          git checkout phoenix/android-4.14-phoenix -- security/security.c
-          git checkout phoenix/android-4.14-phoenix -- include/linux/lsm_hooks.h
-          sed -i '/struct lsm_id \*id;/a \	void *bpf_lsm_hooks;' include/linux/lsm_hooks.h
-          
-          echo "Injecting MM Fixes for Android 15..."
+
+          echo "Finalizing MM Types for OneUI 7..."
           sed -i '1i #include <uapi/linux/auxvec.h>' include/linux/mm_types.h
-          sed -i '/struct task_struct \*owner;/a \	spinlock_t arg_lock;\n\tunsigned long saved_auxv[AT_VECTOR_SIZE];' include/linux/mm_types.h
+          sed -i '/struct task_struct \*owner;/a \	spinlock_t arg_lock;\n\tunsigned long saved_auxv[AT_VECTOR_SIZE];\n\tvoid *bpf_lsm_hooks;' include/linux/mm_types.h
+          
+          # Curățăm Kconfig
+          find . -name "Kconfig" -type f -exec sed -i '/kernelsu/d' {} +
 
           git add .
-          git commit -m "Hybrid V27: Direct bpf.h injection and u32 type fix" || echo "No changes"
+          git commit -m "Hybrid V29: Total BPF/LSM Import for Android 15" || echo "No changes"
 
       - name: Setup Toolchain
         run: |
@@ -83,7 +100,7 @@ jobs:
           make $MAKE_ARGS r5q_defconfig
           ./scripts/config --file out/.config \
             -e CONFIG_BPF -e CONFIG_BPF_SYSCALL -e CONFIG_BPF_JIT -e CONFIG_BPF_LSM \
-            -d CONFIG_SAMSUNG_RTIC -d CONFIG_SECURITY_RKP -d CONFIG_WERROR
+            -d CONFIG_SAMSUNG_RTIC -d CONFIG_SECURITY_RKP
           make $MAKE_ARGS olddefconfig
           
           make -j$(nproc --all) $MAKE_ARGS Image.gz \
