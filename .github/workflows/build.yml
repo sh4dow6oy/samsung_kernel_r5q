@@ -1,4 +1,4 @@
-name: Build R5Q - Android 15 Hybrid V25
+name: Build R5Q - Android 15 Hybrid V26
 on:
   workflow_dispatch:
 
@@ -14,7 +14,7 @@ jobs:
           path: kernel
           fetch-depth: 0
 
-      - name: Android 15 BPF Surgical Injection (V25)
+      - name: Android 15 BPF Surgical Injection (V26)
         run: |
           cd kernel
           git config user.name "GitHub Action"
@@ -35,43 +35,65 @@ jobs:
           git checkout phoenix/android12-5.10-phoenix -- include/linux/tnum.h
           git checkout phoenix/android12-5.10-phoenix -- include/linux/bpf_verifier.h
 
-          echo "Surgery on mm_types.h (The mmap_lock Bridge)..."
-          # Injectăm definiția chiar în structura mm_struct pentru a fi vizibilă global
-          sed -i '/struct rw_semaphore mmap_sem;/a \	#define mmap_lock mmap_sem' include/linux/mm_types.h
-          
-          # Adăugăm macro-urile de locking în sched.h (header universal)
-          cat <<EOF >> include/linux/sched.h
-          /* Android 15 BPF Backport Shim */
+          echo "Creating Dedicated BPF Compatibility Header..."
+          cat <<EOF > kernel/bpf/bpf_compat.h
+          #ifndef __BPF_COMPAT_H
+          #define __BPF_COMPAT_H
+          #include <linux/mm.h>
+          #include <linux/rwsem.h>
+
+          /* Map 5.10 mmap_lock to 4.14 mmap_sem */
+          #ifndef mmap_lock
+          #define mmap_lock mmap_sem
+          #endif
+
           #define mmap_read_lock(mm) down_read(&(mm)->mmap_sem)
           #define mmap_read_unlock(mm) up_read(&(mm)->mmap_sem)
           #define mmap_write_lock(mm) down_write(&(mm)->mmap_sem)
           #define mmap_write_unlock(mm) up_write(&(mm)->mmap_sem)
+
           #ifndef vfree_atomic
           #define vfree_atomic(addr) vfree(addr)
           #endif
+
+          /* Missing BTF Constants for Android 15 */
+          #ifndef BTF_KIND_FLOAT
+          #define BTF_KIND_FLOAT 16
+          #define BTF_KIND_DECL_TAG 17
+          #define BTF_KIND_TYPE_TAG 18
+          #endif
+
+          struct bpf_verifier_log;
+          struct bpf_map_memory { uint32_t pages; void *user; };
+          
+          static inline void bpf_map_put_uref(void *map) {}
+          static inline int bpf_jit_charge_modmem(void *p, int s) { return 0; }
+          static inline void bpf_jit_uncharge_modmem(void *p, int s) {}
+          #endif
           EOF
 
-          echo "Expanding BPF Structures for Android 15..."
-          # Adăugăm membrii de 5.10 în include/linux/bpf.h pentru compatibilitate btf.c
-          sed -i '/struct bpf_map {/a \	void *memcg;\n\tvoid *offload;\n\tuint32_t pages_memory;' include/linux/bpf.h
-          sed -i '/struct bpf_prog_aux {/a \	void *vm;' include/linux/bpf.h
-          
-          # Funcții dummy pentru a evita erorile de linkuire (unresolved symbols)
-          echo "static inline void bpf_map_put_uref(void *map) {}" >> include/linux/bpf.h
-          echo "static inline int bpf_jit_charge_modmem(void *p, int s) { return 0; }" >> include/linux/bpf.h
-          echo "static inline void bpf_jit_uncharge_modmem(void *p, int s) {}" >> include/linux/bpf.h
+          # Injectăm compatibilitatea în toate fișierele .c din kernel/bpf/
+          for f in kernel/bpf/*.c; do
+            sed -i '1i #include "bpf_compat.h"' "$f"
+          done
 
-          echo "Patching Network API..."
-          # Modificăm NF_HOOK să accepte cele 7 argumente din 5.10 dar să sune funcția de 4.14
+          echo "Expanding Structs in bpf.h..."
+          sed -i '/struct bpf_map {/a \	void *memcg;\n\tvoid *offload;\n\tstruct bpf_map_memory memory;' include/linux/bpf.h
+          sed -i '/struct bpf_prog_aux {/a \	void *vm;' include/linux/bpf.h
+
+          echo "Fixing Network & Security..."
           sed -i 's/NF_HOOK(plat, hook, in, out, okfn)/NF_HOOK(plat, hook, net, sk, in, out, okfn)/g' include/linux/netfilter.h
           
-          echo "Syncing Security Base..."
           git checkout phoenix/android-4.14-phoenix -- security/security.c
           git checkout phoenix/android-4.14-phoenix -- include/linux/lsm_hooks.h
           sed -i '/struct lsm_id \*id;/a \	void *bpf_lsm_hooks;' include/linux/lsm_hooks.h
+          
+          # Fix MM types for arg_lock (Android 15 requirement)
+          sed -i '1i #include <uapi/linux/auxvec.h>' include/linux/mm_types.h
+          sed -i '/struct task_struct \*owner;/a \	spinlock_t arg_lock;\n\tunsigned long saved_auxv[AT_VECTOR_SIZE];' include/linux/mm_types.h
 
           git add .
-          git commit -m "Hybrid V25: Surgical mmap_lock bridge and global header injection" || echo "No changes"
+          git commit -m "Hybrid V26: Targeted BPF compatibility and BTF constants" || echo "No changes"
 
       - name: Setup Toolchain
         run: |
@@ -94,4 +116,4 @@ jobs:
           make $MAKE_ARGS olddefconfig
           
           make -j$(nproc --all) $MAKE_ARGS Image.gz \
-            KCFLAGS="-w -fcommon -fno-stack-protector -fintegrated-as -Wno-implicit-function-declaration -Wno-error=int-conversion -Wno-error=return-type"
+            KCFLAGS="-w -fcommon -fno-stack-protector -fintegrated-as -Wno-implicit-function-declaration -Wno-error=int-conversion -Wno-error=return-type -Wno-typedef-redefinition"
