@@ -1,4 +1,4 @@
-name: Build R5Q - Android 15 Shim BPF V23
+name: Build R5Q - Android 15 Hybrid V25
 on:
   workflow_dispatch:
 
@@ -14,7 +14,7 @@ jobs:
           path: kernel
           fetch-depth: 0
 
-      - name: Android 15 BPF Memory Bridge (V23)
+      - name: Android 15 BPF Surgical Injection (V25)
         run: |
           cd kernel
           git config user.name "GitHub Action"
@@ -32,55 +32,46 @@ jobs:
           git checkout phoenix/android12-5.10-phoenix -- include/linux/bpf.h
           git checkout phoenix/android12-5.10-phoenix -- include/linux/btf.h
           git checkout phoenix/android12-5.10-phoenix -- include/uapi/linux/bpf.h
-          
-          echo "Refining Shim for Memory Locking (4.14 vs 5.10)..."
-          cat <<EOF > bpf_mem_shim.h
-          #ifndef __BPF_MEM_SHIM_H
-          #define __BPF_MEM_SHIM_H
-          #include <linux/mm.h>
-          #include <linux/vmalloc.h>
-          #include <linux/mmap_lock.h>
+          git checkout phoenix/android12-5.10-phoenix -- include/linux/tnum.h
+          git checkout phoenix/android12-5.10-phoenix -- include/linux/bpf_verifier.h
 
-          /* Map mmap_lock (5.10) to mmap_sem (4.14) */
-          #define mmap_lock mmap_sem
+          echo "Surgery on mm_types.h (The mmap_lock Bridge)..."
+          # Injectăm definiția chiar în structura mm_struct pentru a fi vizibilă global
+          sed -i '/struct rw_semaphore mmap_sem;/a \	#define mmap_lock mmap_sem' include/linux/mm_types.h
+          
+          # Adăugăm macro-urile de locking în sched.h (header universal)
+          cat <<EOF >> include/linux/sched.h
+          /* Android 15 BPF Backport Shim */
           #define mmap_read_lock(mm) down_read(&(mm)->mmap_sem)
           #define mmap_read_unlock(mm) up_read(&(mm)->mmap_sem)
           #define mmap_write_lock(mm) down_write(&(mm)->mmap_sem)
           #define mmap_write_unlock(mm) up_write(&(mm)->mmap_sem)
-
+          #ifndef vfree_atomic
           #define vfree_atomic(addr) vfree(addr)
-          
-          /* Dummy struct for bpf_map_memory if missing */
-          struct bpf_map_memory { uint32_t pages; void *user; };
-
-          static inline void bpf_map_put_uref(void *map) { }
-          static inline int bpf_jit_charge_modmem(void *prog, int size) { return 0; }
-          static inline void bpf_jit_uncharge_modmem(void *prog, int size) { }
           #endif
           EOF
 
-          # Injectăm shim-ul în bpf.h
-          sed -i '1i #include "../../bpf_mem_shim.h"' include/linux/bpf.h
+          echo "Expanding BPF Structures for Android 15..."
+          # Adăugăm membrii de 5.10 în include/linux/bpf.h pentru compatibilitate btf.c
+          sed -i '/struct bpf_map {/a \	void *memcg;\n\tvoid *offload;\n\tuint32_t pages_memory;' include/linux/bpf.h
+          sed -i '/struct bpf_prog_aux {/a \	void *vm;' include/linux/bpf.h
           
-          # Injectăm membrii lipsă în structuri
-          sed -i '/struct bpf_map {/a \	void *memcg;\n\tvoid *offload;\n\tstruct bpf_map_memory memory;' include/linux/bpf.h
-          sed -i '/struct bpf_prog \*prog;/a \	void *vm;' include/linux/bpf.h
+          # Funcții dummy pentru a evita erorile de linkuire (unresolved symbols)
+          echo "static inline void bpf_map_put_uref(void *map) {}" >> include/linux/bpf.h
+          echo "static inline int bpf_jit_charge_modmem(void *p, int s) { return 0; }" >> include/linux/bpf.h
+          echo "static inline void bpf_jit_uncharge_modmem(void *p, int s) {}" >> include/linux/bpf.h
 
-          echo "Fixing MM Structs & LSM Hooks..."
+          echo "Patching Network API..."
+          # Modificăm NF_HOOK să accepte cele 7 argumente din 5.10 dar să sune funcția de 4.14
+          sed -i 's/NF_HOOK(plat, hook, in, out, okfn)/NF_HOOK(plat, hook, net, sk, in, out, okfn)/g' include/linux/netfilter.h
+          
+          echo "Syncing Security Base..."
           git checkout phoenix/android-4.14-phoenix -- security/security.c
-          git checkout phoenix/android-4.14-phoenix -- kernel/fork.c
           git checkout phoenix/android-4.14-phoenix -- include/linux/lsm_hooks.h
           sed -i '/struct lsm_id \*id;/a \	void *bpf_lsm_hooks;' include/linux/lsm_hooks.h
-          
-          sed -i '1i #include <uapi/linux/auxvec.h>' include/linux/mm_types.h
-          sed -i '/struct task_struct \*owner;/a \	spinlock_t arg_lock;\n\tunsigned long saved_auxv[AT_VECTOR_SIZE];' include/linux/mm_types.h
-          sed -i '/spin_lock_init(&mm->page_table_lock);/a \	spin_lock_init(&mm->arg_lock);' kernel/fork.c
-
-          echo "Hardcoding Network API Bridge..."
-          sed -i 's/NF_HOOK(plat, hook, in, out, okfn)/NF_HOOK(plat, hook, net, sk, in, out, okfn)/g' include/linux/netfilter.h
 
           git add .
-          git commit -m "Hybrid V23: Mapped mmap_lock to mmap_sem and added map_memory shim" || echo "No changes"
+          git commit -m "Hybrid V25: Surgical mmap_lock bridge and global header injection" || echo "No changes"
 
       - name: Setup Toolchain
         run: |
@@ -103,4 +94,4 @@ jobs:
           make $MAKE_ARGS olddefconfig
           
           make -j$(nproc --all) $MAKE_ARGS Image.gz \
-            KCFLAGS="-w -fcommon -fno-stack-protector -fintegrated-as -Wno-implicit-function-declaration -Wno-error=int-conversion -Wno-error=return-type -Wno-unused-variable -Wno-unused-function"
+            KCFLAGS="-w -fcommon -fno-stack-protector -fintegrated-as -Wno-implicit-function-declaration -Wno-error=int-conversion -Wno-error=return-type"
