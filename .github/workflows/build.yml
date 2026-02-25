@@ -1,4 +1,4 @@
-name: Build R5Q - Android 15 Hybrid V29 (Total Import)
+name: Build R5Q - Android 15 Hybrid V30
 on:
   workflow_dispatch:
 
@@ -14,7 +14,7 @@ jobs:
           path: kernel
           fetch-depth: 0
 
-      - name: Massive BPF & LSM Porting (V29)
+      - name: Massive BPF & LSM Porting (V30)
         run: |
           cd kernel
           git config user.name "GitHub Action"
@@ -25,7 +25,6 @@ jobs:
           git fetch phoenix android12-5.10-phoenix --depth=1
           
           echo "Syncing Entire BPF Subsystem from 5.10..."
-          # Luăm tot folderul și headerele core
           git checkout phoenix/android12-5.10-phoenix -- kernel/bpf/
           git checkout phoenix/android12-5.10-phoenix -- include/linux/bpf.h
           git checkout phoenix/android12-5.10-phoenix -- include/linux/bpf_types.h
@@ -36,52 +35,53 @@ jobs:
           git checkout phoenix/android12-5.10-phoenix -- include/linux/tnum.h
           git checkout phoenix/android12-5.10-phoenix -- include/uapi/linux/btf.h
 
-          echo "Syncing LSM & Security Infrastructure..."
+          echo "Syncing LSM Infrastructure from 5.10 (for A15 compatibility)..."
+          # Luăm definițiile LSM din 5.10 pentru că 4.14 Phoenix nu le are pe toate
+          git checkout phoenix/android12-5.10-phoenix -- include/linux/lsm_hook_defs.h || touch include/linux/lsm_hook_defs.h
+          git checkout phoenix/android12-5.10-phoenix -- include/linux/lsm_hooks.h
           git checkout phoenix/android-4.14-phoenix -- security/security.c
-          git checkout phoenix/android-4.14-phoenix -- include/linux/lsm_hooks.h
-          git checkout phoenix/android-4.14-phoenix -- include/linux/lsm_hook_defs.h
 
-          echo "Applying Global Memory Alias (The Bridge)..."
-          # Deoarece importăm cod de 5.10, trebuie să facem MM de 4.14 să pară 5.10
+          echo "Applying Global Memory & Logic Bridge..."
           cat <<EOF > include/linux/android_15_bridge.h
           #ifndef _A15_BRIDGE_H
           #define _A15_BRIDGE_H
           #include <linux/mm.h>
           #include <linux/rwsem.h>
 
-          /* Alias pentru mmap_lock -> mmap_sem */
+          /* Alias mmap_lock -> mmap_sem */
+          #ifndef mmap_lock
           #define mmap_lock mmap_sem
+          #endif
           static inline void mmap_read_lock(struct mm_struct *mm) { down_read(&mm->mmap_sem); }
           static inline void mmap_read_unlock(struct mm_struct *mm) { up_read(&mm->mmap_sem); }
           static inline void mmap_write_lock(struct mm_struct *mm) { down_write(&mm->mmap_sem); }
           static inline void mmap_write_unlock(struct mm_struct *mm) { up_write(&mm->mmap_sem); }
 
-          /* BPF Memory Shim */
+          /* BPF Support shims */
           #ifndef vfree_atomic
           #define vfree_atomic(addr) vfree(addr)
           #endif
-          
-          /* Prototipuri pt functii care vor lipsi la link-uire */
+          struct bpf_storage_stack;
           static inline void bpf_map_put_uref(void *map) {}
           #endif
           EOF
 
-          # Injectăm bridge-ul în bpf.h-ul nou importat
+          # Injectăm bridge-ul în headerele critice
           sed -i '1i #include <linux/android_15_bridge.h>' include/linux/bpf.h
+          sed -i '1i #include <linux/android_15_bridge.h>' include/linux/lsm_hooks.h
 
           echo "Fixing Network Hook Signature..."
-          # 5.10 vrea 7 argumente, 4.14 are 5. Modificăm definiția globală.
           sed -i 's/NF_HOOK(plat, hook, in, out, okfn)/NF_HOOK(plat, hook, net, sk, in, out, okfn)/g' include/linux/netfilter.h
 
           echo "Finalizing MM Types for OneUI 7..."
           sed -i '1i #include <uapi/linux/auxvec.h>' include/linux/mm_types.h
           sed -i '/struct task_struct \*owner;/a \	spinlock_t arg_lock;\n\tunsigned long saved_auxv[AT_VECTOR_SIZE];\n\tvoid *bpf_lsm_hooks;' include/linux/mm_types.h
           
-          # Curățăm Kconfig
+          # Curățăm referințele la fișiere inexistente
           find . -name "Kconfig" -type f -exec sed -i '/kernelsu/d' {} +
 
           git add .
-          git commit -m "Hybrid V29: Total BPF/LSM Import for Android 15" || echo "No changes"
+          git commit -m "Hybrid V30: Full BPF/LSM sync with 5.10 defs" || echo "No changes"
 
       - name: Setup Toolchain
         run: |
