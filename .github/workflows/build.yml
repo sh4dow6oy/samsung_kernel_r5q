@@ -1,4 +1,4 @@
-name: Build R5Q - Android 15 Hybrid V26
+name: Build R5Q - Android 15 Hybrid V27
 on:
   workflow_dispatch:
 
@@ -14,7 +14,7 @@ jobs:
           path: kernel
           fetch-depth: 0
 
-      - name: Android 15 BPF Surgical Injection (V26)
+      - name: Android 15 BPF Surgical Injection (V27)
         run: |
           cd kernel
           git config user.name "GitHub Action"
@@ -35,51 +35,22 @@ jobs:
           git checkout phoenix/android12-5.10-phoenix -- include/linux/tnum.h
           git checkout phoenix/android12-5.10-phoenix -- include/linux/bpf_verifier.h
 
-          echo "Creating Dedicated BPF Compatibility Header..."
-          cat <<EOF > kernel/bpf/bpf_compat.h
-          #ifndef __BPF_COMPAT_H
-          #define __BPF_COMPAT_H
-          #include <linux/mm.h>
-          #include <linux/rwsem.h>
+          echo "Injecting Hardcoded Compat into bpf.h..."
+          # Folosim u32 (kernel-style) si evitam header-ul extern
+          sed -i '1i #include <linux/mm.h>\n#include <linux/rwsem.h>\nstruct bpf_map_memory { u32 pages; void *user; };\n#ifndef mmap_lock\n#define mmap_lock mmap_sem\n#endif\n#define mmap_read_lock(mm) down_read(&(mm)->mmap_sem)\n#define mmap_read_unlock(mm) up_read(&(mm)->mmap_sem)\n#define mmap_write_lock(mm) down_write(&(mm)->mmap_sem)\n#define mmap_write_unlock(mm) up_write(&(mm)->mmap_sem)\n#ifndef vfree_atomic\n#define vfree_atomic(addr) vfree(addr)\n#endif' include/linux/bpf.h
 
-          /* Map 5.10 mmap_lock to 4.14 mmap_sem */
-          #ifndef mmap_lock
-          #define mmap_lock mmap_sem
-          #endif
+          echo "Expanding BPF Structs..."
+          sed -i '/struct bpf_map {/a \	void *memcg;\n\tvoid *offload;\n\tstruct bpf_map_memory memory;' include/linux/bpf.h
+          sed -i '/struct bpf_prog_aux {/a \	void *vm;' include/linux/bpf.h
 
-          #define mmap_read_lock(mm) down_read(&(mm)->mmap_sem)
-          #define mmap_read_unlock(mm) up_read(&(mm)->mmap_sem)
-          #define mmap_write_lock(mm) down_write(&(mm)->mmap_sem)
-          #define mmap_write_unlock(mm) up_write(&(mm)->mmap_sem)
-
-          #ifndef vfree_atomic
-          #define vfree_atomic(addr) vfree(addr)
-          #endif
-
-          /* Missing BTF Constants for Android 15 */
+          echo "Fixing Missing Constants for Android 15..."
+          cat <<EOF >> include/linux/btf.h
           #ifndef BTF_KIND_FLOAT
           #define BTF_KIND_FLOAT 16
           #define BTF_KIND_DECL_TAG 17
           #define BTF_KIND_TYPE_TAG 18
           #endif
-
-          struct bpf_verifier_log;
-          struct bpf_map_memory { uint32_t pages; void *user; };
-          
-          static inline void bpf_map_put_uref(void *map) {}
-          static inline int bpf_jit_charge_modmem(void *p, int s) { return 0; }
-          static inline void bpf_jit_uncharge_modmem(void *p, int s) {}
-          #endif
           EOF
-
-          # Injectăm compatibilitatea în toate fișierele .c din kernel/bpf/
-          for f in kernel/bpf/*.c; do
-            sed -i '1i #include "bpf_compat.h"' "$f"
-          done
-
-          echo "Expanding Structs in bpf.h..."
-          sed -i '/struct bpf_map {/a \	void *memcg;\n\tvoid *offload;\n\tstruct bpf_map_memory memory;' include/linux/bpf.h
-          sed -i '/struct bpf_prog_aux {/a \	void *vm;' include/linux/bpf.h
 
           echo "Fixing Network & Security..."
           sed -i 's/NF_HOOK(plat, hook, in, out, okfn)/NF_HOOK(plat, hook, net, sk, in, out, okfn)/g' include/linux/netfilter.h
@@ -88,12 +59,12 @@ jobs:
           git checkout phoenix/android-4.14-phoenix -- include/linux/lsm_hooks.h
           sed -i '/struct lsm_id \*id;/a \	void *bpf_lsm_hooks;' include/linux/lsm_hooks.h
           
-          # Fix MM types for arg_lock (Android 15 requirement)
+          echo "Injecting MM Fixes for Android 15..."
           sed -i '1i #include <uapi/linux/auxvec.h>' include/linux/mm_types.h
           sed -i '/struct task_struct \*owner;/a \	spinlock_t arg_lock;\n\tunsigned long saved_auxv[AT_VECTOR_SIZE];' include/linux/mm_types.h
 
           git add .
-          git commit -m "Hybrid V26: Targeted BPF compatibility and BTF constants" || echo "No changes"
+          git commit -m "Hybrid V27: Direct bpf.h injection and u32 type fix" || echo "No changes"
 
       - name: Setup Toolchain
         run: |
