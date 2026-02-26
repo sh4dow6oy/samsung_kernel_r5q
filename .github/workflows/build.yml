@@ -1,4 +1,4 @@
-name: Samsung SM8150 Kernel Build (Neutron Clang) - V4
+name: Samsung SM8150 Kernel Build (Neutron Clang) - V5
 
 on:
   workflow_dispatch:
@@ -29,9 +29,9 @@ jobs:
       - name: Patch Source Code
         run: |
           cd kernel
-          # Fix arithmetic on void pointer in icnss.c (din log-ul anterior)
+          # Fix arithmetic on void pointer in icnss.c
           sed -i 's/(void \*)ptr + offset/(char \*)ptr + offset/g' drivers/soc/qcom/icnss.c 2>/dev/null || true
-          # Fix for multiple definition errors (fcommon)
+          # Forțăm ignorarea mismatch-urilor de secțiune
           sed -i 's/CONFIG_SECTION_MISMATCH_WARN_ONLY is not set/CONFIG_SECTION_MISMATCH_WARN_ONLY=y/g' arch/arm64/configs/vendor/b2q_eur_openx_defconfig
 
       - name: Compile Kernel
@@ -55,9 +55,12 @@ jobs:
           # 1. Config
           make O=out vendor/b2q_eur_openx_defconfig
 
-          # 2. Build cu flag-ul -fcommon pentru a repara "multiple definition"
+          # 2. Build cu flag-uri suplimentare pentru compatibilitate Clang 18
+          # -fcommon: rezolvă multiple definition
+          # -Wno-cast-function-type: rezolvă eroarea din adreno_dispatch.c
+          # -Wno-implicit-function-declaration: previne opriri la funcții nedeclarate
           make -j$(nproc --all) O=out ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1 \
-                      KCFLAGS="-Wno-error -w -fcommon" \
+                      KCFLAGS="-Wno-error -w -fcommon -Wno-cast-function-type -Wno-implicit-function-declaration" \
                       HOSTCFLAGS="-Wno-error -fcommon" \
                       HOSTCXXFLAGS="-Wno-error" \
                       Image.gz dtbs dtbo
@@ -65,20 +68,23 @@ jobs:
       - name: Create Image.gz-dtb
         run: |
           cd kernel/out/arch/arm64/boot/
-          # Căutăm DTB-urile oriunde s-ar afla sub out/
+          # Căutăm toate DTB-urile generate
           DTBS=$(find dts/ -name "*.dtb")
           if [ -f Image.gz ] && [ ! -z "$DTBS" ]; then
-            echo "Lipim DTB-urile gasite de Image.gz..."
+            echo "Lipim DTB-urile de Image.gz..."
             cat Image.gz $DTBS > Image.gz-dtb
+            echo "Succes! Image.gz-dtb a fost creat."
           else
-            echo "Eroare: Lipsesc componentele pentru Image.gz-dtb!"
+            echo "Eroare: Nu s-au putut genera Image.gz sau DTB-urile."
+            # Listăm ce avem pentru debug
+            ls -R dts/
             exit 1
           fi
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-SM8150-Final-V4
+          name: Kernel-SM8150-Final-V5
           path: |
             kernel/out/arch/arm64/boot/Image.gz-dtb
             kernel/out/arch/arm64/boot/dtbo.img
