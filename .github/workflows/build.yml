@@ -1,107 +1,73 @@
-name: Build R5Q - Android 15 Hybrid V30
+name: Build Samsung SM8150 (Clang r522817)
+
 on:
   workflow_dispatch:
 
 jobs:
-  build:
-    runs-on: ubuntu-24.04
+  build_kernel:
+    runs-on: ubuntu-latest
     steps:
-      - name: Checkout Your Kernel (r5q)
+      - name: Checkout Source
         uses: actions/checkout@v4
         with:
-          repository: Roynas-Android-Playground/kernel_samsung_r3q
-          ref: master
+          repository: sh4dow6oy/android_kernel_samsung_sm8150-5.4
           path: kernel
-          fetch-depth: 0
 
-      - name: Massive BPF & LSM Porting (V30)
+      - name: Setup Build Environment
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bc build-essential flex bison libssl-dev libelf-dev clang lld llvm \
+          gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi libncurses-dev
+
+      - name: Download Specific Clang (r522817)
+        run: |
+          mkdir clang
+          wget https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r522817.tar.gz
+          tar -xf clang-r522817.tar.gz -C clang/
+
+      - name: Compile Kernel
         run: |
           cd kernel
-          git config user.name "GitHub Action"
-          git config user.email "action@github.com"
+          # Setăm căile către toolchain
+          CLANG_PATH=$GITHUB_WORKSPACE/clang/bin
+          export PATH=$CLANG_PATH:$PATH
           
-          git remote add phoenix https://github.com/PhoenixKernel/linux.git
-          git fetch phoenix android-4.14-phoenix --depth=1
-          git fetch phoenix android12-5.10-phoenix --depth=1
-          
-          echo "Syncing Entire BPF Subsystem from 5.10..."
-          git checkout phoenix/android12-5.10-phoenix -- kernel/bpf/
-          git checkout phoenix/android12-5.10-phoenix -- include/linux/bpf.h
-          git checkout phoenix/android12-5.10-phoenix -- include/linux/bpf_types.h
-          git checkout phoenix/android12-5.10-phoenix -- include/uapi/linux/bpf.h
-          git checkout phoenix/android12-5.10-phoenix -- include/linux/bpf_verifier.h
-          git checkout phoenix/android12-5.10-phoenix -- include/linux/bpf_lsm.h
-          git checkout phoenix/android12-5.10-phoenix -- include/linux/btf.h
-          git checkout phoenix/android12-5.10-phoenix -- include/linux/tnum.h
-          git checkout phoenix/android12-5.10-phoenix -- include/uapi/linux/btf.h
+          # Variabile de mediu pentru compilare
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
+          export CC=clang
+          export CLANG_TRIPLE=aarch64-linux-gnu-
 
-          echo "Syncing LSM Infrastructure from 5.10 (for A15 compatibility)..."
-          # Luăm definițiile LSM din 5.10 pentru că 4.14 Phoenix nu le are pe toate
-          git checkout phoenix/android12-5.10-phoenix -- include/linux/lsm_hook_defs.h || touch include/linux/lsm_hook_defs.h
-          git checkout phoenix/android12-5.10-phoenix -- include/linux/lsm_hooks.h
-          git checkout phoenix/android-4.14-phoenix -- security/security.c
+          # 1. Generare Config
+          make O=out vendor/b2q_eur_openx_defconfig
 
-          echo "Applying Global Memory & Logic Bridge..."
-          cat <<EOF > include/linux/android_15_bridge.h
-          #ifndef _A15_BRIDGE_H
-          #define _A15_BRIDGE_H
-          #include <linux/mm.h>
-          #include <linux/rwsem.h>
+          # 2. Build efectiv
+          # Folosim LLVM=1 pentru a folosi tool-urile din Clang (readelf, objcopy, etc.)
+          make -j$(nproc --all) O=out \
+                      ARCH=arm64 \
+                      CC=clang \
+                      CLANG_TRIPLE=aarch64-linux-gnu- \
+                      CROSS_COMPILE=aarch64-linux-gnu- \
+                      CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+                      LLVM=1 \
+                      LLVM_IAS=1
 
-          /* Alias mmap_lock -> mmap_sem */
-          #ifndef mmap_lock
-          #define mmap_lock mmap_sem
-          #endif
-          static inline void mmap_read_lock(struct mm_struct *mm) { down_read(&mm->mmap_sem); }
-          static inline void mmap_read_unlock(struct mm_struct *mm) { up_read(&mm->mmap_sem); }
-          static inline void mmap_write_lock(struct mm_struct *mm) { down_write(&mm->mmap_sem); }
-          static inline void mmap_write_unlock(struct mm_struct *mm) { up_write(&mm->mmap_sem); }
-
-          /* BPF Support shims */
-          #ifndef vfree_atomic
-          #define vfree_atomic(addr) vfree(addr)
-          #endif
-          struct bpf_storage_stack;
-          static inline void bpf_map_put_uref(void *map) {}
-          #endif
-          EOF
-
-          # Injectăm bridge-ul în headerele critice
-          sed -i '1i #include <linux/android_15_bridge.h>' include/linux/bpf.h
-          sed -i '1i #include <linux/android_15_bridge.h>' include/linux/lsm_hooks.h
-
-          echo "Fixing Network Hook Signature..."
-          sed -i 's/NF_HOOK(plat, hook, in, out, okfn)/NF_HOOK(plat, hook, net, sk, in, out, okfn)/g' include/linux/netfilter.h
-
-          echo "Finalizing MM Types for OneUI 7..."
-          sed -i '1i #include <uapi/linux/auxvec.h>' include/linux/mm_types.h
-          sed -i '/struct task_struct \*owner;/a \	spinlock_t arg_lock;\n\tunsigned long saved_auxv[AT_VECTOR_SIZE];\n\tvoid *bpf_lsm_hooks;' include/linux/mm_types.h
-          
-          # Curățăm referințele la fișiere inexistente
-          find . -name "Kconfig" -type f -exec sed -i '/kernelsu/d' {} +
-
-          git add .
-          git commit -m "Hybrid V30: Full BPF/LSM sync with 5.10 defs" || echo "No changes"
-
-      - name: Setup Toolchain
+      - name: Check Output
         run: |
-          sudo apt-get update && sudo apt-get install -y zstd libssl-dev bc bison flex
-          mkdir clang && wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
-          tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
-          echo "$GITHUB_WORKSPACE/clang/bin" >> $GITHUB_PATH
+          if [ -f kernel/out/arch/arm64/boot/Image.gz-dtb ]; then
+            echo "Kernel built successfully!"
+          else
+            echo "Kernel build failed, Image.gz-dtb not found."
+            exit 1
+          fi
 
-      - name: Build Kernel
-        run: |
-          cd kernel
-          export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
-          MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
-
-          mkdir -p out
-          make $MAKE_ARGS r5q_defconfig
-          ./scripts/config --file out/.config \
-            -e CONFIG_BPF -e CONFIG_BPF_SYSCALL -e CONFIG_BPF_JIT -e CONFIG_BPF_LSM \
-            -d CONFIG_SAMSUNG_RTIC -d CONFIG_SECURITY_RKP
-          make $MAKE_ARGS olddefconfig
-          
-          make -j$(nproc --all) $MAKE_ARGS Image.gz \
-            KCFLAGS="-w -fcommon -fno-stack-protector -fintegrated-as -Wno-implicit-function-declaration -Wno-error=int-conversion -Wno-error=return-type -Wno-typedef-redefinition"
+      - name: Upload Kernel Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: Kernel_SM8150_r522817
+          path: |
+            kernel/out/arch/arm64/boot/Image.gz-dtb
+            kernel/out/arch/arm64/boot/Image
+            kernel/out/.config
