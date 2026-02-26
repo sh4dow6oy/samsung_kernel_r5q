@@ -1,4 +1,4 @@
-name: Samsung SM8150 Kernel Build (Neutron Clang) - V2
+name: Samsung SM8150 Kernel Build (Neutron Clang) - V3
 
 on:
   workflow_dispatch:
@@ -26,12 +26,19 @@ jobs:
           wget https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C neutron/
 
+      - name: Patch Source Code (Clang Fixes)
+        run: |
+          cd kernel
+          # Fix arithmetic on void pointer in icnss.c
+          sed -i 's/(void \*)ptr + offset/(char \*)ptr + offset/g' drivers/soc/qcom/icnss.c 2>/dev/null || true
+          # Fix section mismatch warnings to be just warnings
+          sed -i 's/CONFIG_SECTION_MISMATCH_WARN_ONLY is not set/CONFIG_SECTION_MISMATCH_WARN_ONLY=y/g' arch/arm64/configs/vendor/b2q_eur_openx_defconfig
+
       - name: Compile Kernel
         run: |
           cd kernel
           export PATH=$GITHUB_WORKSPACE/neutron/bin:$PATH
           
-          # Variabile mediu
           export ARCH=arm64
           export SUBARCH=arm64
           export CC=clang
@@ -48,35 +55,27 @@ jobs:
           # 1. Config
           make O=out vendor/b2q_eur_openx_defconfig
 
-          # 2. Fix Section Mismatch (Prevent Error 2)
-          sed -i 's/CONFIG_SECTION_MISMATCH_WARN_ONLY is not set/CONFIG_SECTION_MISMATCH_WARN_ONLY=y/g' out/.config
-          
-          # 3. Build - Incercăm să compilăm țintele pe rând pentru siguranță
-          # Mai întâi Image, apoi Image.gz, apoi DTB-urile
+          # 2. Build explicit targets
           make -j$(nproc --all) O=out ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1 \
                       KCFLAGS="-Wno-error -w" HOSTCFLAGS="-Wno-error" HOSTCXXFLAGS="-Wno-error" \
                       Image.gz dtbs dtbo
 
-      - name: Debug - Find Generated Files
-        run: |
-          echo "Căutăm fișierele rezultate..."
-          find kernel/out/arch/arm64/boot/ -name "Image*"
-          find kernel/out/arch/arm64/boot/dts/ -name "*.dtbo" || echo "Nu s-au găsit dtbo-uri"
-
-      - name: Create Image.gz-dtb (Manual merge if needed)
+      - name: Manually Create Image.gz-dtb
         run: |
           cd kernel/out/arch/arm64/boot/
-          # Dacă Image.gz-dtb nu există, îl creăm prin concatenarea Image.gz cu toate DTB-urile compilate
-          if [ ! -f Image.gz-dtb ]; then
-            echo "Concatenăm manual Image.gz cu DTB-urile..."
-            cat Image.gz dts/vendor/qcom/*.dtb > Image.gz-dtb || echo "Nu s-a putut face concatenarea"
+          if [ -f Image.gz ] && [ -d dts/vendor/qcom ]; then
+            echo "Lipim DTB-urile de Image.gz..."
+            cat Image.gz dts/vendor/qcom/*.dtb > Image.gz-dtb
+          else
+            echo "Eroare: Nu am găsit Image.gz sau folderul cu DTB-uri!"
+            exit 1
           fi
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-SM8150-Final
+          name: Kernel-SM8150-Final-V3
           path: |
-            kernel/out/arch/arm64/boot/Image*
-            kernel/out/arch/arm64/boot/dts/vendor/qcom/*.dtbo
+            kernel/out/arch/arm64/boot/Image.gz-dtb
+            kernel/out/arch/arm64/boot/dtbo.img
             kernel/out/.config
