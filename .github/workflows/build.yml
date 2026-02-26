@@ -1,4 +1,4 @@
-name: Samsung SM8150 Kernel Build (Neutron Clang) - V6
+name: Samsung SM8150 Kernel Build (Neutron Clang) - V7
 
 on:
   workflow_dispatch:
@@ -26,12 +26,6 @@ jobs:
           wget https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C neutron/
 
-      - name: Patch Config
-        run: |
-          cd kernel
-          # Forțăm ignorarea mismatch-urilor de secțiune în defconfig direct
-          sed -i 's/CONFIG_SECTION_MISMATCH_WARN_ONLY is not set/CONFIG_SECTION_MISMATCH_WARN_ONLY=y/g' arch/arm64/configs/vendor/b2q_eur_openx_defconfig
-
       - name: Compile Kernel
         run: |
           cd kernel
@@ -50,13 +44,17 @@ jobs:
           export CROSS_COMPILE=aarch64-linux-gnu-
           export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
 
-          # 1. Config
+          # 1. Config standard
           make O=out vendor/b2q_eur_openx_defconfig
 
-          # 2. Build cu TOATE flag-urile de relaxare necesare pentru Samsung 5.4 + Clang 18
-          # -Wno-pointer-arith: REZOLVĂ eroarea din msm_dvb.c și icnss.c global
-          # -Wno-error: transformă orice eroare de tip warning în avertisment simplu
-          # -fcommon: rezolvă multiple definition
+          # 2. REPARAȚII CONFIG (Section Mismatch + Linker Error Fix)
+          scripts/config --objtree out --file out/.config -d HARDENED_USERCOPY
+          scripts/config --objtree out --file out/.config -e SECTION_MISMATCH_WARN_ONLY
+          
+          # Regenerăm config-ul după modificări
+          make O=out ARCH=arm64 olddefconfig
+
+          # 3. Build cu toate flag-urile de relaxare
           make -j$(nproc --all) O=out ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1 \
                       KCFLAGS="-Wno-error -w -fcommon -Wno-cast-function-type -Wno-implicit-function-declaration -Wno-pointer-arith" \
                       HOSTCFLAGS="-Wno-error -fcommon" \
@@ -66,21 +64,19 @@ jobs:
       - name: Create Image.gz-dtb
         run: |
           cd kernel/out/arch/arm64/boot/
-          # Căutăm toate DTB-urile generate recursiv
           DTBS=$(find dts/ -name "*.dtb")
           if [ -f Image.gz ] && [ ! -z "$DTBS" ]; then
-            echo "Lipim DTB-urile de Image.gz..."
             cat Image.gz $DTBS > Image.gz-dtb
-            echo "Succes! Image.gz-dtb creat."
+            echo "Succes! Kernel compilat și concatenat."
           else
-            echo "Eroare: Nu s-au putut genera Image.gz sau DTB-urile."
+            echo "Eroare: Componente lipsă."
             exit 1
           fi
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-SM8150-Final-V6
+          name: Kernel-SM8150-Final-V7
           path: |
             kernel/out/arch/arm64/boot/Image.gz-dtb
             kernel/out/arch/arm64/boot/dtbo.img
