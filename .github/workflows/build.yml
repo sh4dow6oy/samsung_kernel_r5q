@@ -1,4 +1,4 @@
-name: Samsung SM8150 Kernel Build (Neutron Clang) - V5
+name: Samsung SM8150 Kernel Build (Neutron Clang) - V6
 
 on:
   workflow_dispatch:
@@ -26,12 +26,10 @@ jobs:
           wget https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C neutron/
 
-      - name: Patch Source Code
+      - name: Patch Config
         run: |
           cd kernel
-          # Fix arithmetic on void pointer in icnss.c
-          sed -i 's/(void \*)ptr + offset/(char \*)ptr + offset/g' drivers/soc/qcom/icnss.c 2>/dev/null || true
-          # Forțăm ignorarea mismatch-urilor de secțiune
+          # Forțăm ignorarea mismatch-urilor de secțiune în defconfig direct
           sed -i 's/CONFIG_SECTION_MISMATCH_WARN_ONLY is not set/CONFIG_SECTION_MISMATCH_WARN_ONLY=y/g' arch/arm64/configs/vendor/b2q_eur_openx_defconfig
 
       - name: Compile Kernel
@@ -55,12 +53,12 @@ jobs:
           # 1. Config
           make O=out vendor/b2q_eur_openx_defconfig
 
-          # 2. Build cu flag-uri suplimentare pentru compatibilitate Clang 18
+          # 2. Build cu TOATE flag-urile de relaxare necesare pentru Samsung 5.4 + Clang 18
+          # -Wno-pointer-arith: REZOLVĂ eroarea din msm_dvb.c și icnss.c global
+          # -Wno-error: transformă orice eroare de tip warning în avertisment simplu
           # -fcommon: rezolvă multiple definition
-          # -Wno-cast-function-type: rezolvă eroarea din adreno_dispatch.c
-          # -Wno-implicit-function-declaration: previne opriri la funcții nedeclarate
           make -j$(nproc --all) O=out ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1 \
-                      KCFLAGS="-Wno-error -w -fcommon -Wno-cast-function-type -Wno-implicit-function-declaration" \
+                      KCFLAGS="-Wno-error -w -fcommon -Wno-cast-function-type -Wno-implicit-function-declaration -Wno-pointer-arith" \
                       HOSTCFLAGS="-Wno-error -fcommon" \
                       HOSTCXXFLAGS="-Wno-error" \
                       Image.gz dtbs dtbo
@@ -68,24 +66,21 @@ jobs:
       - name: Create Image.gz-dtb
         run: |
           cd kernel/out/arch/arm64/boot/
-          # Căutăm toate DTB-urile generate
+          # Căutăm toate DTB-urile generate recursiv
           DTBS=$(find dts/ -name "*.dtb")
           if [ -f Image.gz ] && [ ! -z "$DTBS" ]; then
             echo "Lipim DTB-urile de Image.gz..."
             cat Image.gz $DTBS > Image.gz-dtb
-            echo "Succes! Image.gz-dtb a fost creat."
+            echo "Succes! Image.gz-dtb creat."
           else
             echo "Eroare: Nu s-au putut genera Image.gz sau DTB-urile."
-            # Listăm ce avem pentru debug
-            ls -R dts/
             exit 1
           fi
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-SM8150-Final-V5
+          name: Kernel-SM8150-Final-V6
           path: |
             kernel/out/arch/arm64/boot/Image.gz-dtb
             kernel/out/arch/arm64/boot/dtbo.img
-            kernel/out/.config
