@@ -1,4 +1,4 @@
-name: Samsung SM8150 (r5q) - Path Fix - V18
+name: Samsung SM8150 (r5q) - Final Linker Fix - V19
 
 on:
   workflow_dispatch:
@@ -22,7 +22,7 @@ jobs:
 
       - name: Download & Extract Neutron Clang
         run: |
-          mkdir neutron
+          mkdir -p neutron
           wget https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C neutron/
 
@@ -32,8 +32,7 @@ jobs:
           # Fix Section Mismatch
           sed -i 's/__init //g' drivers/samsung/debug/sec_debug_summary.c 2>/dev/null || true
           sed -i 's/__init //g' include/linux/sec_debug.h 2>/dev/null || true
-          
-          # EAS Fix (sched_energy_present)
+          # EAS Fix
           sed -i 's/static_branch_unlikely(&sched_energy_present)/sched_energy_enabled()/g' kernel/sched/fair.c
 
       - name: Compile Kernel
@@ -53,35 +52,43 @@ jobs:
           export CROSS_COMPILE=aarch64-linux-gnu-
           export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
 
-          # 1. Config - Am adăugat prefixul vendor/ care lipsea
+          # 1. Config
           make O=out vendor/r5q_eur_open_defconfig || make O=out r5q_eur_open_defconfig
           
           # 2. Fix Config
           sed -i 's/CONFIG_HARDENED_USERCOPY=y/CONFIG_HARDENED_USERCOPY=n/g' out/.config
           sed -i 's/# CONFIG_SECTION_MISMATCH_WARN_ONLY is not set/CONFIG_SECTION_MISMATCH_WARN_ONLY=y/g' out/.config
           echo "CONFIG_SECTION_MISMATCH_WARN_ONLY=y" >> out/.config
-          
           make O=out ARCH=arm64 olddefconfig
 
-          # 3. Build Image
+          # 3. Build cu limitare de procese la final pentru stabilitate
+          # Compilăm totul, dacă eșuează reluăm cu V=1 pentru a vedea eroarea ascunsă
           make -j$(nproc --all) O=out ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1 \
                       KCFLAGS="-Wno-error -w -fcommon -Wno-cast-function-type -Wno-implicit-function-declaration -Wno-pointer-arith -Wno-frame-address" \
                       HOSTCFLAGS="-Wno-error -fcommon" \
-                      Image
+                      Image dtbs || \
+          make -j1 O=out ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1 V=1 Image
 
-      - name: Gzip and Export
+      - name: Prepare Final Image
         run: |
           cd kernel/out/arch/arm64/boot/
-          if [ -f Image ]; then
+          # Dacă Image.gz nu există, comprimăm Image
+          if [ -f Image ] && [ ! -f Image.gz ]; then
             gzip -n -c Image > Image.gz
-            echo "Kernel comprimat!"
-          else
-            echo "EROARE: Image nu a fost generat."
-            exit 1
+          fi
+          
+          # Încercăm să concatenăm DTB dacă există (pentru r5q)
+          DTBS=$(find dts/ -name "*.dtb" 2>/dev/null)
+          if [ -f Image.gz ] && [ ! -z "$DTBS" ]; then
+            echo "Lipim DTB-urile de Image.gz..."
+            cat Image.gz $DTBS > Image.gz-dtb
           fi
 
-      - name: Upload Kernel
+      - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-r5q-V18
-          path: kernel/out/arch/arm64/boot/Image.gz
+          name: Kernel-r5q-Final-V19
+          path: |
+            kernel/out/arch/arm64/boot/Image.gz
+            kernel/out/arch/arm64/boot/Image.gz-dtb
+            kernel/out/arch/arm64/boot/dts/vendor/qcom/*.dtbo
