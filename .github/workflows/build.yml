@@ -1,4 +1,4 @@
-name: Samsung SM8150 (r5q) - Linker Fix - V20
+name: Samsung SM8150 (r5q) - Security Bypass - V21
 
 on:
   workflow_dispatch:
@@ -26,21 +26,18 @@ jobs:
           wget https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C neutron/
 
-      - name: Patch Source Code (Fix All Conflicts)
+      - name: Patch Source Code
         run: |
           cd kernel
-          # 1. Fix Section Mismatch
+          # 1. Fix Section Mismatch & EAS
           sed -i 's/__init //g' drivers/samsung/debug/sec_debug_summary.c 2>/dev/null || true
           sed -i 's/__init //g' include/linux/sec_debug.h 2>/dev/null || true
-          
-          # 2. EAS Fix
           sed -i 's/static_branch_unlikely(&sched_energy_present)/sched_energy_enabled()/g' kernel/sched/fair.c
           
-          # 3. FIX DUPLICATE SYMBOLS (flow_cache_ops)
-          # Eliminăm definițiile duplicate din net/xfrm/xfrm_state.c care intră în coliziune cu net/core/flow.c
-          # Folosim o metodă sigură de a comenta funcțiile problematice dacă sunt duplicate
-          sed -i 's/void flow_cache_ops_register/void __attribute__((weak)) flow_cache_ops_register/g' net/core/flow.c
-          sed -i 's/void flow_cache_ops_unregister/void __attribute__((weak)) flow_cache_ops_unregister/g' net/core/flow.c
+          # 2. Fix Duplicate Symbols (Networking)
+          # Folosim o metodă mai agresivă de a evita duplicatele în flow.c
+          sed -i 's/^void flow_cache_ops_register/void __attribute__((weak)) flow_cache_ops_register/g' net/core/flow.c
+          sed -i 's/^void flow_cache_ops_unregister/void __attribute__((weak)) flow_cache_ops_unregister/g' net/core/flow.c
 
       - name: Compile Kernel
         run: |
@@ -60,42 +57,41 @@ jobs:
           export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
 
           # 1. Config
-          make O=out vendor/r5q_eur_open_defconfig || make O=out r5q_eur_open_defconfig
+          make O=out vendor/r5q_eur_open_defconfig
           
-          # 2. Fix Config
+          # 2. Hard-Disable Security Features (pentru a trece de erorile SDP/DEFEX)
+          scripts/config --file out/.config -d CONFIG_SDP
+          scripts/config --file out/.config -d CONFIG_SAMSUNG_PRODUCT_SHIP
+          scripts/config --file out/.config -d CONFIG_DEFEX
+          scripts/config --file out/.config -d CONFIG_SECURITY_DEFEX
+          
+          # Fix restul de config
           sed -i 's/CONFIG_HARDENED_USERCOPY=y/CONFIG_HARDENED_USERCOPY=n/g' out/.config
-          sed -i 's/# CONFIG_SECTION_MISMATCH_WARN_ONLY is not set/CONFIG_SECTION_MISMATCH_WARN_ONLY=y/g' out/.config
           echo "CONFIG_SECTION_MISMATCH_WARN_ONLY=y" >> out/.config
+          
           make O=out ARCH=arm64 olddefconfig
 
-          # 3. Build Image
-          # Folosim KCFLAGS pentru a ignora restul avertismentelor care pot deveni erori
+          # 3. Build cu extra relaxare pentru Clang 19
           make -j$(nproc --all) O=out ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1 \
-                      KCFLAGS="-Wno-error -w -fcommon -Wno-cast-function-type -Wno-implicit-function-declaration -Wno-pointer-arith -Wno-frame-address" \
+                      KCFLAGS="-Wno-error -w -fcommon -Wno-cast-function-type -Wno-implicit-function-declaration -Wno-pointer-arith -Wno-frame-address -Wno-incompatible-pointer-types -Wno-cast-function-type-strict" \
                       HOSTCFLAGS="-Wno-error -fcommon" \
                       Image dtbs
 
-      - name: Export Final Kernel
+      - name: Export
         run: |
           cd kernel/out/arch/arm64/boot/
           if [ -f Image ]; then
             gzip -n -c Image > Image.gz
-            # Creăm și versiunea cu DTB dacă avem fișierele
             DTBS=$(find dts/ -name "*.dtb" 2>/dev/null)
-            if [ ! -z "$DTBS" ]; then
-               cat Image.gz $DTBS > Image.gz-dtb
-            fi
-            echo "Succes!"
+            [ ! -z "$DTBS" ] && cat Image.gz $DTBS > Image.gz-dtb
+            echo "Build terminat cu succes!"
           else
-            echo "Eroare: Kernelul nu s-a compilat."
+            echo "Eroare: Image negăsit."
             exit 1
           fi
 
-      - name: Upload Artifacts
+      - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-r5q-V20-Final
-          path: |
-            kernel/out/arch/arm64/boot/Image.gz
-            kernel/out/arch/arm64/boot/Image.gz-dtb
-            kernel/out/arch/arm64/boot/dts/vendor/qcom/*.dtbo
+          name: Kernel-r5q-V21
+          path: kernel/out/arch/arm64/boot/Image.gz*
