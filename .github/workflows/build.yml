@@ -1,4 +1,4 @@
-name: Samsung SM8150 (r5q) - Clang Fix - V25
+name: Samsung SM8150 (r5q) - Direct Header Copy - V26
 
 on:
   workflow_dispatch:
@@ -42,9 +42,9 @@ jobs:
           fi
           
           # 3. FIX CLANG 19+ HEADER ISSUE (dma-iommu.h)
-          # Creăm link-ul simbolic lipsă pentru MHI
+          # Copiem header-ul direct în locația asm
           mkdir -p arch/arm64/include/asm
-          ln -sf ../../../drivers/iommu/dma-iommu.h arch/arm64/include/asm/dma-iommu.h || true
+          cp drivers/iommu/dma-iommu.h arch/arm64/include/asm/dma-iommu.h
 
       - name: Compile Kernel
         run: |
@@ -102,5 +102,5 @@ jobs:
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-r5q-V25
+          name: Kernel-r5q-V26
           path: kernel/out/arch/arm64/boot/Image.gz
