@@ -45,7 +45,7 @@ jobs:
           export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
 
           # 1. Config
-          make O=out vendor/b2q_eur_openx_defconfig
+          make O=out vendor/r5q_eur_open_defconfig
 
           # 2. Fix Config (Hardened Usercopy + Section Mismatch)
           sed -i 's/CONFIG_HARDENED_USERCOPY=y/CONFIG_HARDENED_USERCOPY=n/g' out/.config
