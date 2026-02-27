@@ -1,4 +1,4 @@
-name: Samsung SM8150 (r5q) - Only Kernel (No DTB) - V14
+name: Samsung SM8150 (r5q) - Final Push - V16
 
 on:
   workflow_dispatch:
@@ -29,11 +29,10 @@ jobs:
       - name: Patch Source Code
         run: |
           cd kernel
-          # Fix Section Mismatch (obligatoriu pentru vmlinux)
           sed -i 's/__init //g' drivers/samsung/debug/sec_debug_summary.c 2>/dev/null || true
           sed -i 's/__init //g' include/linux/sec_debug.h 2>/dev/null || true
 
-      - name: Compile Kernel Only
+      - name: Compile Kernel
         run: |
           cd kernel
           export PATH=$GITHUB_WORKSPACE/neutron/bin:$PATH
@@ -59,27 +58,27 @@ jobs:
           echo "CONFIG_SECTION_MISMATCH_WARN_ONLY=y" >> out/.config
           make O=out ARCH=arm64 olddefconfig
 
-          # 3. Build doar Image (fără dtbs)
+          # 3. Build cu fallback pe single-core în caz de eroare
+          # Adăugăm -Wno-frame-address pentru a evita erori de securitate Clang
           make -j$(nproc --all) O=out ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1 \
-                      KCFLAGS="-Wno-error -w -fcommon -Wno-cast-function-type -Wno-implicit-function-declaration -Wno-pointer-arith" \
+                      KCFLAGS="-Wno-error -w -fcommon -Wno-cast-function-type -Wno-implicit-function-declaration -Wno-pointer-arith -Wno-frame-address" \
                       HOSTCFLAGS="-Wno-error -fcommon" \
-                      Image
+                      Image || make O=out ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1 KCFLAGS="-Wno-error -w" Image
 
-      - name: Gzip Image
+      - name: Gzip and Export
         run: |
-          cd kernel/out/arch/arm64/boot/
-          if [ -f Image ]; then
-            gzip -c Image > Image.gz
-            echo "Succes! Image.gz a fost generat."
+          # Verificăm în mai multe locuri unde ar putea fi Image
+          IMAGE_PATH=$(find kernel/out -name Image | head -n 1)
+          if [ -f "$IMAGE_PATH" ]; then
+            gzip -n -c "$IMAGE_PATH" > kernel/out/Image.gz
+            echo "Kernel găsit și comprimat!"
           else
-            echo "Eroare: Image nu a fost găsit!"
+            echo "EROARE: Image nu a fost generat. Verifică log-urile de mai sus pentru eroarea de compilare."
             exit 1
           fi
 
       - name: Upload Kernel
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-Only-r5q-V14
-          path: |
-            kernel/out/arch/arm64/boot/Image.gz
-            kernel/out/.config
+          name: Kernel-r5q-Final-V16
+          path: kernel/out/Image.gz
