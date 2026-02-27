@@ -1,4 +1,4 @@
-name: Samsung SM8150 (r5q) - Final Linker Fix - V19
+name: Samsung SM8150 (r5q) - Linker Fix - V20
 
 on:
   workflow_dispatch:
@@ -26,14 +26,21 @@ jobs:
           wget https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C neutron/
 
-      - name: Patch Source Code
+      - name: Patch Source Code (Fix All Conflicts)
         run: |
           cd kernel
-          # Fix Section Mismatch
+          # 1. Fix Section Mismatch
           sed -i 's/__init //g' drivers/samsung/debug/sec_debug_summary.c 2>/dev/null || true
           sed -i 's/__init //g' include/linux/sec_debug.h 2>/dev/null || true
-          # EAS Fix
+          
+          # 2. EAS Fix
           sed -i 's/static_branch_unlikely(&sched_energy_present)/sched_energy_enabled()/g' kernel/sched/fair.c
+          
+          # 3. FIX DUPLICATE SYMBOLS (flow_cache_ops)
+          # Eliminăm definițiile duplicate din net/xfrm/xfrm_state.c care intră în coliziune cu net/core/flow.c
+          # Folosim o metodă sigură de a comenta funcțiile problematice dacă sunt duplicate
+          sed -i 's/void flow_cache_ops_register/void __attribute__((weak)) flow_cache_ops_register/g' net/core/flow.c
+          sed -i 's/void flow_cache_ops_unregister/void __attribute__((weak)) flow_cache_ops_unregister/g' net/core/flow.c
 
       - name: Compile Kernel
         run: |
@@ -61,33 +68,33 @@ jobs:
           echo "CONFIG_SECTION_MISMATCH_WARN_ONLY=y" >> out/.config
           make O=out ARCH=arm64 olddefconfig
 
-          # 3. Build cu limitare de procese la final pentru stabilitate
-          # Compilăm totul, dacă eșuează reluăm cu V=1 pentru a vedea eroarea ascunsă
+          # 3. Build Image
+          # Folosim KCFLAGS pentru a ignora restul avertismentelor care pot deveni erori
           make -j$(nproc --all) O=out ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1 \
                       KCFLAGS="-Wno-error -w -fcommon -Wno-cast-function-type -Wno-implicit-function-declaration -Wno-pointer-arith -Wno-frame-address" \
                       HOSTCFLAGS="-Wno-error -fcommon" \
-                      Image dtbs || \
-          make -j1 O=out ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1 V=1 Image
+                      Image dtbs
 
-      - name: Prepare Final Image
+      - name: Export Final Kernel
         run: |
           cd kernel/out/arch/arm64/boot/
-          # Dacă Image.gz nu există, comprimăm Image
-          if [ -f Image ] && [ ! -f Image.gz ]; then
+          if [ -f Image ]; then
             gzip -n -c Image > Image.gz
-          fi
-          
-          # Încercăm să concatenăm DTB dacă există (pentru r5q)
-          DTBS=$(find dts/ -name "*.dtb" 2>/dev/null)
-          if [ -f Image.gz ] && [ ! -z "$DTBS" ]; then
-            echo "Lipim DTB-urile de Image.gz..."
-            cat Image.gz $DTBS > Image.gz-dtb
+            # Creăm și versiunea cu DTB dacă avem fișierele
+            DTBS=$(find dts/ -name "*.dtb" 2>/dev/null)
+            if [ ! -z "$DTBS" ]; then
+               cat Image.gz $DTBS > Image.gz-dtb
+            fi
+            echo "Succes!"
+          else
+            echo "Eroare: Kernelul nu s-a compilat."
+            exit 1
           fi
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-r5q-Final-V19
+          name: Kernel-r5q-V20-Final
           path: |
             kernel/out/arch/arm64/boot/Image.gz
             kernel/out/arch/arm64/boot/Image.gz-dtb
