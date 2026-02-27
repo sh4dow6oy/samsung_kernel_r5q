@@ -1,4 +1,4 @@
-name: Samsung SM8150 Kernel Build (Neutron Clang) - V9
+name: Samsung SM8150 (r5q) Kernel Build - V10
 
 on:
   workflow_dispatch:
@@ -26,6 +26,17 @@ jobs:
           wget https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C neutron/
 
+      - name: Patch Source Code (Fix Section Mismatch)
+        run: |
+          cd kernel
+          # Eliminăm marcajele __init care cauzează eroarea fatală în sec_debug
+          # Acesta este fix-ul specific pentru erorile din log-ul tău
+          sed -i 's/__init //g' drivers/samsung/debug/sec_debug_summary.c 2>/dev/null || true
+          sed -i 's/__init //g' include/linux/sec_debug.h 2>/dev/null || true
+          
+          # Fix pentru pointer arithmetic (văzut în build-urile anterioare)
+          sed -i 's/(void \*)ptr + offset/(char \*)ptr + offset/g' drivers/soc/qcom/icnss.c 2>/dev/null || true
+
       - name: Compile Kernel
         run: |
           cd kernel
@@ -47,14 +58,14 @@ jobs:
           # 1. Config
           make O=out vendor/r5q_eur_open_defconfig
 
-          # 2. Fix Config (Hardened Usercopy + Section Mismatch)
+          # 2. Fix Config (Hardened Usercopy + Forced Warning Only)
           sed -i 's/CONFIG_HARDENED_USERCOPY=y/CONFIG_HARDENED_USERCOPY=n/g' out/.config
           sed -i 's/# CONFIG_SECTION_MISMATCH_WARN_ONLY is not set/CONFIG_SECTION_MISMATCH_WARN_ONLY=y/g' out/.config
           echo "CONFIG_SECTION_MISMATCH_WARN_ONLY=y" >> out/.config
           
           make O=out ARCH=arm64 olddefconfig
 
-          # 3. Build (Am scos ținta 'dtbo' care dădea eroare)
+          # 3. Build Kernel
           make -j$(nproc --all) O=out ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1 \
                       KCFLAGS="-Wno-error -w -fcommon -Wno-cast-function-type -Wno-implicit-function-declaration -Wno-pointer-arith" \
                       HOSTCFLAGS="-Wno-error -fcommon" \
@@ -64,23 +75,19 @@ jobs:
       - name: Create Image.gz-dtb
         run: |
           cd kernel/out/arch/arm64/boot/
-          # Căutăm toate DTB-urile (Device Tree Blobs)
-          DTBS=$(find dts/vendor/qcom/ -name "*.dtb" 2>/dev/null || find dts/ -name "*.dtb")
+          DTBS=$(find dts/vendor/qcom/ -name "*.dtb" 2>/dev/null)
           if [ -f Image.gz ] && [ ! -z "$DTBS" ]; then
-            echo "Lipim DTB-urile de Image.gz..."
             cat Image.gz $DTBS > Image.gz-dtb
-            echo "Succes! Image.gz-dtb a fost creat."
+            echo "Succes! Image.gz-dtb creat."
           else
-            echo "Eroare: Nu s-a putut genera Image.gz-dtb."
+            echo "Eroare: Componente lipsă."
             exit 1
           fi
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-SM8150-Final-V9
+          name: Kernel-r5q-Final-V10
           path: |
             kernel/out/arch/arm64/boot/Image.gz-dtb
-            kernel/out/arch/arm64/boot/Image.gz
             kernel/out/arch/arm64/boot/dts/vendor/qcom/*.dtbo
-            kernel/out/.config
