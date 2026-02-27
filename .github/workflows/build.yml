@@ -1,4 +1,4 @@
-name: Samsung SM8150 (r5q) - Direct Header Copy - V26
+name: Samsung SM8150 (r5q) - Skip MHI - V28
 
 on:
   workflow_dispatch:
@@ -41,10 +41,7 @@ jobs:
             sed -i 's/^void flow_cache_ops_unregister/void __attribute__((weak)) flow_cache_ops_unregister/g' "$FLOW_FILE"
           fi
           
-          # 3. FIX CLANG 19+ HEADER ISSUE (dma-iommu.h)
-          # Copiem header-ul direct în locația asm
-          mkdir -p arch/arm64/include/asm
-          cp drivers/iommu/dma-iommu.h arch/arm64/include/asm/dma-iommu.h
+          # Note: Am eliminat pasul de căutare a dma-iommu.h
 
       - name: Compile Kernel
         run: |
@@ -70,12 +67,13 @@ jobs:
             make O=out r5q_eur_open_defconfig
           fi
           
-          # 2. Dezactivare Module Securitate Samsung
+          # 2. Dezactivare Module Securitate Samsung & MHI Bus (Fix pt MHI Error)
           scripts/config --file out/.config -d CONFIG_SDP
           scripts/config --file out/.config -d CONFIG_SAMSUNG_PRODUCT_SHIP
           scripts/config --file out/.config -d CONFIG_DEFEX
           scripts/config --file out/.config -d CONFIG_SECURITY_DEFEX
           scripts/config --file out/.config -d CONFIG_SECURITY_DSMS
+          scripts/config --file out/.config -d CONFIG_MHI_BUS # Încercăm să ocolim MHI
           
           # 3. Final Adjustments
           sed -i 's/CONFIG_HARDENED_USERCOPY=y/CONFIG_HARDENED_USERCOPY=n/g' out/.config
@@ -102,5 +100,5 @@ jobs:
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-r5q-V26
+          name: Kernel-r5q-V28
           path: kernel/out/arch/arm64/boot/Image.gz
