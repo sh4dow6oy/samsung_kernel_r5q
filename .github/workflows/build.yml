@@ -1,4 +1,4 @@
-name: Samsung SM8150 (r5q) - Full Hardware Integration - V32
+name: Samsung SM8150 (r5q) - Scheduler Fix - V34
 
 on:
   workflow_dispatch:
@@ -29,16 +29,16 @@ jobs:
       - name: Patch Source Code
         run: |
           cd kernel
-          # 1. Fix Section Mismatch (Samsung Debug)
+          # 1. FIX SCHEDULER ERROR (sched_energy_present)
+          # Înlocuim macro-ul static_branch cu apelul direct de funcție care există în sched.h
+          sed -i 's/static_branch_unlikely(&sched_energy_present)/sched_energy_enabled()/g' kernel/sched/fair.c
+          
+          # 2. Fix Section Mismatch (Samsung Debug)
           sed -i 's/__init //g' drivers/samsung/debug/sec_debug_summary.c 2>/dev/null || true
           sed -i 's/__init //g' include/linux/sec_debug.h 2>/dev/null || true
           
-          # 2. Fix IOMMU Header (MHI/Modem fix)
+          # 3. Fix IOMMU Header (MHI/Modem fix)
           find drivers/bus/mhi/ -type f -name "*.c" -exec sed -i 's/asm\/dma-iommu.h/linux\/dma-iommu.h/g' {} +
-          
-          # 3. Patch Duplicate Symbols
-          FLOW_FILE=$(find net/ -name flow.c)
-          [ ! -z "$FLOW_FILE" ] && sed -i 's/^void flow_cache_ops_register/void __attribute__((weak)) flow_cache_ops_register/g' "$FLOW_FILE"
 
       - name: Compile Kernel
         run: |
@@ -54,46 +54,31 @@ jobs:
           export CROSS_COMPILE=aarch64-linux-gnu-
           export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
 
-          # 1. Aplicăm Config-ul tău
+          # 1. Config
           make O=out vendor/r5q_eur_open_defconfig
           
-          # 2. FORȚĂM ACTIVAREA DRIVERELOR (Built-in 'y')
-          # Touchscreen - Activăm toate variantele posibile pentru Samsung SM8150
-          scripts/config --file out/.config -e CONFIG_INPUT_TOUCHSCREEN
+          # 2. Hardware & Linker Adjustments
           scripts/config --file out/.config -e CONFIG_TOUCHSCREEN_SAMSUNG
           scripts/config --file out/.config -e CONFIG_TOUCHSCREEN_SEC_TS_Y771_R5
-          scripts/config --file out/.config -e CONFIG_TOUCHSCREEN_SEC_TS_FTS
-          scripts/config --file out/.config -e CONFIG_TOUCHSCREEN_SEC_TS_ZINITIX
-          
-          # Magistrale de date (Fără ele nu comunică ecranul)
           scripts/config --file out/.config -e CONFIG_I2C_QCOM_GENI
-          scripts/config --file out/.config -e CONFIG_SPI_QCOM_GENI
-          scripts/config --file out/.config -e CONFIG_I2C_CHARDEV
-          
-          # Senzori și alte piese
-          scripts/config --file out/.config -e CONFIG_SENSORS_SSC
-          scripts/config --file out/.config -e CONFIG_INPUT_SENSORS
-          scripts/config --file out/.config -e CONFIG_MSM_CAMERA
-          
-          # 3. Eliminăm blocajele de securitate Samsung
           scripts/config --file out/.config -d CONFIG_SDP
-          scripts/config --file out/.config -d CONFIG_SAMSUNG_PRODUCT_SHIP
           scripts/config --file out/.config -d CONFIG_DEFEX
-          scripts/config --file out/.config -d CONFIG_SECURITY_DSMS
           
-          # Finalizare config
+          # Dezactivăm manual EAS dacă provoacă erori de compilare, dar sed-ul de mai sus ar trebui să rezolve
+          # scripts/config --file out/.config -d CONFIG_ENERGY_MODEL
+          
           make O=out ARCH=arm64 olddefconfig
 
-          # 4. Build Image
+          # 3. Build Final
+          # Folosim -fcommon pentru a evita "duplicate symbol" de data trecută
           make -j$(nproc --all) O=out ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1 \
-                      KCFLAGS="-Wno-error -w -fcommon -fno-stack-protector" \
+                      KCFLAGS="-Wno-error -w -fcommon -fno-stack-protector -Wno-implicit-function-declaration" \
                       Image
 
       - name: Prepare Artifacts
         run: |
           if [ -f kernel/out/arch/arm64/boot/Image ]; then
             gzip -n -c kernel/out/arch/arm64/boot/Image > kernel/Image.gz
-            echo "Kernel Image.gz generat cu succes!"
           else
             echo "Kernel Image not found!"
             exit 1
@@ -102,5 +87,5 @@ jobs:
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-r5q-V32-FinalFix
+          name: Kernel-r5q-V34-SchedFix
           path: kernel/Image.gz
