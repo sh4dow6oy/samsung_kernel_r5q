@@ -1,4 +1,4 @@
-name: Samsung SM8150 (r5q) - eBPF Integration - V51
+name: Samsung SM8150 (r5q) - eBPF Final Fix - V52
 
 on:
   workflow_dispatch:
@@ -16,12 +16,12 @@ jobs:
           path: kernel
           fetch-depth: 1
 
-      # 2. Checkout SM6150 Kernel (Source)
+      # 2. Checkout SM6150 Kernel (Source) - FIX REFERINȚĂ
       - name: Checkout SM6150 Kernel
         uses: actions/checkout@v4
         with:
           repository: crdroidandroid/android_kernel_samsung_sm6150
-          ref: 15.0
+          ref: refs/heads/15.0 # FORȚĂM BRANCH-UL CORECT
           path: sm6150
           fetch-depth: 1
 
@@ -42,14 +42,14 @@ jobs:
           K_R5Q="$GITHUB_WORKSPACE/kernel"
           K_SM6150="$GITHUB_WORKSPACE/sm6150"
 
-          # 1. Copiem structura de bpf (directoare și fișiere)
+          # 1. Copiem structura de bpf
           cp -r $K_SM6150/kernel/bpf $K_R5Q/kernel/
 
           # 2. Actualizam Include-urile esențiale pentru eBPF
           cp $K_SM6150/include/linux/bpf.h $K_R5Q/include/linux/bpf.h
           cp $K_SM6150/include/linux/bpf_types.h $K_R5Q/include/linux/bpf_types.h
-          cp $K_SM6150/include/uapi/linux/bpf.h $K_R5Q/include/uapi/linux/bpf.h
-          cp $K_SM6150/include/uapi/linux/bpf_common.h $K_R5Q/include/uapi/linux/bpf_common.h
+          cp -r $K_SM6150/include/uapi/linux/bpf.h $K_R5Q/include/uapi/linux/bpf.h
+          cp -r $K_SM6150/include/uapi/linux/bpf_common.h $K_R5Q/include/uapi/linux/bpf_common.h
 
           # 3. Actualizam Makefile-ul principal pentru a include bpf/
           echo "obj-y += bpf/" >> $K_R5Q/kernel/Makefile
@@ -68,7 +68,7 @@ jobs:
 
           make O=out ARCH=arm64 r5q_eur_open_defconfig
 
-          # Activează eBPF, JIT și BTF (necesar pentru sm6150-based ebpf)
+          # Activează eBPF, JIT și BTF
           scripts/config --file out/.config -e CONFIG_BPF
           scripts/config --file out/.config -e CONFIG_BPF_SYSCALL
           scripts/config --file out/.config -e CONFIG_BPF_JIT
@@ -92,7 +92,6 @@ jobs:
           export CROSS_COMPILE=aarch64-linux-gnu-
           export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
 
-          # KCFLAGS actualizat pentru compatibilitate Clang cu backport-uri
           make -j$(nproc --all) O=out ARCH=arm64 \
                CC=clang LLVM=1 LLVM_IAS=1 \
                KCFLAGS="-Wno-error -Wno-unused-function -Wno-unused-variable -Wno-int-conversion -Wno-implicit-function-declaration"
@@ -110,5 +109,5 @@ jobs:
       - name: Upload Kernel
         uses: actions/upload-artifact@v4
         with:
-          name: r5q-ebpf-V51
+          name: r5q-ebpf-V52
           path: kernel/Image.gz
