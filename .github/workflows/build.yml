@@ -1,4 +1,4 @@
-name: Samsung SM8150 (r5q) - Scheduler Fix - V34
+name: Samsung SM8150 (r5q) - MHI Bypass - V35
 
 on:
   workflow_dispatch:
@@ -29,23 +29,30 @@ jobs:
       - name: Patch Source Code
         run: |
           cd kernel
-          # 1. FIX SCHEDULER ERROR (sched_energy_present)
-          # Înlocuim macro-ul static_branch cu apelul direct de funcție care există în sched.h
+          # 1. FIX SCHEDULER (EAS)
           sed -i 's/static_branch_unlikely(&sched_energy_present)/sched_energy_enabled()/g' kernel/sched/fair.c
           
-          # 2. Fix Section Mismatch (Samsung Debug)
+          # 2. FIX MHI ERRORS (Bypassing problematic lines in mhi_arch_qcom.c)
+          MHI_ARCH="drivers/bus/mhi/controllers/mhi_arch_qcom.c"
+          if [ -f "$MHI_ARCH" ]; then
+            # Comentăm liniile cu pdev nedeclarat și icc_peak_len (Interconnect)
+            sed -i '496s/^/\/\//' "$MHI_ARCH"
+            sed -i '508s/^/\/\//' "$MHI_ARCH"
+            # Comentăm linia cu no_d3hot (PCI Power)
+            sed -i '571s/^/\/\//' "$MHI_ARCH"
+            # Asigurăm headerul corect ca în V34
+            sed -i 's/asm\/dma-iommu.h/linux\/dma-iommu.h/g' "$MHI_ARCH"
+          fi
+
+          # 3. Fix Section Mismatch
           sed -i 's/__init //g' drivers/samsung/debug/sec_debug_summary.c 2>/dev/null || true
           sed -i 's/__init //g' include/linux/sec_debug.h 2>/dev/null || true
-          
-          # 3. Fix IOMMU Header (MHI/Modem fix)
-          find drivers/bus/mhi/ -type f -name "*.c" -exec sed -i 's/asm\/dma-iommu.h/linux\/dma-iommu.h/g' {} +
 
       - name: Compile Kernel
         run: |
           cd kernel
           export PATH=$GITHUB_WORKSPACE/neutron/bin:$PATH
           export ARCH=arm64
-          export SUBARCH=arm64
           export CC=clang
           export NM=llvm-nm
           export OBJCOPY=llvm-objcopy
@@ -57,20 +64,16 @@ jobs:
           # 1. Config
           make O=out vendor/r5q_eur_open_defconfig
           
-          # 2. Hardware & Linker Adjustments
+          # 2. Hardware Force (Touch Fix)
           scripts/config --file out/.config -e CONFIG_TOUCHSCREEN_SAMSUNG
           scripts/config --file out/.config -e CONFIG_TOUCHSCREEN_SEC_TS_Y771_R5
           scripts/config --file out/.config -e CONFIG_I2C_QCOM_GENI
           scripts/config --file out/.config -d CONFIG_SDP
           scripts/config --file out/.config -d CONFIG_DEFEX
           
-          # Dezactivăm manual EAS dacă provoacă erori de compilare, dar sed-ul de mai sus ar trebui să rezolve
-          # scripts/config --file out/.config -d CONFIG_ENERGY_MODEL
-          
           make O=out ARCH=arm64 olddefconfig
 
           # 3. Build Final
-          # Folosim -fcommon pentru a evita "duplicate symbol" de data trecută
           make -j$(nproc --all) O=out ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1 \
                       KCFLAGS="-Wno-error -w -fcommon -fno-stack-protector -Wno-implicit-function-declaration" \
                       Image
@@ -79,6 +82,7 @@ jobs:
         run: |
           if [ -f kernel/out/arch/arm64/boot/Image ]; then
             gzip -n -c kernel/out/arch/arm64/boot/Image > kernel/Image.gz
+            echo "Kernel Image.gz generat!"
           else
             echo "Kernel Image not found!"
             exit 1
@@ -87,5 +91,5 @@ jobs:
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-r5q-V34-SchedFix
+          name: Kernel-r5q-V35-MHI-Fix
           path: kernel/Image.gz
