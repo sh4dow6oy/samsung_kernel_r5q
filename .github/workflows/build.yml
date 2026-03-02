@@ -41,9 +41,9 @@ jobs:
           # 3. INGEST FINGERPRINT DRIVERS (Descărcăm fișierele lipsă)
           FP_DIR="drivers/fingerprint"
           mkdir -p "$FP_DIR"
-          wget -O "$FP_DIR/et7xx-spi.c" https://raw.githubusercontent.com/Roynas-Android-Playground/kernel_samsung_r3q/master/drivers/fingerprint/et7xx-spi.c
-          wget -O "$FP_DIR/et7xx-spi.h" https://raw.githubusercontent.com/Roynas-Android-Playground/kernel_samsung_r3q/master/drivers/fingerprint/et7xx-spi.h
-          wget -O "$FP_DIR/fingerprint_common.h" https://raw.githubusercontent.com/Roynas-Android-Playground/kernel_samsung_r3q/master/drivers/fingerprint/fingerprint_common.h
+          wget -O "$FP_DIR/et7xx-spi.c" https://github.com/Roynas-Android-Playground/kernel_samsung_r3q/blob/master/drivers/fingerprint/et7xx-spi.c
+          wget -O "$FP_DIR/et7xx-spi.h" https://github.com/Roynas-Android-Playground/kernel_samsung_r3q/blob/master/drivers/fingerprint/et7xx-spi.h
+          wget -O "$FP_DIR/fingerprint_common.h" https://github.com/Roynas-Android-Playground/kernel_samsung_r3q/blob/master/drivers/fingerprint/fingerprint_common.h
           
           # Asigurăm Makefile-ul
           if [ ! -f "$FP_DIR/Makefile" ]; then
