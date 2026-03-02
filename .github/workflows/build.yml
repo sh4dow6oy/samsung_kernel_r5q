@@ -1,4 +1,4 @@
-name: Samsung SM8150 (r5q) - Inversat - V71
+name: Samsung SM8150 (r5q) - Inversat - V72
 
 on:
   workflow_dispatch:
@@ -37,7 +37,7 @@ jobs:
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C neutron/
 
-      - name: Inversare si Injectare Specifics - V71
+      - name: Inversare si Injectare Specifics - V72
         run: |
           # 1. Injectam Device Tree specific R5Q
           cp -r $GITHUB_WORKSPACE/r5q_specifics/arch/arm64/boot/dts/samsung/* $GITHUB_WORKSPACE/kernel/arch/arm64/boot/dts/samsung/
@@ -45,10 +45,12 @@ jobs:
           # 2. Injectam Defconfig R5Q
           cp $GITHUB_WORKSPACE/r5q_specifics/arch/arm64/configs/r5q_eur_open_defconfig $GITHUB_WORKSPACE/kernel/arch/arm64/configs/
 
-          # 3. Injectam Drivere specifice necesare (exemplu: sdfat care apare in log)
-          # Asiguram ca driverele Samsung de pe r5q sunt prezente daca lipsesc din sm6150
+          # 3. Injectam Drivere specifice necesare
           cp -r $GITHUB_WORKSPACE/r5q_specifics/drivers/misc/samsung/* $GITHUB_WORKSPACE/kernel/drivers/misc/samsung/ || true
           cp -r $GITHUB_WORKSPACE/r5q_specifics/fs/sdfat/* $GITHUB_WORKSPACE/kernel/fs/sdfat/ || true
+
+          # 4. FIX eCryptfs Incompatibility (V72 Patch)
+          sed -i 's/struct crypto_blkcipher \*\*tfm/struct crypto_skcipher \*\*tfm/g' $GITHUB_WORKSPACE/kernel/fs/ecryptfs/ecryptfs_kernel.h
 
       - name: Configure R5Q Kernel (Inversat)
         run: |
@@ -102,5 +104,5 @@ jobs:
       - name: Upload Kernel
         uses: actions/upload-artifact@v4
         with:
-          name: r5q-ebpf-V71
+          name: r5q-ebpf-V72
           path: kernel/Image.gz
