@@ -1,4 +1,4 @@
-name: Samsung SM8150 (r5q) - Final Hardware Fix - V38
+name: Samsung SM8150 (r5q) - Fingerprint Driver Ingest - V40
 
 on:
   workflow_dispatch:
@@ -29,16 +29,28 @@ jobs:
       - name: Patch Source Code
         run: |
           cd kernel
-          # 1. FIX SCHEDULER (EAS) - Rezolvă eroarea 'sched_energy_present'
+          # 1. FIX SCHEDULER (EAS)
           sed -i 's/static_branch_unlikely(&sched_energy_present)/sched_energy_enabled()/g' kernel/sched/fair.c
           
-          # 2. FIX MHI ERRORS (Rescriere fișier folosind printf pentru siguranță)
+          # 2. FIX MHI ERRORS (Stub complet)
           MHI_ARCH="drivers/bus/mhi/controllers/mhi_arch_qcom.c"
           if [ -f "$MHI_ARCH" ]; then
             printf "#include <linux/module.h>\n#include <linux/platform_device.h>\n#include <linux/mhi.h>\n\nint mhi_arch_pcie_init(struct mhi_controller *mhi_cntrl) { return 0; }\nvoid mhi_arch_pcie_deinit(struct mhi_controller *mhi_cntrl) {}\nint mhi_arch_iommu_init(struct mhi_controller *mhi_cntrl) { return 0; }\nvoid mhi_arch_iommu_deinit(struct mhi_controller *mhi_cntrl) {}\nint mhi_arch_link_resume(struct mhi_controller *mhi_cntrl) { return 0; }\nint mhi_arch_link_suspend(struct mhi_controller *mhi_cntrl) { return 0; }\nint mhi_arch_link_lpm_disable(struct mhi_controller *mhi_cntrl) { return 0; }\nvoid mhi_arch_link_lpm_enable(struct mhi_controller *mhi_cntrl) {}\nint mhi_arch_reg_suspend_cb(struct mhi_controller *mhi_cntrl) { return 0; }\nvoid mhi_arch_reg_resume_cb(struct mhi_controller *mhi_cntrl) {}\n" > "$MHI_ARCH"
           fi
 
-          # 3. Fix Section Mismatch
+          # 3. INGEST FINGERPRINT DRIVERS (Descărcăm fișierele lipsă)
+          FP_DIR="drivers/fingerprint"
+          mkdir -p "$FP_DIR"
+          wget -O "$FP_DIR/et7xx-spi.c" https://raw.githubusercontent.com/Roynas-Android-Playground/kernel_samsung_r3q/master/drivers/fingerprint/et7xx-spi.c
+          wget -O "$FP_DIR/et7xx-spi.h" https://raw.githubusercontent.com/Roynas-Android-Playground/kernel_samsung_r3q/master/drivers/fingerprint/et7xx-spi.h
+          wget -O "$FP_DIR/fingerprint_common.h" https://raw.githubusercontent.com/Roynas-Android-Playground/kernel_samsung_r3q/master/drivers/fingerprint/fingerprint_common.h
+          
+          # Asigurăm Makefile-ul
+          if [ ! -f "$FP_DIR/Makefile" ]; then
+            echo "obj-y += et7xx-spi.o fingerprint_common.o" > "$FP_DIR/Makefile"
+          fi
+
+          # 4. Fix Section Mismatch
           sed -i 's/__init //g' drivers/samsung/debug/sec_debug_summary.c 2>/dev/null || true
           sed -i 's/__init //g' include/linux/sec_debug.h 2>/dev/null || true
 
@@ -55,15 +67,18 @@ jobs:
           export CROSS_COMPILE=aarch64-linux-gnu-
           export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
 
-          # 1. Config Initial
+          # 1. Config
           make O=out vendor/r5q_eur_open_defconfig
           
-          # 2. ACTIVĂM DRIVERELE DE TOUCHSCREEN (Forțat Built-in)
+          # 2. Touchscreen & I2C/SPI
           scripts/config --file out/.config -e CONFIG_INPUT_TOUCHSCREEN
           scripts/config --file out/.config -e CONFIG_TOUCHSCREEN_SAMSUNG
           scripts/config --file out/.config -e CONFIG_TOUCHSCREEN_SEC_TS_Y771_R5
           scripts/config --file out/.config -e CONFIG_I2C_QCOM_GENI
           scripts/config --file out/.config -e CONFIG_SPI_QCOM_GENI
+          
+          # 3. Activăm driverul de amprentă din config
+          scripts/config --file out/.config -e CONFIG_FINGERPRINT_ET7XX
           
           # Dezactivăm securitatea Samsung
           scripts/config --file out/.config -d CONFIG_SDP
@@ -72,8 +87,7 @@ jobs:
           
           make O=out ARCH=arm64 olddefconfig
 
-          # 3. Build Final
-          # -fcommon rezolvă eroarea de simboluri duplicate
+          # 4. Build Final
           make -j$(nproc --all) O=out ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1 \
                       KCFLAGS="-Wno-error -w -fcommon -fno-stack-protector -Wno-implicit-function-declaration" \
                       Image
@@ -91,5 +105,5 @@ jobs:
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-r5q-V38-Final
+          name: Kernel-r5q-V40-Final
           path: kernel/Image.gz
