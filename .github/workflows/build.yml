@@ -1,4 +1,4 @@
-name: Samsung SM8150 (r5q) - Inversat - V77
+name: Samsung SM8150 (r5q) - Inversat - V79
 
 on:
   workflow_dispatch:
@@ -37,7 +37,7 @@ jobs:
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C neutron/
 
-      - name: Inversare si Injectare Specifics - V77
+      - name: Inversare si Injectare Specifics - V79
         run: |
           # 1. Injectam Device Tree specific R5Q
           cp -r $GITHUB_WORKSPACE/r5q_specifics/arch/arm64/boot/dts/samsung/* $GITHUB_WORKSPACE/kernel/arch/arm64/boot/dts/samsung/
@@ -57,9 +57,9 @@ jobs:
             echo "obj-y += sdfat/" >> $GITHUB_WORKSPACE/kernel/fs/Makefile
           fi
 
-          # 6. FIX Missing Header path (V77 Patch)
-          # Adaugam calea catre header-ele de securitate folosind srctree
-          echo "ccflags-y += -I\$(srctree)/security/integrity" >> $GITHUB_WORKSPACE/kernel/security/samsung/five/Makefile
+          # 6. FIX Missing Header path (V79 Patch - Actualizare Cale Makefile)
+          # Adaugam calea catre header-ele de securitate in Makefile-ul five
+          echo "ccflags-y += -Isecurity/integrity" >> $GITHUB_WORKSPACE/kernel/security/samsung/five/Makefile
 
       - name: Configure R5Q Kernel (Inversat + eBPF Force)
         run: |
@@ -117,5 +117,5 @@ jobs:
       - name: Upload Kernel
         uses: actions/upload-artifact@v4
         with:
-          name: r5q-ebpf-V77
+          name: r5q-ebpf-V79
           path: kernel/Image.gz
