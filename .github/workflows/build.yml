@@ -1,4 +1,4 @@
-name: Samsung SM8150 (r5q) - MHI Stub - V36
+name: Samsung SM8150 (r5q) - Final Hardware Fix - V38
 
 on:
   workflow_dispatch:
@@ -29,31 +29,16 @@ jobs:
       - name: Patch Source Code
         run: |
           cd kernel
-          # 1. FIX SCHEDULER (EAS) - Rezolvă eroarea de "undeclared identifier"
+          # 1. FIX SCHEDULER (EAS) - Rezolvă eroarea 'sched_energy_present'
           sed -i 's/static_branch_unlikely(&sched_energy_present)/sched_energy_enabled()/g' kernel/sched/fair.c
           
-          # 2. FIX MHI ERRORS (Suprascriem fișierul cu un Stub minim)
+          # 2. FIX MHI ERRORS (Rescriere fișier folosind printf pentru siguranță)
           MHI_ARCH="drivers/bus/mhi/controllers/mhi_arch_qcom.c"
           if [ -f "$MHI_ARCH" ]; then
-            cat <<EOF > "$MHI_ARCH"
-#include <linux/module.h>
-#include <linux/platform_device.h>
-#include <linux/mhi.h>
-
-int mhi_arch_pcie_init(struct mhi_controller *mhi_cntrl) { return 0; }
-void mhi_arch_pcie_deinit(struct mhi_controller *mhi_cntrl) {}
-int mhi_arch_iommu_init(struct mhi_controller *mhi_cntrl) { return 0; }
-void mhi_arch_iommu_deinit(struct mhi_controller *mhi_cntrl) {}
-int mhi_arch_link_resume(struct mhi_controller *mhi_cntrl) { return 0; }
-int mhi_arch_link_suspend(struct mhi_controller *mhi_cntrl) { return 0; }
-int mhi_arch_link_lpm_disable(struct mhi_controller *mhi_cntrl) { return 0; }
-void mhi_arch_link_lpm_enable(struct mhi_controller *mhi_cntrl) {}
-int mhi_arch_reg_suspend_cb(struct mhi_controller *mhi_cntrl) { return 0; }
-void mhi_arch_reg_resume_cb(struct mhi_controller *mhi_cntrl) {}
-EOF
+            printf "#include <linux/module.h>\n#include <linux/platform_device.h>\n#include <linux/mhi.h>\n\nint mhi_arch_pcie_init(struct mhi_controller *mhi_cntrl) { return 0; }\nvoid mhi_arch_pcie_deinit(struct mhi_controller *mhi_cntrl) {}\nint mhi_arch_iommu_init(struct mhi_controller *mhi_cntrl) { return 0; }\nvoid mhi_arch_iommu_deinit(struct mhi_controller *mhi_cntrl) {}\nint mhi_arch_link_resume(struct mhi_controller *mhi_cntrl) { return 0; }\nint mhi_arch_link_suspend(struct mhi_controller *mhi_cntrl) { return 0; }\nint mhi_arch_link_lpm_disable(struct mhi_controller *mhi_cntrl) { return 0; }\nvoid mhi_arch_link_lpm_enable(struct mhi_controller *mhi_cntrl) {}\nint mhi_arch_reg_suspend_cb(struct mhi_controller *mhi_cntrl) { return 0; }\nvoid mhi_arch_reg_resume_cb(struct mhi_controller *mhi_cntrl) {}\n" > "$MHI_ARCH"
           fi
 
-          # 3. Fix Section Mismatch & Headers
+          # 3. Fix Section Mismatch
           sed -i 's/__init //g' drivers/samsung/debug/sec_debug_summary.c 2>/dev/null || true
           sed -i 's/__init //g' include/linux/sec_debug.h 2>/dev/null || true
 
@@ -70,20 +55,25 @@ EOF
           export CROSS_COMPILE=aarch64-linux-gnu-
           export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
 
-          # 1. Config
+          # 1. Config Initial
           make O=out vendor/r5q_eur_open_defconfig
           
-          # 2. Hardware Force (Touch Fix & I2C/SPI)
+          # 2. ACTIVĂM DRIVERELE DE TOUCHSCREEN (Forțat Built-in)
+          scripts/config --file out/.config -e CONFIG_INPUT_TOUCHSCREEN
           scripts/config --file out/.config -e CONFIG_TOUCHSCREEN_SAMSUNG
           scripts/config --file out/.config -e CONFIG_TOUCHSCREEN_SEC_TS_Y771_R5
           scripts/config --file out/.config -e CONFIG_I2C_QCOM_GENI
           scripts/config --file out/.config -e CONFIG_SPI_QCOM_GENI
+          
+          # Dezactivăm securitatea Samsung
           scripts/config --file out/.config -d CONFIG_SDP
           scripts/config --file out/.config -d CONFIG_DEFEX
+          scripts/config --file out/.config -d CONFIG_SECURITY_DSMS
           
           make O=out ARCH=arm64 olddefconfig
 
           # 3. Build Final
+          # -fcommon rezolvă eroarea de simboluri duplicate
           make -j$(nproc --all) O=out ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1 \
                       KCFLAGS="-Wno-error -w -fcommon -fno-stack-protector -Wno-implicit-function-declaration" \
                       Image
@@ -94,12 +84,12 @@ EOF
             gzip -n -c kernel/out/arch/arm64/boot/Image > kernel/Image.gz
             echo "Kernel Image.gz generat!"
           else
-            echo "Kernel Image not found!"
+            echo "Eroare: Imaginea de kernel nu a fost creată!"
             exit 1
           fi
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-r5q-V36-Final
+          name: Kernel-r5q-V38-Final
           path: kernel/Image.gz
