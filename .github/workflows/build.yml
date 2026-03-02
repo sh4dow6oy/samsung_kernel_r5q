@@ -1,4 +1,4 @@
-name: Samsung SM8150 (r5q) - eBPF Backport Final - V49
+name: Samsung SM8150 (r5q) - eBPF Final Fix - V50
 
 on:
   workflow_dispatch:
@@ -11,7 +11,7 @@ jobs:
       - name: Checkout R5Q Kernel
         uses: actions/checkout@v4
         with:
-          repository: mainey/android_kernel_samsung_sm8150
+          repository: mainey/android_kernel_samsung_r5q
           ref: lineage-18.1
           path: kernel
           fetch-depth: 1
@@ -48,14 +48,16 @@ jobs:
           # 2. Actualizam Include-urile esențiale pentru eBPF
           cp $K_SM6150/include/linux/bpf.h $K_R5Q/include/linux/bpf.h
           cp $K_SM6150/include/linux/bpf_types.h $K_R5Q/include/linux/bpf_types.h
-          cp -r $K_SM6150/include/uapi/linux/bpf.h $K_R5Q/include/uapi/linux/bpf.h
-          cp -r $K_SM6150/include/uapi/linux/bpf_common.h $K_R5Q/include/uapi/linux/bpf_common.h
+          cp $K_SM6150/include/uapi/linux/bpf.h $K_R5Q/include/uapi/linux/bpf.h
+          cp $K_SM6150/include/uapi/linux/bpf_common.h $K_R5Q/include/uapi/linux/bpf_common.h
 
           # 3. Actualizam Makefile-ul pentru a include bpf/
           echo "obj-y += bpf/" >> $K_R5Q/kernel/Makefile
 
-          # 4. Asiguram Kconfig-ul
-          echo "source \"kernel/bpf/Kconfig\"" >> $K_R5Q/init/Kconfig
+          # 4. Asiguram Kconfig-ul (verificam sa nu existe deja)
+          if ! grep -q "source \"kernel/bpf/Kconfig\"" $K_R5Q/init/Kconfig; then
+            echo "source \"kernel/bpf/Kconfig\"" >> $K_R5Q/init/Kconfig
+          fi
 
       - name: Configure R5Q Kernel
         run: |
@@ -93,7 +95,7 @@ jobs:
           # Adăugăm flag-uri pentru a ignora erorile de tip "unused" din backport
           make -j$(nproc --all) O=out ARCH=arm64 \
                CC=clang LLVM=1 LLVM_IAS=1 \
-               KCFLAGS="-Wno-error -Wno-unused-function -Wno-unused-variable"
+               KCFLAGS="-Wno-error -Wno-unused-function -Wno-unused-variable -Wno-int-conversion"
 
       - name: Prepare Artifact
         run: |
@@ -108,5 +110,5 @@ jobs:
       - name: Upload Kernel
         uses: actions/upload-artifact@v4
         with:
-          name: r5q-ebpf-V49
+          name: r5q-ebpf-V50
           path: kernel/Image.gz
