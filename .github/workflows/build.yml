@@ -1,4 +1,4 @@
-name: Samsung SM8150 (r5q) - Android15 Stable Kernel
+name: Build SM8150 (r5q) Android15 Kernel Full + r3q Drivers
 
 on:
   workflow_dispatch:
@@ -8,11 +8,18 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout Kernel Source
+      - name: Checkout r5q Kernel
         uses: actions/checkout@v4
         with:
           repository: sh4dow6oy/android_kernel_samsung_sm8150-5.4
           path: kernel
+          fetch-depth: 1
+
+      - name: Checkout r3q Drivers
+        uses: actions/checkout@v4
+        with:
+          repository: Roynas-Android-Playground/kernel_samsung_r3q
+          path: r3q
           fetch-depth: 1
 
       - name: Install Dependencies
@@ -29,22 +36,50 @@ jobs:
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C neutron/
 
+      - name: Patch DTS for slim_aud
+        run: |
+          cd kernel/arch/arm64/boot/dts/vendor/qcom
+
+          # Patch minimal preluat din r3q DTS
+          cat << 'EOF' > sm8150-audio.dtsi
+/slim_aud: slim@12200000 {
+    compatible = "qcom,slim-ngd";
+    reg = <0x12200000 0x1000>;
+    interrupts = <GIC_SPI 123 IRQ_TYPE_LEVEL_HIGH>;
+    clocks = <&clk_1>;
+    clock-names = "core";
+    status = "okay";
+};
+EOF
+
+          # Include în sm8150.dtsi dacă lipsește
+          grep -q '#include "sm8150-audio.dtsi"' sm8150.dtsi || \
+          sed -i '/^$/a #include "sm8150-audio.dtsi"' sm8150.dtsi
+
+      - name: Copy r3q Drivers
+        run: |
+          # Fingerprint
+          mkdir -p kernel/drivers/fingerprint
+          cp r3q/drivers/fingerprint/* kernel/drivers/fingerprint/ || true
+
+          # Touchscreen / Input
+          mkdir -p kernel/drivers/input/touchscreen
+          cp -r r3q/drivers/input/touchscreen/* kernel/drivers/input/touchscreen/ || true
+
+          # Optional: alte drivere compatibile r5q
+          # cp -r r3q/drivers/soc/qcom/* kernel/drivers/soc/qcom/ || true
+
       - name: Prepare & Configure Kernel
         run: |
           cd kernel
           export PATH=$GITHUB_WORKSPACE/neutron/bin:$PATH
           export ARCH=arm64
-
           mkdir -p out
 
-          # Load Samsung defconfig
           make O=out ARCH=arm64 vendor/r5q_eur_open_defconfig
-
           chmod +x scripts/config
 
-          # ==============================
-          # ANDROID 15 REQUIRED BPF CONFIG
-          # ==============================
+          # ANDROID 15 BPF + BTF
           scripts/config --file out/.config -e CONFIG_BPF
           scripts/config --file out/.config -e CONFIG_BPF_SYSCALL
           scripts/config --file out/.config -e CONFIG_BPF_JIT
@@ -58,18 +93,19 @@ jobs:
           scripts/config --file out/.config -e CONFIG_DEBUG_INFO
           scripts/config --file out/.config -e CONFIG_KALLSYMS
           scripts/config --file out/.config -e CONFIG_KALLSYMS_ALL
-
-          # Required for BTF (Android netd)
           scripts/config --file out/.config -e CONFIG_PAHOLE_HAS_SPLIT_BTF
           scripts/config --file out/.config -e CONFIG_DEBUG_INFO_DWARF4
 
-          # ==============================
-          # ANDROID SECURITY CLEANUP
-          # ==============================
-          scripts/config --file out/.config -d CONFIG_SDP
-          scripts/config --file out/.config -d CONFIG_DEFEX
+          # FINGERPRINT & TOUCHSCREEN
+          scripts/config --file out/.config -e CONFIG_INPUT_TOUCHSCREEN
+          scripts/config --file out/.config -e CONFIG_TOUCHSCREEN_SAMSUNG
+          scripts/config --file out/.config -e CONFIG_TOUCHSCREEN_SEC_TS_Y771_R5
+          scripts/config --file out/.config -e CONFIG_FINGERPRINT_ET7XX
 
-          # Regenerate final config
+          # Remove DEFEX completely
+          scripts/config --file out/.config -d CONFIG_DEFEX
+          rm -rf security/samsung/defex_lsm
+
           make O=out ARCH=arm64 olddefconfig
 
       - name: Build Kernel
@@ -107,5 +143,5 @@ jobs:
       - name: Upload Kernel
         uses: actions/upload-artifact@v4
         with:
-          name: r5q-Android15-BPF-Stable
+          name: r5q-Android15-BPF-R3QDrivers
           path: kernel/Image.gz
