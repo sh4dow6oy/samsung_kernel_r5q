@@ -1,4 +1,4 @@
-name: Samsung SM8150 (r5q) - eBPF Final Fix - V58
+name: Samsung SM8150 (r5q) - eBPF Final Fix - V59
 
 on:
   workflow_dispatch:
@@ -37,21 +37,23 @@ jobs:
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C neutron/
 
-      - name: Patch & Backport eBPF Structurat - V58
+      - name: Patch & Backport eBPF Structurat - V59
         run: |
           # 1. Copiem structura de bpf
           mkdir -p $GITHUB_WORKSPACE/kernel/kernel/bpf
           cp -r $GITHUB_WORKSPACE/sm6150/kernel/bpf/* $GITHUB_WORKSPACE/kernel/kernel/bpf/
 
-          # 2. CREĂM MANUAL Kconfig
+          # 2. CREĂM MANUAL Kconfig FĂRĂ SELECT
           echo "config BPF" > $GITHUB_WORKSPACE/kernel/kernel/bpf/Kconfig
           echo "	bool \"Extended BPF\"" >> $GITHUB_WORKSPACE/kernel/kernel/bpf/Kconfig
           echo "	default y" >> $GITHUB_WORKSPACE/kernel/kernel/bpf/Kconfig
-          echo "	select BPF_SYSCALL" >> $GITHUB_WORKSPACE/kernel/kernel/bpf/Kconfig
           
-          echo "config BPF_SYSCALL" >> $GITHUB_WORKSPACE/kernel/kernel/bpf/Kconfig
-          echo "	bool \"Enable bpf() system call\"" >> $GITHUB_WORKSPACE/kernel/kernel/bpf/Kconfig
-          echo "	default y" >> $GITHUB_WORKSPACE/kernel/kernel/bpf/Kconfig
+          # Eliminam BPF_SYSCALL selectat aici, verificam daca exista in sursa
+          if ! grep -q "config BPF_SYSCALL" $GITHUB_WORKSPACE/kernel/kernel/bpf/Kconfig; then
+              echo "config BPF_SYSCALL" >> $GITHUB_WORKSPACE/kernel/kernel/bpf/Kconfig
+              echo "	bool \"Enable bpf() system call\"" >> $GITHUB_WORKSPACE/kernel/kernel/bpf/Kconfig
+              echo "	default y" >> $GITHUB_WORKSPACE/kernel/kernel/bpf/Kconfig
+          fi
 
           # 3. Actualizam Include-urile esențiale pentru eBPF
           cp $GITHUB_WORKSPACE/sm6150/include/linux/bpf.h $GITHUB_WORKSPACE/kernel/include/linux/bpf.h
@@ -117,5 +119,5 @@ jobs:
       - name: Upload Kernel
         uses: actions/upload-artifact@v4
         with:
-          name: r5q-ebpf-V58
+          name: r5q-ebpf-V59
           path: kernel/Image.gz
