@@ -36,12 +36,12 @@ jobs:
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C neutron/
 
-      - name: Patch DTS for slim_aud
+      - name: Patch DTS slim_aud
         run: |
           cd kernel/arch/arm64/boot/dts/vendor/qcom
-
-          # Patch minimal preluat din r3q DTS
-          cat << 'EOF' > sm8150-audio.dtsi
+          mkdir -p .
+          # Creează sm8150-audio.dtsi dacă lipsește
+          cat > sm8150-audio.dtsi << 'EOF'
 /slim_aud: slim@12200000 {
     compatible = "qcom,slim-ngd";
     reg = <0x12200000 0x1000>;
@@ -51,23 +51,22 @@ jobs:
     status = "okay";
 };
 EOF
-
-          # Include în sm8150.dtsi dacă lipsește
+          # Include în sm8150.dtsi dacă nu există deja
           grep -q '#include "sm8150-audio.dtsi"' sm8150.dtsi || \
-          sed -i '/^$/a #include "sm8150-audio.dtsi"' sm8150.dtsi
+          echo '#include "sm8150-audio.dtsi"' >> sm8150.dtsi
 
       - name: Copy r3q Drivers
         run: |
           # Fingerprint
           mkdir -p kernel/drivers/fingerprint
-          cp r3q/drivers/fingerprint/* kernel/drivers/fingerprint/ || true
-
+          if [ -d "$GITHUB_WORKSPACE/r3q/drivers/fingerprint" ]; then
+              cp -r "$GITHUB_WORKSPACE/r3q/drivers/fingerprint/"* kernel/drivers/fingerprint/
+          fi
           # Touchscreen / Input
           mkdir -p kernel/drivers/input/touchscreen
-          cp -r r3q/drivers/input/touchscreen/* kernel/drivers/input/touchscreen/ || true
-
-          # Optional: alte drivere compatibile r5q
-          # cp -r r3q/drivers/soc/qcom/* kernel/drivers/soc/qcom/ || true
+          if [ -d "$GITHUB_WORKSPACE/r3q/drivers/input/touchscreen" ]; then
+              cp -r "$GITHUB_WORKSPACE/r3q/drivers/input/touchscreen/"* kernel/drivers/input/touchscreen/
+          fi
 
       - name: Prepare & Configure Kernel
         run: |
@@ -79,7 +78,7 @@ EOF
           make O=out ARCH=arm64 vendor/r5q_eur_open_defconfig
           chmod +x scripts/config
 
-          # ANDROID 15 BPF + BTF
+          # Android 15 BPF + BTF
           scripts/config --file out/.config -e CONFIG_BPF
           scripts/config --file out/.config -e CONFIG_BPF_SYSCALL
           scripts/config --file out/.config -e CONFIG_BPF_JIT
@@ -96,7 +95,7 @@ EOF
           scripts/config --file out/.config -e CONFIG_PAHOLE_HAS_SPLIT_BTF
           scripts/config --file out/.config -e CONFIG_DEBUG_INFO_DWARF4
 
-          # FINGERPRINT & TOUCHSCREEN
+          # Fingerprint & Touchscreen
           scripts/config --file out/.config -e CONFIG_INPUT_TOUCHSCREEN
           scripts/config --file out/.config -e CONFIG_TOUCHSCREEN_SAMSUNG
           scripts/config --file out/.config -e CONFIG_TOUCHSCREEN_SEC_TS_Y771_R5
@@ -104,7 +103,9 @@ EOF
 
           # Remove DEFEX completely
           scripts/config --file out/.config -d CONFIG_DEFEX
-          rm -rf security/samsung/defex_lsm
+          if [ -d "security/samsung/defex_lsm" ]; then
+              rm -rf security/samsung/defex_lsm
+          fi
 
           make O=out ARCH=arm64 olddefconfig
 
