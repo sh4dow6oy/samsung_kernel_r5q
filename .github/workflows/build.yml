@@ -1,4 +1,4 @@
-name: Samsung SM8150 (r5q) - eBPF Final Fix - V57
+name: Samsung SM8150 (r5q) - eBPF Final Fix - V58
 
 on:
   workflow_dispatch:
@@ -37,15 +37,20 @@ jobs:
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C neutron/
 
-      - name: Patch & Backport eBPF Structurat - V57
+      - name: Patch & Backport eBPF Structurat - V58
         run: |
-          # 1. Copiem structura de bpf (directoare și fișiere .c/.h/.mk)
+          # 1. Copiem structura de bpf
           mkdir -p $GITHUB_WORKSPACE/kernel/kernel/bpf
           cp -r $GITHUB_WORKSPACE/sm6150/kernel/bpf/* $GITHUB_WORKSPACE/kernel/kernel/bpf/
 
-          # 2. CREĂM MANUAL Kconfig în destinație
+          # 2. CREĂM MANUAL Kconfig
           echo "config BPF" > $GITHUB_WORKSPACE/kernel/kernel/bpf/Kconfig
           echo "	bool \"Extended BPF\"" >> $GITHUB_WORKSPACE/kernel/kernel/bpf/Kconfig
+          echo "	default y" >> $GITHUB_WORKSPACE/kernel/kernel/bpf/Kconfig
+          echo "	select BPF_SYSCALL" >> $GITHUB_WORKSPACE/kernel/kernel/bpf/Kconfig
+          
+          echo "config BPF_SYSCALL" >> $GITHUB_WORKSPACE/kernel/kernel/bpf/Kconfig
+          echo "	bool \"Enable bpf() system call\"" >> $GITHUB_WORKSPACE/kernel/kernel/bpf/Kconfig
           echo "	default y" >> $GITHUB_WORKSPACE/kernel/kernel/bpf/Kconfig
 
           # 3. Actualizam Include-urile esențiale pentru eBPF
@@ -57,14 +62,9 @@ jobs:
           # 4. Actualizam Makefile-ul principal pentru a include bpf/
           echo "obj-y += bpf/" >> $GITHUB_WORKSPACE/kernel/kernel/Makefile
 
-          # 5. Asiguram Kconfig-ul (verificam existenta fisierului creat manual)
-          if [ -f "$GITHUB_WORKSPACE/kernel/kernel/bpf/Kconfig" ]; then
-            if ! grep -q "source \"kernel/bpf/Kconfig\"" $GITHUB_WORKSPACE/kernel/init/Kconfig; then
-              echo "source \"kernel/bpf/Kconfig\"" >> $GITHUB_WORKSPACE/kernel/init/Kconfig
-            fi
-          else
-            echo "EROARE CRITICA: kernel/bpf/Kconfig nu a putut fi creat!"
-            exit 1
+          # 5. Asiguram Kconfig-ul
+          if ! grep -q "source \"kernel/bpf/Kconfig\"" $GITHUB_WORKSPACE/kernel/init/Kconfig; then
+            echo "source \"kernel/bpf/Kconfig\"" >> $GITHUB_WORKSPACE/kernel/init/Kconfig
           fi
 
       - name: Configure R5Q Kernel
@@ -117,5 +117,5 @@ jobs:
       - name: Upload Kernel
         uses: actions/upload-artifact@v4
         with:
-          name: r5q-ebpf-V57
+          name: r5q-ebpf-V58
           path: kernel/Image.gz
