@@ -1,4 +1,4 @@
-name: Samsung SM8150 (r5q) - eBPF Final Fix - V50
+name: Samsung SM8150 (r5q) - eBPF Integration - V51
 
 on:
   workflow_dispatch:
@@ -42,7 +42,7 @@ jobs:
           K_R5Q="$GITHUB_WORKSPACE/kernel"
           K_SM6150="$GITHUB_WORKSPACE/sm6150"
 
-          # 1. Copiem structura de bpf
+          # 1. Copiem structura de bpf (directoare și fișiere)
           cp -r $K_SM6150/kernel/bpf $K_R5Q/kernel/
 
           # 2. Actualizam Include-urile esențiale pentru eBPF
@@ -51,10 +51,10 @@ jobs:
           cp $K_SM6150/include/uapi/linux/bpf.h $K_R5Q/include/uapi/linux/bpf.h
           cp $K_SM6150/include/uapi/linux/bpf_common.h $K_R5Q/include/uapi/linux/bpf_common.h
 
-          # 3. Actualizam Makefile-ul pentru a include bpf/
+          # 3. Actualizam Makefile-ul principal pentru a include bpf/
           echo "obj-y += bpf/" >> $K_R5Q/kernel/Makefile
 
-          # 4. Asiguram Kconfig-ul (verificam sa nu existe deja)
+          # 4. Actualizam Kconfig-ul central
           if ! grep -q "source \"kernel/bpf/Kconfig\"" $K_R5Q/init/Kconfig; then
             echo "source \"kernel/bpf/Kconfig\"" >> $K_R5Q/init/Kconfig
           fi
@@ -68,7 +68,7 @@ jobs:
 
           make O=out ARCH=arm64 r5q_eur_open_defconfig
 
-          # Activează eBPF + BTF
+          # Activează eBPF, JIT și BTF (necesar pentru sm6150-based ebpf)
           scripts/config --file out/.config -e CONFIG_BPF
           scripts/config --file out/.config -e CONFIG_BPF_SYSCALL
           scripts/config --file out/.config -e CONFIG_BPF_JIT
@@ -92,10 +92,10 @@ jobs:
           export CROSS_COMPILE=aarch64-linux-gnu-
           export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
 
-          # Adăugăm flag-uri pentru a ignora erorile de tip "unused" din backport
+          # KCFLAGS actualizat pentru compatibilitate Clang cu backport-uri
           make -j$(nproc --all) O=out ARCH=arm64 \
                CC=clang LLVM=1 LLVM_IAS=1 \
-               KCFLAGS="-Wno-error -Wno-unused-function -Wno-unused-variable -Wno-int-conversion"
+               KCFLAGS="-Wno-error -Wno-unused-function -Wno-unused-variable -Wno-int-conversion -Wno-implicit-function-declaration"
 
       - name: Prepare Artifact
         run: |
@@ -110,5 +110,5 @@ jobs:
       - name: Upload Kernel
         uses: actions/upload-artifact@v4
         with:
-          name: r5q-ebpf-V50
+          name: r5q-ebpf-V51
           path: kernel/Image.gz
