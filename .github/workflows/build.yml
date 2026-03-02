@@ -1,4 +1,4 @@
-name: Build SM8150 (r5q) Android15 Kernel Full + r3q Drivers
+name: Build R5Q Kernel with eBPF Backport from SM6150
 
 on:
   workflow_dispatch:
@@ -8,110 +8,87 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout r5q Kernel
+      # Checkout R5Q Kernel (target)
+      - name: Checkout R5Q Kernel
         uses: actions/checkout@v4
         with:
-          repository: sh4dow6oy/android_kernel_samsung_sm8150-5.4
-          path: kernel
+          repository: mainey/android_kernel_samsung_r5q
+          path: r5q
+          ref: lineage-18.1
           fetch-depth: 1
 
-      - name: Checkout r3q Drivers
+      # Checkout SM6150 Kernel (source eBPF/backport)
+      - name: Checkout SM6150 Kernel
         uses: actions/checkout@v4
         with:
-          repository: Roynas-Android-Playground/kernel_samsung_r3q
-          path: r3q
+          repository: crdroidandroid/android_kernel_samsung_sm6150
+          path: sm6150
+          ref: 15.0
           fetch-depth: 1
 
+      # Install build dependencies
       - name: Install Dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y \
             bc build-essential flex bison libssl-dev libelf-dev \
             gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi \
-            libncurses-dev git zstd python3 gzip wget dwarves
+            libncurses-dev git zstd python3 gzip dwarves wget
 
+      # Download Neutron Clang
       - name: Download Neutron Clang
         run: |
           mkdir -p neutron
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C neutron/
 
-      - name: Patch DTS slim_aud
+      # Copy eBPF code + Makefile + Kconfig from SM6150 -> R5Q
+      - name: Backport eBPF from SM6150 to R5Q
         run: |
-          cd kernel/arch/arm64/boot/dts/vendor/qcom
-          mkdir -p .
-          # Creează sm8150-audio.dtsi dacă lipsește
-          cat > sm8150-audio.dtsi << 'EOF'
-/slim_aud: slim@12200000 {
-    compatible = "qcom,slim-ngd";
-    reg = <0x12200000 0x1000>;
-    interrupts = <GIC_SPI 123 IRQ_TYPE_LEVEL_HIGH>;
-    clocks = <&clk_1>;
-    clock-names = "core";
-    status = "okay";
-};
-EOF
-          # Include în sm8150.dtsi dacă nu există deja
-          grep -q '#include "sm8150-audio.dtsi"' sm8150.dtsi || \
-          echo '#include "sm8150-audio.dtsi"' >> sm8150.dtsi
+          K_R5Q="$GITHUB_WORKSPACE/r5q"
+          K_SM6150="$GITHUB_WORKSPACE/sm6150"
 
-      - name: Copy r3q Drivers
-        run: |
-          # Fingerprint
-          mkdir -p kernel/drivers/fingerprint
-          if [ -d "$GITHUB_WORKSPACE/r3q/drivers/fingerprint" ]; then
-              cp -r "$GITHUB_WORKSPACE/r3q/drivers/fingerprint/"* kernel/drivers/fingerprint/
-          fi
-          # Touchscreen / Input
-          mkdir -p kernel/drivers/input/touchscreen
-          if [ -d "$GITHUB_WORKSPACE/r3q/drivers/input/touchscreen" ]; then
-              cp -r "$GITHUB_WORKSPACE/r3q/drivers/input/touchscreen/"* kernel/drivers/input/touchscreen/
-          fi
+          # Copy kernel/bpf/
+          mkdir -p $K_R5Q/kernel/bpf
+          cp -r $K_SM6150/kernel/bpf/* $K_R5Q/kernel/bpf/
 
-      - name: Prepare & Configure Kernel
+          # Copy include/linux/bpf.h
+          cp $K_SM6150/include/linux/bpf.h $K_R5Q/include/linux/bpf.h
+
+          # Append Makefile entries if missing
+          grep -q "bpf/" $K_R5Q/arch/arm64/Makefile || \
+              cat $K_SM6150/arch/arm64/Makefile | grep "bpf/" >> $K_R5Q/arch/arm64/Makefile
+
+          # Append Kconfig entries if missing
+          grep -q "BPF options" $K_R5Q/kernel/Kconfig || \
+              cat $K_SM6150/kernel/Kconfig | grep -A10 "BPF options" >> $K_R5Q/kernel/Kconfig
+
+      # Configure R5Q kernel
+      - name: Configure R5Q Kernel
         run: |
-          cd kernel
+          cd r5q
           export PATH=$GITHUB_WORKSPACE/neutron/bin:$PATH
           export ARCH=arm64
           mkdir -p out
 
-          make O=out ARCH=arm64 vendor/r5q_eur_open_defconfig
-          chmod +x scripts/config
+          # Folosim config-ul corect
+          make O=out ARCH=arm64 r5q_eur_open_defconfig
 
-          # Android 15 BPF + BTF
+          # Activează eBPF + BTF
           scripts/config --file out/.config -e CONFIG_BPF
           scripts/config --file out/.config -e CONFIG_BPF_SYSCALL
           scripts/config --file out/.config -e CONFIG_BPF_JIT
           scripts/config --file out/.config -e CONFIG_BPF_JIT_ALWAYS_ON
           scripts/config --file out/.config -e CONFIG_CGROUP_BPF
-          scripts/config --file out/.config -e CONFIG_BPF_STREAM_PARSER
-          scripts/config --file out/.config -e CONFIG_NET_CLS_BPF
-          scripts/config --file out/.config -e CONFIG_NET_ACT_BPF
           scripts/config --file out/.config -e CONFIG_BPF_LSM
           scripts/config --file out/.config -e CONFIG_DEBUG_INFO_BTF
-          scripts/config --file out/.config -e CONFIG_DEBUG_INFO
-          scripts/config --file out/.config -e CONFIG_KALLSYMS
-          scripts/config --file out/.config -e CONFIG_KALLSYMS_ALL
-          scripts/config --file out/.config -e CONFIG_PAHOLE_HAS_SPLIT_BTF
-          scripts/config --file out/.config -e CONFIG_DEBUG_INFO_DWARF4
-
-          # Fingerprint & Touchscreen
-          scripts/config --file out/.config -e CONFIG_INPUT_TOUCHSCREEN
-          scripts/config --file out/.config -e CONFIG_TOUCHSCREEN_SAMSUNG
-          scripts/config --file out/.config -e CONFIG_TOUCHSCREEN_SEC_TS_Y771_R5
-          scripts/config --file out/.config -e CONFIG_FINGERPRINT_ET7XX
-
-          # Remove DEFEX completely
-          scripts/config --file out/.config -d CONFIG_DEFEX
-          if [ -d "security/samsung/defex_lsm" ]; then
-              rm -rf security/samsung/defex_lsm
-          fi
 
           make O=out ARCH=arm64 olddefconfig
 
+      # Build R5Q kernel
       - name: Build Kernel
         run: |
-          cd kernel
+          cd r5q
           export PATH=$GITHUB_WORKSPACE/neutron/bin:$PATH
           export ARCH=arm64
           export CC=clang
@@ -127,22 +104,20 @@ EOF
                CC=clang LLVM=1 LLVM_IAS=1 \
                KCFLAGS="-Wno-error -Wno-unused-function -Wno-unused-variable"
 
-      - name: Verify BPF Config
-        run: |
-          grep CONFIG_BPF kernel/out/.config || true
-          grep CONFIG_DEBUG_INFO_BTF kernel/out/.config || true
-
+      # Prepare artifact
       - name: Prepare Artifact
         run: |
-          if [ -f kernel/out/arch/arm64/boot/Image ]; then
-            gzip -n -c kernel/out/arch/arm64/boot/Image > kernel/Image.gz
+          cd r5q
+          if [ -f out/arch/arm64/boot/Image ]; then
+            gzip -n -c out/arch/arm64/boot/Image > Image.gz
           else
             echo "Build failed!"
             exit 1
           fi
 
+      # Upload kernel artifact
       - name: Upload Kernel
         uses: actions/upload-artifact@v4
         with:
-          name: r5q-Android15-BPF-R3QDrivers
-          path: kernel/Image.gz
+          name: r5q-ebpf
+          path: r5q/Image.gz
