@@ -1,4 +1,4 @@
-name: Samsung SM8150 (r5q) - eBPF Final Fix - V54
+name: Samsung SM8150 (r5q) - eBPF Final Fix - V55
 
 on:
   workflow_dispatch:
@@ -37,22 +37,30 @@ jobs:
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C neutron/
 
-      - name: Patch & Backport eBPF Structurat - V54
+      - name: Patch & Backport eBPF Structurat - V55
         run: |
-          # 1. Copiem structura de bpf folosind cai absolute
+          # 1. Copiem structura de bpf (directoare și fișiere .c/.h)
           mkdir -p $GITHUB_WORKSPACE/kernel/kernel/bpf
           cp -r $GITHUB_WORKSPACE/sm6150/kernel/bpf/* $GITHUB_WORKSPACE/kernel/kernel/bpf/
 
-          # 2. Actualizam Include-urile esențiale pentru eBPF
+          # 2. Copiem explicit Kconfig (fix eroarea actuala)
+          if [ -f "$GITHUB_WORKSPACE/sm6150/kernel/bpf/Kconfig" ]; then
+            cp $GITHUB_WORKSPACE/sm6150/kernel/bpf/Kconfig $GITHUB_WORKSPACE/kernel/kernel/bpf/Kconfig
+          else
+            echo "EROARE: Kconfig nu exista in sursa!"
+            exit 1
+          fi
+
+          # 3. Actualizam Include-urile esențiale pentru eBPF
           cp $GITHUB_WORKSPACE/sm6150/include/linux/bpf.h $GITHUB_WORKSPACE/kernel/include/linux/bpf.h
           cp $GITHUB_WORKSPACE/sm6150/include/linux/bpf_types.h $GITHUB_WORKSPACE/kernel/include/linux/bpf_types.h
           cp -r $GITHUB_WORKSPACE/sm6150/include/uapi/linux/bpf.h $GITHUB_WORKSPACE/kernel/include/uapi/linux/bpf.h
           cp -r $GITHUB_WORKSPACE/sm6150/include/uapi/linux/bpf_common.h $GITHUB_WORKSPACE/kernel/include/uapi/linux/bpf_common.h
 
-          # 3. Actualizam Makefile-ul principal pentru a include bpf/
+          # 4. Actualizam Makefile-ul principal pentru a include bpf/
           echo "obj-y += bpf/" >> $GITHUB_WORKSPACE/kernel/kernel/Makefile
 
-          # 4. Asiguram Kconfig-ul (verificam existenta fisierului)
+          # 5. Asiguram Kconfig-ul (verificam existenta fisierului)
           if [ -f "$GITHUB_WORKSPACE/kernel/kernel/bpf/Kconfig" ]; then
             if ! grep -q "source \"kernel/bpf/Kconfig\"" $GITHUB_WORKSPACE/kernel/init/Kconfig; then
               echo "source \"kernel/bpf/Kconfig\"" >> $GITHUB_WORKSPACE/kernel/init/Kconfig
@@ -113,5 +121,5 @@ jobs:
       - name: Upload Kernel
         uses: actions/upload-artifact@v4
         with:
-          name: r5q-ebpf-V54
+          name: r5q-ebpf-V55
           path: kernel/Image.gz
