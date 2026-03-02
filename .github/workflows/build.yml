@@ -53,8 +53,8 @@ jobs:
           sed -i 's/struct crypto_blkcipher \*\*tfm/struct crypto_skcipher \*\*tfm/g' $GITHUB_WORKSPACE/kernel/fs/ecryptfs/ecryptfs_kernel.h
 
           # 5. Fix driver compilation (Makefile patch)
-          if ! grep -q "sdfat" $GITHUB_WORKSPACE/kernel/fs/Makefile; then
-            echo "obj-y += sdfat/" >> $GITHUB_WORKSPACE/kernel/fs/Makefile
+          if ! grep -q "sdfat" $GITHUB_WORKSPACE/fs/Makefile; then
+            echo "obj-y += sdfat/" >> $GITHUB_WORKSPACE/fs/Makefile
           fi
 
           # 6. FIX Missing Header path (V79 Patch - Actualizare Cale Makefile)
