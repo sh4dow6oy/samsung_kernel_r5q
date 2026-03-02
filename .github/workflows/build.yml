@@ -1,4 +1,4 @@
-name: Samsung SM8150 (r5q) - eBPF Final Fix - V66
+name: Samsung SM8150 (r5q) - eBPF Final Fix - V68
 
 on:
   workflow_dispatch:
@@ -37,26 +37,33 @@ jobs:
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C neutron/
 
-      - name: Patch & Backport eBPF Structurat - V66
+      - name: Patch & Backport eBPF Structurat - V68
         run: |
-          # 1. Copiem structura de bpf (directoare și fișiere .c/.h/.mk)
+          # 1. Copiem structura de bpf
           mkdir -p $GITHUB_WORKSPACE/kernel/kernel/bpf
           cp -r $GITHUB_WORKSPACE/sm6150/kernel/bpf/* $GITHUB_WORKSPACE/kernel/kernel/bpf/
 
-          # 2. Copiem explicit Kconfig daca exista in sursa
-          if [ -f "$GITHUB_WORKSPACE/sm6150/kernel/bpf/Kconfig" ]; then
-            cp $GITHUB_WORKSPACE/sm6150/kernel/bpf/Kconfig $GITHUB_WORKSPACE/kernel/kernel/bpf/Kconfig
-          else
-            echo "EROARE: Kconfig nu exista in bpf/ al sursei!"
-            exit 1
-          fi
-
-          # 3. Ștergem definițiile vechi BPF din init/Kconfig (prevenire recursivitate)
-          sed -i '/source "kernel\/bpf\/Kconfig"/d' $GITHUB_WORKSPACE/kernel/init/Kconfig
+          # 2. Curățăm init/Kconfig de definițiile BPF vechi
           sed -i '/config BPF/,/endif/d' $GITHUB_WORKSPACE/kernel/init/Kconfig
           sed -i '/config BPF_SYSCALL/,/endif/d' $GITHUB_WORKSPACE/kernel/init/Kconfig
-          
-          # 4. Adăugăm sursa noastră nouă la final
+          sed -i '/source "kernel\/bpf\/Kconfig"/d' $GITHUB_WORKSPACE/kernel/init/Kconfig
+
+          # 3. CREĂM Kconfig în bpf/ cu dependențe lineare
+          echo "menu \"BPF\"" > $GITHUB_WORKSPACE/kernel/kernel/bpf/Kconfig
+          echo "config BPF" >> $GITHUB_WORKSPACE/kernel/kernel/bpf/Kconfig
+          echo "	bool \"Extended BPF\"" >> $GITHUB_WORKSPACE/kernel/kernel/bpf/Kconfig
+          echo "	default y" >> $GITHUB_WORKSPACE/kernel/kernel/bpf/Kconfig
+          echo "config BPF_SYSCALL" >> $GITHUB_WORKSPACE/kernel/kernel/bpf/Kconfig
+          echo "	bool \"Enable bpf() system call\"" >> $GITHUB_WORKSPACE/kernel/kernel/bpf/Kconfig
+          echo "	depends on BPF" >> $GITHUB_WORKSPACE/kernel/kernel/bpf/Kconfig
+          echo "	default y" >> $GITHUB_WORKSPACE/kernel/kernel/bpf/Kconfig
+          echo "config BPF_JIT" >> $GITHUB_WORKSPACE/kernel/kernel/bpf/Kconfig
+          echo "	bool \"Enable BPF JIT compiler\"" >> $GITHUB_WORKSPACE/kernel/kernel/bpf/Kconfig
+          echo "	depends on BPF" >> $GITHUB_WORKSPACE/kernel/kernel/bpf/Kconfig
+          echo "	default y" >> $GITHUB_WORKSPACE/kernel/kernel/bpf/Kconfig
+          echo "endmenu" >> $GITHUB_WORKSPACE/kernel/kernel/bpf/Kconfig
+
+          # 4. Adăugăm noua sursă la final
           echo "source \"kernel/bpf/Kconfig\"" >> $GITHUB_WORKSPACE/kernel/init/Kconfig
 
           # 5. Actualizam Include-urile esențiale pentru eBPF
@@ -120,5 +127,5 @@ jobs:
       - name: Upload Kernel
         uses: actions/upload-artifact@v4
         with:
-          name: r5q-ebpf-V66
+          name: r5q-ebpf-V68
           path: kernel/Image.gz
