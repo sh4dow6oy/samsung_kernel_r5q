@@ -1,4 +1,4 @@
-name: Samsung SM8150 (r5q) - Inversat - V79
+name: Samsung SM8150 (r5q) - Min Hardware - V81
 
 on:
   workflow_dispatch:
@@ -17,7 +17,7 @@ jobs:
           fetch-depth: 1
 
       # 2. Checkout R5Q Kernel (Target Specifics)
-      - name: Checkout R5Q Kernel (pentru DTS/Defconfig/Drivers)
+      - name: Checkout R5Q Kernel (pentru Hardware Specifics)
         uses: actions/checkout@v4
         with:
           repository: mainey/android_kernel_samsung_r5q
@@ -37,7 +37,7 @@ jobs:
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C neutron/
 
-      - name: Inversare si Injectare Specifics - V79
+      - name: Inject Hardware Components - V81
         run: |
           # 1. Injectam Device Tree specific R5Q
           cp -r $GITHUB_WORKSPACE/r5q_specifics/arch/arm64/boot/dts/samsung/* $GITHUB_WORKSPACE/kernel/arch/arm64/boot/dts/samsung/
@@ -45,23 +45,20 @@ jobs:
           # 2. Injectam Defconfig R5Q
           cp $GITHUB_WORKSPACE/r5q_specifics/arch/arm64/configs/r5q_eur_open_defconfig $GITHUB_WORKSPACE/kernel/arch/arm64/configs/
 
-          # 3. Injectam Drivere specifice necesare (Samsung & fs/sdfat)
-          cp -r $GITHUB_WORKSPACE/r5q_specifics/drivers/misc/samsung/* $GITHUB_WORKSPACE/kernel/drivers/misc/samsung/ || true
-          cp -r $GITHUB_WORKSPACE/r5q_specifics/fs/sdfat/* $GITHUB_WORKSPACE/kernel/fs/sdfat/ || true
+          # 3. Injectam Drivere TOUCHSCREEN specifice (Ajusteaza calea daca e necesar)
+          cp -r $GITHUB_WORKSPACE/r5q_specifics/drivers/input/touchscreen/samsung/* $GITHUB_WORKSPACE/kernel/drivers/input/touchscreen/samsung/ || true
 
-          # 4. FIX eCryptfs Incompatibility (V72 Patch)
+          # 4. Injectam Drivere AUDIO specifice (Ajusteaza calea daca e necesar)
+          cp -r $GITHUB_WORKSPACE/r5q_specifics/sound/soc/codecs/samsung/* $GITHUB_WORKSPACE/kernel/sound/soc/codecs/samsung/ || true
+          cp -r $GITHUB_WORKSPACE/r5q_specifics/sound/soc/samsung/* $GITHUB_WORKSPACE/kernel/sound/soc/samsung/ || true
+
+          # 5. FIX eCryptfs Incompatibility (V72 Patch) - Necesar pentru baze mai vechi
           sed -i 's/struct crypto_blkcipher \*\*tfm/struct crypto_skcipher \*\*tfm/g' $GITHUB_WORKSPACE/kernel/fs/ecryptfs/ecryptfs_kernel.h
 
-          # 5. Fix driver compilation (Makefile patch)
-          if ! grep -q "sdfat" $GITHUB_WORKSPACE/fs/Makefile; then
-            echo "obj-y += sdfat/" >> $GITHUB_WORKSPACE/fs/Makefile
-          fi
-
-          # 6. FIX Missing Header path (V79 Patch - Actualizare Cale Makefile)
-          # Adaugam calea catre header-ele de securitate in Makefile-ul five
+          # 6. FIX Missing Header path (V80 Patch) - Necesar pentru securitate
           echo "ccflags-y += -Isecurity/integrity" >> $GITHUB_WORKSPACE/kernel/security/samsung/five/Makefile
 
-      - name: Configure R5Q Kernel (Inversat + eBPF Force)
+      - name: Configure R5Q Kernel (Minimal + eBPF Force)
         run: |
           cd kernel
           export PATH=$GITHUB_WORKSPACE/neutron/bin:$PATH
@@ -71,14 +68,13 @@ jobs:
           # Folosim defconfig-ul R5Q injectat
           make O=out ARCH=arm64 r5q_eur_open_defconfig
 
-          # Asiguram activarea TOTALA a eBPF si TRACING in noul config
+          # Asiguram activarea TOTALA a eBPF si TRACING
           scripts/config --file out/.config -e CONFIG_BPF
           scripts/config --file out/.config -e CONFIG_BPF_SYSCALL
           scripts/config --file out/.config -e CONFIG_BPF_JIT
           scripts/config --file out/.config -e CONFIG_BPF_JIT_ALWAYS_ON
           scripts/config --file out/.config -e CONFIG_CGROUP_BPF
           scripts/config --file out/.config -e CONFIG_DEBUG_INFO_BTF
-          # Trace config esențial pentru linkare
           scripts/config --file out/.config -e CONFIG_FUNCTION_TRACER
           scripts/config --file out/.config -e CONFIG_TRACING
           scripts/config --file out/.config -e CONFIG_BPF_EVENTS
@@ -117,5 +113,5 @@ jobs:
       - name: Upload Kernel
         uses: actions/upload-artifact@v4
         with:
-          name: r5q-ebpf-V79
+          name: r5q-ebpf-V81
           path: kernel/Image.gz
