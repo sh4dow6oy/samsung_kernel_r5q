@@ -1,4 +1,4 @@
-name: Samsung SM8150 (r5q) - Fingerprint Driver Ingest - V40
+name: Samsung SM8150 (r5q) - Fingerprint Driver Ingest - V42
 
 on:
   workflow_dispatch:
@@ -18,7 +18,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y bc build-essential flex bison libssl-dev libelf-dev \
-          gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi libncurses-dev git zstd python3 gzip
+          gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi libncurses-dev git zstd python3 gzip wget
 
       - name: Download & Extract Neutron Clang
         run: |
@@ -38,17 +38,24 @@ jobs:
             printf "#include <linux/module.h>\n#include <linux/platform_device.h>\n#include <linux/mhi.h>\n\nint mhi_arch_pcie_init(struct mhi_controller *mhi_cntrl) { return 0; }\nvoid mhi_arch_pcie_deinit(struct mhi_controller *mhi_cntrl) {}\nint mhi_arch_iommu_init(struct mhi_controller *mhi_cntrl) { return 0; }\nvoid mhi_arch_iommu_deinit(struct mhi_controller *mhi_cntrl) {}\nint mhi_arch_link_resume(struct mhi_controller *mhi_cntrl) { return 0; }\nint mhi_arch_link_suspend(struct mhi_controller *mhi_cntrl) { return 0; }\nint mhi_arch_link_lpm_disable(struct mhi_controller *mhi_cntrl) { return 0; }\nvoid mhi_arch_link_lpm_enable(struct mhi_controller *mhi_cntrl) {}\nint mhi_arch_reg_suspend_cb(struct mhi_controller *mhi_cntrl) { return 0; }\nvoid mhi_arch_reg_resume_cb(struct mhi_controller *mhi_cntrl) {}\n" > "$MHI_ARCH"
           fi
 
-          # 3. INGEST FINGERPRINT DRIVERS (Descărcăm fișierele lipsă)
+          # 3. INGEST FINGERPRINT DRIVERS (Robust Download)
           FP_DIR="drivers/fingerprint"
           mkdir -p "$FP_DIR"
-          wget -O "$FP_DIR/et7xx-spi.c" https://github.com/Roynas-Android-Playground/kernel_samsung_r3q/blob/master/drivers/fingerprint/et7xx-spi.c
-          wget -O "$FP_DIR/et7xx-spi.h" https://github.com/Roynas-Android-Playground/kernel_samsung_r3q/blob/master/drivers/fingerprint/et7xx-spi.h
-          wget -O "$FP_DIR/fingerprint_common.h" https://github.com/Roynas-Android-Playground/kernel_samsung_r3q/blob/master/drivers/fingerprint/fingerprint_common.h
+          BASE_URL="https://raw.githubusercontent.com/Roynas-Android-Playground/kernel_samsung_r3q/master/drivers/fingerprint"
           
-          # Asigurăm Makefile-ul
-          if [ ! -f "$FP_DIR/Makefile" ]; then
-            echo "obj-y += et7xx-spi.o fingerprint_common.o" > "$FP_DIR/Makefile"
+          # Descarcam fisierele sursa si header-ele
+          wget -q -O "$FP_DIR/et7xx-spi.c" "$BASE_URL/et7xx-spi.c"
+          wget -q -O "$FP_DIR/et7xx.h" "$BASE_URL/et7xx.h"
+          wget -q -O "$FP_DIR/fingerprint_common.h" "$BASE_URL/fingerprint_common.h"
+          wget -q -O "$FP_DIR/fingerprint_common.c" "$BASE_URL/fingerprint_common.c"
+          
+          # Creăm link simbolic daca sursa cauta et7xx-spi.h
+          if [ -f "$FP_DIR/et7xx.h" ]; then
+            ln -sf et7xx.h "$FP_DIR/et7xx-spi.h"
           fi
+
+          # Actualizam sau creăm Makefile-ul
+          echo "obj-y += et7xx-spi.o fingerprint_common.o" > "$FP_DIR/Makefile"
 
           # 4. Fix Section Mismatch
           sed -i 's/__init //g' drivers/samsung/debug/sec_debug_summary.c 2>/dev/null || true
@@ -105,5 +112,5 @@ jobs:
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-r5q-V40-Final
+          name: Kernel-r5q-V42-Final
           path: kernel/Image.gz
