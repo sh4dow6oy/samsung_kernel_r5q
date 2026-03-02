@@ -1,4 +1,4 @@
-name: Samsung SM8150 (r5q) - Super-Robust Patch - V43
+name: Samsung SM8150 (r5q) - Fingerprint Driver Ingest - V45
 
 on:
   workflow_dispatch:
@@ -29,21 +29,22 @@ jobs:
       - name: Patch Source Code
         run: |
           cd kernel
-          # 1. FIX SCHEDULER (EAS)
+          # 1. FIX SCHEDULER
           sed -i 's/static_branch_unlikely(&sched_energy_present)/sched_energy_enabled()/g' kernel/sched/fair.c
           
-          # 2. FIX MHI ERRORS (Stub complet)
+          # 2. FIX MHI ERRORS
           MHI_ARCH="drivers/bus/mhi/controllers/mhi_arch_qcom.c"
           if [ -f "$MHI_ARCH" ]; then
             printf "#include <linux/module.h>\n#include <linux/platform_device.h>\n#include <linux/mhi.h>\n\nint mhi_arch_pcie_init(struct mhi_controller *mhi_cntrl) { return 0; }\nvoid mhi_arch_pcie_deinit(struct mhi_controller *mhi_cntrl) {}\nint mhi_arch_iommu_init(struct mhi_controller *mhi_cntrl) { return 0; }\nvoid mhi_arch_iommu_deinit(struct mhi_controller *mhi_cntrl) {}\nint mhi_arch_link_resume(struct mhi_controller *mhi_cntrl) { return 0; }\nint mhi_arch_link_suspend(struct mhi_controller *mhi_cntrl) { return 0; }\nint mhi_arch_link_lpm_disable(struct mhi_controller *mhi_cntrl) { return 0; }\nvoid mhi_arch_link_lpm_enable(struct mhi_controller *mhi_cntrl) {}\nint mhi_arch_reg_suspend_cb(struct mhi_controller *mhi_cntrl) { return 0; }\nvoid mhi_arch_reg_resume_cb(struct mhi_controller *mhi_cntrl) {}\n" > "$MHI_ARCH"
           fi
           
-          # 3. INGEST FINGERPRINT DRIVERS (Verificari robuste)
+          # 3. INGEST ALL FINGERPRINT DRIVERS
           FP_DIR="drivers/fingerprint"
           mkdir -p "$FP_DIR"
           BASE_URL="https://raw.githubusercontent.com/Roynas-Android-Playground/kernel_samsung_r3q/master/drivers/fingerprint"
           
-          files=("et7xx-spi.c" "et7xx.h" "fingerprint_common.h" "fingerprint_common.c")
+          # Lista completa de fisiere
+          files=("et7xx-spi.c" "et7xx-spi_data_transfer.c" "et7xx.h" "fingerprint.h" "fingerprint_sysfs.c" "fingerprint_sysfs.h")
           for file in "${files[@]}"; do
             wget -q -O "$FP_DIR/$file" "$BASE_URL/$file"
             if [ $? -ne 0 ]; then
@@ -52,13 +53,8 @@ jobs:
             fi
           done
           
-          # Creăm link simbolic
-          if [ -f "$FP_DIR/et7xx.h" ]; then
-            ln -sf et7xx.h "$FP_DIR/et7xx-spi.h"
-          fi
-          
-          # Makefile
-          echo "obj-y += et7xx-spi.o fingerprint_common.o" > "$FP_DIR/Makefile"
+          # Makefile actualizat pentru a include toate fisierele .c
+          echo "obj-y += et7xx-spi.o et7xx-spi_data_transfer.o fingerprint_sysfs.o" > "$FP_DIR/Makefile"
           
           # 4. Fix Section Mismatch (ignoram daca nu gaseste fisierul)
           sed -i 's/__init //g' drivers/samsung/debug/sec_debug_summary.c 2>/dev/null || true
@@ -77,9 +73,10 @@ jobs:
           export CROSS_COMPILE=aarch64-linux-gnu-
           export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
 
+          # 1. Config r5q
           make O=out vendor/r5q_eur_open_defconfig
           
-          # Configurari Touch & Fingerprint
+          # 2. Activare Drivere Touch & FP
           scripts/config --file out/.config -e CONFIG_INPUT_TOUCHSCREEN
           scripts/config --file out/.config -e CONFIG_TOUCHSCREEN_SAMSUNG
           scripts/config --file out/.config -e CONFIG_TOUCHSCREEN_SEC_TS_Y771_R5
@@ -87,12 +84,13 @@ jobs:
           scripts/config --file out/.config -e CONFIG_SPI_QCOM_GENI
           scripts/config --file out/.config -e CONFIG_FINGERPRINT_ET7XX
           
-          # Securitate
+          # 3. Securitate
           scripts/config --file out/.config -d CONFIG_SDP
           scripts/config --file out/.config -d CONFIG_DEFEX
           
           make O=out ARCH=arm64 olddefconfig
 
+          # 4. Build Final
           make -j$(nproc --all) O=out ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1 \
                       KCFLAGS="-Wno-error -w -fcommon -fno-stack-protector -Wno-implicit-function-declaration" \
                       Image
@@ -110,5 +108,5 @@ jobs:
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-r5q-V43-FP-Robust
+          name: Kernel-r5q-V45-FP-Full
           path: kernel/Image.gz
