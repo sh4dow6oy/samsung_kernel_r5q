@@ -1,4 +1,4 @@
-name: Samsung SM8150 (r5q) - MHI Bypass - V35
+name: Samsung SM8150 (r5q) - MHI Stub - V36
 
 on:
   workflow_dispatch:
@@ -29,22 +29,31 @@ jobs:
       - name: Patch Source Code
         run: |
           cd kernel
-          # 1. FIX SCHEDULER (EAS)
+          # 1. FIX SCHEDULER (EAS) - Rezolvă eroarea de "undeclared identifier"
           sed -i 's/static_branch_unlikely(&sched_energy_present)/sched_energy_enabled()/g' kernel/sched/fair.c
           
-          # 2. FIX MHI ERRORS (Bypassing problematic lines in mhi_arch_qcom.c)
+          # 2. FIX MHI ERRORS (Suprascriem fișierul cu un Stub minim)
           MHI_ARCH="drivers/bus/mhi/controllers/mhi_arch_qcom.c"
           if [ -f "$MHI_ARCH" ]; then
-            # Comentăm liniile cu pdev nedeclarat și icc_peak_len (Interconnect)
-            sed -i '496s/^/\/\//' "$MHI_ARCH"
-            sed -i '508s/^/\/\//' "$MHI_ARCH"
-            # Comentăm linia cu no_d3hot (PCI Power)
-            sed -i '571s/^/\/\//' "$MHI_ARCH"
-            # Asigurăm headerul corect ca în V34
-            sed -i 's/asm\/dma-iommu.h/linux\/dma-iommu.h/g' "$MHI_ARCH"
+            cat <<EOF > "$MHI_ARCH"
+#include <linux/module.h>
+#include <linux/platform_device.h>
+#include <linux/mhi.h>
+
+int mhi_arch_pcie_init(struct mhi_controller *mhi_cntrl) { return 0; }
+void mhi_arch_pcie_deinit(struct mhi_controller *mhi_cntrl) {}
+int mhi_arch_iommu_init(struct mhi_controller *mhi_cntrl) { return 0; }
+void mhi_arch_iommu_deinit(struct mhi_controller *mhi_cntrl) {}
+int mhi_arch_link_resume(struct mhi_controller *mhi_cntrl) { return 0; }
+int mhi_arch_link_suspend(struct mhi_controller *mhi_cntrl) { return 0; }
+int mhi_arch_link_lpm_disable(struct mhi_controller *mhi_cntrl) { return 0; }
+void mhi_arch_link_lpm_enable(struct mhi_controller *mhi_cntrl) {}
+int mhi_arch_reg_suspend_cb(struct mhi_controller *mhi_cntrl) { return 0; }
+void mhi_arch_reg_resume_cb(struct mhi_controller *mhi_cntrl) {}
+EOF
           fi
 
-          # 3. Fix Section Mismatch
+          # 3. Fix Section Mismatch & Headers
           sed -i 's/__init //g' drivers/samsung/debug/sec_debug_summary.c 2>/dev/null || true
           sed -i 's/__init //g' include/linux/sec_debug.h 2>/dev/null || true
 
@@ -64,10 +73,11 @@ jobs:
           # 1. Config
           make O=out vendor/r5q_eur_open_defconfig
           
-          # 2. Hardware Force (Touch Fix)
+          # 2. Hardware Force (Touch Fix & I2C/SPI)
           scripts/config --file out/.config -e CONFIG_TOUCHSCREEN_SAMSUNG
           scripts/config --file out/.config -e CONFIG_TOUCHSCREEN_SEC_TS_Y771_R5
           scripts/config --file out/.config -e CONFIG_I2C_QCOM_GENI
+          scripts/config --file out/.config -e CONFIG_SPI_QCOM_GENI
           scripts/config --file out/.config -d CONFIG_SDP
           scripts/config --file out/.config -d CONFIG_DEFEX
           
@@ -91,5 +101,5 @@ jobs:
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-r5q-V35-MHI-Fix
+          name: Kernel-r5q-V36-Final
           path: kernel/Image.gz
