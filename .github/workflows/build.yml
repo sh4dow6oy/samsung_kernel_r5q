@@ -1,4 +1,4 @@
-name: Samsung SM8150 (r5q) - eBPF Final Fix - V52
+name: Samsung SM8150 (r5q) - eBPF Final Fix - V53
 
 on:
   workflow_dispatch:
@@ -16,12 +16,12 @@ jobs:
           path: kernel
           fetch-depth: 1
 
-      # 2. Checkout SM6150 Kernel (Source) - FIX REFERINȚĂ
+      # 2. Checkout SM6150 Kernel (Source)
       - name: Checkout SM6150 Kernel
         uses: actions/checkout@v4
         with:
           repository: crdroidandroid/android_kernel_samsung_sm6150
-          ref: refs/heads/15.0 # FORȚĂM BRANCH-UL CORECT
+          ref: refs/heads/15.0
           path: sm6150
           fetch-depth: 1
 
@@ -37,26 +37,32 @@ jobs:
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C neutron/
 
-      - name: Patch & Backport eBPF Structurat
+      - name: Patch & Backport eBPF Structurat - V53
         run: |
           K_R5Q="$GITHUB_WORKSPACE/kernel"
           K_SM6150="$GITHUB_WORKSPACE/sm6150"
 
           # 1. Copiem structura de bpf
-          cp -r $K_SM6150/kernel/bpf $K_R5Q/kernel/
+          mkdir -p $K_R5Q/kernel/bpf
+          cp -r $K_SM6150/kernel/bpf/* $K_R5Q/kernel/bpf/
 
           # 2. Actualizam Include-urile esențiale pentru eBPF
           cp $K_SM6150/include/linux/bpf.h $K_R5Q/include/linux/bpf.h
           cp $K_SM6150/include/linux/bpf_types.h $K_R5Q/include/linux/bpf_types.h
-          cp -r $K_SM6150/include/uapi/linux/bpf.h $K_R5Q/include/uapi/linux/bpf.h
-          cp -r $K_SM6150/include/uapi/linux/bpf_common.h $K_R5Q/include/uapi/linux/bpf_common.h
+          cp $K_SM6150/include/uapi/linux/bpf.h $K_R5Q/include/uapi/linux/bpf.h
+          cp $K_SM6150/include/uapi/linux/bpf_common.h $K_R5Q/include/uapi/linux/bpf_common.h
 
           # 3. Actualizam Makefile-ul principal pentru a include bpf/
           echo "obj-y += bpf/" >> $K_R5Q/kernel/Makefile
 
-          # 4. Actualizam Kconfig-ul central
-          if ! grep -q "source \"kernel/bpf/Kconfig\"" $K_R5Q/init/Kconfig; then
-            echo "source \"kernel/bpf/Kconfig\"" >> $K_R5Q/init/Kconfig
+          # 4. Asiguram Kconfig-ul (verificam existenta fisierului)
+          if [ -f "$K_R5Q/kernel/bpf/Kconfig" ]; then
+            if ! grep -q "source \"kernel/bpf/Kconfig\"" $K_R5Q/init/Kconfig; then
+              echo "source \"kernel/bpf/Kconfig\"" >> $K_R5Q/init/Kconfig
+            fi
+          else
+            echo "EROARE: kernel/bpf/Kconfig nu a fost copiat!"
+            exit 1
           fi
 
       - name: Configure R5Q Kernel
@@ -109,5 +115,5 @@ jobs:
       - name: Upload Kernel
         uses: actions/upload-artifact@v4
         with:
-          name: r5q-ebpf-V52
+          name: r5q-ebpf-V53
           path: kernel/Image.gz
