@@ -1,4 +1,4 @@
-name: Samsung SM8150 (r5q) - Inversat - V73
+name: Samsung SM8150 (r5q) - Inversat - V74
 
 on:
   workflow_dispatch:
@@ -7,7 +7,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      # 1. Checkout SM6150 Kernel (Source Baza)
+      # 1. Checkout SM6150 Kernel (Source Baza - eBPF suport)
       - name: Checkout SM6150 Kernel
         uses: actions/checkout@v4
         with:
@@ -37,7 +37,7 @@ jobs:
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C neutron/
 
-      - name: Inversare si Injectare Specifics - V73
+      - name: Inversare si Injectare Specifics - V74
         run: |
           # 1. Injectam Device Tree specific R5Q
           cp -r $GITHUB_WORKSPACE/r5q_specifics/arch/arm64/boot/dts/samsung/* $GITHUB_WORKSPACE/kernel/arch/arm64/boot/dts/samsung/
@@ -52,12 +52,14 @@ jobs:
           # 4. FIX eCryptfs Incompatibility (V72 Patch)
           sed -i 's/struct crypto_blkcipher \*\*tfm/struct crypto_skcipher \*\*tfm/g' $GITHUB_WORKSPACE/kernel/fs/ecryptfs/ecryptfs_kernel.h
 
-          # 5. Fix driver compilation (V73 Patch)
+          # 5. Fix driver compilation (Makefile patch)
           # Exemplu: daca un fisier .c nou din r5q nu e in Makefile-ul sm6150, il adaugam
-          # In acest caz, analizam log-ul pentru a vedea ce fisier lipsește (exemplu generic)
-          # echo "obj-y += fisier_nou.o" >> $GITHUB_WORKSPACE/kernel/drivers/misc/samsung/Makefile
+          # In acest caz, verificam daca sdfat este in Makefile
+          if ! grep -q "sdfat" $GITHUB_WORKSPACE/kernel/fs/Makefile; then
+            echo "obj-y += sdfat/" >> $GITHUB_WORKSPACE/kernel/fs/Makefile
+          fi
 
-      - name: Configure R5Q Kernel (Inversat)
+      - name: Configure R5Q Kernel (Inversat + eBPF Force)
         run: |
           cd kernel
           export PATH=$GITHUB_WORKSPACE/neutron/bin:$PATH
@@ -67,13 +69,17 @@ jobs:
           # Folosim defconfig-ul R5Q injectat
           make O=out ARCH=arm64 r5q_eur_open_defconfig
 
-          # Asiguram activarea eBPF in noul config
+          # Asiguram activarea TOTALA a eBPF si TRACING in noul config
           scripts/config --file out/.config -e CONFIG_BPF
           scripts/config --file out/.config -e CONFIG_BPF_SYSCALL
           scripts/config --file out/.config -e CONFIG_BPF_JIT
           scripts/config --file out/.config -e CONFIG_BPF_JIT_ALWAYS_ON
           scripts/config --file out/.config -e CONFIG_CGROUP_BPF
           scripts/config --file out/.config -e CONFIG_DEBUG_INFO_BTF
+          # Trace config
+          scripts/config --file out/.config -e CONFIG_FUNCTION_TRACER
+          scripts/config --file out/.config -e CONFIG_TRACING
+          scripts/config --file out/.config -e CONFIG_BPF_EVENTS
 
           make O=out ARCH=arm64 olddefconfig
 
@@ -109,5 +115,5 @@ jobs:
       - name: Upload Kernel
         uses: actions/upload-artifact@v4
         with:
-          name: r5q-ebpf-V73
+          name: r5q-ebpf-V74
           path: kernel/Image.gz
