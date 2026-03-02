@@ -1,4 +1,4 @@
-name: Samsung SM8150 (r5q) - eBPF Final Fix - V68
+name: Samsung SM8150 (r5q) - Inversat - V70
 
 on:
   workflow_dispatch:
@@ -7,22 +7,22 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      # 1. Checkout R5Q Kernel (Target)
-      - name: Checkout R5Q Kernel
-        uses: actions/checkout@v4
-        with:
-          repository: mainey/android_kernel_samsung_r5q
-          ref: lineage-18.1
-          path: kernel
-          fetch-depth: 1
-
-      # 2. Checkout SM6150 Kernel (Source)
+      # 1. Checkout SM6150 Kernel (Source Baza)
       - name: Checkout SM6150 Kernel
         uses: actions/checkout@v4
         with:
           repository: crdroidandroid/android_kernel_samsung_sm6150
           ref: refs/heads/15.0
-          path: sm6150
+          path: kernel
+          fetch-depth: 1
+
+      # 2. Checkout R5Q Kernel (Target Specifics)
+      - name: Checkout R5Q Kernel (pentru DTS/Defconfig)
+        uses: actions/checkout@v4
+        with:
+          repository: mainey/android_kernel_samsung_r5q
+          ref: lineage-18.1
+          path: r5q_specifics
           fetch-depth: 1
 
       - name: Install Dependencies
@@ -37,56 +37,28 @@ jobs:
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C neutron/
 
-      - name: Patch & Backport eBPF Structurat - V68
+      - name: Inversare si Injectare Specifics - V70
         run: |
-          # 1. Copiem structura de bpf
-          mkdir -p $GITHUB_WORKSPACE/kernel/kernel/bpf
-          cp -r $GITHUB_WORKSPACE/sm6150/kernel/bpf/* $GITHUB_WORKSPACE/kernel/kernel/bpf/
+          # 1. Injectam Device Tree specific R5Q (daca difera structura, ajustam calea)
+          cp -r $GITHUB_WORKSPACE/r5q_specifics/arch/arm64/boot/dts/samsung/* $GITHUB_WORKSPACE/kernel/arch/arm64/boot/dts/samsung/
 
-          # 2. Curățăm init/Kconfig de definițiile BPF vechi
-          sed -i '/config BPF/,/endif/d' $GITHUB_WORKSPACE/kernel/init/Kconfig
-          sed -i '/config BPF_SYSCALL/,/endif/d' $GITHUB_WORKSPACE/kernel/init/Kconfig
-          sed -i '/source "kernel\/bpf\/Kconfig"/d' $GITHUB_WORKSPACE/kernel/init/Kconfig
+          # 2. Injectam Defconfig R5Q
+          cp $GITHUB_WORKSPACE/r5q_specifics/arch/arm64/configs/r5q_eur_open_defconfig $GITHUB_WORKSPACE/kernel/arch/arm64/configs/
 
-          # 3. CREĂM Kconfig în bpf/ cu dependențe lineare
-          echo "menu \"BPF\"" > $GITHUB_WORKSPACE/kernel/kernel/bpf/Kconfig
-          echo "config BPF" >> $GITHUB_WORKSPACE/kernel/kernel/bpf/Kconfig
-          echo "	bool \"Extended BPF\"" >> $GITHUB_WORKSPACE/kernel/kernel/bpf/Kconfig
-          echo "	default y" >> $GITHUB_WORKSPACE/kernel/kernel/bpf/Kconfig
-          echo "config BPF_SYSCALL" >> $GITHUB_WORKSPACE/kernel/kernel/bpf/Kconfig
-          echo "	bool \"Enable bpf() system call\"" >> $GITHUB_WORKSPACE/kernel/kernel/bpf/Kconfig
-          echo "	depends on BPF" >> $GITHUB_WORKSPACE/kernel/kernel/bpf/Kconfig
-          echo "	default y" >> $GITHUB_WORKSPACE/kernel/kernel/bpf/Kconfig
-          echo "config BPF_JIT" >> $GITHUB_WORKSPACE/kernel/kernel/bpf/Kconfig
-          echo "	bool \"Enable BPF JIT compiler\"" >> $GITHUB_WORKSPACE/kernel/kernel/bpf/Kconfig
-          echo "	depends on BPF" >> $GITHUB_WORKSPACE/kernel/kernel/bpf/Kconfig
-          echo "	default y" >> $GITHUB_WORKSPACE/kernel/kernel/bpf/Kconfig
-          echo "endmenu" >> $GITHUB_WORKSPACE/kernel/kernel/bpf/Kconfig
+          # 3. Injectam Drivere specifice (daca exista in R5Q si nu in SM6150)
+          # Exemplu: cp -r $GITHUB_WORKSPACE/r5q_specifics/drivers/misc/samsung/* $GITHUB_WORKSPACE/kernel/drivers/misc/samsung/
 
-          # 4. Adăugăm noua sursă la final
-          echo "source \"kernel/bpf/Kconfig\"" >> $GITHUB_WORKSPACE/kernel/init/Kconfig
-
-          # 5. Actualizam Include-urile esențiale pentru eBPF
-          cp $GITHUB_WORKSPACE/sm6150/include/linux/bpf.h $GITHUB_WORKSPACE/kernel/include/linux/bpf.h
-          cp $GITHUB_WORKSPACE/sm6150/include/linux/bpf_types.h $GITHUB_WORKSPACE/kernel/include/linux/bpf_types.h
-          cp -r $GITHUB_WORKSPACE/sm6150/include/uapi/linux/bpf.h $GITHUB_WORKSPACE/kernel/include/uapi/linux/bpf.h
-          cp -r $GITHUB_WORKSPACE/sm6150/include/uapi/linux/bpf_common.h $GITHUB_WORKSPACE/kernel/include/uapi/linux/bpf_common.h
-
-          # 6. Actualizam Makefile-ul principal pentru a include bpf/
-          if ! grep -q "obj-y += bpf/" $GITHUB_WORKSPACE/kernel/kernel/Makefile; then
-            echo "obj-y += bpf/" >> $GITHUB_WORKSPACE/kernel/kernel/Makefile
-          fi
-
-      - name: Configure R5Q Kernel
+      - name: Configure R5Q Kernel (Inversat)
         run: |
           cd kernel
           export PATH=$GITHUB_WORKSPACE/neutron/bin:$PATH
           export ARCH=arm64
           mkdir -p out
 
+          # Folosim defconfig-ul R5Q injectat
           make O=out ARCH=arm64 r5q_eur_open_defconfig
 
-          # Activează eBPF, JIT și BTF
+          # Asiguram activarea eBPF in noul config
           scripts/config --file out/.config -e CONFIG_BPF
           scripts/config --file out/.config -e CONFIG_BPF_SYSCALL
           scripts/config --file out/.config -e CONFIG_BPF_JIT
@@ -127,5 +99,5 @@ jobs:
       - name: Upload Kernel
         uses: actions/upload-artifact@v4
         with:
-          name: r5q-ebpf-V68
+          name: r5q-ebpf-V70
           path: kernel/Image.gz
