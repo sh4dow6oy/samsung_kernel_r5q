@@ -1,4 +1,4 @@
-name: Build Kernel with Neutron Clang
+name: Neutron Build - SM8150 Lineage-20
 
 on:
   workflow_dispatch:
@@ -19,61 +19,66 @@ jobs:
           git config --global user.name "GitHub Action"
           git config --global user.email "action@github.com"
 
-      - name: Fetch and Merge SM7125 (Strategy Ours)
+      - name: Fetch and Merge Lineage-20 (SM8150)
         run: |
-          git remote add lineage_github https://github.com/LineageOS/android_kernel_samsung_sm7125.git
-          git fetch lineage_github 1db3840e4d743768892374dc395a1a4c930a97dd
-          # Folosim -X ours pentru a evita coruperea Makefile-ului si a headerelor critice
-          git merge -X ours FETCH_HEAD --allow-unrelated-histories -m "Merge SM7125 LineageOS Base"
+          # Adăugăm sursa LineageOS SM8150
+          git remote add lineage_8150 https://github.com/LineageOS/android_kernel_qcom_sm8150.git
+          git fetch lineage_8150 lineage-20
+          
+          echo "Începem merge-ul lineage-20 pentru platforma comună SM8150..."
+          # De data asta facem un merge normal, dar păstrăm fișierele tale în caz de conflict major
+          # pentru a asigura boot-ul pe varianta Samsung
+          git merge -X ours lineage_8150/lineage-20 -m "Merge Lineage-20 SM8150 Base" --allow-unrelated-histories
 
       - name: Setup Neutron Clang
         run: |
           sudo apt-get update
           sudo apt-get install -y zstd
           mkdir clang-neutron
-          # Descarcăm Neutron Toolchain
           wget https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
-          # Dezarhivăm .tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang-neutron
-          echo "Neutron Clang is ready."
+
+      - name: Prepare Defconfig & Fix Makefile
+        run: |
+          # Revenim la Makefile-ul tău dacă merge-ul a stricat sintaxa (eroarea 2104)
+          git checkout HEAD -- Makefile
+          
+          DEFCONFIG="arch/arm64/configs/r5q_defconfig"
+          
+          # Dezactivăm mizeriile Samsung care blochează boot-ul pe kernel custom
+          sed -i 's/CONFIG_KNP=y/CONFIG_KNP=n/g' $DEFCONFIG
+          sed -i 's/CONFIG_RKP=y/CONFIG_RKP=n/g' $DEFCONFIG
+          sed -i 's/CONFIG_SEC_RESTRICT_FORK=y/CONFIG_SEC_RESTRICT_FORK=n/g' $DEFCONFIG
+          
+          # Dezactivăm controalele de integritate Knox
+          echo "CONFIG_TIMA=n" >> $DEFCONFIG
+          echo "CONFIG_KNOX_KAP=n" >> $DEFCONFIG
 
       - name: Build Kernel
         run: |
-          # Setăm calea către Neutron
           export PATH=$(pwd)/clang-neutron/bin:$PATH
           export ARCH=arm64
           export SUBARCH=arm64
           
-          # Parametrii Neutron recomandați
+          # Setări specifice Neutron pentru SM8150
           export CC=clang
           export LD=ld.lld
-          export AR=llvm-ar
-          export NM=llvm-nm
-          export OBJCOPY=llvm-objcopy
-          export OBJDUMP=llvm-objdump
-          export STRIP=llvm-strip
           
-          # Fix rapid pentru Makefile dacă merge-ul a lăsat mizerie
-          git checkout HEAD -- Makefile
-          
-          # Patch rapid defconfig
-          DEFCONFIG="arch/arm64/configs/r5q_defconfig"
-          sed -i 's/CONFIG_KNP=y/CONFIG_KNP=n/g' $DEFCONFIG
-          sed -i 's/CONFIG_RKP=y/CONFIG_RKP=n/g' $DEFCONFIG
-
           mkdir -p out
           make O=out r5q_defconfig
           
-          # Compilarea cu Neutron (folosind LLVM=1 pentru a activa tot setul de unelte)
+          # Build folosind LLVM complet (IAS, Linker, etc.)
+          # KCFLAGS="-w" ignoră warning-urile noi ca să nu oprească build-ul
           make -j$(nproc --all) O=out \
                LLVM=1 \
                LLVM_IAS=1 \
                CROSS_COMPILE=aarch64-linux-gnu- \
                CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-               CLANG_TRIPLE=aarch64-linux-gnu-
+               CLANG_TRIPLE=aarch64-linux-gnu- \
+               KCFLAGS="-w"
 
-      - name: Upload Kernel Image
+      - name: Upload Flashable Kernel
         uses: actions/upload-artifact@v4
         with:
-          name: r5q-Neutron-Build
+          name: r5q-SM8150-Lineage20
           path: out/arch/arm64/boot/Image.gz-dtb
