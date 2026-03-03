@@ -1,7 +1,7 @@
-name: Upstream Kernel 4.14.y
+name: Merge LineageOS Patch & Build
 
 on:
-  workflow_dispatch: # Îl pornești manual din tab-ul Actions
+  workflow_dispatch:
 
 jobs:
   build:
@@ -12,34 +12,35 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: sh4dow6oy/kernel_samsung_r5q
-          fetch-depth: 0 # Esențial pentru istoric și merge
+          fetch-depth: 0
 
       - name: Configure Git
         run: |
           git config --global user.name "GitHub Action"
           git config --global user.email "action@github.com"
 
-      - name: Fetch and Merge Linux Stable
+      - name: Fetch and Apply LineageOS Patch
         run: |
-          git remote add stable https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git
-          git fetch stable linux-4.14.y
-          echo "Începem merge-ul upstream 4.14.y..."
-          # Încercăm merge-ul automat. Dacă sunt conflicte mici, le va raporta.
-          git merge stable/linux-4.14.y --no-edit || echo "Atenție: Există conflicte care pot necesita rezolvare manuală!"
+          # Adăugăm remote-ul LineageOS pentru SM7125
+          git remote add lineage https://github.com/LineageOS/android_kernel_samsung_sm7125 || true
+          
+          # Luăm schimburile de pe Gerrit (review.lineageos.org)
+          # Folosim referința specifică pentru commit-ul 469879
+          git fetch https://review.lineageos.org/LineageOS/android_kernel_samsung_sm7125 refs/changes/79/469879/1
+          
+          echo "Aplicăm patch-ul LineageOS..."
+          # Aplicăm modificările. Dacă sunt conflicte, folosim strategia de a păstra ce avem, dar commit-ul acesta e de obicei curat.
+          git cherry-pick FETCH_HEAD || (git cherry-pick --abort && echo "Cherry-pick eșuat, probabil patch-ul este deja aplicat sau incompatibil")
 
       - name: Disable Samsung Security (KNP/RKP)
         run: |
           DEFCONFIG="arch/arm64/configs/r5q_defconfig"
-          # Dezactivăm protectiile care cauzează kernel panic la upstream
           sed -i 's/CONFIG_KNP=y/CONFIG_KNP=n/g' $DEFCONFIG
-          sed -i 's/CONFIG_KNP_DEBUG=y/CONFIG_KNP_DEBUG=n/g' $DEFCONFIG
-          sed -i 's/CONFIG_SEC_RESTRICT_FORK=y/CONFIG_SEC_RESTRICT_FORK=n/g' $DEFCONFIG
           sed -i 's/CONFIG_RKP=y/CONFIG_RKP=n/g' $DEFCONFIG
-          echo "KNP/RKP disabled in $DEFCONFIG"
+          sed -i 's/CONFIG_SEC_RESTRICT_FORK=y/CONFIG_SEC_RESTRICT_FORK=n/g' $DEFCONFIG
 
       - name: Setup Proton Clang
         run: |
-          # Proton Clang e optimizat pentru kernel-uri de Android
           git clone --depth=1 https://github.com/kdrag0n/proton-clang clang-llvm
 
       - name: Build Kernel
@@ -48,13 +49,9 @@ jobs:
           export ARCH=arm64
           export SUBARCH=arm64
           
-          # Pregătire foldere
           mkdir -p out
-          
-          # Configurare
           make O=out r5q_defconfig
           
-          # Build cu LLVM (folosește integrat Clang, LLD linker și IAS)
           make -j$(nproc --all) O=out \
                CC=clang \
                CLANG_TRIPLE=aarch64-linux-gnu- \
@@ -62,8 +59,8 @@ jobs:
                CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
                LLVM=1 LLVM_IAS=1
 
-      - name: Upload Kernel Image
+      - name: Upload Kernel
         uses: actions/upload-artifact@v4
         with:
-          name: Image.gz-dtb-upstreamed
+          name: r5q-Lineage-Patched
           path: out/arch/arm64/boot/Image.gz-dtb
