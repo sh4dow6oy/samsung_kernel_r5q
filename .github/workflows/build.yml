@@ -1,48 +1,45 @@
-name: Merge CLO Tag & Build (No KNP)
+name: Upstream Kernel 4.14.y
 
 on:
-  workflow_dispatch:
+  workflow_dispatch: # Îl pornești manual din tab-ul Actions
 
 jobs:
-  build-r5q:
+  build:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout Kernel Source
+      - name: Checkout Samsung Source
         uses: actions/checkout@v4
         with:
           repository: sh4dow6oy/kernel_samsung_r5q
-          fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0 # Esențial pentru istoric și merge
 
       - name: Configure Git
         run: |
           git config --global user.name "GitHub Action"
           git config --global user.email "action@github.com"
 
-      - name: Merge CLO Tag
+      - name: Fetch and Merge Linux Stable
         run: |
-          git remote add clo https://git.codelinaro.org/clo/la/kernel/msm-4.14.git
-          git fetch clo --tags
-          # Încercăm merge-ul tag-ului QSSI13
-          git merge LA.UM.9.12.c25-02400-SMxx50.QSSI13c28.0 --no-edit || echo "Conflicte detectate - mergem mai departe cu ce avem"
+          git remote add stable https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git
+          git fetch stable linux-4.14.y
+          echo "Începem merge-ul upstream 4.14.y..."
+          # Încercăm merge-ul automat. Dacă sunt conflicte mici, le va raporta.
+          git merge stable/linux-4.14.y --no-edit || echo "Atenție: Există conflicte care pot necesita rezolvare manuală!"
 
-      - name: Patch Defconfig (Disable KNP/RKP/KSU)
+      - name: Disable Samsung Security (KNP/RKP)
         run: |
           DEFCONFIG="arch/arm64/configs/r5q_defconfig"
-          
-          # Dezactivăm KNP și alte protecții Samsung care dau erori la compile/boot
+          # Dezactivăm protectiile care cauzează kernel panic la upstream
           sed -i 's/CONFIG_KNP=y/CONFIG_KNP=n/g' $DEFCONFIG
           sed -i 's/CONFIG_KNP_DEBUG=y/CONFIG_KNP_DEBUG=n/g' $DEFCONFIG
           sed -i 's/CONFIG_SEC_RESTRICT_FORK=y/CONFIG_SEC_RESTRICT_FORK=n/g' $DEFCONFIG
-          
-          # Opțional: Dacă ai KernelSU integrat și vrei să-l scoți
-          sed -i 's/CONFIG_KSU=y/CONFIG_KSU=n/g' $DEFCONFIG
-          
-          echo "Defconfig patched! KNP is now disabled."
+          sed -i 's/CONFIG_RKP=y/CONFIG_RKP=n/g' $DEFCONFIG
+          echo "KNP/RKP disabled in $DEFCONFIG"
 
       - name: Setup Proton Clang
         run: |
+          # Proton Clang e optimizat pentru kernel-uri de Android
           git clone --depth=1 https://github.com/kdrag0n/proton-clang clang-llvm
 
       - name: Build Kernel
@@ -51,25 +48,22 @@ jobs:
           export ARCH=arm64
           export SUBARCH=arm64
           
-          # Creăm folderul de output
+          # Pregătire foldere
           mkdir -p out
           
-          # Regenerăm config-ul
+          # Configurare
           make O=out r5q_defconfig
           
-          # Build cu LLVM
+          # Build cu LLVM (folosește integrat Clang, LLD linker și IAS)
           make -j$(nproc --all) O=out \
                CC=clang \
                CLANG_TRIPLE=aarch64-linux-gnu- \
                CROSS_COMPILE=aarch64-linux-gnu- \
                CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-               LLVM=1 LLVM_IAS=1 \
-               | tee build_log.txt
+               LLVM=1 LLVM_IAS=1
 
-      - name: Upload Artifacts
+      - name: Upload Kernel Image
         uses: actions/upload-artifact@v4
         with:
-          name: r5q-kernel-no-knp
-          path: |
-            out/arch/arm64/boot/Image.gz-dtb
-            build_log.txt
+          name: Image.gz-dtb-upstreamed
+          path: out/arch/arm64/boot/Image.gz-dtb
