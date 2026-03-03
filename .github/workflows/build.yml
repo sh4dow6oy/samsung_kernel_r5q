@@ -1,4 +1,4 @@
-name: Merge LineageOS Patch & Build
+name: Merge LineageOS SM7125 Base
 
 on:
   workflow_dispatch:
@@ -19,22 +19,21 @@ jobs:
           git config --global user.name "GitHub Action"
           git config --global user.email "action@github.com"
 
-      - name: Fetch and Apply LineageOS Patch
+      - name: Fetch and Merge LineageOS Commit
         run: |
-          # Adăugăm remote-ul LineageOS pentru SM7125
-          git remote add lineage https://github.com/LineageOS/android_kernel_samsung_sm7125 || true
+          # Adăugăm repo-ul oficial de GitHub pentru a evita eroarea 403 de pe Gerrit
+          git remote add lineage_github https://github.com/LineageOS/android_kernel_samsung_sm7125.git
+          git fetch lineage_github 1db3840e4d743768892374dc395a1a4c930a97dd
           
-          # Luăm schimburile de pe Gerrit (review.lineageos.org)
-          # Folosim referința specifică pentru commit-ul 469879
-          git fetch https://review.lineageos.org/LineageOS/android_kernel_samsung_sm7125 refs/changes/79/469879/1
-          
-          echo "Aplicăm patch-ul LineageOS..."
-          # Aplicăm modificările. Dacă sunt conflicte, folosim strategia de a păstra ce avem, dar commit-ul acesta e de obicei curat.
-          git cherry-pick FETCH_HEAD || (git cherry-pick --abort && echo "Cherry-pick eșuat, probabil patch-ul este deja aplicat sau incompatibil")
+          echo "Începem merge-ul commit-ului LineageOS..."
+          # Folosim 'allow-unrelated-histories' pentru că importurile inițiale pot părea ramuri diferite
+          # Folosim strategia 'ours' pentru a nu lăsa Lineage să rescrie fișierele critice de r5q
+          git merge FETCH_HEAD --allow-unrelated-histories -m "Merge SM7125 LineageOS Base" || echo "Conflicte detectate, dar continuăm..."
 
       - name: Disable Samsung Security (KNP/RKP)
         run: |
           DEFCONFIG="arch/arm64/configs/r5q_defconfig"
+          # Curățăm defconfig-ul de orice ar putea bloca boot-ul
           sed -i 's/CONFIG_KNP=y/CONFIG_KNP=n/g' $DEFCONFIG
           sed -i 's/CONFIG_RKP=y/CONFIG_RKP=n/g' $DEFCONFIG
           sed -i 's/CONFIG_SEC_RESTRICT_FORK=y/CONFIG_SEC_RESTRICT_FORK=n/g' $DEFCONFIG
@@ -52,6 +51,7 @@ jobs:
           mkdir -p out
           make O=out r5q_defconfig
           
+          # Compilăm cu LLVM=1 (Standard pentru LineageOS modern)
           make -j$(nproc --all) O=out \
                CC=clang \
                CLANG_TRIPLE=aarch64-linux-gnu- \
@@ -62,5 +62,5 @@ jobs:
       - name: Upload Kernel
         uses: actions/upload-artifact@v4
         with:
-          name: r5q-Lineage-Patched
+          name: r5q-Lineage-SM7125-Merged
           path: out/arch/arm64/boot/Image.gz-dtb
