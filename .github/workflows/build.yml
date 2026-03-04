@@ -1,4 +1,4 @@
-name: R5Q BPF 4.14.355 Build
+name: R5Q BPF Cherry-Pick Build
 
 on:
   workflow_dispatch:
@@ -8,23 +8,33 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout Base
+      - name: Checkout Base (R5Q 4.14)
         uses: actions/checkout@v4
         with:
           repository: sh4dow6oy/kernel_samsung_r5q
           ref: master
           fetch-depth: 0
 
-      - name: Merge BPF 4.14.355
+      - name: Fetch & Sync BPF Folders
         run: |
           git config --global user.name "sh4dow6oy"
           git config --global user.email "109531621+sh4dow6oy@users.noreply.github.com"
-          git remote add bpf_src https://github.com/pascua28/android_kernel_samsung_sm7150.git
-          git fetch bpf_src bpf-5.10
-          # Facem merge dar pastram structurile noastre de memorie (evitam eroarea vm_sequence)
-          git merge -X ours bpf_src/bpf-5.10 -m "Merge BPF 4.14.355 backport" --allow-unrelated-histories || true
+          
+          # Adăugăm sursa BPF
+          git remote add bpf_provider https://github.com/pascua28/android_kernel_samsung_sm7150.git
+          git fetch bpf_provider bpf-5.10
+          
+          # În loc de merge, forțăm folderele critice pentru BPF să fie ca în sursa de 4.14.355
+          # Asta aduce suportul eBPF fără a atinge mm.h (evităm eroarea vm_sequence)
+          git checkout bpf_provider/bpf-5.10 -- kernel/bpf/
+          git checkout bpf_provider/bpf-5.10 -- net/core/filter.c
+          git checkout bpf_provider/bpf-5.10 -- include/linux/bpf.h
+          git checkout bpf_provider/bpf-5.10 -- include/uapi/linux/bpf.h
+          git checkout bpf_provider/bpf-5.10 -- include/linux/filter.h
+          
+          git commit -m "Add eBPF support via folder sync" || echo "No changes"
 
-      - name: Setup Toolchain
+      - name: Setup Toolchain (Neutron)
         run: |
           sudo apt-get update
           sudo apt-get install -y zstd bc build-essential gcc-aarch64-linux-gnu libssl-dev libelf-dev python3
@@ -40,34 +50,27 @@ jobs:
           export CROSS_COMPILE=aarch64-linux-gnu-
           export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
 
-          # 1. FIX: Injectare macro __bpf_md_ptr (Eroarea principala de la asm-offsets)
-          # Aceasta definitie permite Clang sa recunoasca pointerii eBPF
-          grep -q "__bpf_md_ptr" include/uapi/linux/bpf.h || sed -i '/#define _UAPI__LINUX_BPF_H/a #ifndef __bpf_md_ptr\n#define __bpf_md_ptr(type, name) \\\n\tunion { \\\n\t\ttype name; \\\n\t\t__u64 name##_64; \\\n\t}\n#endif' include/uapi/linux/bpf.h
+          # Fix rapid pentru macro-ul de pointeri eBPF
+          sed -i '/#define _UAPI__LINUX_BPF_H/a #ifndef __bpf_md_ptr\n#define __bpf_md_ptr(type, name) \\\n\tunion { \\\n\t\ttype name; \\\n\t\t__u64 name##_64; \\\n\t}\n#endif' include/uapi/linux/bpf.h
 
-          # 2. Symlink pentru calea Samsung
+          # Symlink trick Samsung
           mkdir -p toolchain/llvm-arm-toolchain-ship/10.0/bin
           ln -sf $(pwd)/clang-neutron/bin/clang toolchain/llvm-arm-toolchain-ship/10.0/bin/clang
 
-          # 3. Config
+          # Configurația de bază
           make O=out r5q_defconfig
 
-          # 4. Activare Kernel BPF Features
+          # Activare BPF
           scripts/config --file out/.config --enable BPF --enable BPF_SYSCALL --enable BPF_JIT --enable CGROUP_BPF --enable NET_CLS_BPF --enable NET_ACT_BPF
           
-          # 5. Dezactivare Knox/Samsung Debug care blocheaza compilarea
+          # Dezactivare Knox/Security
           scripts/config --file out/.config --disable SEC_DEBUG --disable CC_STACKPROTECTOR_STRONG --enable CC_STACKPROTECTOR_NONE
 
-          # 6. Compilare
+          # Compilare
           make -j$(nproc --all) O=out LLVM=1 LLVM_IAS=1 KCFLAGS="-w -Wno-error"
 
-      - name: Package
-        run: |
-          git clone --depth=1 https://github.com/osm0sis/AnyKernel3
-          cp out/arch/arm64/boot/Image.gz-dtb AnyKernel3/ || cp out/arch/arm64/boot/Image.gz AnyKernel3/
-          cd AnyKernel3 && zip -r9 ../Kernel-R5Q-BPF-Final.zip *
-
-      - name: Upload
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-BPF-4.14.355
-          path: Kernel-R5Q-BPF-Final.zip
+          name: Kernel-R5Q-BPF-Cherry
+          path: out/arch/arm64/boot/Image.gz-dtb
