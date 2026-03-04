@@ -1,4 +1,4 @@
-name: R5Q Android 15 - Final Relocation Fix
+name: R5Q Android 15 - Final Kallsyms Fix
 
 on:
   workflow_dispatch:
@@ -21,25 +21,24 @@ jobs:
           sudo apt-get install -y zstd bc build-essential gcc-aarch64-linux-gnu libssl-dev libelf-dev python3 python-is-python3
           sudo ln -sf /usr/bin/python3 /usr/bin/python2
           
-          # 1. FIX RELOCATION (Eroarea din LOG.txt)
-          # Adăugăm flag-ul -mcmodel=large sau forțăm compilatorul să folosească salturi lungi
-          # Aceasta rezolvă "relocation truncated to fit"
+          # 1. FIX KALLSYMS & RELOCATION (Rezolvă eroarea din ultimul LOG)
+          # Aplicăm mcmodel=large pentru a permite salturi lungi în memorie
           sed -i 's/KBUILD_CFLAGS   += -fno-pic/KBUILD_CFLAGS   += -fno-pic -mcmodel=large/g' arch/arm64/Makefile || true
           
-          # 2. FIX 'need_memory_boosting' (Samsung Inline Error)
+          # 2. FIX Samsung Memory Boosting Inline Error
           sed -i 's/extern inline bool need_memory_boosting/extern bool need_memory_boosting/g' include/linux/mm.h
           
-          # 3. FIX KVMALLOC (BPF compatibility)
+          # 3. FIX KVMALLOC (Compatibilitate BPF)
           if ! grep -q "kvmalloc" include/linux/mm.h; then
             echo -e "\n#include <linux/slab.h>\n#include <linux/vmalloc.h>\nstatic inline void *kvmalloc(size_t size, gfp_t flags)\n{\n\tif (size > PAGE_SIZE)\n\t\treturn vmalloc(size);\n\treturn kmalloc(size, flags);\n}\n" >> include/linux/mm.h
           fi
           
-          # 4. Descărcare Neutron Toolchain
+          # 4. Descărcare Toolchain Neutron
           mkdir clang-neutron
           wget https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang-neutron
 
-      - name: Build Kernel
+      - name: Build Kernel (R5Q Config)
         run: |
           export PATH=$(pwd)/clang-neutron/bin:$PATH
           export ARCH=arm64
@@ -49,17 +48,17 @@ jobs:
           KERNEL_LLVM_BIN=$(pwd)/clang-neutron/bin/clang
           CLANG_TRIPLE=aarch64-linux-gnu-
           
-          mkdir -p system/core/liblog/include/log/
-          touch system/core/liblog/include/log/perflog.h
-
-          # 1. Config
+          # 1. Configurare inițială
           make O=out ARCH=arm64 CROSS_COMPILE=$CROSS_COMPILE REAL_CC=$KERNEL_LLVM_BIN CLANG_TRIPLE=$CLANG_TRIPLE r5q_eur_open_defconfig
           
-          # 2. Dezactivăm Kprobes (conflict cu Knox/BPF relocation)
+          # 2. FIX CRITIC PENTRU KALLSYMS (Soluția pentru eroarea de out-of-range)
+          ./scripts/config --file out/.config --disable KALLSYMS_BASE_RELATIVE
           ./scripts/config --file out/.config --disable KPROBES
+          
+          # Actualizăm config-ul
           make O=out ARCH=arm64 CROSS_COMPILE=$CROSS_COMPILE REAL_CC=$KERNEL_LLVM_BIN CLANG_TRIPLE=$CLANG_TRIPLE olddefconfig
 
-          # 3. Compilare cu flag-uri de forță brută pentru a evita erorile de relocare
+          # 3. Compilare principală
           echo "--- START FINAL COMPILATION ---"
           make -j$(nproc --all) O=out ARCH=arm64 \
                CROSS_COMPILE=$CROSS_COMPILE \
@@ -73,8 +72,8 @@ jobs:
           find out/arch/arm64/boot/ -name "Image.gz*" -exec cp {} AnyKernel3/ \;
           cd AnyKernel3 && zip -r9 ../R5Q-A15-BPF-Final.zip * -x .git README.md
 
-      - name: Upload
+      - name: Upload Kernel
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-R5Q-Relocation-Fixed
+          name: Kernel-R5Q-A15-Success
           path: R5Q-A15-BPF-Final.zip
