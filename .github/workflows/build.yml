@@ -1,4 +1,4 @@
-name: R5Q Android 15 - Ultimate BPF Build
+name: R5Q Android 15 - Ultimate BPF & DTBO Build
 
 on:
   workflow_dispatch:
@@ -15,7 +15,7 @@ jobs:
           ref: rawr-bpf
           fetch-depth: 0
 
-      - name: Setup & Hard Patching
+      - name: Setup & Brutal Patching
         run: |
           sudo apt-get update
           sudo apt-get install -y zstd bc build-essential gcc-aarch64-linux-gnu libssl-dev libelf-dev python3 python-is-python3
@@ -23,18 +23,14 @@ jobs:
           
           # 1. HARD PATCH KALLSYMS (Elimină eroarea out-of-range)
           sed -i 's/if (base_relative)/if (0)/g' scripts/kallsyms.c
-          
-          # 2. PATCH LINKER SCRIPT
           sed -i 's/--kallsyms-base-relative//g' scripts/link-vmlinux.sh
           
-          # 3. FORCE LARGE MEMORY MODEL
-          sed -i 's/KBUILD_CFLAGS   += -fno-pic/KBUILD_CFLAGS   += -fno-pic -mcmodel=large/g' arch/arm64/Makefile
+          # 2. FORCE SELINUX PERMISSIVE (În codul sursă)
+          sed -i 's/static int selinux_enforcing = 1;/static int selinux_enforcing = 0;/g' security/selinux/hooks.c || true
           
-          # 4. FIX SAMSUNG MEMORY INLINING & KVMALLOC
+          # 3. FIX SAMSUNG MEMORY & MCMODEL LARGE
+          sed -i 's/KBUILD_CFLAGS   += -fno-pic/KBUILD_CFLAGS   += -fno-pic -mcmodel=large/g' arch/arm64/Makefile
           sed -i 's/extern inline bool need_memory_boosting/extern bool need_memory_boosting/g' include/linux/mm.h
-          if ! grep -q "kvmalloc" include/linux/mm.h; then
-            echo -e "\n#include <linux/slab.h>\n#include <linux/vmalloc.h>\nstatic inline void *kvmalloc(size_t size, gfp_t flags)\n{\n\tif (size > PAGE_SIZE)\n\t\treturn vmalloc(size);\n\treturn kmalloc(size, flags);\n}\n" >> include/linux/mm.h
-          fi
 
       - name: Download Neutron Toolchain
         run: |
@@ -42,69 +38,69 @@ jobs:
           wget https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang-neutron
 
-      - name: Build Kernel (Image.gz-dtb)
+      - name: Build Kernel, BPF & DTBO
         run: |
           export PATH=$(pwd)/clang-neutron/bin:$PATH
           export ARCH=arm64
           export CROSS_COMPILE=aarch64-linux-gnu-
-          export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
           KERNEL_LLVM_BIN=$(pwd)/clang-neutron/bin/clang
           
-          # Configurare
+          # Generare config
           make O=out ARCH=arm64 CROSS_COMPILE=$CROSS_COMPILE REAL_CC=$KERNEL_LLVM_BIN r5q_eur_open_defconfig
           
-          # Dezactivări critice
+          # 4. FORȚARE BPF (Setări critice pentru Android 15)
+          ./scripts/config --file out/.config --enable BPF
+          ./scripts/config --file out/.config --enable BPF_SYSCALL
+          ./scripts/config --file out/.config --enable BPF_JIT
+          ./scripts/config --file out/.config --enable CGROUP_BPF
+          ./scripts/config --file out/.config --enable NET_CLS_BPF
+          ./scripts/config --file out/.config --enable NET_ACT_BPF
+          ./scripts/config --file out/.config --enable BPF_EVENTS
+          
+          # 5. ACTIVARE DTBO & OVERLAY
+          ./scripts/config --file out/.config --enable CONFIG_BUILD_ARM64_DT_OVERLAY
+          ./scripts/config --file out/.config --enable CONFIG_DTC
+          ./scripts/config --file out/.config --enable CONFIG_OF_OVERLAY
+          
+          # 6. DEZACTIVARE KASLR & RELATIVE ADDR
           ./scripts/config --file out/.config --disable KALLSYMS_BASE_RELATIVE
           ./scripts/config --file out/.config --disable RANDOMIZE_BASE
-          ./scripts/config --file out/.config --disable LTO_CLANG
           ./scripts/config --file out/.config --enable KALLSYMS_ALL
           
           make O=out ARCH=arm64 CROSS_COMPILE=$CROSS_COMPILE REAL_CC=$KERNEL_LLVM_BIN olddefconfig
 
-          # Compilăm target-ul care include DTB (vital pentru Samsung)
+          # Compilare Image.gz-dtb și fișierele DTBO
           make -j$(nproc --all) O=out ARCH=arm64 \
                CROSS_COMPILE=$CROSS_COMPILE \
                REAL_CC=$KERNEL_LLVM_BIN \
                KCFLAGS="-w -mcmodel=large" \
-               Image.gz-dtb || make -j$(nproc --all) O=out ARCH=arm64 CROSS_COMPILE=$CROSS_COMPILE REAL_CC=$KERNEL_LLVM_BIN KCFLAGS="-w -mcmodel=large" Image
+               Image.gz-dtb dtbs
+
+          # 7. GENERARE DTBO.IMG (Utilizând scriptul intern)
+          python3 scripts/dtc/libfdt/mkdtboimg.py create out/arch/arm64/boot/dtbo.img $(find out/arch/arm64/boot/dts -name "*.dtbo")
 
       - name: Package with AnyKernel3
         run: |
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3
           
-          echo "--- Conținut folder boot după build ---"
-          ls -l out/arch/arm64/boot/
+          # Copiem Kernel Image și DTBO
+          cp out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
+          [ -f out/arch/arm64/boot/dtbo.img ] && cp out/arch/arm64/boot/dtbo.img AnyKernel3/
           
-          # Logica de colectare a imaginii
-          if [ -f out/arch/arm64/boot/Image.gz-dtb ]; then
-            echo "Am găsit Image.gz-dtb (Perfect)."
-            cp out/arch/arm64/boot/Image.gz-dtb AnyKernel3/Image.gz-dtb
-          elif [ -f out/arch/arm64/boot/Image.gz ]; then
-            echo "Am găsit Image.gz (Fără DTB, s-ar putea să nu booteze)."
-            cp out/arch/arm64/boot/Image.gz AnyKernel3/Image.gz
-          elif [ -f out/arch/arm64/boot/Image ]; then
-            echo "Am găsit doar Image brut. Încercăm compresie manuală..."
-            gzip -9 -c out/arch/arm64/boot/Image > AnyKernel3/Image.gz
-          else
-            echo "EROARE CRITICĂ: Nicio imagine găsită!"
-            exit 1
-          fi
-
-          # Colectăm modulele compilate (.ko) pentru Wi-Fi, Audio etc.
-          echo "Colectăm modulele..."
+          # Colectăm modulele (.ko)
           find out/ -name "*.ko" -exec cp {} AnyKernel3/modules/system/lib/modules/ \; || true
 
           cd AnyKernel3
-          # Ajustăm anykernel.sh pentru a recunoaște Image.gz-dtb dacă e prezent
-          if [ -f Image.gz-dtb ]; then
-            sed -i 's/block=\/dev\/block\/platform\/soc\/1d84000.ufshc\/by-name\/boot/block=auto/g' anykernel.sh
-          fi
+          # Configurare AnyKernel pentru Android 15 & SELinux Permissive
+          sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
+          sed -i '/cmdline=/ s/$/ androidboot.selinux=permissive/' anykernel.sh
+          [ -f dtbo.img ] && sed -i 's/dtbo_setup=0/dtbo_setup=1/g' anykernel.sh
           
           rm -rf .git README.md
-          zip -r9 ../Kernel_R5Q_A15_Final.zip *
+          zip -r9 ../R5Q-A15-BPF-DTBO-FINAL.zip *
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: Kernel_R5Q_A15_Final
-          path: Kernel_R5Q_A15_Final.zip
+          path: R5Q-A15-BPF-DTBO-FINAL.zip
