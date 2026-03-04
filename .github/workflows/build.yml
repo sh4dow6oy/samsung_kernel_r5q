@@ -1,4 +1,4 @@
-name: R5Q Android 15 - Success BPF & DTBO
+name: R5Q Android 15 - Deep Search DTBO
 
 on:
   workflow_dispatch:
@@ -21,7 +21,7 @@ jobs:
           sudo apt-get install -y zstd bc build-essential gcc-aarch64-linux-gnu libssl-dev libelf-dev python3 python-is-python3
           sudo ln -sf /usr/bin/python3 /usr/bin/python2
           
-          # 1. FIX KALLSYMS & SELINUX
+          # 1. HARD PATCH KALLSYMS & SELINUX
           sed -i 's/if (base_relative)/if (0)/g' scripts/kallsyms.c
           sed -i 's/--kallsyms-base-relative//g' scripts/link-vmlinux.sh
           sed -i 's/static int selinux_enforcing = 1;/static int selinux_enforcing = 0;/g' security/selinux/hooks.c || true
@@ -36,9 +36,8 @@ jobs:
           wget https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang-neutron
           
-          # DESCĂRCĂM mkdtboimg direct de la Google (AOSP) pentru a fi siguri că funcționează
-          wget https://android.googlesource.com/platform/system/libufdt/+/master/utils/src/mkdtboimg.py?format=TEXT -O mkdtboimg_base64.txt
-          base64 -d mkdtboimg_base64.txt > mkdtboimg.py
+          # Descărcăm mkdtboimg direct din sursa AOSP raw
+          curl -Lo mkdtboimg.py "https://android.googlesource.com/platform/system/libufdt/+/refs/heads/master/utils/src/mkdtboimg.py?format=TEXT" | base64 --decode > mkdtboimg.py
           chmod +x mkdtboimg.py
 
       - name: Build Kernel & BPF
@@ -50,22 +49,33 @@ jobs:
           
           make O=out ARCH=arm64 CROSS_COMPILE=$CROSS_COMPILE REAL_CC=$KERNEL_LLVM_BIN r5q_eur_open_defconfig
           
-          # FORȚARE BPF & CONFIG
+          # FORȚARE BPF (Fix-uri critice Android 15)
           ./scripts/config --file out/.config --enable BPF --enable BPF_SYSCALL --enable BPF_JIT --enable CGROUP_BPF --enable NET_CLS_BPF --enable NET_ACT_BPF
           ./scripts/config --file out/.config --enable CONFIG_BUILD_ARM64_DT_OVERLAY --enable CONFIG_DTC --enable CONFIG_OF_OVERLAY
           ./scripts/config --file out/.config --disable KALLSYMS_BASE_RELATIVE --disable RANDOMIZE_BASE --enable KALLSYMS_ALL
           
           make O=out ARCH=arm64 CROSS_COMPILE=$CROSS_COMPILE REAL_CC=$KERNEL_LLVM_BIN olddefconfig
           
-          # Compilare
+          # Compilare Image.gz-dtb și fișierele DTBO (inclusiv techpack)
           make -j$(nproc --all) O=out ARCH=arm64 CROSS_COMPILE=$CROSS_COMPILE REAL_CC=$KERNEL_LLVM_BIN KCFLAGS="-w -mcmodel=large" Image.gz-dtb dtbs
 
-      - name: Generate DTBO.IMG
+      - name: Generate DTBO.IMG (Deep Search)
         run: |
-          # Folosim scriptul descărcat anterior
-          echo "Generăm DTBO.img..."
-          python3 mkdtboimg.py create out/arch/arm64/boot/dtbo.img $(find out/arch/arm64/boot/dts -name "*.dtbo")
-          ls -lh out/arch/arm64/boot/dtbo.img
+          echo "Căutăm fișierele .dtbo generate..."
+          # Căutăm în tot folderul 'out', nu doar în boot/dts
+          DTBO_FILES=$(find out/arch/arm64/boot/dts -name "*.dtbo")
+          
+          if [ -z "$DTBO_FILES" ]; then
+            echo "Atenție: Nu s-au găsit .dtbo în dts, încercăm techpack..."
+            DTBO_FILES=$(find out/ -name "*.dtbo")
+          fi
+
+          if [ -n "$DTBO_FILES" ]; then
+            echo "Fișiere găsite: $DTBO_FILES"
+            python3 mkdtboimg.py create out/arch/arm64/boot/dtbo.img $DTBO_FILES
+          else
+            echo "EROARE: Nu s-a găsit niciun fișier .dtbo! Verifică dacă CONFIG_BUILD_ARM64_DT_OVERLAY=y"
+          fi
 
       - name: Package with AnyKernel3
         run: |
@@ -80,10 +90,10 @@ jobs:
           sed -i '/cmdline=/ s/$/ androidboot.selinux=permissive/' anykernel.sh
           [ -f dtbo.img ] && sed -i 's/dtbo_setup=0/dtbo_setup=1/g' anykernel.sh
           
-          zip -r9 ../R5Q-A15-FINAL-FIXED.zip *
+          zip -r9 ../R5Q-A15-BPF-DTBO-FINAL.zip *
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
           name: Kernel_R5Q_A15_Final
-          path: R5Q-A15-FINAL-FIXED.zip
+          path: R5Q-A15-BPF-DTBO-FINAL.zip
