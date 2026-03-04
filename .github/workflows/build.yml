@@ -1,4 +1,4 @@
-name: R5Q BPF Final Fix
+name: R5Q BPF Final Fix - Defconfig Repair
 
 on:
   workflow_dispatch:
@@ -15,7 +15,7 @@ jobs:
           ref: master
           fetch-depth: 0
 
-      - name: Manual BPF Patching
+      - name: Manual BPF Patching & Reset MM
         run: |
           git config --global user.name "sh4dow6oy"
           git config --global user.email "109531621+sh4dow6oy@users.noreply.github.com"
@@ -23,15 +23,15 @@ jobs:
           git remote add bpf_src https://github.com/pascua28/android_kernel_samsung_sm7150.git
           git fetch bpf_src bpf-5.10
           
-          # Aduce doar logica BPF necesara, ignorand mm.h problematic
+          # Resetăm mm.h la varianta originală Samsung pentru a elimina eroarea vm_sequence
+          git checkout HEAD -- include/linux/mm.h
+          
+          # Aduce doar logica BPF necesara
           git checkout bpf_src/bpf-5.10 -- kernel/bpf/
           git checkout bpf_src/bpf-5.10 -- include/uapi/linux/bpf.h
           git checkout bpf_src/bpf-5.10 -- include/linux/bpf_types.h
           
-          # REPARARE MM.H - Scoatem referintele la vm_sequence aduse de merge
-          sed -i '/vm_sequence/d' include/linux/mm.h || true
-          
-          # REPARARE BPF.H - Fortam macro-ul __bpf_md_ptr chiar daca fisierul e readonly
+          # Injectăm definiția macro-ului __bpf_md_ptr
           chmod +w include/uapi/linux/bpf.h
           printf '#ifndef __bpf_md_ptr\n#define __bpf_md_ptr(type, name) \\\n\tunion { \\\n\t\ttype name; \\\n\t\t__u64 name##_64; \\\n\t}\n#endif\n' | cat - include/uapi/linux/bpf.h > temp && mv temp include/uapi/linux/bpf.h
 
@@ -55,16 +55,20 @@ jobs:
           mkdir -p toolchain/llvm-arm-toolchain-ship/10.0/bin
           ln -sf $(pwd)/clang-neutron/bin/clang toolchain/llvm-arm-toolchain-ship/10.0/bin/clang
 
-          # Config
-          make O=out r5q_defconfig
-
-          # Activare BPF minimala dar functionala pentru Android 15
-          scripts/config --file out/.config --enable BPF --enable BPF_SYSCALL --enable BPF_JIT --enable CGROUP_BPF
+          # 🔍 Găsește defconfig-ul corect (poate e r5q_eur_open_defconfig)
+          REAL_DEFCONFIG=$(ls arch/arm64/configs/ | grep r5q | head -n 1)
+          echo "Using defconfig: $REAL_DEFCONFIG"
           
-          # Dezactivare protectii care cauzeaza crash la compilare
-          scripts/config --file out/.config --disable SEC_DEBUG --disable CC_STACKPROTECTOR_STRONG --enable CC_STACKPROTECTOR_NONE
+          # Generare config
+          make O=out $REAL_DEFCONFIG
 
-          # Compilare cu ignorarea avertismentelor (KCFLAGS "-w")
+          # Activare BPF minimala
+          ./scripts/config --file out/.config --enable BPF --enable BPF_SYSCALL --enable BPF_JIT --enable CGROUP_BPF
+          
+          # Dezactivare protectii
+          ./scripts/config --file out/.config --disable SEC_DEBUG --disable CC_STACKPROTECTOR_STRONG --enable CC_STACKPROTECTOR_NONE
+
+          # Compilare
           make -j$(nproc --all) O=out LLVM=1 LLVM_IAS=1 KCFLAGS="-w -Wno-error"
 
       - name: Upload Artifact
