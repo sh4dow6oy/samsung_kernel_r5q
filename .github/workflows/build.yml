@@ -1,4 +1,4 @@
-name: R5Q BPF Final Fix - Defconfig Repair
+name: R5Q Android 15 BPF Builder - Neutron
 
 on:
   workflow_dispatch:
@@ -8,34 +8,39 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout Base
+      - name: Checkout Base Source (R5Q)
         uses: actions/checkout@v4
         with:
           repository: sh4dow6oy/samsung_kernel_r5q
           ref: master
           fetch-depth: 0
 
-      - name: Manual BPF Patching & Reset MM
+      - name: Sync BPF 4.14.355 Backport
         run: |
           git config --global user.name "sh4dow6oy"
           git config --global user.email "109531621+sh4dow6oy@users.noreply.github.com"
           
-          git remote add bpf_src https://github.com/pascua28/android_kernel_samsung_sm7150.git
-          git fetch bpf_src bpf-5.10
+          # Adăugăm sursa BPF de la Pascua28
+          git remote add bpf_provider https://github.com/pascua28/android_kernel_samsung_sm7150.git
+          git fetch bpf_provider bpf-5.10
           
-          # Resetăm mm.h la varianta originală Samsung pentru a elimina eroarea vm_sequence
+          # Resetăm mm.h la varianta Samsung (foarte important pentru a evita eroarea vm_sequence)
           git checkout HEAD -- include/linux/mm.h
           
-          # Aduce doar logica BPF necesara
-          git checkout bpf_src/bpf-5.10 -- kernel/bpf/
-          git checkout bpf_src/bpf-5.10 -- include/uapi/linux/bpf.h
-          git checkout bpf_src/bpf-5.10 -- include/linux/bpf_types.h
+          # Cherry-pick selectiv pentru eBPF (Android 15 support)
+          git checkout bpf_provider/bpf-5.10 -- kernel/bpf/
+          git checkout bpf_provider/bpf-5.10 -- include/uapi/linux/bpf.h
+          git checkout bpf_provider/bpf-5.10 -- include/linux/bpf_types.h
+          git checkout bpf_provider/bpf-5.10 -- net/core/filter.c
           
-          # Injectăm definiția macro-ului __bpf_md_ptr
+          # Injectăm macro-ul __bpf_md_ptr obligatoriu pentru compilarea BPF
           chmod +w include/uapi/linux/bpf.h
           printf '#ifndef __bpf_md_ptr\n#define __bpf_md_ptr(type, name) \\\n\tunion { \\\n\t\ttype name; \\\n\t\t__u64 name##_64; \\\n\t}\n#endif\n' | cat - include/uapi/linux/bpf.h > temp && mv temp include/uapi/linux/bpf.h
+          
+          git add .
+          git commit -m "Apply eBPF backport and header fixes" || echo "No changes to commit"
 
-      - name: Setup Toolchain
+      - name: Setup Neutron Toolchain
         run: |
           sudo apt-get update
           sudo apt-get install -y zstd bc build-essential gcc-aarch64-linux-gnu libssl-dev libelf-dev python3
@@ -45,34 +50,60 @@ jobs:
 
       - name: Build Kernel
         run: |
+          # Exportăm mediul Neutron
           export PATH=$(pwd)/clang-neutron/bin:$PATH
           export ARCH=arm64
           export CC="clang --target=aarch64-linux-gnu"
           export CROSS_COMPILE=aarch64-linux-gnu-
           export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
-
-          # Păcălim calea Samsung
+          
+          # Fix pentru calea de toolchain Samsung hardcoded în unele Makefile-uri
           mkdir -p toolchain/llvm-arm-toolchain-ship/10.0/bin
           ln -sf $(pwd)/clang-neutron/bin/clang toolchain/llvm-arm-toolchain-ship/10.0/bin/clang
-
-          # 🔍 Găsește defconfig-ul corect (poate e r5q_eur_open_defconfig)
+          
+          # 1. Detecție automată Defconfig (r5q_eur_open_defconfig)
           REAL_DEFCONFIG=$(ls arch/arm64/configs/ | grep r5q | head -n 1)
           echo "Using defconfig: $REAL_DEFCONFIG"
-          
-          # Generare config
           make O=out $REAL_DEFCONFIG
-
-          # Activare BPF minimala
-          ./scripts/config --file out/.config --enable BPF --enable BPF_SYSCALL --enable BPF_JIT --enable CGROUP_BPF
           
-          # Dezactivare protectii
-          ./scripts/config --file out/.config --disable SEC_DEBUG --disable CC_STACKPROTECTOR_STRONG --enable CC_STACKPROTECTOR_NONE
+          # 2. Configurare BPF (Android 15 Requirements)
+          ./scripts/config --file out/.config --enable BPF
+          ./scripts/config --file out/.config --enable BPF_SYSCALL
+          ./scripts/config --file out/.config --enable BPF_JIT
+          ./scripts/config --file out/.config --enable CGROUP_BPF
+          ./scripts/config --file out/.config --enable NET_CLS_BPF
+          ./scripts/config --file out/.config --enable NET_ACT_BPF
+          
+          # 3. Dezactivare Knox & Samsung Debug (Prevenire conflicte)
+          ./scripts/config --file out/.config --disable SEC_DEBUG
+          ./scripts/config --file out/.config --disable CC_STACKPROTECTOR_STRONG
+          ./scripts/config --file out/.config --enable CC_STACKPROTECTOR_NONE
+          
+          # 4. Aplicare automată a opțiunilor noi (Rezolvă eroarea 'aborted')
+          make O=out olddefconfig
+          
+          # 5. Compilarea propriu-zisă
+          echo "--- Starting Kernel Compilation ---"
+          make -j$(nproc --all) O=out \
+               LLVM=1 LLVM_IAS=1 \
+               KCFLAGS="-w -Wno-error"
 
-          # Compilare
-          make -j$(nproc --all) O=out LLVM=1 LLVM_IAS=1 KCFLAGS="-w -Wno-error"
+      - name: Create Flashable Zip (AnyKernel3)
+        run: |
+          git clone --depth=1 https://github.com/osm0sis/AnyKernel3
+          # Identificăm imaginea generată
+          if [ -f out/arch/arm64/boot/Image.gz-dtb ]; then
+            cp out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
+          elif [ -f out/arch/arm64/boot/Image.gz ]; then
+            cp out/arch/arm64/boot/Image.gz AnyKernel3/
+          else
+            cp out/arch/arm64/boot/Image AnyKernel3/
+          fi
+          cd AnyKernel3
+          zip -r9 ../R5Q-BPF-Android15-Kernel.zip * -x .git README.md
 
-      - name: Upload Artifact
+      - name: Upload Final Kernel
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-R5Q-A15-Fixed
-          path: out/arch/arm64/boot/Image.gz-dtb
+          name: Kernel-R5Q-A15
+          path: R5Q-BPF-Android15-Kernel.zip
