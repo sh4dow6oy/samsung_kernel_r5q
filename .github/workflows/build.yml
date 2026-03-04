@@ -11,7 +11,7 @@ jobs:
       - name: Checkout LumiPlayground Source (rawr-bpf)
         uses: actions/checkout@v4
         with:
-          repository: LumiPlayground/android_kernel_samsung_sm8150
+          repository: sh4dow6oy/android_kernel_samsung_sm8150
           ref: rawr-bpf
           fetch-depth: 1
 
