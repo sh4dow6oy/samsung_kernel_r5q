@@ -1,4 +1,4 @@
-name: R5Q Android 15 - Force Success Build
+name: R5Q Android 15 - Final Success Build
 
 on:
   workflow_dispatch:
@@ -13,7 +13,7 @@ jobs:
         with:
           repository: LumiPlayground/android_kernel_samsung_sm8150
           ref: rawr-bpf
-          fetch-depth: 0 # Elimină erorile Git 'ambiguous argument'
+          fetch-depth: 0
 
       - name: Setup & Hard Patching
         run: |
@@ -21,19 +21,17 @@ jobs:
           sudo apt-get install -y zstd bc build-essential gcc-aarch64-linux-gnu libssl-dev libelf-dev python3 python-is-python3
           sudo ln -sf /usr/bin/python3 /usr/bin/python2
           
-          # 1. HARD PATCH KALLSYMS (Soluția finală pentru eroarea 'out of range')
-          # Modificăm codul sursă al utilitarului de build să ignore adresele relative
-          echo "Applying hard patch to scripts/kallsyms.c..."
-          sed -i 's/if (base_relative)/if (0)/g' scripts/kallsyms.c || true
+          # 1. HARD PATCH KALLSYMS (Elimină eroarea out-of-range)
+          sed -i 's/if (base_relative)/if (0)/g' scripts/kallsyms.c
           
-          # 2. FORCE LARGE MEMORY MODEL
-          # Permite kernel-ului să acceseze adrese de memorie îndepărtate (necesar pt BPF)
-          sed -i 's/KBUILD_CFLAGS   += -fno-pic/KBUILD_CFLAGS   += -fno-pic -mcmodel=large/g' arch/arm64/Makefile || true
+          # 2. PATCH LINKER SCRIPT
+          sed -i 's/--kallsyms-base-relative//g' scripts/link-vmlinux.sh
           
-          # 3. FIX SAMSUNG MEMORY INLINING
+          # 3. FORCE LARGE MEMORY MODEL
+          sed -i 's/KBUILD_CFLAGS   += -fno-pic/KBUILD_CFLAGS   += -fno-pic -mcmodel=large/g' arch/arm64/Makefile
+          
+          # 4. FIX SAMSUNG MEMORY INLINING & KVMALLOC
           sed -i 's/extern inline bool need_memory_boosting/extern bool need_memory_boosting/g' include/linux/mm.h
-          
-          # 4. INJECT KVMALLOC (Compatibilitate BPF Android 15)
           if ! grep -q "kvmalloc" include/linux/mm.h; then
             echo -e "\n#include <linux/slab.h>\n#include <linux/vmalloc.h>\nstatic inline void *kvmalloc(size_t size, gfp_t flags)\n{\n\tif (size > PAGE_SIZE)\n\t\treturn vmalloc(size);\n\treturn kmalloc(size, flags);\n}\n" >> include/linux/mm.h
           fi
@@ -44,47 +42,59 @@ jobs:
           wget https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang-neutron
 
-      - name: Build Kernel (R5Q-A15)
+      - name: Build Kernel
         run: |
           export PATH=$(pwd)/clang-neutron/bin:$PATH
           export ARCH=arm64
-          export SUBARCH=arm64
           export CROSS_COMPILE=aarch64-linux-gnu-
           export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
-          
           KERNEL_LLVM_BIN=$(pwd)/clang-neutron/bin/clang
-          CLANG_TRIPLE=aarch64-linux-gnu-
           
-          # 1. Configurare
-          make O=out ARCH=arm64 CROSS_COMPILE=$CROSS_COMPILE REAL_CC=$KERNEL_LLVM_BIN CLANG_TRIPLE=$CLANG_TRIPLE r5q_eur_open_defconfig
+          # Configurare
+          make O=out ARCH=arm64 CROSS_COMPILE=$CROSS_COMPILE REAL_CC=$KERNEL_LLVM_BIN r5q_eur_open_defconfig
           
-          # 2. CONFIG FIXES (Dezactivări critice pentru a evita erorile de link-uire)
+          # Dezactivări critice pentru relocare
           ./scripts/config --file out/.config --disable KALLSYMS_BASE_RELATIVE
           ./scripts/config --file out/.config --disable RANDOMIZE_BASE
           ./scripts/config --file out/.config --disable LTO_CLANG
-          ./scripts/config --file out/.config --disable THINLTO
           ./scripts/config --file out/.config --enable KALLSYMS_ALL
           
-          # Re-generare config final
-          make O=out ARCH=arm64 CROSS_COMPILE=$CROSS_COMPILE REAL_CC=$KERNEL_LLVM_BIN CLANG_TRIPLE=$CLANG_TRIPLE olddefconfig
+          make O=out ARCH=arm64 CROSS_COMPILE=$CROSS_COMPILE REAL_CC=$KERNEL_LLVM_BIN olddefconfig
 
-          # 3. Compilare (folosim -w pentru a ignora warning-urile și a merge mai repede)
-          echo "--- STARTING FINAL LINKING PHASE ---"
+          # Compilare
           make -j$(nproc --all) O=out ARCH=arm64 \
                CROSS_COMPILE=$CROSS_COMPILE \
                REAL_CC=$KERNEL_LLVM_BIN \
-               CLANG_TRIPLE=$CLANG_TRIPLE \
-               KCFLAGS="-w -mcmodel=large -Wno-error"
+               KCFLAGS="-w -mcmodel=large"
 
       - name: Package with AnyKernel3
         run: |
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3
-          # Căutăm imaginea compilată (poate fi Image.gz-dtb sau simplu Image.gz)
-          find out/arch/arm64/boot/ -name "Image.gz*" -exec cp {} AnyKernel3/ \;
-          cd AnyKernel3 && zip -r9 ../R5Q-A15-BPF-Final.zip * -x .git README.md
+          
+          echo "--- Verificare fișiere generate ---"
+          ls -l out/arch/arm64/boot/
+          
+          # Căutăm și copiem imaginea corectă (Samsung SM8150 folosește de obicei Image.gz-dtb)
+          if [ -f out/arch/arm64/boot/Image.gz-dtb ]; then
+            echo "S-a găsit Image.gz-dtb. Copiere..."
+            cp out/arch/arm64/boot/Image.gz-dtb AnyKernel3/Image.gz-dtb
+          elif [ -f out/arch/arm64/boot/Image.gz ]; then
+            echo "S-a găsit Image.gz. Copiere..."
+            cp out/arch/arm64/boot/Image.gz AnyKernel3/Image.gz
+          elif [ -f out/arch/arm64/boot/Image ]; then
+            echo "S-a găsit Image brut. Comprimare..."
+            gzip -c out/arch/arm64/boot/Image > AnyKernel3/Image.gz
+          else
+            echo "EROARE: Nicio imagine de kernel nu a fost găsită!"
+            exit 1
+          fi
+          
+          cd AnyKernel3
+          rm -rf .git README.md
+          zip -r9 ../R5Q-A15-BPF-KERNEL.zip *
 
-      - name: Upload Kernel Artifact
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-R5Q-A15-Success
-          path: R5Q-A15-BPF-Final.zip
+          name: Kernel_R5Q_A15_Final
+          path: R5Q-A15-BPF-KERNEL.zip
