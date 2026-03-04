@@ -1,4 +1,4 @@
-name: R5Q Android 15 - Lumi Base Final
+name: R5Q Android 15 - Lumi Base Final Fix
 
 on:
   workflow_dispatch:
@@ -8,58 +8,64 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout LumiPlayground Source
+      - name: Checkout LumiPlayground Source (rawr-bpf)
         uses: actions/checkout@v4
         with:
           repository: LumiPlayground/android_kernel_samsung_sm8150
           ref: rawr-bpf
           fetch-depth: 1
 
-      - name: Setup & Architecture Patch
+      - name: Setup & Architecture Patch (Memory & BPF)
         run: |
           sudo apt-get update
           sudo apt-get install -y zstd bc build-essential gcc-aarch64-linux-gnu libssl-dev libelf-dev python3 python-is-python3
           sudo ln -sf /usr/bin/python3 /usr/bin/python2
           
-          # 1. FIX KVMALLOC: Injectăm definiția în mm.h pentru compatibilitate BPF
-          # Verificăm dacă nu cumva există deja pentru a evita redefinirea
+          # 1. FIX PENTRU EROAREA 'need_memory_boosting' (Samsung Inline Error)
+          # Transformăm declarația 'extern inline' în 'extern' simplu pentru a evita eroarea de inlining failed
+          sed -i 's/extern inline bool need_memory_boosting/extern bool need_memory_boosting/g' include/linux/mm.h
+          
+          # 2. FIX KVMALLOC (Compatibilitate BPF pentru kernel 4.14)
+          # Injectăm definiția kvmalloc în mm.h dacă lipsește
           if ! grep -q "kvmalloc" include/linux/mm.h; then
             echo -e "\n#include <linux/slab.h>\n#include <linux/vmalloc.h>\nstatic inline void *kvmalloc(size_t size, gfp_t flags)\n{\n\tif (size > PAGE_SIZE)\n\t\treturn vmalloc(size);\n\treturn kmalloc(size, flags);\n}\n" >> include/linux/mm.h
           fi
           
-          # 2. FIX PYTHON: Reparăm wrapper-ul DOAR dacă există în această sursă
+          # 3. FIX PYTHON: Reparăm wrapper-ul DOAR dacă există în această sursă
           if [ -f scripts/gcc-wrapper.py ]; then
             sed -i 's/print >> sys.stderr, \(.*\)/print(\1, file=sys.stderr)/g' scripts/gcc-wrapper.py
             sed -i 's/python/python3/g' scripts/gcc-wrapper.py
           fi
           
-          # 3. Descărcare Neutron Toolchain
+          # 4. Descărcare Neutron Toolchain
           mkdir clang-neutron
           wget https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang-neutron
 
-      - name: Build Kernel
+      - name: Build Kernel (R5Q Config)
         run: |
+          # Setări mediu
           export PATH=$(pwd)/clang-neutron/bin:$PATH
           export ARCH=arm64
           export CROSS_COMPILE=aarch64-linux-gnu-
           export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
           
+          # Variabilele cerute de Makefile-ul Samsung (REAL_CC)
           KERNEL_LLVM_BIN=$(pwd)/clang-neutron/bin/clang
           CLANG_TRIPLE=aarch64-linux-gnu-
           
-          # Headere dummy pentru Samsung (liblog)
+          # Fix headere dummy pentru Samsung
           mkdir -p system/core/liblog/include/log/
           touch system/core/liblog/include/log/perflog.h
 
-          # 1. Config (R5Q Defconfig din sursa Lumi)
+          # 1. Configurare (Folosim defconfig-ul de R5Q din sursa Lumi)
           make O=out ARCH=arm64 CROSS_COMPILE=$CROSS_COMPILE REAL_CC=$KERNEL_LLVM_BIN CLANG_TRIPLE=$CLANG_TRIPLE r5q_eur_open_defconfig
           
-          # 2. Forțăm dezactivarea KPROBES dacă apar erori de redefinire
+          # 2. Optimizări suplimentare (Dezactivăm KPROBES care pot cauza redefiniri)
           ./scripts/config --file out/.config --disable KPROBES
           make O=out ARCH=arm64 CROSS_COMPILE=$CROSS_COMPILE REAL_CC=$KERNEL_LLVM_BIN CLANG_TRIPLE=$CLANG_TRIPLE olddefconfig
 
-          # 3. Compilare
+          # 3. Compilare principală
           echo "--- START COMPILATION ---"
           make -j$(nproc --all) O=out ARCH=arm64 \
                CROSS_COMPILE=$CROSS_COMPILE \
@@ -67,15 +73,15 @@ jobs:
                CLANG_TRIPLE=$CLANG_TRIPLE \
                KCFLAGS="-w -Wno-error"
 
-      - name: Package AnyKernel3
+      - name: Package with AnyKernel3
         run: |
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3
-          # Căutăm imaginea rezultată
+          # Căutăm imaginea generată (Image.gz sau Image.gz-dtb)
           find out/arch/arm64/boot/ -name "Image.gz*" -exec cp {} AnyKernel3/ \;
-          cd AnyKernel3 && zip -r9 ../R5Q-A15-Lumi.zip * -x .git README.md
+          cd AnyKernel3 && zip -r9 ../R5Q-A15-Lumi-Fixed.zip * -x .git README.md
 
-      - name: Upload
+      - name: Upload Kernel
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-R5Q-A15-Lumi
-          path: R5Q-A15-Lumi.zip
+          name: R5Q-Lumi-BPF-Fixed
+          path: R5Q-A15-Lumi-Fixed.zip
