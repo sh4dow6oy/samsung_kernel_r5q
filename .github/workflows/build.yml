@@ -13,7 +13,7 @@ jobs:
         with:
           repository: LumiPlayground/android_kernel_samsung_sm8150
           ref: rawr-bpf
-          [cite_start]fetch-depth: 0 # Rezolvă erorile Git 'ambiguous argument' 
+          fetch-depth: 0 # Rezolvă erorile Git 'ambiguous argument' 
 
       - name: Setup & Hard Patch
         run: |
