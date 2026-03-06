@@ -1,4 +1,4 @@
-name: R5Q Android 15 - Deep Search DTBO
+name: R5Q Android 15 - Ultimate BPF DTBO Appended
 
 on:
   workflow_dispatch:
@@ -8,25 +8,27 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout Source
+      - name: Checkout Source (Full History)
         uses: actions/checkout@v4
         with:
-          repository: sh4dow6oy/android_kernel_samsung_sm8150
+          repository: LumiPlayground/android_kernel_samsung_sm8150
           ref: rawr-bpf
           fetch-depth: 0
 
       - name: Setup & Brutal Patching
         run: |
           sudo apt-get update
-          sudo apt-get install -y zstd bc build-essential gcc-aarch64-linux-gnu libssl-dev libelf-dev python3 python-is-python3
+          sudo apt-get install -y zstd bc build-essential gcc-aarch64-linux-gnu libssl-dev libelf-dev python3 python-is-python3 curl
           sudo ln -sf /usr/bin/python3 /usr/bin/python2
           
-          # 1. HARD PATCH KALLSYMS & SELINUX
+          # 1. HARD PATCH KALLSYMS (Elimină eroarea 'out of range' din log)
           sed -i 's/if (base_relative)/if (0)/g' scripts/kallsyms.c
           sed -i 's/--kallsyms-base-relative//g' scripts/link-vmlinux.sh
+          
+          # 2. FORCE SELINUX PERMISSIVE (Fix pentru crash-urile de serviciu din Android 15)
           sed -i 's/static int selinux_enforcing = 1;/static int selinux_enforcing = 0;/g' security/selinux/hooks.c || true
           
-          # 2. FIX MCMODEL & MEMORY
+          # 3. FIX SAMSUNG MEMORY & MCMODEL LARGE
           sed -i 's/KBUILD_CFLAGS   += -fno-pic/KBUILD_CFLAGS   += -fno-pic -mcmodel=large/g' arch/arm64/Makefile
           sed -i 's/extern inline bool need_memory_boosting/extern bool need_memory_boosting/g' include/linux/mm.h
 
@@ -36,63 +38,70 @@ jobs:
           wget https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang-neutron
           
-          # Descărcăm mkdtboimg direct din sursa AOSP raw
+          # Descarcă utilitarul de generare DTBO direct de la Google
           curl -Lo mkdtboimg.py "https://android.googlesource.com/platform/system/libufdt/+/refs/heads/master/utils/src/mkdtboimg.py?format=TEXT" | base64 --decode > mkdtboimg.py
           chmod +x mkdtboimg.py
 
-      - name: Build Kernel & BPF
+      - name: Build Kernel, BPF & DTBO
         run: |
           export PATH=$(pwd)/clang-neutron/bin:$PATH
           export ARCH=arm64
           export CROSS_COMPILE=aarch64-linux-gnu-
           KERNEL_LLVM_BIN=$(pwd)/clang-neutron/bin/clang
           
+          # Configurare inițială
           make O=out ARCH=arm64 CROSS_COMPILE=$CROSS_COMPILE REAL_CC=$KERNEL_LLVM_BIN r5q_eur_open_defconfig
           
-          # FORȚARE BPF (Fix-uri critice Android 15)
+          # 4. ACTIVARE APPENDED DTB (Fix pentru recunoașterea hardware la boot)
+          ./scripts/config --file out/.config --enable CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE
+          ./scripts/config --file out/.config --enable CONFIG_ARM64_APPENDED_DTB
+          
+          # 5. FORȚARE BPF (Configurația necesară pentru rețeaua Android 15)
           ./scripts/config --file out/.config --enable BPF --enable BPF_SYSCALL --enable BPF_JIT --enable CGROUP_BPF --enable NET_CLS_BPF --enable NET_ACT_BPF
+          
+          # 6. ACTIVARE DTBO & OVERLAY
+          ./scripts/config --file out/.config --enable CONFIG_BUILD_ARM64_DT_OVERLAY --enable CONFIG_DTC --enable CONFIG_OF_OVERLAY
+          
+          # 7. DEZACTIVARE KASLR & RELATIVE ADDR
           ./scripts/config --file out/.config --disable KALLSYMS_BASE_RELATIVE --disable RANDOMIZE_BASE --enable KALLSYMS_ALL
           
           make O=out ARCH=arm64 CROSS_COMPILE=$CROSS_COMPILE REAL_CC=$KERNEL_LLVM_BIN olddefconfig
-          
-          # Compilare Image.gz-dtb și fișierele DTBO (inclusiv techpack)
+
+          # Compilare finală
           make -j$(nproc --all) O=out ARCH=arm64 CROSS_COMPILE=$CROSS_COMPILE REAL_CC=$KERNEL_LLVM_BIN KCFLAGS="-w -mcmodel=large" Image.gz-dtb dtbs
 
-      - name: Generate DTBO.IMG (Deep Search)
+      - name: Generate DTBO.IMG
         run: |
-          echo "Căutăm fișierele .dtbo generate..."
-          # Căutăm în tot folderul 'out', nu doar în boot/dts
-          DTBO_FILES=$(find out/arch/arm64/boot/dts -name "*.dtbo")
-          
-          if [ -z "$DTBO_FILES" ]; then
-            echo "Atenție: Nu s-au găsit .dtbo în dts, încercăm techpack..."
-            DTBO_FILES=$(find out/ -name "*.dtbo")
-          fi
-
+          # Căutare avansată a fișierelor .dtbo (Samsung le poate pune în subfoldere de techpack)
+          DTBO_FILES=$(find out/ -name "*.dtbo" -not -path "*/scripts/*")
           if [ -n "$DTBO_FILES" ]; then
-            echo "Fișiere găsite: $DTBO_FILES"
+            echo "Generăm DTBO.img cu fișierele: $DTBO_FILES"
             python3 mkdtboimg.py create out/arch/arm64/boot/dtbo.img $DTBO_FILES
           else
-            echo "EROARE: Nu s-a găsit niciun fișier .dtbo! Verifică dacă CONFIG_BUILD_ARM64_DT_OVERLAY=y"
+            echo "EROARE: Nu s-au găsit fișiere DTBO!"
           fi
 
       - name: Package with AnyKernel3
         run: |
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3
+          
+          # Copiem Kernel Image și DTBO
           cp out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
           [ -f out/arch/arm64/boot/dtbo.img ] && cp out/arch/arm64/boot/dtbo.img AnyKernel3/
           
+          # Colectăm modulele de drivere (.ko)
           find out/ -name "*.ko" -exec cp {} AnyKernel3/modules/system/lib/modules/ \; || true
 
           cd AnyKernel3
+          # Configurare pentru Android 15 & SELinux Permissive
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
           sed -i '/cmdline=/ s/$/ androidboot.selinux=permissive/' anykernel.sh
           [ -f dtbo.img ] && sed -i 's/dtbo_setup=0/dtbo_setup=1/g' anykernel.sh
           
-          zip -r9 ../R5Q-A15-BPF-DTBO-FINAL.zip *
+          zip -r9 ../R5Q-A15-BPF-APPENDED-FINAL.zip *
 
-      - name: Upload
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: Kernel_R5Q_A15_Final
-          path: R5Q-A15-BPF-DTBO-FINAL.zip
+          path: R5Q-A15-BPF-APPENDED-FINAL.zip
