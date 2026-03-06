@@ -11,7 +11,7 @@ jobs:
       - name: Checkout Source
         uses: actions/checkout@v4
         with:
-          repository: sh4dow6oy/android_kernel_samsung_sm8150-common
+          repository: sh4dow6oy/samsung_kernel_r5q
           ref: lineage-20
           fetch-depth: 1
 
@@ -27,21 +27,16 @@ jobs:
           sed -i 's/#error "Unsupported NR_CPUS for lb tracepoint."/\/\/ Fix NR_CPUS/g' include/trace/events/sched.h
           
           # 2. FIX need_memory_boosting (mm/page_alloc.c)
-          # Neutron Clang urăște 'extern inline' fără corp disponibil. Îl forțăm static.
           sed -i 's/extern inline bool need_memory_boosting/static bool need_memory_boosting/g' include/linux/mm.h
 
           # 3. FIX NOHZ_BALANCE_KICK (kernel/sched/core.c)
-          # Injectăm definiția bitului lipsă direct în header-ul fișierului
-          sed -i '30i #define NOHZ_BALANCE_KICK 1' kernel/sched/core.c
+          sed -i '30i #ifndef NOHZ_BALANCE_KICK\n#define NOHZ_BALANCE_KICK 1\n#endif' kernel/sched/core.c
 
-          # 4. FIX SDCARDFS Magic Errors (fs/dlog_hook.c)
-          # Injectăm manual numerele magice pentru sistemele de fișiere Samsung
-          sed -i '25i #include <linux/magic.h>' fs/dlog_hook.c
-          sed -i '26i #define SDCARDFS_SUPER_MAGIC 0x5dca6d64' fs/dlog_hook.c
-          sed -i '27i #define SDFAT_SUPER_MAGIC 0x444e474s' fs/dlog_hook.c
-          sed -i '28i #define MSDOS_SUPER_MAGIC 0x4d44' fs/dlog_hook.c
+          # 4. FIX SDCARDFS Magic Errors (fs/dlog_hook.c) - REPARAT HEX
+          # Am corectat valoarea 0x444e474a (SDFAT)
+          sed -i '25i #include <linux/magic.h>\n#ifndef SDCARDFS_SUPER_MAGIC\n#define SDCARDFS_SUPER_MAGIC 0x5dca6d64\n#endif\n#ifndef SDFAT_SUPER_MAGIC\n#define SDFAT_SUPER_MAGIC 0x444e474a\n#endif\n#ifndef MSDOS_SUPER_MAGIC\n#define MSDOS_SUPER_MAGIC 0x4d44\n#endif' fs/dlog_hook.c
 
-          # 5. CURĂȚARE CONFLICTE DEFCONFIG (Elimină tag-urile de merge <<<< HEAD)
+          # 5. CURĂȚARE CONFLICTE DEFCONFIG
           sed -i '/<<<<<<< HEAD/d; /=======/d; /<<<<<<< /d; />>>>>>> /d' arch/arm64/configs/sm8150_sec_r5q_eur_open_defconfig
           
           # 6. FIX KALLSYMS & SELINUX & MCMODEL
@@ -63,10 +58,10 @@ jobs:
           export CROSS_COMPILE=aarch64-linux-gnu-
           KERNEL_LLVM_BIN=$(pwd)/clang-neutron/bin/clang
           
-          # Configurare cu defconfig-ul r5q
+          # Generare .config initial
           make O=out ARCH=arm64 CROSS_COMPILE=$CROSS_COMPILE REAL_CC=$KERNEL_LLVM_BIN sm8150_sec_r5q_eur_open_defconfig
           
-          # Forțare BPF și DTBO pentru Android 15
+          # Forțare BPF și DTBO (Android 15)
           ./scripts/config --file out/.config --enable BPF --enable BPF_SYSCALL --enable BPF_JIT --enable CGROUP_BPF --enable NET_CLS_BPF --enable NET_ACT_BPF
           ./scripts/config --file out/.config --enable CONFIG_BUILD_ARM64_DT_OVERLAY --enable CONFIG_DTC --enable CONFIG_OF_OVERLAY
           ./scripts/config --file out/.config --enable CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE
@@ -82,7 +77,6 @@ jobs:
           curl -Lo mkdtboimg.py "https://android.googlesource.com/platform/system/libufdt/+/refs/heads/master/utils/src/mkdtboimg.py?format=TEXT" | base64 --decode > mkdtboimg.py
           chmod +x mkdtboimg.py
           
-          # Căutăm orice fișier .dtbo sau .dtb (ca fallback) pentru a crea imaginea hardware
           DTBO_FILES=$(find out/arch/arm64/boot/dts/ -name "*.dtbo")
           if [ -z "$DTBO_FILES" ]; then
             DTBO_FILES=$(find out/arch/arm64/boot/dts/samsung/ -name "*.dtb")
@@ -90,9 +84,9 @@ jobs:
           
           if [ -n "$DTBO_FILES" ]; then
             python3 mkdtboimg.py create out/arch/arm64/boot/dtbo.img $DTBO_FILES
-            echo "DTBO.img generat cu succes."
+            echo "DTBO.img generat."
           else
-            echo "Eroare: Nu s-au găsit fișiere de tip Device Tree."
+            echo "Eroare: Nu s-au găsit fișiere Device Tree."
             exit 1
           fi
 
@@ -101,20 +95,17 @@ jobs:
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3
           cp out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
           [ -f out/arch/arm64/boot/dtbo.img ] && cp out/arch/arm64/boot/dtbo.img AnyKernel3/
-          
-          # Colectăm modulele kernel (.ko) pentru WiFi și senzori
           find out/ -name "*.ko" -exec cp {} AnyKernel3/modules/system/lib/modules/ \; || true
 
           cd AnyKernel3
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-          # Forțăm Permissive în linia de comandă a kernelului
           sed -i '/cmdline=/ s/$/ androidboot.selinux=permissive/' anykernel.sh
           [ -f dtbo.img ] && sed -i 's/dtbo_setup=0/dtbo_setup=1/g' anykernel.sh
           
-          zip -r9 ../R5Q-A15-FIXED-FINAL.zip *
+          zip -r9 ../R5Q-A15-REPAIRED-KERNEL.zip *
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel_R5Q_Final_A15
-          path: R5Q-A15-FIXED-FINAL.zip
+          name: Kernel_R5Q_Repaired
+          path: R5Q-A15-REPAIRED-KERNEL.zip
