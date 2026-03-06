@@ -1,4 +1,4 @@
-name: Build S10 Lite (Lineage 23.0 + Neutron + BPF Fix)
+name: Build S10 Lite (Lineage 23.0 + Neutron + Fixes)
 
 on:
   workflow_dispatch:
@@ -28,29 +28,35 @@ jobs:
 
       - name: Inject Samsung r5q Config & Enable BPF
         run: |
-          # 1. Luăm configurația de bază pentru S10 Lite
+          # 1. Luăm configurația verificată pentru S10 Lite
           curl -LSs https://raw.githubusercontent.com/mainey/android_kernel_samsung_r5q/lineage-19.0/arch/arm64/configs/r5q_eur_open_defconfig > arch/arm64/configs/vendor/r5q_samsung_defconfig
           
-          # 2. Activăm flag-urile BPF necesare pentru a repara eroarea din verifier.c și pentru compatibilitate Android 14+
+          # 2. Activăm flag-urile BPF pentru a repara eroarea din verifier.c
           KCONFIG=arch/arm64/configs/vendor/r5q_samsung_defconfig
-          echo "CONFIG_BPF=y" >> $KCONFIG
-          echo "CONFIG_BPF_SYSCALL=y" >> $KCONFIG
-          echo "CONFIG_BPF_JIT=y" >> $KCONFIG
-          echo "CONFIG_HAVE_EBPF_JIT=y" >> $KCONFIG
-          echo "CONFIG_BPF_JIT_ALWAYS_ON=y" >> $KCONFIG
-          echo "CONFIG_CGROUP_BPF=y" >> $KCONFIG
-          echo "CONFIG_NETFILTER_XT_MATCH_BPF=y" >> $KCONFIG
+          {
+            echo "CONFIG_BPF=y"
+            echo "CONFIG_BPF_SYSCALL=y"
+            echo "CONFIG_BPF_JIT=y"
+            echo "CONFIG_HAVE_EBPF_JIT=y"
+            echo "CONFIG_BPF_JIT_ALWAYS_ON=y"
+            echo "CONFIG_CGROUP_BPF=y"
+            echo "CONFIG_NETFILTER_XT_MATCH_BPF=y"
+          } >> $KCONFIG
 
-      - name: Patch Source and Makefile
+      - name: Patch Source and Makefile (Fix Clang Errors)
         run: |
-          # Eliminăm -Werror global (Neutron e prea strict cu avertismentele)
+          # Eliminăm flag-urile de GCC care blochează Clang
           find . -name Makefile -exec sed -i 's/-Werror//g' {} +
+          find . -name Makefile -exec sed -i 's/-implicit-function-declaration//g' {} +
+          find . -name Makefile -exec sed -i 's/-unknown-warning-option//g' {} +
+          find . -name Makefile -exec sed -i 's/-return-type//g' {} +
+          find . -name Makefile -exec sed -i 's/-fno-var-tracking-assignments//g' {} +
           
           # Fix pentru Makefile-urile care caută GCC-ul vechi de Android
           sed -i 's/CROSS_COMPILE_ARM32 := arm-linux-androideabi-/CROSS_COMPILE_ARM32 := arm-linux-gnueabi-/g' Makefile
           sed -i 's/CROSS_COMPILE := aarch64-linux-android-/CROSS_COMPILE := aarch64-linux-gnu-/g' Makefile
           
-          # Forțăm includerea filter.h în verifier.c pentru a găsi bpf_jit_blinding_enabled
+          # Fix pentru eroarea BPF prin forțarea header-ului filter.h
           sed -i '1i #include <linux/filter.h>' kernel/bpf/verifier.c
 
       - name: Configure Kernel
@@ -62,14 +68,15 @@ jobs:
             CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             LLVM=1 \
-            LLVM_IAS=1 \
+            LLVM_IAS=0 \
             vendor/r5q_samsung_defconfig
           
-          # Actualizăm configurația cu noile opțiuni din Lineage 23.0
-          make -j$(nproc --all) O=out ARCH=arm64 LLVM=1 olddefconfig
+          # Aplicăm setările default pentru restul opțiunilor din L23
+          make -j$(nproc --all) O=out ARCH=arm64 LLVM=1 LLVM_IAS=0 olddefconfig
 
       - name: Build Kernel Image
         run: |
+          # Setăm LLVM_IAS=0 pentru a folosi asamblorul clasic (evită eroarea .inst)
           make -j$(nproc --all) O=out \
             ARCH=arm64 \
             CC=clang \
@@ -77,14 +84,23 @@ jobs:
             CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             LLVM=1 \
-            LLVM_IAS=1 \
+            LLVM_IAS=0 \
             2>&1 | tee build.log
 
-      - name: Upload Kernel Image & DTBO
+      - name: Check Build Result
+        run: |
+          if [ -f out/arch/arm64/boot/Image.gz-dtb ]; then
+            echo "SUCCESS: Image.gz-dtb created."
+          else
+            echo "ERROR: Kernel image not found. Check build.log"
+            exit 1
+          fi
+
+      - name: Upload Artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-L23-Kernel
+          name: S10Lite-Neutron-L23
           path: |
             out/arch/arm64/boot/Image.gz-dtb
             out/arch/arm64/boot/dtbo.img
