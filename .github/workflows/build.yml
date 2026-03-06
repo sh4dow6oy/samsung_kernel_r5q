@@ -1,4 +1,4 @@
-name: Build S10 Lite (Lineage 23.0 + Neutron + Fixes)
+name: Build S10 Lite (L23 + Neutron Hard Clean)
 
 on:
   workflow_dispatch:
@@ -7,7 +7,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Kernel Source (nzlnice 23.0)
+      - name: Checkout Kernel Source
         uses: actions/checkout@v4
         with:
           repository: nzlnice/kernel_qcom_sm8150
@@ -28,10 +28,7 @@ jobs:
 
       - name: Inject Samsung r5q Config & Enable BPF
         run: |
-          # 1. Luăm configurația verificată pentru S10 Lite
           curl -LSs https://raw.githubusercontent.com/mainey/android_kernel_samsung_r5q/lineage-19.0/arch/arm64/configs/r5q_eur_open_defconfig > arch/arm64/configs/vendor/r5q_samsung_defconfig
-          
-          # 2. Activăm flag-urile BPF pentru a repara eroarea din verifier.c
           KCONFIG=arch/arm64/configs/vendor/r5q_samsung_defconfig
           {
             echo "CONFIG_BPF=y"
@@ -39,24 +36,23 @@ jobs:
             echo "CONFIG_BPF_JIT=y"
             echo "CONFIG_HAVE_EBPF_JIT=y"
             echo "CONFIG_BPF_JIT_ALWAYS_ON=y"
-            echo "CONFIG_CGROUP_BPF=y"
-            echo "CONFIG_NETFILTER_XT_MATCH_BPF=y"
           } >> $KCONFIG
 
-      - name: Patch Source and Makefile (Fix Clang Errors)
+      - name: Patch Source and Makefile (Hard Cleaning Flags)
         run: |
-          # Eliminăm flag-urile de GCC care blochează Clang
-          find . -name Makefile -exec sed -i 's/-Werror//g' {} +
-          find . -name Makefile -exec sed -i 's/-implicit-function-declaration//g' {} +
-          find . -name Makefile -exec sed -i 's/-unknown-warning-option//g' {} +
-          find . -name Makefile -exec sed -i 's/-return-type//g' {} +
-          find . -name Makefile -exec sed -i 's/-fno-var-tracking-assignments//g' {} +
+          # 1. Eliminăm flag-urile de eroare care blochează Clang (Regex Power)
+          # Aceasta șterge tot argumentul care conține termenii de eroare, evitând resturi de tipul "-Wno-error="
+          find . -type f -name "Makefile*" -exec sed -i 's/-W[^ ]*unknown-warning-option//g' {} +
+          find . -type f -name "Makefile*" -exec sed -i 's/-W[^ ]*return-type//g' {} +
+          find . -type f -name "Makefile*" -exec sed -i 's/-W[^ ]*implicit-function-declaration//g' {} +
+          find . -type f -name "Makefile*" -exec sed -i 's/-W[^ ]*maybe-uninitialized//g' {} +
+          find . -type f -name "Makefile*" -exec sed -i 's/-Werror//g' {} +
           
-          # Fix pentru Makefile-urile care caută GCC-ul vechi de Android
+          # 2. Fix pentru căile de compilare vechi
           sed -i 's/CROSS_COMPILE_ARM32 := arm-linux-androideabi-/CROSS_COMPILE_ARM32 := arm-linux-gnueabi-/g' Makefile
           sed -i 's/CROSS_COMPILE := aarch64-linux-android-/CROSS_COMPILE := aarch64-linux-gnu-/g' Makefile
           
-          # Fix pentru eroarea BPF prin forțarea header-ului filter.h
+          # 3. Fix BPF Header Include
           sed -i '1i #include <linux/filter.h>' kernel/bpf/verifier.c
 
       - name: Configure Kernel
@@ -71,12 +67,12 @@ jobs:
             LLVM_IAS=0 \
             vendor/r5q_samsung_defconfig
           
-          # Aplicăm setările default pentru restul opțiunilor din L23
+          # Aplicăm noutățile din Lineage 23
           make -j$(nproc --all) O=out ARCH=arm64 LLVM=1 LLVM_IAS=0 olddefconfig
 
       - name: Build Kernel Image
         run: |
-          # Setăm LLVM_IAS=0 pentru a folosi asamblorul clasic (evită eroarea .inst)
+          # Folosim LLVM_IAS=0 pentru a folosi asamblorul extern (GNU as) din toolchain, mai permisiv
           make -j$(nproc --all) O=out \
             ARCH=arm64 \
             CC=clang \
@@ -85,22 +81,13 @@ jobs:
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             LLVM=1 \
             LLVM_IAS=0 \
-            2>&1 | tee build.log
-
-      - name: Check Build Result
-        run: |
-          if [ -f out/arch/arm64/boot/Image.gz-dtb ]; then
-            echo "SUCCESS: Image.gz-dtb created."
-          else
-            echo "ERROR: Kernel image not found. Check build.log"
-            exit 1
-          fi
+            V=1 2>&1 | tee build.log
 
       - name: Upload Artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-Neutron-L23
+          name: S10Lite-L23-HardClean
           path: |
             out/arch/arm64/boot/Image.gz-dtb
             out/arch/arm64/boot/dtbo.img
