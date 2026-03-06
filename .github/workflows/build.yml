@@ -1,62 +1,78 @@
-name: Build S10 Lite Kernel (Franken-Kernel)
+name: Build S10 Lite Kernel (Neutron Clang)
 
 on:
-  workflow_dispatch: # Permite pornirea manuală a build-ului din interfața GitHub
+  workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Kernel Source (nzlnice)
+      - name: Checkout Kernel Source
         uses: actions/checkout@v4
         with:
+          # Aici folosim repo-ul nzlnice ca bază
           repository: nzlnice/kernel_qcom_sm8150
           fetch-depth: 1
 
-      - name: Set up Build Environment
+      - name: Install Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y bc bison build-essential flex git glibc-source libssl-dev libelf-dev abi-compliance-checker
-          sudo apt-get install -y clang llvm lld
+          sudo apt-get install -y bc bison build-essential flex git libssl-dev libelf-dev clang llvm lld zstd libarchive-tools curl
 
-      - name: Download Toolchain (AOSP Clang)
+      - name: Download and Extract Neutron Clang
         run: |
           mkdir clang-neutron
           wget https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang-neutron
+          # Setăm calea către binare în variabila de mediu a GitHub
+          echo "$GITHUB_WORKSPACE/clang-neutron/bin" >> $GITHUB_PATH
 
-      - name: Setup Build Variables
+      - name: Patch Makefile for LLVM
         run: |
-          echo "ARCH=arm64" >> $GITHUB_ENV
-          echo "SUBARCH=arm64" >> $GITHUB_ENV
-          echo "PATH=$GITHUB_WORKSPACE/clang/bin:$PATH" >> $GITHUB_ENV
-          echo "CLANG_TRIPLE=aarch64-linux-gnu-" >> $GITHUB_ENV
-          echo "CROSS_COMPILE=aarch64-linux-android-" >> $GITHUB_ENV
+          # Acești pași forțează Makefile-ul să nu mai caute "aarch64-linux-android-gcc"
+          sed -i 's/CROSS_COMPILE_ARM32 := arm-linux-androideabi-/CROSS_COMPILE_ARM32 := arm-linux-gnueabi-/g' Makefile
+          sed -i 's/CROSS_COMPILE := aarch64-linux-android-/CROSS_COMPILE := aarch64-linux-gnu-/g' Makefile
+          # Eliminăm verificarea forțată a versiunii GCC care blochează procesul
+          sed -i 's/ifneq ($(shell $(CC) -v 2>\&1 | grep -c "clang"), 1)/ifneq (1, 1)/g' Makefile
 
-      - name: Pull Samsung Specific Drivers (Optional/Manual Step)
-        run: |
-          # Aici poți adăuga comenzi git pentru a aduce driverele din sursa Mainey
-          # Exemplu: git clone --depth=1 https://github.com/mainey/android_kernel_samsung_r5q samsung_src
-          # Apoi comenzi 'cp -r' pentru a muta driverele în structura nzlnice
-          echo "Gata pentru integrare manuală sau patch-uri."
-
-      - name: Configure Kernel
-        run: |
-          # Folosim vendor defconfig-ul de SM8150 din sursa nzlnice
-          make O=out vendor/sm8150-perf_defconfig
-
-      - name: Build Kernel
+      - name: Configure Kernel (Defconfig)
         run: |
           make -j$(nproc --all) O=out \
-                      CC=clang \
-                      AR=llvm-ar \
-                      NM=llvm-nm \
-                      OBJCOPY=llvm-objcopy \
-                      OBJDUMP=llvm-objdump \
-                      STRIP=llvm-strip
+            ARCH=arm64 \
+            CC=clang \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            LLVM=1 \
+            LLVM_IAS=1 \
+            vendor/sm8150-perf_defconfig
 
-      - name: Upload Kernel Image
+      - name: Build Kernel Image
+        run: |
+          make -j$(nproc --all) O=out \
+            ARCH=arm64 \
+            CC=clang \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            LLVM=1 \
+            LLVM_IAS=1 \
+            2>&1 | tee build.log
+
+      - name: Check Build Success
+        run: |
+          if [ -f out/arch/arm64/boot/Image.gz-dtb ]; then
+            echo "Kernel construit cu succes!"
+          else
+            echo "Eroare: Imaginea kernel-ului nu a fost generată."
+            exit 1
+          fi
+
+      - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-Kernel-Image
-          path: out/arch/arm64/boot/Image.gz-dtb
+          name: S10Lite-Neutron-Kernel
+          path: |
+            out/arch/arm64/boot/Image.gz-dtb
+            out/arch/arm64/boot/dtbo.img
+            build.log
