@@ -1,4 +1,4 @@
-name: Build S10 Lite (L23 + Neutron Hard Clean)
+name: Build S10 Lite (L23 + Neutron Nuclear Option)
 
 on:
   workflow_dispatch:
@@ -17,7 +17,7 @@ jobs:
       - name: Install Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y bc bison build-essential flex git libssl-dev libelf-dev clang llvm lld zstd curl libarchive-tools
+          sudo apt-get install -y bc bison build-essential flex git libssl-dev libelf-dev clang llvm lld zstd curl libarchive-tools python3
 
       - name: Download and Extract Neutron Clang
         run: |
@@ -38,56 +38,60 @@ jobs:
             echo "CONFIG_BPF_JIT_ALWAYS_ON=y"
           } >> $KCONFIG
 
-      - name: Patch Source and Makefile (Hard Cleaning Flags)
+      - name: Patch Source (The Nuclear Clean)
         run: |
-          # 1. Eliminăm flag-urile de eroare care blochează Clang (Regex Power)
-          # Aceasta șterge tot argumentul care conține termenii de eroare, evitând resturi de tipul "-Wno-error="
+          # 1. Ștergem wrapper-ul de GCC care generează flag-urile invalide detected in logs
+          rm -f scripts/gcc-wrapper.py
+          
+          # 2. Eliminăm testele de 'cc-option' care eșuează și lasă resturi de argumente
+          find . -type f -name "Makefile*" -exec sed -i 's/$(call cc-option,-Wno-error=unknown-warning-option)//g' {} +
+          find . -type f -name "Makefile*" -exec sed -i 's/$(call cc-option,-Wno-error=return-type)//g' {} +
+          
+          # 3. Curățare brutală a tuturor flag-urilor de tip -Wno-error= sau -Werror
+          find . -type f -name "Makefile*" -exec sed -i 's/-Werror//g' {} +
           find . -type f -name "Makefile*" -exec sed -i 's/-W[^ ]*unknown-warning-option//g' {} +
           find . -type f -name "Makefile*" -exec sed -i 's/-W[^ ]*return-type//g' {} +
           find . -type f -name "Makefile*" -exec sed -i 's/-W[^ ]*implicit-function-declaration//g' {} +
-          find . -type f -name "Makefile*" -exec sed -i 's/-W[^ ]*maybe-uninitialized//g' {} +
-          find . -type f -name "Makefile*" -exec sed -i 's/-Werror//g' {} +
           
-          # 2. Fix pentru căile de compilare vechi
+          # 4. Fix pentru căile de cross-compilare
           sed -i 's/CROSS_COMPILE_ARM32 := arm-linux-androideabi-/CROSS_COMPILE_ARM32 := arm-linux-gnueabi-/g' Makefile
           sed -i 's/CROSS_COMPILE := aarch64-linux-android-/CROSS_COMPILE := aarch64-linux-gnu-/g' Makefile
           
-          # 3. Fix BPF Header Include
+          # 5. Fix BPF Header Include
           sed -i '1i #include <linux/filter.h>' kernel/bpf/verifier.c
 
-      - name: Configure Kernel
+      - name: Configure and Build
         run: |
-          make -j$(nproc --all) O=out \
-            ARCH=arm64 \
-            CC=clang \
-            CLANG_TRIPLE=aarch64-linux-gnu- \
-            CROSS_COMPILE=aarch64-linux-gnu- \
-            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-            LLVM=1 \
-            LLVM_IAS=0 \
-            vendor/r5q_samsung_defconfig
-          
-          # Aplicăm noutățile din Lineage 23
-          make -j$(nproc --all) O=out ARCH=arm64 LLVM=1 LLVM_IAS=0 olddefconfig
+          # Definim manual toată suita LLVM pentru a ignora orice fallback la GCC
+          ARGS="ARCH=arm64 \
+                O=out \
+                CC=clang \
+                LD=ld.lld \
+                AR=llvm-ar \
+                NM=llvm-nm \
+                OBJCOPY=llvm-objcopy \
+                OBJDUMP=llvm-objdump \
+                STRIP=llvm-strip \
+                CLANG_TRIPLE=aarch64-linux-gnu- \
+                CROSS_COMPILE=aarch64-linux-gnu- \
+                CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+                LLVM=1 \
+                LLVM_IAS=0"
 
-      - name: Build Kernel Image
-        run: |
-          # Folosim LLVM_IAS=0 pentru a folosi asamblorul extern (GNU as) din toolchain, mai permisiv
-          make -j$(nproc --all) O=out \
-            ARCH=arm64 \
-            CC=clang \
-            CLANG_TRIPLE=aarch64-linux-gnu- \
-            CROSS_COMPILE=aarch64-linux-gnu- \
-            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-            LLVM=1 \
-            LLVM_IAS=0 \
-            V=1 2>&1 | tee build.log
+          # Pasul 1: Generare Config
+          make -j$(nproc --all) $ARGS vendor/r5q_samsung_defconfig
+          
+          # Pasul 2: Sync cu noile opțiuni din Lineage 23
+          make -j$(nproc --all) $ARGS olddefconfig
+
+          # Pasul 3: Compilarea efectivă cu Verbose activat pentru depanare
+          make -j$(nproc --all) $ARGS V=1 2>&1 | tee build.log
 
       - name: Upload Artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-L23-HardClean
+          name: S10Lite-L23-Nuclear-Build
           path: |
             out/arch/arm64/boot/Image.gz-dtb
             out/arch/arm64/boot/dtbo.img
