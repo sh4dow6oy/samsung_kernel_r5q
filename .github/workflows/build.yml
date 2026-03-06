@@ -51,7 +51,6 @@ jobs:
           
           # FORȚARE BPF (Fix-uri critice Android 15)
           ./scripts/config --file out/.config --enable BPF --enable BPF_SYSCALL --enable BPF_JIT --enable CGROUP_BPF --enable NET_CLS_BPF --enable NET_ACT_BPF
-          ./scripts/config --file out/.config --enable CONFIG_BUILD_ARM64_DT_OVERLAY --enable CONFIG_DTC --enable CONFIG_OF_OVERLAY
           ./scripts/config --file out/.config --disable KALLSYMS_BASE_RELATIVE --disable RANDOMIZE_BASE --enable KALLSYMS_ALL
           
           make O=out ARCH=arm64 CROSS_COMPILE=$CROSS_COMPILE REAL_CC=$KERNEL_LLVM_BIN olddefconfig
