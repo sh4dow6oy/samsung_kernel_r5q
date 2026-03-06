@@ -21,10 +21,9 @@ jobs:
 
       - name: Download Toolchain (AOSP Clang)
         run: |
-          mkdir clang
-          cd clang
-          wget https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/master/clang-r450784d.tar.gz
-          tar -xf clang-r450784d.tar.gz
+          mkdir clang-neutron
+          wget https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
+          tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang-neutron
 
       - name: Setup Build Variables
         run: |
