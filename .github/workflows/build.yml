@@ -1,4 +1,4 @@
-name: R5Q Android 15 Kernel + DTBO
+name: R5Q Android 15 - BPF DTBO Final Success
 
 on:
   workflow_dispatch:
@@ -11,71 +11,73 @@ jobs:
       - name: Checkout Source
         uses: actions/checkout@v4
         with:
-          repository: sh4dow6oy/android_kernel_samsung_sm8150
+          repository: LumiPlayground/android_kernel_samsung_sm8150
           ref: rawr-bpf
-          fetch-depth: 1
+          fetch-depth: 0
 
-      - name: Install Dependencies
+      - name: Setup & Brutal Patching
         run: |
-          sudo apt update
-          sudo apt install -y bc bison build-essential curl flex git libelf-dev libssl-dev python3 zstd gcc-aarch64-linux-gnu
+          sudo apt-get update
+          sudo apt-get install -y zstd bc build-essential gcc-aarch64-linux-gnu libssl-dev libelf-dev python3 python-is-python3 curl
+          sudo ln -sf /usr/bin/python3 /usr/bin/python2
+          
+          # 1. HARD PATCH KALLSYMS (Elimină eroarea 'out of range' din log)
+          sed -i 's/if (base_relative)/if (0)/g' scripts/kallsyms.c
+          sed -i 's/--kallsyms-base-relative//g' scripts/link-vmlinux.sh
+          
+          # 2. FORCE SELINUX PERMISSIVE (Sursă)
+          sed -i 's/static int selinux_enforcing = 1;/static int selinux_enforcing = 0;/g' security/selinux/hooks.c || true
+          
+          # 3. FIX SAMSUNG MEMORY & MCMODEL LARGE
+          sed -i 's/KBUILD_CFLAGS   += -fno-pic/KBUILD_CFLAGS   += -fno-pic -mcmodel=large/g' arch/arm64/Makefile
+          sed -i 's/extern inline bool need_memory_boosting/extern bool need_memory_boosting/g' include/linux/mm.h
 
-      - name: Download Neutron Clang
+      - name: Download Neutron & DTBO Tool
         run: |
-          mkdir clang
+          mkdir clang-neutron
           wget https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
-          tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
+          tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang-neutron
+          
+          # Descarcă utilitarul mkdtboimg direct de la Google
+          curl -Lo mkdtboimg.py "https://android.googlesource.com/platform/system/libufdt/+/refs/heads/master/utils/src/mkdtboimg.py?format=TEXT" | base64 --decode > mkdtboimg.py
+          chmod +x mkdtboimg.py
 
-      - name: Setup Environment
+      - name: Build Kernel + BPF + DTBO
         run: |
-          echo "ARCH=arm64" >> $GITHUB_ENV
-          echo "CROSS_COMPILE=aarch64-linux-gnu-" >> $GITHUB_ENV
-          echo "CLANG_PATH=$(pwd)/clang/bin" >> $GITHUB_ENV
+          export PATH=$(pwd)/clang-neutron/bin:$PATH
+          export ARCH=arm64
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          KERNEL_LLVM_BIN=$(pwd)/clang-neutron/bin/clang
+          
+          # Generare config
+          make O=out ARCH=arm64 CROSS_COMPILE=$CROSS_COMPILE REAL_CC=$KERNEL_LLVM_BIN r5q_eur_open_defconfig
+          
+          # 4. FORȚARE BPF (Network Fix Android 15)
+          ./scripts/config --file out/.config --enable BPF --enable BPF_SYSCALL --enable BPF_JIT --enable CGROUP_BPF --enable NET_CLS_BPF --enable NET_ACT_BPF
+          
+          # 5. FORȚARE APPENDED DTB & OVERLAY
+          ./scripts/config --file out/.config --enable CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE --enable CONFIG_BUILD_ARM64_DT_OVERLAY --enable CONFIG_DTC --enable CONFIG_OF_OVERLAY
+          
+          # 6. DEZACTIVARE KASLR & RELATIVE ADDR (Kallsyms Fix)
+          ./scripts/config --file out/.config --disable KALLSYMS_BASE_RELATIVE --disable RANDOMIZE_BASE --enable KALLSYMS_ALL
+          
+          make O=out ARCH=arm64 CROSS_COMPILE=$CROSS_COMPILE REAL_CC=$KERNEL_LLVM_BIN olddefconfig
 
-      - name: Configure Kernel
-        run: |
-          export PATH=$CLANG_PATH:$PATH
-          make O=out \
-            ARCH=arm64 \
-            CROSS_COMPILE=$CROSS_COMPILE \
-            CC=clang \
-            r5q_eur_open_defconfig
-
-      - name: Enable Android 15 BPF and KALLSYMS
-        run: |
-          ./scripts/config --file out/.config \
-            --enable BPF \
-            --enable BPF_SYSCALL \
-            --enable BPF_JIT \
-            --enable CGROUP_BPF \
-            --enable NET_CLS_BPF \
-            --enable NET_ACT_BPF \
-            --disable RANDOMIZE_BASE \
-            --disable KALLSYMS_BASE_RELATIVE \
-            --enable KALLSYMS_ALL
-
-          make O=out ARCH=arm64 olddefconfig
-
-      - name: Build Kernel + DTBs
-        run: |
-          export PATH=$CLANG_PATH:$PATH
-          make -j$(nproc) \
-            O=out \
-            ARCH=arm64 \
-            CROSS_COMPILE=$CROSS_COMPILE \
-            CC=clang \
-            Image.gz-dtb dtbs
+          # Compilare efectivă
+          make -j$(nproc) O=out ARCH=arm64 CROSS_COMPILE=$CROSS_COMPILE REAL_CC=$KERNEL_LLVM_BIN KCFLAGS="-w -mcmodel=large" Image.gz-dtb dtbs
 
       - name: Generate DTBO.img
         run: |
-          DTBO_FILES=$(find out/arch/arm64/boot/dts/samsung/renovation -name "*.dtbo")
+          # Căutare inteligentă: găsește toate .dtbo indiferent de folderul producătorului
+          DTBO_FILES=$(find out/arch/arm64/boot/dts/ -name "*.dtbo")
+          
           if [ -n "$DTBO_FILES" ]; then
-            echo "Generating dtbo.img from: $DTBO_FILES"
-            curl -Lo mkdtboimg.py "https://android.googlesource.com/platform/system/libufdt/+/refs/heads/master/utils/src/mkdtboimg.py?format=TEXT" | base64 --decode > mkdtboimg.py
-            chmod +x mkdtboimg.py
+            echo "Generăm dtbo.img folosind: $DTBO_FILES"
             python3 mkdtboimg.py create out/arch/arm64/boot/dtbo.img $DTBO_FILES
+            echo "Succes: dtbo.img generat."
           else
-            echo "ERROR: No DTBO files found!"
+            echo "EROARE: Nu s-au găsit fișiere .dtbo! Verifică dacă CONFIG_BUILD_ARM64_DT_OVERLAY este activ."
+            exit 1
           fi
 
       - name: Package AnyKernel3
@@ -83,16 +85,22 @@ jobs:
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3
           cp out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
           [ -f out/arch/arm64/boot/dtbo.img ] && cp out/arch/arm64/boot/dtbo.img AnyKernel3/
+          
+          # Colectare module .ko (esențiale pentru Wi-Fi/Audio)
           find out/ -name "*.ko" -exec cp {} AnyKernel3/modules/system/lib/modules/ \; || true
 
           cd AnyKernel3
+          # Configurare AnyKernel pentru Samsung R5Q
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
+          # Forțăm Permissive în cmdline pentru a trece de securitatea A15
+          sed -i '/cmdline=/ s/$/ androidboot.selinux=permissive/' anykernel.sh
+          # Activăm suportul DTBO în scriptul de flash
           [ -f dtbo.img ] && sed -i 's/dtbo_setup=0/dtbo_setup=1/g' anykernel.sh
 
-          zip -r9 ../R5Q-A15-KERNEL.zip *
+          zip -r9 ../R5Q-A15-KERNEL-FINAL.zip *
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: R5Q-Android15-Kernel
-          path: R5Q-A15-KERNEL.zip
+          name: Kernel_R5Q_A15_Final
+          path: R5Q-A15-KERNEL-FINAL.zip
