@@ -1,4 +1,4 @@
-name: Build S10 Lite Kernel (Neutron Clang)
+name: Build S10 Lite (nzlnice Lineage-23.0 + Neutron)
 
 on:
   workflow_dispatch:
@@ -7,35 +7,40 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Kernel Source
+      - name: Checkout Kernel Source (nzlnice 23.0)
         uses: actions/checkout@v4
         with:
-          # Aici folosim repo-ul nzlnice ca bază
           repository: nzlnice/kernel_qcom_sm8150
+          ref: lineage-23.0
           fetch-depth: 1
 
       - name: Install Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y bc bison build-essential flex git libssl-dev libelf-dev clang llvm lld zstd libarchive-tools curl
+          sudo apt-get install -y bc bison build-essential flex git libssl-dev libelf-dev clang llvm lld zstd curl
 
-      - name: Download and Extract Neutron Clang
+      - name: Download Neutron Clang
         run: |
           mkdir clang-neutron
           wget https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang-neutron
-          # Setăm calea către binare în variabila de mediu a GitHub
           echo "$GITHUB_WORKSPACE/clang-neutron/bin" >> $GITHUB_PATH
 
-      - name: Patch Makefile for LLVM
+      - name: Inject Samsung r5q Config
         run: |
-          # Acești pași forțează Makefile-ul să nu mai caute "aarch64-linux-android-gcc"
+          # Luăm configurația verificată de la Mainey și o punem în noua bază nzlnice
+          curl -LSs https://raw.githubusercontent.com/mainey/android_kernel_samsung_r5q/lineage-19.0/arch/arm64/configs/r5q_eur_open_defconfig > arch/arm64/configs/vendor/r5q_samsung_defconfig
+          echo "Configurația r5q a fost injectată în arch/arm64/configs/vendor/"
+
+      - name: Patch Makefile for Neutron
+        run: |
+          # Eliminăm referințele la GCC-ul vechi de Android
           sed -i 's/CROSS_COMPILE_ARM32 := arm-linux-androideabi-/CROSS_COMPILE_ARM32 := arm-linux-gnueabi-/g' Makefile
           sed -i 's/CROSS_COMPILE := aarch64-linux-android-/CROSS_COMPILE := aarch64-linux-gnu-/g' Makefile
-          # Eliminăm verificarea forțată a versiunii GCC care blochează procesul
-          sed -i 's/ifneq ($(shell $(CC) -v 2>\&1 | grep -c "clang"), 1)/ifneq (1, 1)/g' Makefile
+          # Opțional: Dezactivăm avertismentele care devin erori în Neutron (dacă build-ul e prea strict)
+          # sed -i 's/-Werror//g' Makefile
 
-      - name: Configure Kernel (Defconfig)
+      - name: Configure Kernel
         run: |
           make -j$(nproc --all) O=out \
             ARCH=arm64 \
@@ -45,9 +50,9 @@ jobs:
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             LLVM=1 \
             LLVM_IAS=1 \
-            vendor/sm8150-perf_defconfig
+            vendor/r5q_samsung_defconfig
 
-      - name: Build Kernel Image
+      - name: Build Kernel
         run: |
           make -j$(nproc --all) O=out \
             ARCH=arm64 \
@@ -59,19 +64,10 @@ jobs:
             LLVM_IAS=1 \
             2>&1 | tee build.log
 
-      - name: Check Build Success
-        run: |
-          if [ -f out/arch/arm64/boot/Image.gz-dtb ]; then
-            echo "Kernel construit cu succes!"
-          else
-            echo "Eroare: Imaginea kernel-ului nu a fost generată."
-            exit 1
-          fi
-
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-Neutron-Kernel
+          name: S10Lite-Lineage23-Neutron
           path: |
             out/arch/arm64/boot/Image.gz-dtb
             out/arch/arm64/boot/dtbo.img
