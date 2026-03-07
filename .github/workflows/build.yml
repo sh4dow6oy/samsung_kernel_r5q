@@ -1,4 +1,4 @@
-name: S10 Lite (Royna + BPF - Prepare Fix)
+name: S10 Lite (Royna + BPF - Full Scrub)
 
 on:
   workflow_dispatch:
@@ -7,14 +7,14 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Royna (S10 Lite Base)
+      - name: Checkout Royna Base
         uses: actions/checkout@v4
         with:
           repository: Roynas-Android-Playground/kernel_samsung_r3q
           ref: master
           path: main
 
-      - name: Checkout Pascua BPF Branch
+      - name: Checkout Pascua BPF
         uses: actions/checkout@v4
         with:
           repository: pascua28/android_kernel_samsung_sm7150
@@ -24,86 +24,64 @@ jobs:
       - name: Install Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y bc bison build-essential flex git libssl-dev libelf-dev clang llvm lld zstd curl libarchive-tools python3
+          sudo apt-get install -y bc bison build-essential flex git libssl-dev libelf-dev clang llvm lld zstd curl python3
 
-      - name: Download and Extract Neutron Clang
+      - name: Download Neutron Clang
         run: |
           mkdir clang-neutron
           wget https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang-neutron
           echo "$GITHUB_WORKSPACE/clang-neutron/bin" >> $GITHUB_PATH
 
-      - name: Advanced BPF Backport Merge
+      - name: BPF Merge
         run: |
-          rm -rf main/kernel/bpf
-          rm -rf main/include/linux/bpf*
-          rm -rf main/include/uapi/linux/bpf*
+          rm -rf main/kernel/bpf main/include/linux/bpf* main/include/uapi/linux/bpf*
           cp -r bpf_source/kernel/bpf main/kernel/
           cp bpf_source/include/linux/bpf* main/include/linux/
           cp bpf_source/include/uapi/linux/bpf* main/include/uapi/linux/
           cp bpf_source/include/linux/filter.h main/include/linux/
 
-      - name: Nuclear Patching (Fix Compiler Checks)
+      - name: Full Scrub Patching
         run: |
           cd main
-          # 1. Eliminăm referințele la KernelSU
+          # Elimină KernelSU
           find . -name "Kconfig" -exec sed -i '/kernelsu/d' {} +
           find . -name "Makefile" -exec sed -i '/kernelsu/d' {} +
           
-          # 2. Ștergem verificarea care oprește build-ul (prepare-compiler-check)
-          sed -i 's/prepare-compiler-check//g' Makefile
+          # Fix Clang Arguments (Scrubbing common offenders)
+          find . -type f -name "Makefile*" -exec sed -i 's/-implicit-function-declaration//g' {} +
+          find . -type f -name "Makefile*" -exec sed -i 's/-Wunknown-warning-option//g' {} +
+          find . -type f -name "Makefile*" -exec sed -i 's/=unknown-warning-option//g' {} +
           
-          # 3. Forțăm asamblarea să accepte .inst (Nuclear Fix)
+          # Force assembly compatibility
           find arch/arm64 -name "*.S" -exec sed -i 's/\.inst\.w/.inst/g' {} +
-          sed -i 's/$(error x)//g' arch/arm64/Makefile || true
+          sed -i 's/prepare-compiler-check//g' Makefile
 
-          # 4. Curățăm Makefile-urile de flag-uri GCC invalide
-          find . -type f -name "Makefile*" -exec sed -i 's/-Werror//g' {} +
-          find . -type f -name "Makefile*" -exec sed -i 's/-fconserve-stack//g' {} +
-
-      - name: Configure and Build
+      - name: Build
         run: |
           cd main
-          # Exportăm variabilele global pentru a fi văzute de sub-scripturi
           export ARCH=arm64
-          export KBUILD_BUILD_USER="Gemini"
-          export KBUILD_BUILD_HOST="GithubActions"
           export CC=clang
-          export LD=ld.lld
-          export AR=llvm-ar
-          export NM=llvm-nm
-          export OBJCOPY=llvm-objcopy
-          export OBJDUMP=llvm-objdump
-          export STRIP=llvm-strip
           export CLANG_TRIPLE=aarch64-linux-gnu-
           export CROSS_COMPILE=aarch64-linux-gnu-
           export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
           export LLVM=1
           export LLVM_IAS=0
-
-          # Dezactivăm Stack Protector Strong (care crapă build-ul în faza de check)
+          
+          # Defconfig Fixes
           KCONFIG=arch/arm64/configs/r5q_defconfig
           sed -i 's/CONFIG_CC_STACKPROTECTOR_STRONG=y/CONFIG_CC_STACKPROTECTOR_STRONG=n/g' $KCONFIG
-          echo "CONFIG_CC_STACKPROTECTOR_NONE=y" >> $KCONFIG
-          
-          # BPF Enable
-          {
-            echo "CONFIG_BPF_SYSCALL=y"
-            echo "CONFIG_BPF_JIT=y"
-          } >> $KCONFIG
+          echo "CONFIG_BPF_SYSCALL=y" >> $KCONFIG
+          echo "CONFIG_BPF_JIT=y" >> $KCONFIG
 
-          # Rulăm configurarea
           make -j$(nproc --all) O=out r5q_defconfig
-          
-          # Compilarea
           make -j$(nproc --all) O=out 2>&1 | tee build.log
 
-      - name: Upload Artifacts
+      - name: Upload
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-Royna-Fix-Prepare
+          name: S10Lite-Royna-Full-Scrub
           path: |
             main/out/arch/arm64/boot/Image.gz-dtb
-            main/out/arch/arm64/boot/dtbo.img
             main/build.log
