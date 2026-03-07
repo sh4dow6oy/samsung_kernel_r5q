@@ -1,4 +1,4 @@
-name: S10 Lite (Royna + Pascua BPF Backport)
+name: S10 Lite (Royna + BPF Backport - No KSU)
 
 on:
   workflow_dispatch:
@@ -24,9 +24,9 @@ jobs:
       - name: Install Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y bc bison build-essential flex git libssl-dev libelf-dev clang llvm lld zstd curl libarchive-tools
+          sudo apt-get install -y bc bison build-essential flex git libssl-dev libelf-dev clang llvm lld zstd curl libarchive-tools python3
 
-      - name: Download Neutron Clang
+      - name: Download and Extract Neutron Clang
         run: |
           mkdir clang-neutron
           wget https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
@@ -45,20 +45,19 @@ jobs:
           cp bpf_source/include/linux/bpf* main/include/linux/
           cp bpf_source/include/uapi/linux/bpf* main/include/uapi/linux/
           cp bpf_source/include/linux/filter.h main/include/linux/
-          
-          # Important: Copiem și scripturile de generare BPF dacă există
-          cp bpf_source/scripts/bpf_helpers_doc.py main/scripts/ 2>/dev/null || true
 
-      - name: Nuclear Patching (Neutron Fixes)
+      - name: Nuclear Patching (Remove KSU & Fix Neutron)
         run: |
           cd main
-          # Eliminăm wrapper-ul problematic
-          rm -f scripts/gcc-wrapper.py
+          # 1. Ștergem manual referințele la KernelSU din fișierele Kconfig pentru a opri eroarea de build
+          find . -name "Kconfig" -exec sed -i '/kernelsu/d' {} +
+          find . -name "Makefile" -exec sed -i '/kernelsu/d' {} +
           
-          # Fix pentru directivele de asamblare .inst care crapă în Neutron
+          # 2. Eliminăm wrapper-ul problematic și fixăm asamblarea
+          rm -f scripts/gcc-wrapper.py
           find arch/arm64 -name "*.S" -exec sed -i 's/\.inst\.w/.inst/g' {} +
           
-          # Curățăm Makefile-urile de flag-uri GCC invalide
+          # 3. Curățăm Makefile-urile de flag-uri GCC invalide
           find . -type f -name "Makefile*" -exec sed -i 's/-Werror//g' {} +
           find . -type f -name "Makefile*" -exec sed -i 's/-W[^ ]*unknown-warning-option//g' {} +
           find . -type f -name "Makefile*" -exec sed -i 's/-W[^ ]*return-type//g' {} +
@@ -81,26 +80,25 @@ jobs:
                 LLVM=1 \
                 LLVM_IAS=0"
 
-          # Activăm suportul BPF complet în defconfig-ul r5q
+          # Dezactivăm KernelSU în defconfig (în caz că era activat)
           KCONFIG=arch/arm64/configs/r5q_defconfig
-          sed -i '/CONFIG_BPF/d' $KCONFIG
+          sed -i '/CONFIG_KSU/d' $KCONFIG
+          echo "CONFIG_KSU=n" >> $KCONFIG
+
+          # Activăm doar BPF-ul necesar pentru Android modern
           {
-            echo "CONFIG_BPF=y"
             echo "CONFIG_BPF_SYSCALL=y"
             echo "CONFIG_BPF_JIT=y"
-            echo "CONFIG_HAVE_EBPF_JIT=y"
-            echo "CONFIG_BPF_JIT_ALWAYS_ON=y"
-            echo "CONFIG_NET_CLS_BPF=y"
           } >> $KCONFIG
 
           make -j$(nproc --all) $ARGS r5q_defconfig
           make -j$(nproc --all) $ARGS 2>&1 | tee build.log
 
-      - name: Upload Kernel Artifacts
+      - name: Upload Artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-Royna-Pascua-BPF
+          name: S10Lite-NoKSU-BPF
           path: |
             main/out/arch/arm64/boot/Image.gz-dtb
             main/out/arch/arm64/boot/dtbo.img
