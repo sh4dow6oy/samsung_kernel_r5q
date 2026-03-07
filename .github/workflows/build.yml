@@ -1,4 +1,4 @@
-name: S10 Lite (Royna + BPF + FCOMMON)
+name: S10 Lite (Royna + BPF + Nuclear Clean)
 
 on:
   workflow_dispatch:
@@ -28,10 +28,9 @@ jobs:
 
       - name: Download Neutron Clang
         run: |
-          mkdir clang-neutron
+          mkdir -p main/clang
           wget https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
-          tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang-neutron
-          echo "$GITHUB_WORKSPACE/clang-neutron/bin" >> $GITHUB_PATH
+          tar -I zstd -xf neutron-clang-10032024.tar.zst -C main/clang
 
       - name: BPF Merge
         run: |
@@ -41,61 +40,75 @@ jobs:
           cp bpf_source/include/uapi/linux/bpf* main/include/uapi/linux/
           cp bpf_source/include/linux/filter.h main/include/linux/
 
-      - name: Advanced Patching (FCOMMON & IAS Fixes)
+      - name: Nuclear Cleanup & Patching
         run: |
           cd main
-          # 1. Eliminăm referințele KernelSU care blochează Kconfig
-          find . -name "Kconfig" -exec sed -i '/kernelsu/d' {} +
-          find . -name "Makefile" -exec sed -i '/kernelsu/d' {} +
+          export PATH="$GITHUB_WORKSPACE/main/clang/bin:$PATH"
+
+          # 1. NUCLEAR CLEANUP (Prevenim Error 1 cauzat de flag-uri LLVM incompatibile)
+          find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
+          find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm//g' {} +
+          find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-polly[^ ]*//g' {} +
+
+          # 2. VDSO FIX (Anti-static link errors)
+          if [ -f arch/arm64/kernel/vdso/Makefile ]; then
+            sed -i 's/-static//g' arch/arm64/kernel/vdso/Makefile
+            sed -i 's/$(LDFLAGS)/$(filter-out -static,$(LDFLAGS))/g' arch/arm64/kernel/vdso/Makefile
+          fi
+
+          # 3. KERNELSU & SAMSUNG CLEANUP
+          sed -i '/kernelsu/d' drivers/android/Kconfig || true
+          sed -i '/kernelsu/d' drivers/android/Makefile || true
+          rm -rf drivers/kernelsu
+          # Dezactivăm gcc-wrapper-ul care injectează flag-uri de GCC în Clang
+          sed -i 's/ifneq ($(wildcard $(srctree)\/scripts\/gcc-wrapper.py),)/ifeq (0,1)/g' Makefile
           
-          # 2. Injectăm -fcommon în Makefile-ul principal
-          # Îl adăugăm la KBUILD_CFLAGS pentru a fi aplicat global
-          sed -i '/KBUILD_CFLAGS   += $(call cc-option,-fno-delete-null-pointer-checks,)/a KBUILD_CFLAGS   += -fcommon' Makefile
-          
-          # 3. Fix pentru asamblorul integrat (IAS)
+          # Fix asamblare .inst pentru IAS
           find arch/arm64 -name "*.S" -exec sed -i 's/\.inst\.w/.inst/g' {} +
-          
-          # 4. Curățăm flag-urile problematice care au eșuat anterior
-          find . -type f -name "Makefile*" -exec sed -i 's/-Werror//g' {} +
-          find . -type f -name "Makefile*" -exec sed -i 's/-Wunknown-warning-option//g' {} +
-          find . -type f -name "Makefile*" -exec sed -i 's/-implicit-function-declaration//g' {} +
-          
-          # 5. Bypass la verificările de compilator
-          sed -i 's/prepare-compiler-check//g' Makefile
 
-      - name: Build with LLVM IAS & FCOMMON
+      - name: Configure and Build
         run: |
           cd main
-          export ARCH=arm64
-          export CC=clang
-          export LD=ld.lld
-          export AR=llvm-ar
-          export NM=llvm-nm
-          export OBJCOPY=llvm-objcopy
-          export OBJDUMP=llvm-objdump
-          export STRIP=llvm-strip
-          export CLANG_TRIPLE=aarch64-linux-gnu-
-          export CROSS_COMPILE=aarch64-linux-gnu-
-          export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
-          
-          # Forțăm mediul LLVM pur
-          export LLVM=1
-          export LLVM_IAS=1
-          
-          # Defconfig Fixes
-          KCONFIG=arch/arm64/configs/r5q_defconfig
-          sed -i 's/CONFIG_CC_STACKPROTECTOR_STRONG=y/CONFIG_CC_STACKPROTECTOR_STRONG=n/g' $KCONFIG
-          echo "CONFIG_BPF_SYSCALL=y" >> $KCONFIG
-          echo "CONFIG_BPF_JIT=y" >> $KCONFIG
+          export PATH="$GITHUB_WORKSPACE/main/clang/bin:$PATH"
 
-          make -j$(nproc --all) O=out r5q_defconfig
-          make -j$(nproc --all) O=out 2>&1 | tee build.log
+          # 4. Argumente Build
+          MAKE_ARGS="ARCH=arm64 \
+            LLVM=1 \
+            LLVM_IAS=1 \
+            CC=clang \
+            LD=ld.lld \
+            AR=llvm-ar \
+            NM=llvm-nm \
+            OBJCOPY=llvm-objcopy \
+            OBJDUMP=llvm-objdump \
+            STRIP=llvm-strip \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            O=out"
 
-      - name: Upload Artifacts
+          # 5. Configurare
+          make $MAKE_ARGS r5q_defconfig
+          
+          ./scripts/config --file out/.config \
+            -d CONFIG_LTO -d CONFIG_LTO_CLANG -e CONFIG_LTO_NONE \
+            -d CONFIG_CC_STACKPROTECTOR_STRONG -e CONFIG_CC_STACKPROTECTOR_NONE \
+            -d CONFIG_SHADOW_CALL_STACK -d CONFIG_KNOX_KAP -d CONFIG_SECURITY_SAMSUNG_KNOX \
+            -d CONFIG_ASSIST_KSU -d CONFIG_KSU \
+            -e CONFIG_BPF_SYSCALL -e CONFIG_BPF_JIT
+            
+          make $MAKE_ARGS olddefconfig
+
+          # 6. Compilare (Adăugăm flag-urile de iertare KCFLAGS)
+          make -j$(nproc --all) $MAKE_ARGS \
+            KCFLAGS="-fcommon -Wno-error -Wno-unknown-warning-option -Wno-unused-command-line-argument" \
+            2>&1 | tee build.log
+
+      - name: Upload Kernel
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-FCommon-Build
+          name: S10Lite-Nuclear-Image
           path: |
             main/out/arch/arm64/boot/Image.gz-dtb
+            main/out/arch/arm64/boot/dtbo.img
             main/build.log
