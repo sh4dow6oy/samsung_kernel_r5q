@@ -1,4 +1,4 @@
-name: Build S10 Lite (L23 + Neutron Nuclear Option)
+name: S10 Lite (Royna + Pascua BPF Backport)
 
 on:
   workflow_dispatch:
@@ -7,63 +7,66 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Kernel Source
+      - name: Checkout Royna (S10 Lite Base)
         uses: actions/checkout@v4
         with:
-          repository: nzlnice/kernel_qcom_sm8150
-          ref: lineage-23.0
-          fetch-depth: 1
+          repository: Roynas-Android-Playground/kernel_samsung_r3q
+          ref: master
+          path: main
+
+      - name: Checkout Pascua BPF Branch
+        uses: actions/checkout@v4
+        with:
+          repository: pascua28/android_kernel_samsung_sm7150
+          ref: bpf
+          path: bpf_source
 
       - name: Install Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y bc bison build-essential flex git libssl-dev libelf-dev clang llvm lld zstd curl libarchive-tools python3
+          sudo apt-get install -y bc bison build-essential flex git libssl-dev libelf-dev clang llvm lld zstd curl libarchive-tools
 
-      - name: Download and Extract Neutron Clang
+      - name: Download Neutron Clang
         run: |
           mkdir clang-neutron
           wget https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang-neutron
           echo "$GITHUB_WORKSPACE/clang-neutron/bin" >> $GITHUB_PATH
 
-      - name: Inject Samsung r5q Config & Enable BPF
+      - name: Advanced BPF Backport Merge
         run: |
-          curl -LSs https://raw.githubusercontent.com/mainey/android_kernel_samsung_r5q/lineage-19.0/arch/arm64/configs/r5q_eur_open_defconfig > arch/arm64/configs/vendor/r5q_samsung_defconfig
-          KCONFIG=arch/arm64/configs/vendor/r5q_samsung_defconfig
-          {
-            echo "CONFIG_BPF=y"
-            echo "CONFIG_BPF_SYSCALL=y"
-            echo "CONFIG_BPF_JIT=y"
-            echo "CONFIG_HAVE_EBPF_JIT=y"
-            echo "CONFIG_BPF_JIT_ALWAYS_ON=y"
-          } >> $KCONFIG
+          # Curățăm vechiul subsistem BPF din Royna
+          rm -rf main/kernel/bpf
+          rm -rf main/include/linux/bpf*
+          rm -rf main/include/uapi/linux/bpf*
+          
+          # Injectăm noul cod de backport de la Pascua
+          cp -r bpf_source/kernel/bpf main/kernel/
+          cp bpf_source/include/linux/bpf* main/include/linux/
+          cp bpf_source/include/uapi/linux/bpf* main/include/uapi/linux/
+          cp bpf_source/include/linux/filter.h main/include/linux/
+          
+          # Important: Copiem și scripturile de generare BPF dacă există
+          cp bpf_source/scripts/bpf_helpers_doc.py main/scripts/ 2>/dev/null || true
 
-      - name: Patch Source (The Nuclear Clean)
+      - name: Nuclear Patching (Neutron Fixes)
         run: |
-          # 1. Ștergem wrapper-ul de GCC care generează flag-urile invalide detected in logs
+          cd main
+          # Eliminăm wrapper-ul problematic
           rm -f scripts/gcc-wrapper.py
           
-          # 2. Eliminăm testele de 'cc-option' care eșuează și lasă resturi de argumente
-          find . -type f -name "Makefile*" -exec sed -i 's/$(call cc-option,-Wno-error=unknown-warning-option)//g' {} +
-          find . -type f -name "Makefile*" -exec sed -i 's/$(call cc-option,-Wno-error=return-type)//g' {} +
+          # Fix pentru directivele de asamblare .inst care crapă în Neutron
+          find arch/arm64 -name "*.S" -exec sed -i 's/\.inst\.w/.inst/g' {} +
           
-          # 3. Curățare brutală a tuturor flag-urilor de tip -Wno-error= sau -Werror
+          # Curățăm Makefile-urile de flag-uri GCC invalide
           find . -type f -name "Makefile*" -exec sed -i 's/-Werror//g' {} +
           find . -type f -name "Makefile*" -exec sed -i 's/-W[^ ]*unknown-warning-option//g' {} +
           find . -type f -name "Makefile*" -exec sed -i 's/-W[^ ]*return-type//g' {} +
-          find . -type f -name "Makefile*" -exec sed -i 's/-W[^ ]*implicit-function-declaration//g' {} +
-          
-          # 4. Fix pentru căile de cross-compilare
-          sed -i 's/CROSS_COMPILE_ARM32 := arm-linux-androideabi-/CROSS_COMPILE_ARM32 := arm-linux-gnueabi-/g' Makefile
-          sed -i 's/CROSS_COMPILE := aarch64-linux-android-/CROSS_COMPILE := aarch64-linux-gnu-/g' Makefile
-          
-          # 5. Fix BPF Header Include
-          sed -i '1i #include <linux/filter.h>' kernel/bpf/verifier.c
 
       - name: Configure and Build
         run: |
-          # Definim manual toată suita LLVM pentru a ignora orice fallback la GCC
-          ARGS="ARCH=arm64 \
+          cd main
+          export ARGS="ARCH=arm64 \
                 O=out \
                 CC=clang \
                 LD=ld.lld \
@@ -78,21 +81,27 @@ jobs:
                 LLVM=1 \
                 LLVM_IAS=0"
 
-          # Pasul 1: Generare Config
-          make -j$(nproc --all) $ARGS vendor/r5q_samsung_defconfig
-          
-          # Pasul 2: Sync cu noile opțiuni din Lineage 23
-          make -j$(nproc --all) $ARGS olddefconfig
+          # Activăm suportul BPF complet în defconfig-ul r5q
+          KCONFIG=arch/arm64/configs/r5q_defconfig
+          sed -i '/CONFIG_BPF/d' $KCONFIG
+          {
+            echo "CONFIG_BPF=y"
+            echo "CONFIG_BPF_SYSCALL=y"
+            echo "CONFIG_BPF_JIT=y"
+            echo "CONFIG_HAVE_EBPF_JIT=y"
+            echo "CONFIG_BPF_JIT_ALWAYS_ON=y"
+            echo "CONFIG_NET_CLS_BPF=y"
+          } >> $KCONFIG
 
-          # Pasul 3: Compilarea efectivă cu Verbose activat pentru depanare
-          make -j$(nproc --all) $ARGS V=1 2>&1 | tee build.log
+          make -j$(nproc --all) $ARGS r5q_defconfig
+          make -j$(nproc --all) $ARGS 2>&1 | tee build.log
 
-      - name: Upload Artifacts
+      - name: Upload Kernel Artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-L23-Nuclear-Build
+          name: S10Lite-Royna-Pascua-BPF
           path: |
-            out/arch/arm64/boot/Image.gz-dtb
-            out/arch/arm64/boot/dtbo.img
-            build.log
+            main/out/arch/arm64/boot/Image.gz-dtb
+            main/out/arch/arm64/boot/dtbo.img
+            main/build.log
