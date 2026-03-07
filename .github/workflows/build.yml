@@ -1,4 +1,4 @@
-name: S10 Lite (Royna + BPF Header Fix)
+name: S10 Lite (Royna + Full Pascua BPF Import)
 
 on:
   workflow_dispatch:
@@ -14,12 +14,12 @@ jobs:
           ref: master
           path: main
 
-      - name: Checkout Pascua BPF
+      - name: Checkout Pascua BPF Branch
         uses: actions/checkout@v4
         with:
           repository: pascua28/android_kernel_samsung_sm7150
           ref: bpf
-          path: bpf_source
+          path: pascua
 
       - name: Install Dependencies
         run: |
@@ -32,35 +32,44 @@ jobs:
           wget https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C main/clang
 
-      - name: BPF Merge & Header Fix
+      - name: Deep Integration of BPF Dependencies
         run: |
-          # 1. Merge BPF
-          rm -rf main/kernel/bpf main/include/linux/bpf* main/include/uapi/linux/bpf*
-          cp -r bpf_source/kernel/bpf main/kernel/
-          cp bpf_source/include/linux/bpf* main/include/linux/
-          cp bpf_source/include/uapi/linux/bpf* main/include/uapi/linux/
-          cp bpf_source/include/linux/filter.h main/include/linux/
-          
-          # 2. Fix Header Dependencies (Eroarea skb_metadata_len / cant_sleep)
-          # Adăugăm include-uri necesare în vârful fișierului filter.h
-          sed -i '1i #include <linux/skbuff.h>' main/include/linux/filter.h
-          sed -i '2i #include <linux/kernel.h>' main/include/linux/filter.h
-          sed -i '3i #include <linux/kallsyms.h>' main/include/linux/filter.h
+          # 1. Copiem subsistemul BPF complet (Kernel side)
+          rm -rf main/kernel/bpf
+          cp -r pascua/kernel/bpf main/kernel/
 
-      - name: Nuclear Cleanup & Patching
+          # 2. Importam Header-ele UAPI si Linux (Aici sunt definitiile lipsa)
+          # Folosim 'cp -f' pentru a suprascrie fisierele vechi din Royna cu cele compatibile BPF
+          cp -f pascua/include/linux/bpf* main/include/linux/
+          cp -f pascua/include/linux/filter.h main/include/linux/
+          cp -f pascua/include/linux/skbuff.h main/include/linux/
+          cp -f pascua/include/linux/netdevice.h main/include/linux/
+          cp -f pascua/include/uapi/linux/bpf* main/include/uapi/linux/
+          cp -f pascua/include/uapi/linux/bpf_common.h main/include/uapi/linux/
+
+          # 3. Patch pentru 'cant_sleep' si dependinte de procesor
+          # Pascua are aceste definitii in sched.h sau wait.h
+          cp -f pascua/include/linux/sched.h main/include/linux/ 2>/dev/null || true
+
+      - name: Nuclear Cleanup & Samsung Fixes
         run: |
           cd main
-          export PATH="$GITHUB_WORKSPACE/main/clang/bin:$PATH"
-          
-          # Curățăm Polly și KSU/Samsung Knox
+          # Eliminam flag-urile Polly care cauzeaza crash-uri pe Clang
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm//g' {} +
+          
+          # Fix pentru VDSO (eroarea de linkare statica)
+          if [ -f arch/arm64/kernel/vdso/Makefile ]; then
+            sed -i 's/-static//g' arch/arm64/kernel/vdso/Makefile
+          fi
+
+          # Dezactivam Samsung Knox si KernelSU rezidual care blocheaza build-ul
           sed -i '/kernelsu/d' drivers/android/Kconfig || true
           sed -i '/kernelsu/d' drivers/android/Makefile || true
-          
-          # Fix .inst asamblare
-          find arch/arm64 -name "*.S" -exec sed -i 's/\.inst\.w/.inst/g' {} +
           sed -i 's/ifneq ($(wildcard $(srctree)\/scripts\/gcc-wrapper.py),)/ifeq (0,1)/g' Makefile
+
+          # Fix asamblare .inst pentru LLVM_IAS
+          find arch/arm64 -name "*.S" -exec sed -i 's/\.inst\.w/.inst/g' {} +
 
       - name: Configure and Build
         run: |
@@ -81,18 +90,28 @@ jobs:
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             O=out"
 
+          # Generam config-ul de baza
           make $MAKE_ARGS r5q_defconfig
           
-          # Modificăm flag-urile de eroare să nu mai oprească build-ul la funcții lipsă (BPF)
+          # Fortam activarea optiunilor BPF in .config
+          ./scripts/config --file out/.config \
+            -e CONFIG_BPF -e CONFIG_BPF_SYSCALL -e CONFIG_BPF_JIT \
+            -e CONFIG_HAVE_EBPF_JIT -e CONFIG_BPF_JIT_ALWAYS_ON \
+            -e CONFIG_NET_CLS_BPF -e CONFIG_NET_ACT_BPF \
+            -d CONFIG_CC_STACKPROTECTOR_STRONG -e CONFIG_CC_STACKPROTECTOR_NONE
+
+          make $MAKE_ARGS olddefconfig
+
+          # Build final cu flag-uri de iertare pentru restul kernelului
           make -j$(nproc --all) $MAKE_ARGS \
-            KCFLAGS="-fcommon -Wno-error -Wno-implicit-function-declaration -Wno-error=implicit-function-declaration -Wno-unknown-warning-option" \
+            KCFLAGS="-fcommon -Wno-error -Wno-implicit-function-declaration -Wno-unused-command-line-argument" \
             2>&1 | tee build.log
 
       - name: Upload Kernel
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-Final-Attempt
+          name: S10Lite-Pascua-BPF-Import
           path: |
             main/out/arch/arm64/boot/Image.gz-dtb
             main/build.log
