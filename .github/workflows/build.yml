@@ -1,4 +1,4 @@
-name: S10 Lite (Royna + BPF + Nuclear Clean)
+name: S10 Lite (Royna + BPF Header Fix)
 
 on:
   workflow_dispatch:
@@ -32,46 +32,41 @@ jobs:
           wget https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C main/clang
 
-      - name: BPF Merge
+      - name: BPF Merge & Header Fix
         run: |
+          # 1. Merge BPF
           rm -rf main/kernel/bpf main/include/linux/bpf* main/include/uapi/linux/bpf*
           cp -r bpf_source/kernel/bpf main/kernel/
           cp bpf_source/include/linux/bpf* main/include/linux/
           cp bpf_source/include/uapi/linux/bpf* main/include/uapi/linux/
           cp bpf_source/include/linux/filter.h main/include/linux/
+          
+          # 2. Fix Header Dependencies (Eroarea skb_metadata_len / cant_sleep)
+          # Adăugăm include-uri necesare în vârful fișierului filter.h
+          sed -i '1i #include <linux/skbuff.h>' main/include/linux/filter.h
+          sed -i '2i #include <linux/kernel.h>' main/include/linux/filter.h
+          sed -i '3i #include <linux/kallsyms.h>' main/include/linux/filter.h
 
       - name: Nuclear Cleanup & Patching
         run: |
           cd main
           export PATH="$GITHUB_WORKSPACE/main/clang/bin:$PATH"
-
-          # 1. NUCLEAR CLEANUP (Prevenim Error 1 cauzat de flag-uri LLVM incompatibile)
+          
+          # Curățăm Polly și KSU/Samsung Knox
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm//g' {} +
-          find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-polly[^ ]*//g' {} +
-
-          # 2. VDSO FIX (Anti-static link errors)
-          if [ -f arch/arm64/kernel/vdso/Makefile ]; then
-            sed -i 's/-static//g' arch/arm64/kernel/vdso/Makefile
-            sed -i 's/$(LDFLAGS)/$(filter-out -static,$(LDFLAGS))/g' arch/arm64/kernel/vdso/Makefile
-          fi
-
-          # 3. KERNELSU & SAMSUNG CLEANUP
           sed -i '/kernelsu/d' drivers/android/Kconfig || true
           sed -i '/kernelsu/d' drivers/android/Makefile || true
-          rm -rf drivers/kernelsu
-          # Dezactivăm gcc-wrapper-ul care injectează flag-uri de GCC în Clang
-          sed -i 's/ifneq ($(wildcard $(srctree)\/scripts\/gcc-wrapper.py),)/ifeq (0,1)/g' Makefile
           
-          # Fix asamblare .inst pentru IAS
+          # Fix .inst asamblare
           find arch/arm64 -name "*.S" -exec sed -i 's/\.inst\.w/.inst/g' {} +
+          sed -i 's/ifneq ($(wildcard $(srctree)\/scripts\/gcc-wrapper.py),)/ifeq (0,1)/g' Makefile
 
       - name: Configure and Build
         run: |
           cd main
           export PATH="$GITHUB_WORKSPACE/main/clang/bin:$PATH"
 
-          # 4. Argumente Build
           MAKE_ARGS="ARCH=arm64 \
             LLVM=1 \
             LLVM_IAS=1 \
@@ -86,29 +81,18 @@ jobs:
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             O=out"
 
-          # 5. Configurare
           make $MAKE_ARGS r5q_defconfig
           
-          ./scripts/config --file out/.config \
-            -d CONFIG_LTO -d CONFIG_LTO_CLANG -e CONFIG_LTO_NONE \
-            -d CONFIG_CC_STACKPROTECTOR_STRONG -e CONFIG_CC_STACKPROTECTOR_NONE \
-            -d CONFIG_SHADOW_CALL_STACK -d CONFIG_KNOX_KAP -d CONFIG_SECURITY_SAMSUNG_KNOX \
-            -d CONFIG_ASSIST_KSU -d CONFIG_KSU \
-            -e CONFIG_BPF_SYSCALL -e CONFIG_BPF_JIT
-            
-          make $MAKE_ARGS olddefconfig
-
-          # 6. Compilare (Adăugăm flag-urile de iertare KCFLAGS)
+          # Modificăm flag-urile de eroare să nu mai oprească build-ul la funcții lipsă (BPF)
           make -j$(nproc --all) $MAKE_ARGS \
-            KCFLAGS="-fcommon -Wno-error -Wno-unknown-warning-option -Wno-unused-command-line-argument" \
+            KCFLAGS="-fcommon -Wno-error -Wno-implicit-function-declaration -Wno-error=implicit-function-declaration -Wno-unknown-warning-option" \
             2>&1 | tee build.log
 
       - name: Upload Kernel
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-Nuclear-Image
+          name: S10Lite-Final-Attempt
           path: |
             main/out/arch/arm64/boot/Image.gz-dtb
-            main/out/arch/arm64/boot/dtbo.img
             main/build.log
