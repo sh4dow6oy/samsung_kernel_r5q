@@ -1,4 +1,4 @@
-name: S10 Lite (V19 - Folder Fix & Cache)
+name: S10 Lite (Pure G770F Build)
 
 on:
   workflow_dispatch:
@@ -7,119 +7,86 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout LineageOS Base
+      - name: Checkout Your Kernel Source
         uses: actions/checkout@v4
         with:
-          repository: LineageOS/android_kernel_oneplus_sm8150
-          ref: lineage-23.2
-          path: main
+          repository: sh4dow6oy/samsung_kernel_r5q
+          ref: master
+          fetch-depth: 1
 
-      - name: Checkout Mainey (R5Q Source)
-        uses: actions/checkout@v4
-        with:
-          repository: mainey/android_kernel_samsung_r5q
-          path: mainey
-
-      - name: Setup Cache
+      - name: Setup Build Cache
         uses: actions/cache@v4
         with:
           path: |
-            main/clang
-            main/out
-          key: ${{ runner.os }}-kernel-v19-${{ hashFiles('mainey/arch/arm64/configs/r5q_eur_open_defconfig') }}
+            clang
+            out
+          key: ${{ runner.os }}-pure-g770f-v1
           restore-keys: |
-            ${{ runner.os }}-kernel-v19-
+            ${{ runner.os }}-pure-g770f-
 
-      - name: Install Dependencies
+      - name: Install Build Tools
         run: |
           sudo apt-get update
           sudo apt-get install -y bc bison build-essential flex git libssl-dev libelf-dev clang llvm lld zstd curl python3 device-tree-compiler
 
       - name: Download Neutron Clang
         run: |
-          if [ ! -d "main/clang/bin" ]; then
-            mkdir -p main/clang
+          if [ ! -d "clang/bin" ]; then
+            mkdir -p clang
             wget https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
-            tar -I zstd -xf neutron-clang-10032024.tar.zst -C main/clang
+            tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
           fi
 
-      - name: Surgical Grafting (Robust Folder Creation)
+      - name: Build Kernel (No Extra Configs)
         run: |
-          # 1. Config
-          cp mainey/arch/arm64/configs/r5q_eur_open_defconfig main/arch/arm64/configs/r5q_defconfig
+          export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           
-          # 2. DTS Structure Fix
-          # Cream toate folderele posibile pentru a evita eroarea "No such file or directory"
-          mkdir -p main/arch/arm64/boot/dts/samsung
-          
-          # Copiem continutul. Folosim "|| true" pentru a nu opri build-ul daca un subfolder e gol
-          cp -r mainey/arch/arm64/boot/dts/samsung/* main/arch/arm64/boot/dts/samsung/ 2>/dev/null || true
-          
-          # Importam Makefile-ul care contine r5q.dtb
-          cp mainey/arch/arm64/boot/dts/Makefile main/arch/arm64/boot/dts/Makefile
-          
-          cd main
-          # 3. Linker Stubs (Injectie in compiler.h)
-          cat << 'EOF' > linker_stub.h
-          #ifndef __LINKER_STUB_H
-          #define __LINKER_STUB_H
-          #ifndef __ASSEMBLY__
-          #include <linux/types.h>
-          static inline void switch_headset_state(int s) {}
-          struct dev_pm_ops;
-          static const struct dev_pm_ops *qpnp_pm_ops_ptr = (void *)0;
-          #define qpnp_pm_ops (*(struct dev_pm_ops *)qpnp_pm_ops_ptr)
-          static inline void push_component_info(const char *a, const char *b) {}
-          static inline int get_boot_mode(void) { return 0; }
-          static inline void register_device_proc(const char *a, void *b, void *c) {}
-          static inline void sys_reset_dev(void) {}
-          static inline int pmicwd_init(void) { return 0; }
-          static inline int kpdpwr_init(void) { return 0; }
-          static inline int get_PCB_Version(void) { return 0; }
-          static inline int is_project(int p) { return 0; }
-          static inline int get_project(void) { return 0; }
-          static inline int qpnp_is_power_off_charging(void) { return 0; }
-          static inline void opticalfp_irq_handler_register(void *h) {}
-          #define SAMSUNG_PRODUCT_SHIP 1
-          #define initcall_sec_debug 0
-          #endif
-          #endif
-          EOF
+          # Argumente standard pentru LLVM/Clang
+          MAKE_ARGS="ARCH=arm64 \
+            LLVM=1 \
+            LLVM_IAS=1 \
+            CC=clang \
+            LD=ld.lld \
+            DTC=dtc \
+            AR=llvm-ar \
+            NM=llvm-nm \
+            OBJCOPY=llvm-objcopy \
+            OBJDUMP=llvm-objdump \
+            STRIP=llvm-strip \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            O=out"
 
-          cat linker_stub.h include/linux/compiler.h > include/linux/compiler.h.new
-          mv include/linux/compiler.h.new include/linux/compiler.h
-          sed -i 's/^YYLTYPE yylloc;/extern YYLTYPE yylloc;/g' scripts/dtc/dtc-lexer.lex.c_shipped || true
+          # 1. Initializare cu defconfig-ul tau
+          make $MAKE_ARGS g770f_defconfig
 
-      - name: Configure and Build
-        run: |
-          cd main
-          export PATH="$GITHUB_WORKSPACE/main/clang/bin:$PATH"
-          
-          MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld DTC=dtc AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
-
-          # Regeneram config-ul daca folderul out e gol sau corupt
-          if [ ! -f "out/.config" ]; then
-            make $MAKE_ARGS r5q_defconfig
-            ./scripts/config --file out/.config \
-              -e CONFIG_BPF_SYSCALL -e CONFIG_BPF_JIT \
-              -d CONFIG_LTO -d CONFIG_LTO_CLANG -e CONFIG_LTO_NONE \
-              -d CONFIG_SECURITY_SAMSUNG_KNOX -d CONFIG_KNOX_KAP \
-              -d CONFIG_SEC_ABC -d CONFIG_SEC_DEBUG \
-              -d CONFIG_SAMSUNG_TUI \
-              -d CONFIG_SND_SOC_WCD_MBHC
-            make $MAKE_ARGS olddefconfig
-          fi
-
+          # 2. Compilare efectiva
+          # Folosim doar flag-uri de toleranta pentru compilator
           make -j$(nproc --all) $MAKE_ARGS \
-            KCFLAGS="-fcommon -Wno-error -Wno-implicit-function-declaration" \
+            KCFLAGS="-fcommon -fno-common -Wno-error" \
             2>&1 | tee build.log
 
-      - name: Upload Kernel
+      - name: Package AnyKernel3
+        run: |
+          git clone https://github.com/osm0sis/AnyKernel3
+          # Copiem ce s-a compilat
+          cp out/arch/arm64/boot/Image.gz-dtb AnyKernel3/ || echo "Image.gz-dtb missing"
+          cp out/arch/arm64/boot/dtbo.img AnyKernel3/ || echo "dtbo.img missing"
+          
+          cd AnyKernel3
+          # Setam numele device-ului pentru S10 Lite
+          sed -i 's/device.name1=maguro/device.name1=r5q/' anykernel.sh
+          sed -i 's/device.name2=toroplus/device.name2=SM-G770F/' anykernel.sh
+          # Setam partitia de boot corecta pentru r5q
+          sed -i 's|block=/dev/block/platform/omap/omap_hsmmc.0/by-name/boot|block=/dev/block/bootdevice/by-name/boot|' anykernel.sh
+          
+          zip -r ../S10Lite-Pure-Kernel.zip *
+
+      - name: Upload Artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-Lineage-V19
+          name: S10Lite-Pure-Build
           path: |
-            main/out/arch/arm64/boot/Image.gz-dtb
-            main/out/arch/arm64/boot/dtbo.img
-            main/build.log
+            S10Lite-Pure-Kernel.zip
+            build.log
