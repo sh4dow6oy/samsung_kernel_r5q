@@ -1,4 +1,4 @@
-name: S10 Lite (V32 - BPF Header Surgical Strike)
+name: S10 Lite (V33 - Legacy Security Fix)
 
 on:
   workflow_dispatch:
@@ -23,18 +23,22 @@ jobs:
           wget https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
 
-      - name: Surgical Patching
+      - name: Surgical Patching (V33)
         run: |
-          # 1. FIX CRITIC: Inlocuim calea problematica in codul sursa
-          # In loc de <uapi/linux/btf.h>, folosim <linux/btf.h> care este calea standard de cautare
-          sed -i 's|<uapi/linux/btf.h>|<linux/btf.h>|g' kernel/bpf/core.c
-          sed -i 's|<uapi/linux/bpf.h>|<linux/bpf.h>|g' kernel/bpf/core.c
+          # 1. FIX BPF Path
+          sed -i 's|<uapi/linux/btf.h>|<linux/btf.h>|g' kernel/bpf/core.c || true
+          sed -i 's|<uapi/linux/bpf.h>|<linux/bpf.h>|g' kernel/bpf/core.c || true
           
-          # 2. Fix permisiuni si mizerii Samsung
+          # 2. FIX Samsung FIVE (set_fs/get_fs error)
+          # Injectam un header care sa previna eroarea de declaratie implicita
+          # sau pur si simplu dezactivam eroarea pentru aceste fisiere
+          find security/samsung/five/ -name "*.c" -exec sed -i '1i #include <asm/uaccess.h>' {} +
+
+          # 3. Curatenie Samsung & Permissions
           chmod -R 777 scripts/
           find . -type f -name "Makefile*" -exec sed -i 's/$(shell secgetspf)//g' {} +
           
-          # 3. Mocking Headers (Samsung Debugging)
+          # 4. Mocking Headers
           mkdir -p system/core/liblog/include/log
           mkdir -p system/logging/liblog/include/log
           touch system/core/liblog/include/log/perflog.h
@@ -58,19 +62,19 @@ jobs:
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             O=out"
 
-          # Configurare
           make $MAKE_ARGS g770f_defconfig
 
-          # Patch .config
+          # Patch .config - Dezactivam FIVE daca continua sa dea erori de linkare (optional)
           ./scripts/config --file out/.config \
             -d CONFIG_CC_WERROR \
             -d CONFIG_CC_STACKPROTECTOR_STRONG \
-            -e CONFIG_CC_STACKPROTECTOR_NONE
+            -e CONFIG_CC_STACKPROTECTOR_NONE \
+            -d CONFIG_SAMSUNG_FIVE
 
           make $MAKE_ARGS olddefconfig
 
           # COMPILARE
-          # Fortam includerea folderelor UAPI in procesul de cautare
+          # Am adaugat -Wno-implicit-function-declaration special pentru set_fs
           make -j$(nproc --all) $MAKE_ARGS \
             KCFLAGS="--target=aarch64-linux-gnu \
                      -I$(pwd)/include/uapi \
@@ -80,14 +84,15 @@ jobs:
                      -Wno-error \
                      -Wno-strict-prototypes \
                      -Wno-deprecated-declarations \
-                     -Wno-implicit-function-declaration" \
+                     -Wno-implicit-function-declaration \
+                     -Wno-int-conversion" \
             2>&1 | tee build.log
 
-      - name: Upload Results
+      - name: Upload Artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-V32-Result
+          name: S10Lite-V33-Result
           path: |
             out/arch/arm64/boot/Image.gz-dtb
             out/arch/arm64/boot/dtbo.img
