@@ -1,4 +1,4 @@
-name: S10 Lite (V28 - Relaxed C Standards)
+name: S10 Lite (V31 - Manual BTF Header Fix)
 
 on:
   workflow_dispatch:
@@ -17,34 +17,34 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y bc bison build-essential flex git libssl-dev libelf-dev clang llvm lld zstd curl python3 device-tree-compiler gcc-aarch64-linux-gnu
 
-      - name: Download Neutron Clang
+      - name: Download Toolchain
         run: |
           mkdir -p clang
           wget https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
 
-      - name: Surgical Source Fix
+      - name: Prepare Source
         run: |
-          # 1. Permisiuni si curatenie Makefile
+          # 1. Permisiuni
           chmod -R 777 scripts/
-          grep -rl "secgetspf" . | xargs sed -i 's/$(shell secgetspf)//g' 2>/dev/null || true
+          
+          # 2. Curatare Makefile de secgetspf (inca mai apare in log-uri uneori)
+          find . -type f -name "Makefile*" -exec sed -i 's/$(shell secgetspf)//g' {} +
+          
+          # 3. Patch DTC yylloc (pentru a evita erori la generarea dtb-urilor)
           sed -i 's/^YYLTYPE yylloc;/extern YYLTYPE yylloc;/g' scripts/dtc/dtc-lexer.lex.c_shipped || true
           
-          # 2. Mock Headers pentru Samsung Logging
+          # 4. Mocking Samsung logging headers
           mkdir -p system/core/liblog/include/log
           mkdir -p system/logging/liblog/include/log
           touch system/core/liblog/include/log/perflog.h
           touch system/logging/liblog/include/log/perflog.h
-          
-          # 3. Dezactivare Samsung gcc-wrapper
-          sed -i 's/exec /#exec /g' scripts/gcc-wrapper.py || true
-          echo 'exec "$@"' >> scripts/gcc-wrapper.py
 
       - name: Build Kernel
         run: |
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           
-          # Fortam toolchain-ul LLVM
+          # Parametrii de build
           MAKE_ARGS="ARCH=arm64 \
             LLVM=1 \
             LLVM_IAS=1 \
@@ -62,7 +62,7 @@ jobs:
           # Configurare
           make $MAKE_ARGS g770f_defconfig
 
-          # Patch config: eliminam WERROR si fixam Stack Protector
+          # Patch .config
           ./scripts/config --file out/.config \
             -d CONFIG_CC_WERROR \
             -d CONFIG_CC_STACKPROTECTOR_STRONG \
@@ -70,25 +70,25 @@ jobs:
 
           make $MAKE_ARGS olddefconfig
 
-          # COMPILARE cu flag-uri de relaxare pentru Clang
-          # -Wno-strict-prototypes rezolva eroarea din dd_core.c
-          # -Wno-unused-but-set-variable curata log-ul de warning-uri inutile
+          # COMPILARE
+          # -Iusr/include ajuta compilatorul sa gaseasca headerele UAPI generate sau adaugate manual
           make -j$(nproc --all) $MAKE_ARGS \
             KCFLAGS="--target=aarch64-linux-gnu \
+                     -I$(pwd)/include/uapi \
+                     -I$(pwd)/arch/arm64/include/uapi \
                      -fcommon \
                      -fno-stack-protector \
                      -Wno-error \
                      -Wno-strict-prototypes \
-                     -Wno-unused-but-set-variable \
-                     -Wno-implicit-function-declaration \
-                     -Wno-incompatible-pointer-types-discards-qualifiers" \
+                     -Wno-deprecated-declarations \
+                     -Wno-implicit-function-declaration" \
             2>&1 | tee build.log
 
-      - name: Upload Results
+      - name: Upload Artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-V28-Build
+          name: S10Lite-V31-Result
           path: |
             out/arch/arm64/boot/Image.gz-dtb
             out/arch/arm64/boot/dtbo.img
