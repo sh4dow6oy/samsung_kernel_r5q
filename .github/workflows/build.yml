@@ -1,4 +1,4 @@
-name: S10 Lite (V24 - Assembler & Headers Fix)
+name: S10 Lite (V25 - Path & Wrapper Fix)
 
 on:
   workflow_dispatch:
@@ -7,22 +7,20 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Your Kernel Source
+      - name: Checkout Source
         uses: actions/checkout@v4
         with:
-          repository: sh4dow6oy/samsung_kernel_r5q
-          ref: master
           fetch-depth: 1
 
-      - name: Setup Build Cache
+      - name: Setup Cache
         uses: actions/cache@v4
         with:
           path: |
             clang
             out
-          key: ${{ runner.os }}-r5q-v24-final
+          key: ${{ runner.os }}-r5q-v25-final
           restore-keys: |
-            ${{ runner.os }}-r5q-v24-
+            ${{ runner.os }}-r5q-v25-
 
       - name: Install Build Tools
         run: |
@@ -37,11 +35,29 @@ jobs:
             tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
           fi
 
+      - name: Fix Source & Wrappers
+        run: |
+          # 1. Dezactivăm gcc-wrapper.py (Samsung hack) care caută căi greșite
+          # Îl facem să returneze direct comanda fără să mai verifice căi hardcodate
+          sed -i 's/exec /#exec /g' scripts/gcc-wrapper.py || true
+          echo 'exec "$@"' >> scripts/gcc-wrapper.py
+
+          # 2. Fix DTC Lexer (Eroarea yylloc din log-ul tău)
+          sed -i 's/^YYLTYPE yylloc;/extern YYLTYPE yylloc;/g' scripts/dtc/dtc-lexer.lex.c_shipped || true
+          
+          # 3. Ștergem secgetspf care dădea "No such file or directory"
+          find . -name "Makefile*" -exec sed -i 's/$(shell secgetspf)//g' {} +
+
+          # 4. Mock Headers pentru perflog
+          mkdir -p system/core/liblog/include/log
+          touch system/core/liblog/include/log/perflog.h
+
       - name: Build Kernel
         run: |
-          export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
+          # Setăm calea ABSOLUTĂ către Clang
+          export CLANG_PATH=$GITHUB_WORKSPACE/clang/bin
+          export PATH="$CLANG_PATH:$PATH"
           
-          # Parametrii critici pentru a evita /usr/bin/as
           MAKE_ARGS="ARCH=arm64 \
             LLVM=1 \
             LLVM_IAS=1 \
@@ -56,21 +72,10 @@ jobs:
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             O=out"
 
-          # 1. FIX: Creare Mock Headers pentru log/perflog.h
-          # Samsung cauta aceste fisiere in foldere de sistem Android care nu exista aici
-          mkdir -p system/core/liblog/include/log
-          mkdir -p system/logging/liblog/include/log
-          touch system/core/liblog/include/log/perflog.h
-          touch system/logging/liblog/include/log/perflog.h
-
-          # 2. FIX: Stergere secgetspf din Makefile-uri (preventiv)
-          find . -name "Makefile*" -exec sed -i 's/$(shell secgetspf)//g' {} +
-          find . -name "Makefile*" -exec sed -i 's/secgetspf//g' {} +
-
-          # 3. Config
+          # Configurare
           make $MAKE_ARGS g770f_defconfig
 
-          # 4. Dezactivare protectii care blocheaza compiler check
+          # Bypass Stack Protector Check care eșua în log
           ./scripts/config --file out/.config \
             -d CONFIG_CC_STACKPROTECTOR_STRONG \
             -e CONFIG_CC_STACKPROTECTOR_NONE \
@@ -78,27 +83,17 @@ jobs:
 
           make $MAKE_ARGS olddefconfig
 
-          # 5. Compilare (Adaugam --target pentru siguranta asamblorului)
+          # Compilare cu target explicit pentru a evita /usr/bin/as
           make -j$(nproc --all) $MAKE_ARGS \
             KCFLAGS="--target=aarch64-linux-gnu -fcommon -fno-stack-protector -Wno-error" \
             2>&1 | tee build.log
 
-      - name: Package with AnyKernel3
-        if: success()
-        run: |
-          git clone https://github.com/osm0sis/AnyKernel3
-          cp out/arch/arm64/boot/Image.gz-dtb AnyKernel3/ || echo "No Image"
-          cp out/arch/arm64/boot/dtbo.img AnyKernel3/ || echo "No DTBO"
-          cd AnyKernel3
-          sed -i 's/device.name1=maguro/device.name1=r5q/' anykernel.sh
-          sed -i 's|block=/dev/block/platform/omap/omap_hsmmc.0/by-name/boot|block=/dev/block/bootdevice/by-name/boot|' anykernel.sh
-          zip -r ../S10Lite-G770F-V24.zip *
-
-      - name: Upload
+      - name: Upload Artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-Build-V24
+          name: S10Lite-Build-V25
           path: |
-            S10Lite-G770F-V24.zip
+            out/arch/arm64/boot/Image.gz-dtb
+            out/arch/arm64/boot/dtbo.img
             build.log
