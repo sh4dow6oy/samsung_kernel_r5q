@@ -1,4 +1,4 @@
-name: S10 Lite (Sixteen - DTC & Assembly Fix)
+name: S10 Lite (Lineage Base + Samsung DTS Tree)
 
 on:
   workflow_dispatch:
@@ -7,19 +7,18 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Sixteen Base (Pascua)
+      - name: Checkout LineageOS SM8150 Base
         uses: actions/checkout@v4
         with:
-          repository: pascua28/android_kernel_samsung_sm7150
-          ref: sixteen
+          repository: LineageOS/android_kernel_oneplus_sm8150
+          ref: lineage-22.1
           path: main
 
-      - name: Checkout Royna (For R5Q Defconfig)
+      - name: Checkout Mainey (R5Q Source)
         uses: actions/checkout@v4
         with:
-          repository: Roynas-Android-Playground/kernel_samsung_r3q
-          ref: master
-          path: royna
+          repository: mainey/android_kernel_samsung_r5q
+          path: mainey
 
       - name: Install Dependencies
         run: |
@@ -32,55 +31,42 @@ jobs:
           wget https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C main/clang
 
-      - name: Inject R5Q & Precision Patching
+      - name: Surgical Grafting (DTS & Config)
         run: |
-          cp royna/arch/arm64/configs/r5q_defconfig main/arch/arm64/configs/r5q_defconfig
+          # 1. Copiem Config-ul European r5q
+          cp mainey/arch/arm64/configs/vendor/r5q_eur_open_defconfig main/arch/arm64/configs/r5q_defconfig
+          
+          # 2. Replicam structura de foldere DTS Samsung
+          # Mainey are fisierele in arch/arm64/boot/dts/samsung si dts/vendor
+          mkdir -p main/arch/arm64/boot/dts/samsung
+          mkdir -p main/arch/arm64/boot/dts/vendor
+          cp -r mainey/arch/arm64/boot/dts/samsung/* main/arch/arm64/boot/dts/samsung/
+          cp -r mainey/arch/arm64/boot/dts/vendor/* main/arch/arm64/boot/dts/vendor/
+          
           cd main
-          
-          # 1. FIX DTC (Multiple definitions fix pentru Clang modern)
-          sed -i 's/^YYLTYPE yylloc;/extern YYLTYPE yylloc;/g' scripts/dtc/dtc-lexer.lex.c_shipped || true
-          
-          # 2. FIX setup_arch IN MAIN.C & SETUP.C
-          sed -i 's/setup_arch(.*);/setup_arch(\&command_line);/g' init/main.c
-          sed -i '1i void setup_arch(char **cmdline_p);' init/main.c
-          sed -i 's/void setup_arch(char \*\*cmdline_p.*/void setup_arch(char \*\*cmdline_p)/g' arch/arm64/kernel/setup.c
-
-          # 3. GLOBAL SHIMS (Assembly Safe - Rezolva eroarea de la usr/initramfs)
+          # 3. Global Shims (Protecție Assembly pentru functii Samsung lipsa)
           cat << 'EOF' > global_shims.h
           #ifndef __GLOBAL_SHIMS_H
           #define __GLOBAL_SHIMS_H
           #ifndef __ASSEMBLY__
-          #include <linux/types.h>
           static inline int as_is_debug_level(void) { return 0; }
           static inline int get_avc_paranoid(void) { return 0; }
           #define initcall_sec_debug 0
           #endif
-          #ifndef SAMSUNG_PRODUCT_SHIP
           #define SAMSUNG_PRODUCT_SHIP 1
-          #endif
           #endif
           EOF
           cat global_shims.h include/linux/compiler.h > include/linux/compiler.h.new
           mv include/linux/compiler.h.new include/linux/compiler.h
 
-          # 4. NUCLEAR CLEANUP (Polly, Wrappers & SecGetSpf)
-          find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
-          find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm//g' {} +
-          sed -i 's/ifneq ($(wildcard $(srctree)\/scripts\/gcc-wrapper.py),)/ifeq (0,1)/g' Makefile
-          sed -i 's/secgetspf//g' Makefile
-          find include/linux -name "cgroup.h" -exec sed -i 's/task->frozen/0/g' {} +
-
-          # 5. VDSO Fix
-          if [ -f arch/arm64/kernel/vdso/Makefile ]; then
-            sed -i 's/-static//g' arch/arm64/kernel/vdso/Makefile
-          fi
+          # 4. Patch DTC Lexer
+          sed -i 's/^YYLTYPE yylloc;/extern YYLTYPE yylloc;/g' scripts/dtc/dtc-lexer.lex.c_shipped || true
 
       - name: Configure and Build
         run: |
           cd main
           export PATH="$GITHUB_WORKSPACE/main/clang/bin:$PATH"
 
-          # Adaugam DTC-ul extern in argumente
           MAKE_ARGS="ARCH=arm64 \
             LLVM=1 \
             LLVM_IAS=1 \
@@ -96,13 +82,15 @@ jobs:
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             O=out"
 
+          # Generăm config
           make $MAKE_ARGS r5q_defconfig
           
+          # Ajustări pentru Lineage Base (Eliminăm modulele Knox care ar bloca linkarea)
           ./scripts/config --file out/.config \
             -e CONFIG_BPF_SYSCALL -e CONFIG_BPF_JIT \
             -d CONFIG_LTO -d CONFIG_LTO_CLANG -e CONFIG_LTO_NONE \
             -d CONFIG_SECURITY_SAMSUNG_KNOX -d CONFIG_KNOX_KAP \
-            -d CONFIG_SEC_DEBUG
+            -d CONFIG_SEC_ABC
 
           make $MAKE_ARGS olddefconfig
 
@@ -115,7 +103,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-Sixteen-v8-DTCFix
+          name: S10Lite-Lineage-Final-v11
           path: |
             main/out/arch/arm64/boot/Image.gz-dtb
             main/out/arch/arm64/boot/dtbo.img
