@@ -1,53 +1,62 @@
-name: S10 Lite (V33 - Legacy Security Fix)
-
+name: Build Roynas R5Q - Neutron Clang Final
 on:
   workflow_dispatch:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout Source
         uses: actions/checkout@v4
         with:
+          repository: Roynas-Android-Playground/kernel_samsung_r3q
+          ref: master
           fetch-depth: 1
 
-      - name: Install Build Tools
+      - name: Install Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y bc bison build-essential flex git libssl-dev libelf-dev clang llvm lld zstd curl python3 device-tree-compiler gcc-aarch64-linux-gnu
+          sudo apt-get install -y bc build-essential flex bison lz4 libssl-dev libelf-dev \
+          ccache python3 python-is-python3 libarchive-tools wget zstd libtinfo6 zip
 
-      - name: Download Toolchain
+      - name: Setup Neutron Clang
         run: |
-          mkdir -p clang
-          wget https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
+          mkdir clang
+          wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
-
-      - name: Surgical Patching (V33)
-        run: |
-          # 1. FIX BPF Path
-          sed -i 's|<uapi/linux/btf.h>|<linux/btf.h>|g' kernel/bpf/core.c || true
-          sed -i 's|<uapi/linux/bpf.h>|<linux/bpf.h>|g' kernel/bpf/core.c || true
-          
-          # 2. FIX Samsung FIVE (set_fs/get_fs error)
-          # Injectam un header care sa previna eroarea de declaratie implicita
-          # sau pur si simplu dezactivam eroarea pentru aceste fisiere
-          find security/samsung/five/ -name "*.c" -exec sed -i '1i #include <asm/uaccess.h>' {} +
-
-          # 3. Curatenie Samsung & Permissions
-          chmod -R 777 scripts/
-          find . -type f -name "Makefile*" -exec sed -i 's/$(shell secgetspf)//g' {} +
-          
-          # 4. Mocking Headers
-          mkdir -p system/core/liblog/include/log
-          mkdir -p system/logging/liblog/include/log
-          touch system/core/liblog/include/log/perflog.h
-          touch system/logging/liblog/include/log/perflog.h
 
       - name: Build Kernel
         run: |
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           
+          # --- SPOOF KERNEL VERSION & NAME (About Phone) ---
+          sed -i 's/^VERSION =.*/VERSION = 4/' Makefile
+          sed -i 's/^PATCHLEVEL =.*/PATCHLEVEL = 14/' Makefile
+          sed -i 's/^SUBLEVEL =.*/SUBLEVEL = 356/' Makefile
+          sed -i 's/^LOCALVERSION =.*/LOCALVERSION = -sh4dow6oy/' Makefile
+          
+          export KBUILD_BUILD_USER="sh4dow6oy"
+          export KBUILD_BUILD_HOST="Android"
+          # -------------------------------------------------
+
+          # 1. NUCLEAR CLEANUP
+          find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
+          find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm//g' {} +
+          find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-polly[^ ]*//g' {} +
+
+          # 2. VDSO FIX
+          if [ -f arch/arm64/kernel/vdso/Makefile ]; then
+            sed -i 's/-static//g' arch/arm64/kernel/vdso/Makefile
+            sed -i 's/$(LDFLAGS)/$(filter-out -static,$(LDFLAGS))/g' arch/arm64/kernel/vdso/Makefile
+          fi
+
+          # 3. KERNELSU & SAMSUNG CLEANUP
+          sed -i '/kernelsu/d' drivers/android/Kconfig || true
+          sed -i '/kernelsu/d' drivers/android/Makefile || true
+          rm -rf drivers/kernelsu
+          sed -i 's/ifneq ($(wildcard $(srctree)\/scripts\/gcc-wrapper.py),)/ifeq (0,1)/g' Makefile
+
+          # 4. Argumente Build
           MAKE_ARGS="ARCH=arm64 \
             LLVM=1 \
             LLVM_IAS=1 \
@@ -62,38 +71,46 @@ jobs:
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             O=out"
 
-          make $MAKE_ARGS g770f_defconfig
-
-          # Patch .config - Dezactivam FIVE daca continua sa dea erori de linkare (optional)
+          # 5. Configurare (Adăugat CONFIG_BPF_JIT_ALWAYS_ON)
+          make $MAKE_ARGS r5q_defconfig
+          
           ./scripts/config --file out/.config \
-            -d CONFIG_CC_WERROR \
-            -d CONFIG_CC_STACKPROTECTOR_STRONG \
-            -e CONFIG_CC_STACKPROTECTOR_NONE \
-            -d CONFIG_SAMSUNG_FIVE
-
+            -e CONFIG_BPF_JIT_ALWAYS_ON \
+            -d CONFIG_LOCALVERSION_AUTO \
+            --set-str CONFIG_LOCALVERSION "-sh4dow6oy" \
+            -d CONFIG_LTO -d CONFIG_LTO_CLANG -e CONFIG_LTO_NONE \
+            -d CONFIG_CC_STACKPROTECTOR_STRONG -e CONFIG_CC_STACKPROTECTOR_NONE \
+            -d CONFIG_SHADOW_CALL_STACK -d CONFIG_KNOX_KAP -d CONFIG_SECURITY_SAMSUNG_KNOX \
+            -d CONFIG_ASSIST_KSU -d CONFIG_KSU
+            
           make $MAKE_ARGS olddefconfig
 
-          # COMPILARE
-          # Am adaugat -Wno-implicit-function-declaration special pentru set_fs
-          make -j$(nproc --all) $MAKE_ARGS \
-            KCFLAGS="--target=aarch64-linux-gnu \
-                     -I$(pwd)/include/uapi \
-                     -I$(pwd)/arch/arm64/include/uapi \
-                     -fcommon \
-                     -fno-stack-protector \
-                     -Wno-error \
-                     -Wno-strict-prototypes \
-                     -Wno-deprecated-declarations \
-                     -Wno-implicit-function-declaration \
-                     -Wno-int-conversion" \
-            2>&1 | tee build.log
+          # 6. Compilare
+          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -Wno-error -Wno-unknown-warning-option -Wno-unused-command-line-argument"
 
-      - name: Upload Artifacts
-        if: always()
+      - name: Package with AnyKernel3
+        run: |
+          IMAGE="$GITHUB_WORKSPACE/out/arch/arm64/boot/Image.gz-dtb"
+          if [ ! -f "$IMAGE" ]; then
+            IMAGE="$GITHUB_WORKSPACE/out/arch/arm64/boot/Image.gz"
+          fi
+          DTBO="$GITHUB_WORKSPACE/out/arch/arm64/boot/dtbo.img"
+
+          git clone https://github.com/osm0sis/AnyKernel3.git
+          rm -rf AnyKernel3/.git
+
+          cp $IMAGE AnyKernel3/Image.gz
+          [ -f "$DTBO" ] && cp $DTBO AnyKernel3/dtbo.img
+
+          sed -i 's/device.name1=maguro/device.name1=r5q/g' AnyKernel3/anykernel.sh
+          sed -i 's/device.name2=toroplus/device.name2=SM-G770F/g' AnyKernel3/anykernel.sh
+          sed -i 's/device.name3=toro/device.name3=r5q/g' AnyKernel3/anykernel.sh
+
+          cd AnyKernel3
+          zip -r9 ../4.14.356-sh4dow6oy.zip *
+
+      - name: Upload Flashable Kernel
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-V33-Result
-          path: |
-            out/arch/arm64/boot/Image.gz-dtb
-            out/arch/arm64/boot/dtbo.img
-            build.log
+          name: 4.14.356-sh4dow6oy
+          path: 4.14.356-sh4dow6oy.zip
