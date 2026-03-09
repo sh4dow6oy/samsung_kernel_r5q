@@ -1,4 +1,4 @@
-name: S10 Lite (V26 - Permissions & Path Fix)
+name: S10 Lite (V27 - The Ultimate Build Fix)
 
 on:
   workflow_dispatch:
@@ -12,16 +12,6 @@ jobs:
         with:
           fetch-depth: 1
 
-      - name: Setup Cache
-        uses: actions/cache@v4
-        with:
-          path: |
-            clang
-            out
-          key: ${{ runner.os }}-r5q-v26-final
-          restore-keys: |
-            ${{ runner.os }}-r5q-v26-
-
       - name: Install Build Tools
         run: |
           sudo apt-get update
@@ -29,30 +19,29 @@ jobs:
 
       - name: Download Neutron Clang
         run: |
-          if [ ! -d "clang/bin" ]; then
-            mkdir -p clang
-            wget https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
-            tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
-          fi
+          mkdir -p clang
+          wget https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
+          tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
 
-      - name: Fix Permissions and Source
+      - name: Nuclear Fix for Source
         run: |
-          # 1. ACORDARE PERMISIUNI (Rezolvă "Permission denied" de la ./scripts/config)
-          chmod -R +x scripts/
+          # 1. Permisiuni totale pe scripturi
+          chmod -R 777 scripts/
           
-          # 2. Fix DTC Lexer & yylloc
+          # 2. Eliminare completa secgetspf (cauza multor erori de tip "No such file")
+          grep -rl "secgetspf" . | xargs sed -i 's/$(shell secgetspf)//g' 2>/dev/null || true
+          
+          # 3. Fix DTC Lexer
           sed -i 's/^YYLTYPE yylloc;/extern YYLTYPE yylloc;/g' scripts/dtc/dtc-lexer.lex.c_shipped || true
           
-          # 3. Stergere agresiva secgetspf din Makefile-uri
-          # Folosim o metoda care cauta orice variatie a string-ului
-          find . -type f -name "Makefile*" -exec sed -i 's/$(shell secgetspf)//g' {} +
-          find . -type f -name "*.mk" -exec sed -i 's/$(shell secgetspf)//g' {} +
-
-          # 4. Mocking Headers
+          # 4. Creare Mock Headers pentru a opri erorile de "perflog.h"
+          # Cream structura de directoare exact unde o cauta Samsung
           mkdir -p system/core/liblog/include/log
-          touch system/core/liblog/include/log/perflog.h
+          mkdir -p system/logging/liblog/include/log
+          echo "" > system/core/liblog/include/log/perflog.h
+          echo "" > system/logging/liblog/include/log/perflog.h
           
-          # 5. Dezactivare gcc-wrapper.py
+          # 5. Dezactivare Samsung gcc-wrapper
           sed -i 's/exec /#exec /g' scripts/gcc-wrapper.py || true
           echo 'exec "$@"' >> scripts/gcc-wrapper.py
           chmod +x scripts/gcc-wrapper.py
@@ -61,17 +50,18 @@ jobs:
         run: |
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           
-          # Definim argumentele de build
+          # Setam variabilele de mediu pentru a forta LLVM peste tot
+          export CC=clang
+          export LD=ld.lld
+          export AR=llvm-ar
+          export NM=llvm-nm
+          export OBJCOPY=llvm-objcopy
+          export OBJDUMP=llvm-objdump
+          export STRIP=llvm-strip
+          
           MAKE_ARGS="ARCH=arm64 \
             LLVM=1 \
             LLVM_IAS=1 \
-            CC=clang \
-            LD=ld.lld \
-            AR=llvm-ar \
-            NM=llvm-nm \
-            OBJCOPY=llvm-objcopy \
-            OBJDUMP=llvm-objdump \
-            STRIP=llvm-strip \
             CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             O=out"
@@ -79,7 +69,7 @@ jobs:
           # Configurare
           make $MAKE_ARGS g770f_defconfig
 
-          # Executăm scripts/config (Acum va avea permisiuni)
+          # Patch config pentru Clang
           ./scripts/config --file out/.config \
             -d CONFIG_CC_STACKPROTECTOR_STRONG \
             -e CONFIG_CC_STACKPROTECTOR_NONE \
@@ -87,16 +77,18 @@ jobs:
 
           make $MAKE_ARGS olddefconfig
 
-          # Compilare
+          # Build cu forțare asamblor integrat (fara /usr/bin/as)
           make -j$(nproc --all) $MAKE_ARGS \
-            KCFLAGS="--target=aarch64-linux-gnu -fcommon -fno-stack-protector -Wno-error" \
+            CC="clang" \
+            HOSTCC="clang" \
+            KCFLAGS="--target=aarch64-linux-gnu -Wno-error -Wno-implicit-function-declaration -fno-stack-protector" \
             2>&1 | tee build.log
 
       - name: Upload Artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-Build-V26
+          name: S10Lite-V27-Result
           path: |
             out/arch/arm64/boot/Image.gz-dtb
             out/arch/arm64/boot/dtbo.img
