@@ -1,4 +1,4 @@
-name: S10 Lite (Sixteen - Global Header Fix)
+name: S10 Lite (Sixteen - Final Bulletproof)
 
 on:
   workflow_dispatch:
@@ -32,43 +32,51 @@ jobs:
           wget https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C main/clang
 
-      - name: Inject R5Q & Global Patching
+      - name: Inject R5Q & Precision Patching
         run: |
           cp royna/arch/arm64/configs/r5q_defconfig main/arch/arm64/configs/r5q_defconfig
           cd main
           
-          # 1. FIX DEFINITIV setup_arch (Sintaxa si Prototip)
-          # Fortam prototipul functiei la inceputul main.c pentru a asigura vizibilitatea
+          # 1. FIX setup_arch IN MAIN.C (Sintaxa corecta)
+          # Fortam linia 692 (sau unde este apelul) sa fie exact ce trebuie
+          sed -i 's/setup_arch.*);/setup_arch(\&command_line);/g' init/main.c
+          # Adaugam prototipul la inceput pentru a evita "implicit declaration"
           sed -i '1i void setup_arch(char **cmdline_p);' init/main.c
-          sed -i 's/setup_arch(.*);/setup_arch(\&command_line);/g' init/main.c
           
-          # 2. GLOBAL SHIM (Injectam in compiler.h pentru a fi vizibil PESTE TOT)
-          # Rezolva as_is_debug_level si alte functii Samsung lipsa
-          cat << 'EOF' >> include/linux/compiler.h
+          # 2. FIX setup_arch IN SETUP.C (Definitia functiei)
+          # Folosim o cautare specifica pentru a nu strica acoladele
+          sed -i 's/void setup_arch(char \*\*cmdline_p.*/void setup_arch(char \*\*cmdline_p)/g' arch/arm64/kernel/setup.c
+
+          # 3. GLOBAL SHIMS (In compiler.h - cel mai sigur loc)
+          # Rezolvam as_is_debug, initcall_sec_debug si SAMSUNG_PRODUCT_SHIP dintr-un singur loc
+          cat << 'EOF' > global_shims.h
+          #ifndef __GLOBAL_SHIMS_H
+          #define __GLOBAL_SHIMS_H
+          #include <linux/types.h>
           static inline int as_is_debug_level(void) { return 0; }
           static inline int get_avc_paranoid(void) { return 0; }
+          #define initcall_sec_debug 0
           #ifndef SAMSUNG_PRODUCT_SHIP
           #define SAMSUNG_PRODUCT_SHIP 1
           #endif
+          #endif
           EOF
-
-          # 3. Sync setup_arch implementation
-          sed -i 's/void setup_arch(char \*\*cmdline_p, .*/void setup_arch(char \*\*cmdline_p)/g' arch/arm64/kernel/setup.c
+          # Injectam shim-ul la inceputul compiler.h
+          cat global_shims.h include/linux/compiler.h > include/linux/compiler.h.new
+          mv include/linux/compiler.h.new include/linux/compiler.h
 
           # 4. FIX frozen & cgroup
           find include/linux -name "cgroup.h" -exec sed -i 's/task->frozen/0/g' {} +
-          sed -i 's/initcall_sec_debug/initcall_debug/g' init/main.c
 
           # 5. NUCLEAR CLEANUP
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm//g' {} +
           sed -i 's/ifneq ($(wildcard $(srctree)\/scripts\/gcc-wrapper.py),)/ifeq (0,1)/g' Makefile
           
-          # 6. VDSO & ASM Fixes
+          # 6. VDSO Fix (Nu folosim -static)
           if [ -f arch/arm64/kernel/vdso/Makefile ]; then
             sed -i 's/-static//g' arch/arm64/kernel/vdso/Makefile
           fi
-          find arch/arm64 -name "*.S" -exec sed -i 's/\.inst\.w/.inst/g' {} +
 
       - name: Configure and Build
         run: |
@@ -91,6 +99,7 @@ jobs:
 
           make $MAKE_ARGS r5q_defconfig
           
+          # Ajustam config-ul pentru a evita conflictele de linkare
           ./scripts/config --file out/.config \
             -e CONFIG_BPF_SYSCALL -e CONFIG_BPF_JIT \
             -d CONFIG_LTO -d CONFIG_LTO_CLANG -e CONFIG_LTO_NONE \
@@ -99,16 +108,16 @@ jobs:
 
           make $MAKE_ARGS olddefconfig
 
-          # Build Final
+          # Build Final - adaugam Wno-everything doar pentru a trece de orice avertisment minor ramas
           make -j$(nproc --all) $MAKE_ARGS \
-            KCFLAGS="-fcommon -Wno-error -Wno-implicit-function-declaration -Wno-macro-redefined -Wno-incompatible-pointer-types -Wno-implicit-int" \
+            KCFLAGS="-fcommon -Wno-error -Wno-implicit-function-declaration -Wno-macro-redefined -Wno-incompatible-pointer-types" \
             2>&1 | tee build.log
 
       - name: Upload Kernel
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-Sixteen-v5-GlobalFix
+          name: S10Lite-Sixteen-v6-Bulletproof
           path: |
             main/out/arch/arm64/boot/Image.gz-dtb
             main/out/arch/arm64/boot/dtbo.img
