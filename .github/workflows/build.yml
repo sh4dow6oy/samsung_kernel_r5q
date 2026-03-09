@@ -1,4 +1,4 @@
-name: S10 Lite (Pascua Sixteen Base + R5Q Config)
+name: S10 Lite (Pascua Sixteen + R5Q Config)
 
 on:
   workflow_dispatch:
@@ -32,25 +32,29 @@ jobs:
           wget https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C main/clang
 
-      - name: Inject R5Q Defconfig & Patching
+      - name: Inject R5Q & Surgical Patching
         run: |
-          # Copiem defconfig-ul de S10 Lite in sursa noua
+          # 1. Injectare Defconfig r5q
           cp royna/arch/arm64/configs/r5q_defconfig main/arch/arm64/configs/r5q_defconfig
           
           cd main
-          # NUCLEAR CLEANUP (Prevenim erorile de flag-uri LLVM pe sursa Sixteen)
+          # 2. Fix SecDebug & initcall_sec_debug (Eroarea din init/main.c)
+          sed -i 's/initcall_sec_debug/initcall_debug/g' init/main.c
+          sed -i 's/secgetspf//g' Makefile
+          
+          # 3. Fix 'frozen' member in task_struct
+          sed -i '/unsigned int flags;/a \	unsigned int frozen:1;' include/linux/sched.h
+          find include/linux -name "cgroup.h" -exec sed -i 's/return task->frozen;/return 0;/g' {} +
+
+          # 4. Nuclear Cleanup (Polly & GCC Wrappers)
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm//g' {} +
+          sed -i 's/ifneq ($(wildcard $(srctree)\/scripts\/gcc-wrapper.py),)/ifeq (0,1)/g' Makefile
           
-          # Fix VDSO (Eroarea de linkare statica pe Clang/LLVM)
+          # 5. VDSO & ASM Fixes
           if [ -f arch/arm64/kernel/vdso/Makefile ]; then
             sed -i 's/-static//g' arch/arm64/kernel/vdso/Makefile
           fi
-
-          # Dezactivam Samsung Knox/KSU care ar putea intra in conflict
-          sed -i 's/ifneq ($(wildcard $(srctree)\/scripts\/gcc-wrapper.py),)/ifeq (0,1)/g' Makefile
-          
-          # Fix pentru asamblorul integrat (.inst compatibilitate)
           find arch/arm64 -name "*.S" -exec sed -i 's/\.inst\.w/.inst/g' {} +
 
       - name: Configure and Build
@@ -58,7 +62,7 @@ jobs:
           cd main
           export PATH="$GITHUB_WORKSPACE/main/clang/bin:$PATH"
 
-          # Definim argumentele de build pentru LLVM pur
+          # Argumente Build pentru Neutron Clang + LLVM
           MAKE_ARGS="ARCH=arm64 \
             LLVM=1 \
             LLVM_IAS=1 \
@@ -73,28 +77,29 @@ jobs:
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             O=out"
 
-          # 1. Generam config-ul R5Q
+          # Generare config r5q
           make $MAKE_ARGS r5q_defconfig
           
-          # 2. Ajustam config-ul pentru compatibilitate moderna
+          # Ajustări fine pentru stabilitate și BPF
           ./scripts/config --file out/.config \
             -e CONFIG_BPF_SYSCALL -e CONFIG_BPF_JIT \
             -d CONFIG_LTO -d CONFIG_LTO_CLANG -e CONFIG_LTO_NONE \
             -d CONFIG_CC_STACKPROTECTOR_STRONG -e CONFIG_CC_STACKPROTECTOR_NONE \
-            -d CONFIG_SECURITY_SAMSUNG_KNOX -d CONFIG_KNOX_KAP
+            -d CONFIG_SECURITY_SAMSUNG_KNOX -d CONFIG_KNOX_KAP \
+            -d CONFIG_SEC_DEBUG -d CONFIG_SEC_ABC
 
           make $MAKE_ARGS olddefconfig
 
-          # 3. Compilare Finala
+          # Compilare cu flag-uri de iertare (fcommon rezolvă definițiile multiple)
           make -j$(nproc --all) $MAKE_ARGS \
-            KCFLAGS="-fcommon -Wno-error -Wno-implicit-function-declaration" \
+            KCFLAGS="-fcommon -Wno-error -Wno-implicit-function-declaration -Wno-unused-command-line-argument -Wno-int-conversion" \
             2>&1 | tee build.log
 
-      - name: Upload Kernel Artifacts
+      - name: Upload Kernel
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-Sixteen-Base
+          name: S10Lite-Sixteen-Final
           path: |
             main/out/arch/arm64/boot/Image.gz-dtb
             main/out/arch/arm64/boot/dtbo.img
