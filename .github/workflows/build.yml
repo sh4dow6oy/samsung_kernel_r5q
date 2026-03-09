@@ -1,4 +1,4 @@
-name: S10 Lite (V31 - Manual BTF Header Fix)
+name: S10 Lite (V32 - BPF Header Surgical Strike)
 
 on:
   workflow_dispatch:
@@ -23,18 +23,18 @@ jobs:
           wget https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
 
-      - name: Prepare Source
+      - name: Surgical Patching
         run: |
-          # 1. Permisiuni
-          chmod -R 777 scripts/
+          # 1. FIX CRITIC: Inlocuim calea problematica in codul sursa
+          # In loc de <uapi/linux/btf.h>, folosim <linux/btf.h> care este calea standard de cautare
+          sed -i 's|<uapi/linux/btf.h>|<linux/btf.h>|g' kernel/bpf/core.c
+          sed -i 's|<uapi/linux/bpf.h>|<linux/bpf.h>|g' kernel/bpf/core.c
           
-          # 2. Curatare Makefile de secgetspf (inca mai apare in log-uri uneori)
+          # 2. Fix permisiuni si mizerii Samsung
+          chmod -R 777 scripts/
           find . -type f -name "Makefile*" -exec sed -i 's/$(shell secgetspf)//g' {} +
           
-          # 3. Patch DTC yylloc (pentru a evita erori la generarea dtb-urilor)
-          sed -i 's/^YYLTYPE yylloc;/extern YYLTYPE yylloc;/g' scripts/dtc/dtc-lexer.lex.c_shipped || true
-          
-          # 4. Mocking Samsung logging headers
+          # 3. Mocking Headers (Samsung Debugging)
           mkdir -p system/core/liblog/include/log
           mkdir -p system/logging/liblog/include/log
           touch system/core/liblog/include/log/perflog.h
@@ -44,7 +44,6 @@ jobs:
         run: |
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           
-          # Parametrii de build
           MAKE_ARGS="ARCH=arm64 \
             LLVM=1 \
             LLVM_IAS=1 \
@@ -71,7 +70,7 @@ jobs:
           make $MAKE_ARGS olddefconfig
 
           # COMPILARE
-          # -Iusr/include ajuta compilatorul sa gaseasca headerele UAPI generate sau adaugate manual
+          # Fortam includerea folderelor UAPI in procesul de cautare
           make -j$(nproc --all) $MAKE_ARGS \
             KCFLAGS="--target=aarch64-linux-gnu \
                      -I$(pwd)/include/uapi \
@@ -84,11 +83,11 @@ jobs:
                      -Wno-implicit-function-declaration" \
             2>&1 | tee build.log
 
-      - name: Upload Artifacts
+      - name: Upload Results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-V31-Result
+          name: S10Lite-V32-Result
           path: |
             out/arch/arm64/boot/Image.gz-dtb
             out/arch/arm64/boot/dtbo.img
