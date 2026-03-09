@@ -1,4 +1,4 @@
-name: S10 Lite (V27 - The Ultimate Build Fix)
+name: S10 Lite (V28 - Relaxed C Standards)
 
 on:
   workflow_dispatch:
@@ -23,45 +23,38 @@ jobs:
           wget https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
 
-      - name: Nuclear Fix for Source
+      - name: Surgical Source Fix
         run: |
-          # 1. Permisiuni totale pe scripturi
+          # 1. Permisiuni si curatenie Makefile
           chmod -R 777 scripts/
-          
-          # 2. Eliminare completa secgetspf (cauza multor erori de tip "No such file")
           grep -rl "secgetspf" . | xargs sed -i 's/$(shell secgetspf)//g' 2>/dev/null || true
-          
-          # 3. Fix DTC Lexer
           sed -i 's/^YYLTYPE yylloc;/extern YYLTYPE yylloc;/g' scripts/dtc/dtc-lexer.lex.c_shipped || true
           
-          # 4. Creare Mock Headers pentru a opri erorile de "perflog.h"
-          # Cream structura de directoare exact unde o cauta Samsung
+          # 2. Mock Headers pentru Samsung Logging
           mkdir -p system/core/liblog/include/log
           mkdir -p system/logging/liblog/include/log
-          echo "" > system/core/liblog/include/log/perflog.h
-          echo "" > system/logging/liblog/include/log/perflog.h
+          touch system/core/liblog/include/log/perflog.h
+          touch system/logging/liblog/include/log/perflog.h
           
-          # 5. Dezactivare Samsung gcc-wrapper
+          # 3. Dezactivare Samsung gcc-wrapper
           sed -i 's/exec /#exec /g' scripts/gcc-wrapper.py || true
           echo 'exec "$@"' >> scripts/gcc-wrapper.py
-          chmod +x scripts/gcc-wrapper.py
 
       - name: Build Kernel
         run: |
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           
-          # Setam variabilele de mediu pentru a forta LLVM peste tot
-          export CC=clang
-          export LD=ld.lld
-          export AR=llvm-ar
-          export NM=llvm-nm
-          export OBJCOPY=llvm-objcopy
-          export OBJDUMP=llvm-objdump
-          export STRIP=llvm-strip
-          
+          # Fortam toolchain-ul LLVM
           MAKE_ARGS="ARCH=arm64 \
             LLVM=1 \
             LLVM_IAS=1 \
+            CC=clang \
+            LD=ld.lld \
+            AR=llvm-ar \
+            NM=llvm-nm \
+            OBJCOPY=llvm-objcopy \
+            OBJDUMP=llvm-objdump \
+            STRIP=llvm-strip \
             CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             O=out"
@@ -69,26 +62,33 @@ jobs:
           # Configurare
           make $MAKE_ARGS g770f_defconfig
 
-          # Patch config pentru Clang
+          # Patch config: eliminam WERROR si fixam Stack Protector
           ./scripts/config --file out/.config \
+            -d CONFIG_CC_WERROR \
             -d CONFIG_CC_STACKPROTECTOR_STRONG \
-            -e CONFIG_CC_STACKPROTECTOR_NONE \
-            -d CONFIG_CC_WERROR
+            -e CONFIG_CC_STACKPROTECTOR_NONE
 
           make $MAKE_ARGS olddefconfig
 
-          # Build cu forțare asamblor integrat (fara /usr/bin/as)
+          # COMPILARE cu flag-uri de relaxare pentru Clang
+          # -Wno-strict-prototypes rezolva eroarea din dd_core.c
+          # -Wno-unused-but-set-variable curata log-ul de warning-uri inutile
           make -j$(nproc --all) $MAKE_ARGS \
-            CC="clang" \
-            HOSTCC="clang" \
-            KCFLAGS="--target=aarch64-linux-gnu -Wno-error -Wno-implicit-function-declaration -fno-stack-protector" \
+            KCFLAGS="--target=aarch64-linux-gnu \
+                     -fcommon \
+                     -fno-stack-protector \
+                     -Wno-error \
+                     -Wno-strict-prototypes \
+                     -Wno-unused-but-set-variable \
+                     -Wno-implicit-function-declaration \
+                     -Wno-incompatible-pointer-types-discards-qualifiers" \
             2>&1 | tee build.log
 
-      - name: Upload Artifacts
+      - name: Upload Results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-V27-Result
+          name: S10Lite-V28-Build
           path: |
             out/arch/arm64/boot/Image.gz-dtb
             out/arch/arm64/boot/dtbo.img
