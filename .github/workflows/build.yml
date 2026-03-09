@@ -1,4 +1,4 @@
-name: S10 Lite (Royna + Full Pascua BPF Import)
+name: S10 Lite (Pascua Sixteen Base + R5Q Config)
 
 on:
   workflow_dispatch:
@@ -7,19 +7,19 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Royna Base
+      - name: Checkout Sixteen Base (Pascua)
+        uses: actions/checkout@v4
+        with:
+          repository: pascua28/android_kernel_samsung_sm7150
+          ref: sixteen
+          path: main
+
+      - name: Checkout Royna (For R5Q Defconfig)
         uses: actions/checkout@v4
         with:
           repository: Roynas-Android-Playground/kernel_samsung_r3q
           ref: master
-          path: main
-
-      - name: Checkout Pascua BPF Branch
-        uses: actions/checkout@v4
-        with:
-          repository: pascua28/android_kernel_samsung_sm7150
-          ref: bpf
-          path: pascua
+          path: royna
 
       - name: Install Dependencies
         run: |
@@ -32,43 +32,25 @@ jobs:
           wget https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C main/clang
 
-      - name: Deep Integration of BPF Dependencies
+      - name: Inject R5Q Defconfig & Patching
         run: |
-          # 1. Copiem subsistemul BPF complet (Kernel side)
-          rm -rf main/kernel/bpf
-          cp -r pascua/kernel/bpf main/kernel/
-
-          # 2. Importam Header-ele UAPI si Linux (Aici sunt definitiile lipsa)
-          # Folosim 'cp -f' pentru a suprascrie fisierele vechi din Royna cu cele compatibile BPF
-          cp -f pascua/include/linux/bpf* main/include/linux/
-          cp -f pascua/include/linux/filter.h main/include/linux/
-          cp -f pascua/include/linux/skbuff.h main/include/linux/
-          cp -f pascua/include/linux/netdevice.h main/include/linux/
-          cp -f pascua/include/uapi/linux/bpf* main/include/uapi/linux/
-          cp -f pascua/include/uapi/linux/bpf_common.h main/include/uapi/linux/
-
-          # 3. Patch pentru 'cant_sleep' si dependinte de procesor
-          # Pascua are aceste definitii in sched.h sau wait.h
-          cp -f pascua/include/linux/sched.h main/include/linux/ 2>/dev/null || true
-
-      - name: Nuclear Cleanup & Samsung Fixes
-        run: |
+          # Copiem defconfig-ul de S10 Lite in sursa noua
+          cp royna/arch/arm64/configs/r5q_defconfig main/arch/arm64/configs/r5q_defconfig
+          
           cd main
-          # Eliminam flag-urile Polly care cauzeaza crash-uri pe Clang
+          # NUCLEAR CLEANUP (Prevenim erorile de flag-uri LLVM pe sursa Sixteen)
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm//g' {} +
           
-          # Fix pentru VDSO (eroarea de linkare statica)
+          # Fix VDSO (Eroarea de linkare statica pe Clang/LLVM)
           if [ -f arch/arm64/kernel/vdso/Makefile ]; then
             sed -i 's/-static//g' arch/arm64/kernel/vdso/Makefile
           fi
 
-          # Dezactivam Samsung Knox si KernelSU rezidual care blocheaza build-ul
-          sed -i '/kernelsu/d' drivers/android/Kconfig || true
-          sed -i '/kernelsu/d' drivers/android/Makefile || true
+          # Dezactivam Samsung Knox/KSU care ar putea intra in conflict
           sed -i 's/ifneq ($(wildcard $(srctree)\/scripts\/gcc-wrapper.py),)/ifeq (0,1)/g' Makefile
-
-          # Fix asamblare .inst pentru LLVM_IAS
+          
+          # Fix pentru asamblorul integrat (.inst compatibilitate)
           find arch/arm64 -name "*.S" -exec sed -i 's/\.inst\.w/.inst/g' {} +
 
       - name: Configure and Build
@@ -76,6 +58,7 @@ jobs:
           cd main
           export PATH="$GITHUB_WORKSPACE/main/clang/bin:$PATH"
 
+          # Definim argumentele de build pentru LLVM pur
           MAKE_ARGS="ARCH=arm64 \
             LLVM=1 \
             LLVM_IAS=1 \
@@ -90,28 +73,29 @@ jobs:
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             O=out"
 
-          # Generam config-ul de baza
+          # 1. Generam config-ul R5Q
           make $MAKE_ARGS r5q_defconfig
           
-          # Fortam activarea optiunilor BPF in .config
+          # 2. Ajustam config-ul pentru compatibilitate moderna
           ./scripts/config --file out/.config \
-            -e CONFIG_BPF -e CONFIG_BPF_SYSCALL -e CONFIG_BPF_JIT \
-            -e CONFIG_HAVE_EBPF_JIT -e CONFIG_BPF_JIT_ALWAYS_ON \
-            -e CONFIG_NET_CLS_BPF -e CONFIG_NET_ACT_BPF \
-            -d CONFIG_CC_STACKPROTECTOR_STRONG -e CONFIG_CC_STACKPROTECTOR_NONE
+            -e CONFIG_BPF_SYSCALL -e CONFIG_BPF_JIT \
+            -d CONFIG_LTO -d CONFIG_LTO_CLANG -e CONFIG_LTO_NONE \
+            -d CONFIG_CC_STACKPROTECTOR_STRONG -e CONFIG_CC_STACKPROTECTOR_NONE \
+            -d CONFIG_SECURITY_SAMSUNG_KNOX -d CONFIG_KNOX_KAP
 
           make $MAKE_ARGS olddefconfig
 
-          # Build final cu flag-uri de iertare pentru restul kernelului
+          # 3. Compilare Finala
           make -j$(nproc --all) $MAKE_ARGS \
-            KCFLAGS="-fcommon -Wno-error -Wno-implicit-function-declaration -Wno-unused-command-line-argument" \
+            KCFLAGS="-fcommon -Wno-error -Wno-implicit-function-declaration" \
             2>&1 | tee build.log
 
-      - name: Upload Kernel
+      - name: Upload Kernel Artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-Pascua-BPF-Import
+          name: S10Lite-Sixteen-Base
           path: |
             main/out/arch/arm64/boot/Image.gz-dtb
+            main/out/arch/arm64/boot/dtbo.img
             main/build.log
