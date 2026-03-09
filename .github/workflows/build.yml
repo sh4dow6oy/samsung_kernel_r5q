@@ -1,4 +1,4 @@
-name: S10 Lite (V23 - Full Pure Build Fix)
+name: S10 Lite (V24 - Assembler & Headers Fix)
 
 on:
   workflow_dispatch:
@@ -20,16 +20,16 @@ jobs:
           path: |
             clang
             out
-          key: ${{ runner.os }}-r5q-v23-${{ hashFiles('arch/arm64/configs/g770f_defconfig') }}
+          key: ${{ runner.os }}-r5q-v24-final
           restore-keys: |
-            ${{ runner.os }}-r5q-v23-
+            ${{ runner.os }}-r5q-v24-
 
       - name: Install Build Tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y bc bison build-essential flex git libssl-dev libelf-dev clang llvm lld zstd curl python3 device-tree-compiler
+          sudo apt-get install -y bc bison build-essential flex git libssl-dev libelf-dev clang llvm lld zstd curl python3 device-tree-compiler gcc-aarch64-linux-gnu
 
-      - name: Download Neutron Clang (Cached)
+      - name: Download Neutron Clang
         run: |
           if [ ! -d "clang/bin" ]; then
             mkdir -p clang
@@ -41,12 +41,12 @@ jobs:
         run: |
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           
+          # Parametrii critici pentru a evita /usr/bin/as
           MAKE_ARGS="ARCH=arm64 \
             LLVM=1 \
             LLVM_IAS=1 \
             CC=clang \
             LD=ld.lld \
-            DTC=dtc \
             AR=llvm-ar \
             NM=llvm-nm \
             OBJCOPY=llvm-objcopy \
@@ -56,50 +56,49 @@ jobs:
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             O=out"
 
-          # 1. Curățăm Makefile-ul de mizeriile Samsung (secgetspf)
-          # Acesta este motivul pentru care primeai "No such file or directory"
-          sed -i 's/$(shell secgetspf)//g' Makefile || true
-          sed -i 's/$(shell secgetspf)//g' arch/arm64/Makefile || true
+          # 1. FIX: Creare Mock Headers pentru log/perflog.h
+          # Samsung cauta aceste fisiere in foldere de sistem Android care nu exista aici
+          mkdir -p system/core/liblog/include/log
+          mkdir -p system/logging/liblog/include/log
+          touch system/core/liblog/include/log/perflog.h
+          touch system/logging/liblog/include/log/perflog.h
 
-          # 2. Generăm .config din sursa ta
+          # 2. FIX: Stergere secgetspf din Makefile-uri (preventiv)
+          find . -name "Makefile*" -exec sed -i 's/$(shell secgetspf)//g' {} +
+          find . -name "Makefile*" -exec sed -i 's/secgetspf//g' {} +
+
+          # 3. Config
           make $MAKE_ARGS g770f_defconfig
 
-          # 3. Rezolvăm eroarea CONFIG_CC_STACKPROTECTOR_STRONG
-          # Clang are nevoie de flag-uri diferite sau de dezactivare pentru a trece de check
+          # 4. Dezactivare protectii care blocheaza compiler check
           ./scripts/config --file out/.config \
             -d CONFIG_CC_STACKPROTECTOR_STRONG \
             -e CONFIG_CC_STACKPROTECTOR_NONE \
             -d CONFIG_CC_WERROR
 
-          # Aplicăm schimbările în config
           make $MAKE_ARGS olddefconfig
 
-          # 4. Compilare efectivă
-          # Folosim KCFLAGS pentru a ignora stack-protector-ul la nivel de compiler check
+          # 5. Compilare (Adaugam --target pentru siguranta asamblorului)
           make -j$(nproc --all) $MAKE_ARGS \
-            KCFLAGS="-fcommon -fno-stack-protector -Wno-error -Wno-implicit-function-declaration" \
+            KCFLAGS="--target=aarch64-linux-gnu -fcommon -fno-stack-protector -Wno-error" \
             2>&1 | tee build.log
 
       - name: Package with AnyKernel3
         if: success()
         run: |
           git clone https://github.com/osm0sis/AnyKernel3
-          cp out/arch/arm64/boot/Image.gz-dtb AnyKernel3/ || echo "No Image found"
-          cp out/arch/arm64/boot/dtbo.img AnyKernel3/ || echo "No DTBO found"
-          
+          cp out/arch/arm64/boot/Image.gz-dtb AnyKernel3/ || echo "No Image"
+          cp out/arch/arm64/boot/dtbo.img AnyKernel3/ || echo "No DTBO"
           cd AnyKernel3
           sed -i 's/device.name1=maguro/device.name1=r5q/' anykernel.sh
-          sed -i 's/device.name2=toroplus/device.name2=SM-G770F/' anykernel.sh
-          # Setăm calea corectă pentru boot block pe Snapdragon 855
           sed -i 's|block=/dev/block/platform/omap/omap_hsmmc.0/by-name/boot|block=/dev/block/bootdevice/by-name/boot|' anykernel.sh
-          
-          zip -r ../S10Lite-G770F-V23.zip *
+          zip -r ../S10Lite-G770F-V24.zip *
 
-      - name: Upload Kernel Zip
+      - name: Upload
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-Build-V23
+          name: S10Lite-Build-V24
           path: |
-            S10Lite-G770F-V23.zip
+            S10Lite-G770F-V24.zip
             build.log
