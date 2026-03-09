@@ -1,4 +1,4 @@
-name: S10 Lite (Lineage Base + Mainey R5Q EUR Config)
+name: S10 Lite (Lineage Base + Mainey DTS & Makefile)
 
 on:
   workflow_dispatch:
@@ -7,7 +7,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout LineageOS SM8150 Base
+      - name: Checkout LineageOS Base
         uses: actions/checkout@v4
         with:
           repository: LineageOS/android_kernel_oneplus_sm8150
@@ -31,32 +31,54 @@ jobs:
           wget https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C main/clang
 
-      - name: Surgical Grafting (DTS & EUR Config)
+      - name: Surgical Grafting (DTS, Makefile & Shims)
         run: |
-          # 1. Copiem Config-ul European r5q exact din calea specificata
+          # 1. Config R5Q EUR
           cp mainey/arch/arm64/configs/r5q_eur_open_defconfig main/arch/arm64/configs/r5q_defconfig
           
-          # 2. Replicam structura de foldere DTS (Crucial pentru include-uri)
+          # 2. DTS & MAKEFILE Grafting (Aici am adaugat Makefile-ul)
           mkdir -p main/arch/arm64/boot/dts/samsung
           cp -r mainey/arch/arm64/boot/dts/samsung/* main/arch/arm64/boot/dts/samsung/
           
+          # Suprascriem Makefile-ul din dts/ pentru a include tintele Samsung
+          cp mainey/arch/arm64/boot/dts/Makefile main/arch/arm64/boot/dts/Makefile
+          
           cd main
-          # 3. Global Shims (Protecție Assembly pentru functii Samsung lipsa)
-          cat << 'EOF' > global_shims.h
-          #ifndef __GLOBAL_SHIMS_H
-          #define __GLOBAL_SHIMS_H
-          #ifndef __ASSEMBLY__
-          static inline int as_is_debug_level(void) { return 0; }
-          static inline int get_avc_paranoid(void) { return 0; }
-          #define initcall_sec_debug 0
-          #endif
-          #define SAMSUNG_PRODUCT_SHIP 1
-          #endif
-          EOF
-          cat global_shims.h include/linux/compiler.h > include/linux/compiler.h.new
-          mv include/linux/compiler.h.new include/linux/compiler.h
+          # 3. CREARE FISIER SHIMS (Prevenim erorile de linkare ld.lld)
+          # In loc de header, punem simbolurile intr-un .c pentru a evita "multiple definition"
+          cat << 'EOF' > drivers/misc/r5q_shims.c
+          #include <linux/kernel.h>
+          #include <linux/module.h>
+          #include <linux/types.h>
+          #include <linux/pm.h>
 
-          # 4. Patch DTC Lexer pentru compatibilitate Clang modern
+          void push_component_info(const char *name, const char *version) {}
+          int get_boot_mode(void) { return 0; }
+          void register_device_proc(const char *name, void *read_proc, void *write_proc) {}
+          void sys_reset_dev(void) {}
+          int pmicwd_init(void) { return 0; }
+          int kpdpwr_init(void) { return 0; }
+          int get_PCB_Version(void) { return 0; }
+          int is_project(int project) { return 0; }
+          int get_project(void) { return 0; }
+          int qpnp_is_power_off_charging(void) { return 0; }
+          void opticalfp_irq_handler_register(void *handler) {}
+          int tp_gesture_enable_flag_oncell = 0;
+          int tp_fp_enable_flag = 0;
+          struct dev_pm_ops qpnp_pm_ops = {};
+          
+          EXPORT_SYMBOL(push_component_info);
+          EXPORT_SYMBOL(get_boot_mode);
+          EXPORT_SYMBOL(register_device_proc);
+          EOF
+          
+          # Adaugam shim-ul in Makefile-ul driverelor
+          echo "obj-y += r5q_shims.o" >> drivers/misc/Makefile
+
+          # 4. Global Guards (Doar macro-uri in header)
+          sed -i '/#define _LINUX_COMPILER_H/a #define SAMSUNG_PRODUCT_SHIP 1\n#define initcall_sec_debug 0' include/linux/compiler.h
+          
+          # 5. Patch DTC Lexer
           sed -i 's/^YYLTYPE yylloc;/extern YYLTYPE yylloc;/g' scripts/dtc/dtc-lexer.lex.c_shipped || true
 
       - name: Configure and Build
@@ -79,10 +101,8 @@ jobs:
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             O=out"
 
-          # Generăm config folosind fisierul r5q_defconfig (care e acum r5q_eur_open_defconfig)
           make $MAKE_ARGS r5q_defconfig
           
-          # Ajustări obligatorii pentru suport Android 15 & Lineage Base
           ./scripts/config --file out/.config \
             -e CONFIG_BPF_SYSCALL -e CONFIG_BPF_JIT \
             -d CONFIG_LTO -d CONFIG_LTO_CLANG -e CONFIG_LTO_NONE \
@@ -100,7 +120,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-Lineage-EUR-Final
+          name: S10Lite-Lineage-V14-Final
           path: |
             main/out/arch/arm64/boot/Image.gz-dtb
             main/out/arch/arm64/boot/dtbo.img
