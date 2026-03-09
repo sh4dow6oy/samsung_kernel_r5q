@@ -1,4 +1,4 @@
-name: S10 Lite (Lineage Base + Mainey DTS & Makefile)
+name: S10 Lite (Lineage Base - No Jack Fix)
 
 on:
   workflow_dispatch:
@@ -31,26 +31,22 @@ jobs:
           wget https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C main/clang
 
-      - name: Surgical Grafting (DTS, Makefile & Shims)
+      - name: Surgical Grafting (DTS, No-Jack Audio & Shims)
         run: |
           # 1. Config R5Q EUR
           cp mainey/arch/arm64/configs/r5q_eur_open_defconfig main/arch/arm64/configs/r5q_defconfig
           
-          # 2. DTS & MAKEFILE Grafting (Aici am adaugat Makefile-ul)
+          # 2. DTS & Makefile Grafting
           mkdir -p main/arch/arm64/boot/dts/samsung
           cp -r mainey/arch/arm64/boot/dts/samsung/* main/arch/arm64/boot/dts/samsung/
-          
-          # Suprascriem Makefile-ul din dts/ pentru a include tintele Samsung
           cp mainey/arch/arm64/boot/dts/Makefile main/arch/arm64/boot/dts/Makefile
           
           cd main
-          # 3. CREARE FISIER SHIMS (Prevenim erorile de linkare ld.lld)
-          # In loc de header, punem simbolurile intr-un .c pentru a evita "multiple definition"
+          # 3. CREARE FISIER SHIMS (FARA switch_headset_state)
           cat << 'EOF' > drivers/misc/r5q_shims.c
           #include <linux/kernel.h>
           #include <linux/module.h>
           #include <linux/types.h>
-          #include <linux/pm.h>
 
           void push_component_info(const char *name, const char *version) {}
           int get_boot_mode(void) { return 0; }
@@ -63,22 +59,24 @@ jobs:
           int get_project(void) { return 0; }
           int qpnp_is_power_off_charging(void) { return 0; }
           void opticalfp_irq_handler_register(void *handler) {}
+          
           int tp_gesture_enable_flag_oncell = 0;
           int tp_fp_enable_flag = 0;
-          struct dev_pm_ops qpnp_pm_ops = {};
           
           EXPORT_SYMBOL(push_component_info);
           EXPORT_SYMBOL(get_boot_mode);
-          EXPORT_SYMBOL(register_device_proc);
           EOF
           
-          # Adaugam shim-ul in Makefile-ul driverelor
           echo "obj-y += r5q_shims.o" >> drivers/misc/Makefile
 
-          # 4. Global Guards (Doar macro-uri in header)
+          # 4. AUDIO PATCH: Dezactivam apelul catre switch_headset_state in sursa
+          # Comentam linia care cauzeaza eroarea in techpack/audio
+          find techpack/audio -name "wcd-mbhc-v2.c" -exec sed -i 's/switch_headset_state(state);//g' {} +
+
+          # 5. Global Guards
           sed -i '/#define _LINUX_COMPILER_H/a #define SAMSUNG_PRODUCT_SHIP 1\n#define initcall_sec_debug 0' include/linux/compiler.h
           
-          # 5. Patch DTC Lexer
+          # 6. Fix DTC Lexer
           sed -i 's/^YYLTYPE yylloc;/extern YYLTYPE yylloc;/g' scripts/dtc/dtc-lexer.lex.c_shipped || true
 
       - name: Configure and Build
@@ -103,24 +101,27 @@ jobs:
 
           make $MAKE_ARGS r5q_defconfig
           
+          # Ajustări pentru a elimina dependințele de Jack Audio
           ./scripts/config --file out/.config \
             -e CONFIG_BPF_SYSCALL -e CONFIG_BPF_JIT \
             -d CONFIG_LTO -d CONFIG_LTO_CLANG -e CONFIG_LTO_NONE \
             -d CONFIG_SECURITY_SAMSUNG_KNOX -d CONFIG_KNOX_KAP \
-            -d CONFIG_SEC_ABC -d CONFIG_SEC_DEBUG
+            -d CONFIG_SEC_ABC -d CONFIG_SEC_DEBUG \
+            -d CONFIG_SAMSUNG_TUI \
+            -d CONFIG_SND_SOC_WCD_MBHC # Dezactivam MBHC complet
 
           make $MAKE_ARGS olddefconfig
 
           # Build Final
           make -j$(nproc --all) $MAKE_ARGS \
-            KCFLAGS="-fcommon -Wno-error -Wno-implicit-function-declaration -Wno-macro-redefined -Wno-incompatible-pointer-types" \
+            KCFLAGS="-fcommon -fno-common -Wno-error -Wno-implicit-function-declaration -Wno-macro-redefined" \
             2>&1 | tee build.log
 
       - name: Upload Kernel
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-Lineage-V14-Final
+          name: S10Lite-Lineage-V16-NoJack
           path: |
             main/out/arch/arm64/boot/Image.gz-dtb
             main/out/arch/arm64/boot/dtbo.img
