@@ -38,9 +38,7 @@ jobs:
           
           # 2. Replicam structura de foldere DTS (Crucial pentru include-uri)
           mkdir -p main/arch/arm64/boot/dts/samsung
-          mkdir -p main/arch/arm64/boot/dts/vendor
           cp -r mainey/arch/arm64/boot/dts/samsung/* main/arch/arm64/boot/dts/samsung/
-          cp -r mainey/arch/arm64/boot/dts/vendor/* main/arch/arm64/boot/dts/vendor/
           
           cd main
           # 3. Global Shims (Protecție Assembly pentru functii Samsung lipsa)
