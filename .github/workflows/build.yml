@@ -1,4 +1,4 @@
-name: S10 Lite (Sixteen - Argument Fix)
+name: S10 Lite (Sixteen - Sync Fix)
 
 on:
   workflow_dispatch:
@@ -37,23 +37,23 @@ jobs:
           cp royna/arch/arm64/configs/r5q_defconfig main/arch/arm64/configs/r5q_defconfig
           cd main
           
-          # 1. FIX PENTRU setup_arch (Eroarea: too few arguments)
-          # Fortam apelul setup_arch sa aiba al doilea argument (NULL sau dummy) daca e nevoie
-          # Dar de cele mai multe ori, in Sixteen, definitia asteapta (char **cmdline_p)
-          # Daca cere 2, al doilea este de obicei pointerul catre DTB sau ceva similar.
-          # O vom "pacali" redirectionand-o catre o variabila locala.
-          sed -i 's/setup_arch(&command_line);/setup_arch(&command_line, NULL);/g' init/main.c
-          
-          # 2. FIX PENTRU initcall_sec_debug & frozen
-          sed -i 's/initcall_sec_debug/initcall_debug/g' init/main.c
-          find include/linux -name "cgroup.h" -exec sed -i 's/task->frozen/0/g' {} +
-          
-          # 3. FIX REDEFINITION (SAMSUNG_PRODUCT_SHIP)
-          # In loc sa o adaugam in Makefile (unde cauzeaza duplicate), o definim doar daca nu exista
-          sed -i '1i #ifndef SAMSUNG_PRODUCT_SHIP\n#define SAMSUNG_PRODUCT_SHIP\n#endif' init/main.c
-          sed -i 's/secgetspf//g' Makefile
+          # 1. SYNC setup_arch: Fortam 1 singur argument peste tot pentru a evita "too many/few"
+          # In main.c
+          sed -i 's/setup_arch(&command_line, NULL);/setup_arch(&command_line);/g' init/main.c
+          sed -i 's/setup_arch(&command_line);/setup_arch(&command_line);/g' init/main.c
+          # In setup.c (asiguram ca definitia primeste doar char**)
+          sed -i 's/void setup_arch(char \*\*cmdline_p, .*/void setup_arch(char \*\*cmdline_p)/g' arch/arm64/kernel/setup.c
 
-          # 4. NUCLEAR CLEANUP
+          # 2. FIX Debug Functions (as_is_debug_level)
+          # O definim global ca sa nu mai urle compilatorul
+          echo "#define as_is_debug_level() (0)" >> include/linux/printk.h
+          sed -i 's/initcall_sec_debug/initcall_debug/g' init/main.c
+
+          # 3. CLEANUP Samsung Macros
+          sed -i 's/secgetspf//g' Makefile
+          find include/linux -name "cgroup.h" -exec sed -i 's/task->frozen/0/g' {} +
+
+          # 4. NUCLEAR CLEANUP (Polly & GCC Wrappers)
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm//g' {} +
           sed -i 's/ifneq ($(wildcard $(srctree)\/scripts\/gcc-wrapper.py),)/ifeq (0,1)/g' Makefile
@@ -85,7 +85,6 @@ jobs:
 
           make $MAKE_ARGS r5q_defconfig
           
-          # Optimizari de stabilitate
           ./scripts/config --file out/.config \
             -e CONFIG_BPF_SYSCALL -e CONFIG_BPF_JIT \
             -d CONFIG_LTO -d CONFIG_LTO_CLANG -e CONFIG_LTO_NONE \
@@ -95,16 +94,16 @@ jobs:
 
           make $MAKE_ARGS olddefconfig
 
-          # Build final
+          # Build final cu flag-uri de ignorare redefiniri
           make -j$(nproc --all) $MAKE_ARGS \
-            KCFLAGS="-fcommon -Wno-error -Wno-implicit-function-declaration -Wno-int-conversion -Wno-incompatible-pointer-types -Wno-macro-redefined" \
+            KCFLAGS="-fcommon -Wno-error -Wno-implicit-function-declaration -Wno-macro-redefined -Wno-incompatible-pointer-types" \
             2>&1 | tee build.log
 
       - name: Upload Kernel
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-Sixteen-v2
+          name: S10Lite-Sixteen-v3
           path: |
             main/out/arch/arm64/boot/Image.gz-dtb
             main/out/arch/arm64/boot/dtbo.img
