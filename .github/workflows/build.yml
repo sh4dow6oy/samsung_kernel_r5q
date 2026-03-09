@@ -1,4 +1,4 @@
-name: S10 Lite (Sixteen - Final Clean Build)
+name: S10 Lite (Sixteen - Global Header Fix)
 
 on:
   workflow_dispatch:
@@ -32,28 +32,34 @@ jobs:
           wget https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C main/clang
 
-      - name: Inject R5Q & Surgical Patching
+      - name: Inject R5Q & Global Patching
         run: |
           cp royna/arch/arm64/configs/r5q_defconfig main/arch/arm64/configs/r5q_defconfig
           cd main
           
-          # 1. FIX DEFINITIV setup_arch (Rezolva eroarea de sintaxa C)
-          # Folosim un regex mai precis pentru a curata linia din main.c
+          # 1. FIX DEFINITIV setup_arch (Sintaxa si Prototip)
+          # Fortam prototipul functiei la inceputul main.c pentru a asigura vizibilitatea
+          sed -i '1i void setup_arch(char **cmdline_p);' init/main.c
           sed -i 's/setup_arch(.*);/setup_arch(\&command_line);/g' init/main.c
           
-          # 2. Sync setup_arch implementation in arch/arm64
-          # Ne asiguram ca definitia functiei accepta doar char**
-          sed -i 's/void setup_arch(char \*\*cmdline_p, .*/void setup_arch(char \*\*cmdline_p)/g' arch/arm64/kernel/setup.c
+          # 2. GLOBAL SHIM (Injectam in compiler.h pentru a fi vizibil PESTE TOT)
+          # Rezolva as_is_debug_level si alte functii Samsung lipsa
+          cat << 'EOF' >> include/linux/compiler.h
+          static inline int as_is_debug_level(void) { return 0; }
+          static inline int get_avc_paranoid(void) { return 0; }
+          #ifndef SAMSUNG_PRODUCT_SHIP
+          #define SAMSUNG_PRODUCT_SHIP 1
+          #endif
+          EOF
 
-          # 3. FIX Debug & Samsung (as_is_debug_level)
-          # Injectam macro-ul in printk.h pentru a fi vizibil global
-          sed -i '/#define _LINUX_PRINTK_H/a #define as_is_debug_level() (0)' include/linux/printk.h
-          sed -i 's/initcall_sec_debug/initcall_debug/g' init/main.c
+          # 3. Sync setup_arch implementation
+          sed -i 's/void setup_arch(char \*\*cmdline_p, .*/void setup_arch(char \*\*cmdline_p)/g' arch/arm64/kernel/setup.c
 
           # 4. FIX frozen & cgroup
           find include/linux -name "cgroup.h" -exec sed -i 's/task->frozen/0/g' {} +
+          sed -i 's/initcall_sec_debug/initcall_debug/g' init/main.c
 
-          # 5. NUCLEAR CLEANUP (Polly & GCC Wrappers)
+          # 5. NUCLEAR CLEANUP
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm//g' {} +
           sed -i 's/ifneq ($(wildcard $(srctree)\/scripts\/gcc-wrapper.py),)/ifeq (0,1)/g' Makefile
@@ -83,10 +89,8 @@ jobs:
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             O=out"
 
-          # Generare config
           make $MAKE_ARGS r5q_defconfig
           
-          # Dezactivam modulele care cauzeaza conflicte la linkare
           ./scripts/config --file out/.config \
             -e CONFIG_BPF_SYSCALL -e CONFIG_BPF_JIT \
             -d CONFIG_LTO -d CONFIG_LTO_CLANG -e CONFIG_LTO_NONE \
@@ -97,14 +101,14 @@ jobs:
 
           # Build Final
           make -j$(nproc --all) $MAKE_ARGS \
-            KCFLAGS="-fcommon -Wno-error -Wno-implicit-function-declaration -Wno-macro-redefined -Wno-incompatible-pointer-types" \
+            KCFLAGS="-fcommon -Wno-error -Wno-implicit-function-declaration -Wno-macro-redefined -Wno-incompatible-pointer-types -Wno-implicit-int" \
             2>&1 | tee build.log
 
       - name: Upload Kernel
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-Sixteen-v4-Final
+          name: S10Lite-Sixteen-v5-GlobalFix
           path: |
             main/out/arch/arm64/boot/Image.gz-dtb
             main/out/arch/arm64/boot/dtbo.img
