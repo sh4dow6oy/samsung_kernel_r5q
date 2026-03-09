@@ -1,4 +1,4 @@
-name: S10 Lite (V18 - Cache & Speed Optimization)
+name: S10 Lite (V19 - Folder Fix & Cache)
 
 on:
   workflow_dispatch:
@@ -20,46 +20,52 @@ jobs:
           repository: mainey/android_kernel_samsung_r5q
           path: mainey
 
-      - name: Setup Cache for Clang & Build Artifacts
+      - name: Setup Cache
         uses: actions/cache@v4
         with:
           path: |
             main/clang
             main/out
-          key: ${{ runner.os }}-kernel-build-${{ hashFiles('main/arch/arm64/configs/r5q_defconfig') }}
+          key: ${{ runner.os }}-kernel-v19-${{ hashFiles('mainey/arch/arm64/configs/r5q_eur_open_defconfig') }}
           restore-keys: |
-            ${{ runner.os }}-kernel-build-
+            ${{ runner.os }}-kernel-v19-
 
       - name: Install Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y bc bison build-essential flex git libssl-dev libelf-dev clang llvm lld zstd curl python3 device-tree-compiler ccache
+          sudo apt-get install -y bc bison build-essential flex git libssl-dev libelf-dev clang llvm lld zstd curl python3 device-tree-compiler
 
-      - name: Download Neutron Clang (Skip if cached)
+      - name: Download Neutron Clang
         run: |
           if [ ! -d "main/clang/bin" ]; then
             mkdir -p main/clang
             wget https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
             tar -I zstd -xf neutron-clang-10032024.tar.zst -C main/clang
-          else
-            echo "Using cached Neutron Clang"
           fi
 
-      - name: Surgical Grafting & Linker Shims
+      - name: Surgical Grafting (Robust Folder Creation)
         run: |
-          # 1. Config & DTS Grafting
+          # 1. Config
           cp mainey/arch/arm64/configs/r5q_eur_open_defconfig main/arch/arm64/configs/r5q_defconfig
-          cp -r mainey/arch/arm64/boot/dts/samsung/* main/arch/arm64/boot/dts/samsung/
+          
+          # 2. DTS Structure Fix
+          # Cream toate folderele posibile pentru a evita eroarea "No such file or directory"
+          mkdir -p main/arch/arm64/boot/dts/samsung
+          
+          # Copiem continutul. Folosim "|| true" pentru a nu opri build-ul daca un subfolder e gol
+          cp -r mainey/arch/arm64/boot/dts/samsung/* main/arch/arm64/boot/dts/samsung/ 2>/dev/null || true
+          
+          # Importam Makefile-ul care contine r5q.dtb
           cp mainey/arch/arm64/boot/dts/Makefile main/arch/arm64/boot/dts/Makefile
           
           cd main
-          # 2. INJECTIE AGRESIVA DE SIMBOLURI (compiler.h)
+          # 3. Linker Stubs (Injectie in compiler.h)
           cat << 'EOF' > linker_stub.h
           #ifndef __LINKER_STUB_H
           #define __LINKER_STUB_H
           #ifndef __ASSEMBLY__
           #include <linux/types.h>
-          static inline void switch_headset_state(int state) {}
+          static inline void switch_headset_state(int s) {}
           struct dev_pm_ops;
           static const struct dev_pm_ops *qpnp_pm_ops_ptr = (void *)0;
           #define qpnp_pm_ops (*(struct dev_pm_ops *)qpnp_pm_ops_ptr)
@@ -88,12 +94,10 @@ jobs:
         run: |
           cd main
           export PATH="$GITHUB_WORKSPACE/main/clang/bin:$PATH"
-          export KBUILD_BUILD_USER="sh4dow6oy"
-          export KBUILD_BUILD_HOST="GitHub-Actions"
-
+          
           MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld DTC=dtc AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
 
-          # Doar daca nu exista deja .config in out/
+          # Regeneram config-ul daca folderul out e gol sau corupt
           if [ ! -f "out/.config" ]; then
             make $MAKE_ARGS r5q_defconfig
             ./scripts/config --file out/.config \
@@ -106,16 +110,15 @@ jobs:
             make $MAKE_ARGS olddefconfig
           fi
 
-          # Build Final
           make -j$(nproc --all) $MAKE_ARGS \
             KCFLAGS="-fcommon -Wno-error -Wno-implicit-function-declaration" \
             2>&1 | tee build.log
 
-      - name: Upload Kernel Artifacts
+      - name: Upload Kernel
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-Lineage-V18-Cached
+          name: S10Lite-Lineage-V19
           path: |
             main/out/arch/arm64/boot/Image.gz-dtb
             main/out/arch/arm64/boot/dtbo.img
