@@ -1,4 +1,4 @@
-name: S10 Lite (Lineage Base - No Jack Fix)
+name: S10 Lite (V18 - Cache & Speed Optimization)
 
 on:
   workflow_dispatch:
@@ -11,7 +11,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: LineageOS/android_kernel_oneplus_sm8150
-          ref: lineage-23.2
+          ref: lineage-22.1
           path: main
 
       - name: Checkout Mainey (R5Q Source)
@@ -20,108 +20,104 @@ jobs:
           repository: mainey/android_kernel_samsung_r5q
           path: mainey
 
+      - name: Setup Cache for Clang & Build Artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            main/clang
+            main/out
+          key: ${{ runner.os }}-kernel-build-${{ hashFiles('main/arch/arm64/configs/r5q_defconfig') }}
+          restore-keys: |
+            ${{ runner.os }}-kernel-build-
+
       - name: Install Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y bc bison build-essential flex git libssl-dev libelf-dev clang llvm lld zstd curl python3 device-tree-compiler
+          sudo apt-get install -y bc bison build-essential flex git libssl-dev libelf-dev clang llvm lld zstd curl python3 device-tree-compiler ccache
 
-      - name: Download Neutron Clang
+      - name: Download Neutron Clang (Skip if cached)
         run: |
-          mkdir -p main/clang
-          wget https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
-          tar -I zstd -xf neutron-clang-10032024.tar.zst -C main/clang
+          if [ ! -d "main/clang/bin" ]; then
+            mkdir -p main/clang
+            wget https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
+            tar -I zstd -xf neutron-clang-10032024.tar.zst -C main/clang
+          else
+            echo "Using cached Neutron Clang"
+          fi
 
-      - name: Surgical Grafting (DTS, No-Jack Audio & Shims)
+      - name: Surgical Grafting & Linker Shims
         run: |
-          # 1. Config R5Q EUR
+          # 1. Config & DTS Grafting
           cp mainey/arch/arm64/configs/r5q_eur_open_defconfig main/arch/arm64/configs/r5q_defconfig
-          
-          # 2. DTS & Makefile Grafting
-          mkdir -p main/arch/arm64/boot/dts/samsung
+          mkdir -p main/arch/arm64/boot/dts/samsung main/arch/arm64/boot/dts/vendor
           cp -r mainey/arch/arm64/boot/dts/samsung/* main/arch/arm64/boot/dts/samsung/
+          cp -r mainey/arch/arm64/boot/dts/vendor/* main/arch/arm64/boot/dts/vendor/
           cp mainey/arch/arm64/boot/dts/Makefile main/arch/arm64/boot/dts/Makefile
           
           cd main
-          # 3. CREARE FISIER SHIMS (FARA switch_headset_state)
-          cat << 'EOF' > drivers/misc/r5q_shims.c
-          #include <linux/kernel.h>
-          #include <linux/module.h>
+          # 2. INJECTIE AGRESIVA DE SIMBOLURI (compiler.h)
+          cat << 'EOF' > linker_stub.h
+          #ifndef __LINKER_STUB_H
+          #define __LINKER_STUB_H
+          #ifndef __ASSEMBLY__
           #include <linux/types.h>
-
-          void push_component_info(const char *name, const char *version) {}
-          int get_boot_mode(void) { return 0; }
-          void register_device_proc(const char *name, void *read_proc, void *write_proc) {}
-          void sys_reset_dev(void) {}
-          int pmicwd_init(void) { return 0; }
-          int kpdpwr_init(void) { return 0; }
-          int get_PCB_Version(void) { return 0; }
-          int is_project(int project) { return 0; }
-          int get_project(void) { return 0; }
-          int qpnp_is_power_off_charging(void) { return 0; }
-          void opticalfp_irq_handler_register(void *handler) {}
-          
-          int tp_gesture_enable_flag_oncell = 0;
-          int tp_fp_enable_flag = 0;
-          
-          EXPORT_SYMBOL(push_component_info);
-          EXPORT_SYMBOL(get_boot_mode);
+          static inline void switch_headset_state(int state) {}
+          struct dev_pm_ops;
+          static const struct dev_pm_ops *qpnp_pm_ops_ptr = (void *)0;
+          #define qpnp_pm_ops (*(struct dev_pm_ops *)qpnp_pm_ops_ptr)
+          static inline void push_component_info(const char *a, const char *b) {}
+          static inline int get_boot_mode(void) { return 0; }
+          static inline void register_device_proc(const char *a, void *b, void *c) {}
+          static inline void sys_reset_dev(void) {}
+          static inline int pmicwd_init(void) { return 0; }
+          static inline int kpdpwr_init(void) { return 0; }
+          static inline int get_PCB_Version(void) { return 0; }
+          static inline int is_project(int p) { return 0; }
+          static inline int get_project(void) { return 0; }
+          static inline int qpnp_is_power_off_charging(void) { return 0; }
+          static inline void opticalfp_irq_handler_register(void *h) {}
+          #define SAMSUNG_PRODUCT_SHIP 1
+          #define initcall_sec_debug 0
+          #endif
+          #endif
           EOF
-          
-          echo "obj-y += r5q_shims.o" >> drivers/misc/Makefile
 
-          # 4. AUDIO PATCH: Dezactivam apelul catre switch_headset_state in sursa
-          # Comentam linia care cauzeaza eroarea in techpack/audio
-          find techpack/audio -name "wcd-mbhc-v2.c" -exec sed -i 's/switch_headset_state(state);//g' {} +
-
-          # 5. Global Guards
-          sed -i '/#define _LINUX_COMPILER_H/a #define SAMSUNG_PRODUCT_SHIP 1\n#define initcall_sec_debug 0' include/linux/compiler.h
-          
-          # 6. Fix DTC Lexer
+          cat linker_stub.h include/linux/compiler.h > include/linux/compiler.h.new
+          mv include/linux/compiler.h.new include/linux/compiler.h
           sed -i 's/^YYLTYPE yylloc;/extern YYLTYPE yylloc;/g' scripts/dtc/dtc-lexer.lex.c_shipped || true
 
       - name: Configure and Build
         run: |
           cd main
           export PATH="$GITHUB_WORKSPACE/main/clang/bin:$PATH"
+          export KBUILD_BUILD_USER="sh4dow6oy"
+          export KBUILD_BUILD_HOST="GitHub-Actions"
 
-          MAKE_ARGS="ARCH=arm64 \
-            LLVM=1 \
-            LLVM_IAS=1 \
-            CC=clang \
-            LD=ld.lld \
-            DTC=dtc \
-            AR=llvm-ar \
-            NM=llvm-nm \
-            OBJCOPY=llvm-objcopy \
-            OBJDUMP=llvm-objdump \
-            STRIP=llvm-strip \
-            CROSS_COMPILE=aarch64-linux-gnu- \
-            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-            O=out"
+          MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld DTC=dtc AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
 
-          make $MAKE_ARGS r5q_defconfig
-          
-          # Ajustări pentru a elimina dependințele de Jack Audio
-          ./scripts/config --file out/.config \
-            -e CONFIG_BPF_SYSCALL -e CONFIG_BPF_JIT \
-            -d CONFIG_LTO -d CONFIG_LTO_CLANG -e CONFIG_LTO_NONE \
-            -d CONFIG_SECURITY_SAMSUNG_KNOX -d CONFIG_KNOX_KAP \
-            -d CONFIG_SEC_ABC -d CONFIG_SEC_DEBUG \
-            -d CONFIG_SAMSUNG_TUI \
-            -d CONFIG_SND_SOC_WCD_MBHC # Dezactivam MBHC complet
-
-          make $MAKE_ARGS olddefconfig
+          # Doar daca nu exista deja .config in out/
+          if [ ! -f "out/.config" ]; then
+            make $MAKE_ARGS r5q_defconfig
+            ./scripts/config --file out/.config \
+              -e CONFIG_BPF_SYSCALL -e CONFIG_BPF_JIT \
+              -d CONFIG_LTO -d CONFIG_LTO_CLANG -e CONFIG_LTO_NONE \
+              -d CONFIG_SECURITY_SAMSUNG_KNOX -d CONFIG_KNOX_KAP \
+              -d CONFIG_SEC_ABC -d CONFIG_SEC_DEBUG \
+              -d CONFIG_SAMSUNG_TUI \
+              -d CONFIG_SND_SOC_WCD_MBHC
+            make $MAKE_ARGS olddefconfig
+          fi
 
           # Build Final
           make -j$(nproc --all) $MAKE_ARGS \
-            KCFLAGS="-fcommon -fno-common -Wno-error -Wno-implicit-function-declaration -Wno-macro-redefined" \
+            KCFLAGS="-fcommon -Wno-error -Wno-implicit-function-declaration" \
             2>&1 | tee build.log
 
-      - name: Upload Kernel
+      - name: Upload Kernel Artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-Lineage-V16-NoJack
+          name: S10Lite-Lineage-V18-Cached
           path: |
             main/out/arch/arm64/boot/Image.gz-dtb
             main/out/arch/arm64/boot/dtbo.img
