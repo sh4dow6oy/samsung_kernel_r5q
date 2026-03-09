@@ -1,4 +1,4 @@
-name: S10 Lite (Lineage Base + Samsung DTS Tree)
+name: S10 Lite (Lineage Base + Mainey R5Q EUR Config)
 
 on:
   workflow_dispatch:
@@ -31,13 +31,12 @@ jobs:
           wget https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C main/clang
 
-      - name: Surgical Grafting (DTS & Config)
+      - name: Surgical Grafting (DTS & EUR Config)
         run: |
-          # 1. Copiem Config-ul European r5q
-          cp mainey/arch/arm64/configs/vendor/r5q_eur_open_defconfig main/arch/arm64/configs/r5q_defconfig
+          # 1. Copiem Config-ul European r5q exact din calea specificata
+          cp mainey/arch/arm64/configs/r5q_eur_open_defconfig main/arch/arm64/configs/r5q_defconfig
           
-          # 2. Replicam structura de foldere DTS Samsung
-          # Mainey are fisierele in arch/arm64/boot/dts/samsung si dts/vendor
+          # 2. Replicam structura de foldere DTS (Crucial pentru include-uri)
           mkdir -p main/arch/arm64/boot/dts/samsung
           mkdir -p main/arch/arm64/boot/dts/vendor
           cp -r mainey/arch/arm64/boot/dts/samsung/* main/arch/arm64/boot/dts/samsung/
@@ -59,7 +58,7 @@ jobs:
           cat global_shims.h include/linux/compiler.h > include/linux/compiler.h.new
           mv include/linux/compiler.h.new include/linux/compiler.h
 
-          # 4. Patch DTC Lexer
+          # 4. Patch DTC Lexer pentru compatibilitate Clang modern
           sed -i 's/^YYLTYPE yylloc;/extern YYLTYPE yylloc;/g' scripts/dtc/dtc-lexer.lex.c_shipped || true
 
       - name: Configure and Build
@@ -82,15 +81,15 @@ jobs:
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             O=out"
 
-          # Generăm config
+          # Generăm config folosind fisierul r5q_defconfig (care e acum r5q_eur_open_defconfig)
           make $MAKE_ARGS r5q_defconfig
           
-          # Ajustări pentru Lineage Base (Eliminăm modulele Knox care ar bloca linkarea)
+          # Ajustări obligatorii pentru suport Android 15 & Lineage Base
           ./scripts/config --file out/.config \
             -e CONFIG_BPF_SYSCALL -e CONFIG_BPF_JIT \
             -d CONFIG_LTO -d CONFIG_LTO_CLANG -e CONFIG_LTO_NONE \
             -d CONFIG_SECURITY_SAMSUNG_KNOX -d CONFIG_KNOX_KAP \
-            -d CONFIG_SEC_ABC
+            -d CONFIG_SEC_ABC -d CONFIG_SEC_DEBUG
 
           make $MAKE_ARGS olddefconfig
 
@@ -103,7 +102,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-Lineage-Final-v11
+          name: S10Lite-Lineage-EUR-Final
           path: |
             main/out/arch/arm64/boot/Image.gz-dtb
             main/out/arch/arm64/boot/dtbo.img
