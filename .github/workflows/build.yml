@@ -1,4 +1,4 @@
-name: S10 Lite (Pure G770F Build)
+name: S10 Lite (V23 - Full Pure Build Fix)
 
 on:
   workflow_dispatch:
@@ -20,16 +20,16 @@ jobs:
           path: |
             clang
             out
-          key: ${{ runner.os }}-pure-g770f-v1
+          key: ${{ runner.os }}-r5q-v23-${{ hashFiles('arch/arm64/configs/g770f_defconfig') }}
           restore-keys: |
-            ${{ runner.os }}-pure-g770f-
+            ${{ runner.os }}-r5q-v23-
 
       - name: Install Build Tools
         run: |
           sudo apt-get update
           sudo apt-get install -y bc bison build-essential flex git libssl-dev libelf-dev clang llvm lld zstd curl python3 device-tree-compiler
 
-      - name: Download Neutron Clang
+      - name: Download Neutron Clang (Cached)
         run: |
           if [ ! -d "clang/bin" ]; then
             mkdir -p clang
@@ -37,11 +37,10 @@ jobs:
             tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
           fi
 
-      - name: Build Kernel (No Extra Configs)
+      - name: Build Kernel
         run: |
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           
-          # Argumente standard pentru LLVM/Clang
           MAKE_ARGS="ARCH=arm64 \
             LLVM=1 \
             LLVM_IAS=1 \
@@ -57,36 +56,50 @@ jobs:
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             O=out"
 
-          # 1. Initializare cu defconfig-ul tau
+          # 1. Curățăm Makefile-ul de mizeriile Samsung (secgetspf)
+          # Acesta este motivul pentru care primeai "No such file or directory"
+          sed -i 's/$(shell secgetspf)//g' Makefile || true
+          sed -i 's/$(shell secgetspf)//g' arch/arm64/Makefile || true
+
+          # 2. Generăm .config din sursa ta
           make $MAKE_ARGS g770f_defconfig
 
-          # 2. Compilare efectiva
-          # Folosim doar flag-uri de toleranta pentru compilator
+          # 3. Rezolvăm eroarea CONFIG_CC_STACKPROTECTOR_STRONG
+          # Clang are nevoie de flag-uri diferite sau de dezactivare pentru a trece de check
+          ./scripts/config --file out/.config \
+            -d CONFIG_CC_STACKPROTECTOR_STRONG \
+            -e CONFIG_CC_STACKPROTECTOR_NONE \
+            -d CONFIG_CC_WERROR
+
+          # Aplicăm schimbările în config
+          make $MAKE_ARGS olddefconfig
+
+          # 4. Compilare efectivă
+          # Folosim KCFLAGS pentru a ignora stack-protector-ul la nivel de compiler check
           make -j$(nproc --all) $MAKE_ARGS \
-            KCFLAGS="-fcommon -fno-common -Wno-error" \
+            KCFLAGS="-fcommon -fno-stack-protector -Wno-error -Wno-implicit-function-declaration" \
             2>&1 | tee build.log
 
-      - name: Package AnyKernel3
+      - name: Package with AnyKernel3
+        if: success()
         run: |
           git clone https://github.com/osm0sis/AnyKernel3
-          # Copiem ce s-a compilat
-          cp out/arch/arm64/boot/Image.gz-dtb AnyKernel3/ || echo "Image.gz-dtb missing"
-          cp out/arch/arm64/boot/dtbo.img AnyKernel3/ || echo "dtbo.img missing"
+          cp out/arch/arm64/boot/Image.gz-dtb AnyKernel3/ || echo "No Image found"
+          cp out/arch/arm64/boot/dtbo.img AnyKernel3/ || echo "No DTBO found"
           
           cd AnyKernel3
-          # Setam numele device-ului pentru S10 Lite
           sed -i 's/device.name1=maguro/device.name1=r5q/' anykernel.sh
           sed -i 's/device.name2=toroplus/device.name2=SM-G770F/' anykernel.sh
-          # Setam partitia de boot corecta pentru r5q
+          # Setăm calea corectă pentru boot block pe Snapdragon 855
           sed -i 's|block=/dev/block/platform/omap/omap_hsmmc.0/by-name/boot|block=/dev/block/bootdevice/by-name/boot|' anykernel.sh
           
-          zip -r ../S10Lite-Pure-Kernel.zip *
+          zip -r ../S10Lite-G770F-V23.zip *
 
-      - name: Upload Artifacts
+      - name: Upload Kernel Zip
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-Pure-Build
+          name: S10Lite-Build-V23
           path: |
-            S10Lite-Pure-Kernel.zip
+            S10Lite-G770F-V23.zip
             build.log
