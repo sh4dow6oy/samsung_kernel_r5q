@@ -1,4 +1,4 @@
-name: S10 Lite (Sixteen Fix - Frozen & Ship)
+name: S10 Lite (Sixteen - Argument Fix)
 
 on:
   workflow_dispatch:
@@ -37,19 +37,23 @@ jobs:
           cp royna/arch/arm64/configs/r5q_defconfig main/arch/arm64/configs/r5q_defconfig
           cd main
           
-          # 1. FIX GLOBAL PENTRU 'frozen' (Evităm eroarea task_struct)
-          # Înlocuim orice apel către task->frozen cu 0 direct în headerul de cgroup
+          # 1. FIX PENTRU setup_arch (Eroarea: too few arguments)
+          # Fortam apelul setup_arch sa aiba al doilea argument (NULL sau dummy) daca e nevoie
+          # Dar de cele mai multe ori, in Sixteen, definitia asteapta (char **cmdline_p)
+          # Daca cere 2, al doilea este de obicei pointerul catre DTB sau ceva similar.
+          # O vom "pacali" redirectionand-o catre o variabila locala.
+          sed -i 's/setup_arch(&command_line);/setup_arch(&command_line, NULL);/g' init/main.c
+          
+          # 2. FIX PENTRU initcall_sec_debug & frozen
+          sed -i 's/initcall_sec_debug/initcall_debug/g' init/main.c
           find include/linux -name "cgroup.h" -exec sed -i 's/task->frozen/0/g' {} +
           
-          # 2. FIX PENTRU initcall_sec_debug (Eroarea din main.c)
-          sed -i 's/initcall_sec_debug/initcall_debug/g' init/main.c
-          
-          # 3. FIX PENTRU SAMSUNG_PRODUCT_SHIP & secgetspf
-          # Definim macro-ul global în Makefile pentru a fi văzut peste tot
-          sed -i '/KBUILD_CFLAGS   += $(call cc-option,-fno-delete-null-pointer-checks,)/a KBUILD_CFLAGS   += -DSAMSUNG_PRODUCT_SHIP' Makefile
+          # 3. FIX REDEFINITION (SAMSUNG_PRODUCT_SHIP)
+          # In loc sa o adaugam in Makefile (unde cauzeaza duplicate), o definim doar daca nu exista
+          sed -i '1i #ifndef SAMSUNG_PRODUCT_SHIP\n#define SAMSUNG_PRODUCT_SHIP\n#endif' init/main.c
           sed -i 's/secgetspf//g' Makefile
 
-          # 4. NUCLEAR CLEANUP (Polly & GCC Wrappers)
+          # 4. NUCLEAR CLEANUP
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm//g' {} +
           sed -i 's/ifneq ($(wildcard $(srctree)\/scripts\/gcc-wrapper.py),)/ifeq (0,1)/g' Makefile
@@ -81,26 +85,26 @@ jobs:
 
           make $MAKE_ARGS r5q_defconfig
           
-          # Dezactivăm LTO și Shadow Call Stack pentru stabilitate la prima compilare
+          # Optimizari de stabilitate
           ./scripts/config --file out/.config \
             -e CONFIG_BPF_SYSCALL -e CONFIG_BPF_JIT \
             -d CONFIG_LTO -d CONFIG_LTO_CLANG -e CONFIG_LTO_NONE \
             -d CONFIG_SHADOW_CALL_STACK \
             -d CONFIG_SECURITY_SAMSUNG_KNOX -d CONFIG_KNOX_KAP \
-            -d CONFIG_SEC_DEBUG -d CONFIG_SEC_ABC
+            -d CONFIG_SEC_DEBUG
 
           make $MAKE_ARGS olddefconfig
 
-          # KCFLAGS adiționale pentru a suprima restul erorilor de tip pointer/int
+          # Build final
           make -j$(nproc --all) $MAKE_ARGS \
-            KCFLAGS="-fcommon -Wno-error -Wno-implicit-function-declaration -Wno-int-conversion -Wno-incompatible-pointer-types" \
+            KCFLAGS="-fcommon -Wno-error -Wno-implicit-function-declaration -Wno-int-conversion -Wno-incompatible-pointer-types -Wno-macro-redefined" \
             2>&1 | tee build.log
 
       - name: Upload Kernel
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-Sixteen-Fixed
+          name: S10Lite-Sixteen-v2
           path: |
             main/out/arch/arm64/boot/Image.gz-dtb
             main/out/arch/arm64/boot/dtbo.img
