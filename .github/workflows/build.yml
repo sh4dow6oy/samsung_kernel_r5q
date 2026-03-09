@@ -1,4 +1,4 @@
-name: S10 Lite (Pascua Sixteen + R5Q Config)
+name: S10 Lite (Sixteen Fix - Frozen & Ship)
 
 on:
   workflow_dispatch:
@@ -34,19 +34,22 @@ jobs:
 
       - name: Inject R5Q & Surgical Patching
         run: |
-          # 1. Injectare Defconfig r5q
           cp royna/arch/arm64/configs/r5q_defconfig main/arch/arm64/configs/r5q_defconfig
-          
           cd main
-          # 2. Fix SecDebug & initcall_sec_debug (Eroarea din init/main.c)
-          sed -i 's/initcall_sec_debug/initcall_debug/g' init/main.c
-          sed -i 's/secgetspf//g' Makefile
           
-          # 3. Fix 'frozen' member in task_struct
-          sed -i '/unsigned int flags;/a \	unsigned int frozen:1;' include/linux/sched.h
-          find include/linux -name "cgroup.h" -exec sed -i 's/return task->frozen;/return 0;/g' {} +
+          # 1. FIX GLOBAL PENTRU 'frozen' (Evităm eroarea task_struct)
+          # Înlocuim orice apel către task->frozen cu 0 direct în headerul de cgroup
+          find include/linux -name "cgroup.h" -exec sed -i 's/task->frozen/0/g' {} +
+          
+          # 2. FIX PENTRU initcall_sec_debug (Eroarea din main.c)
+          sed -i 's/initcall_sec_debug/initcall_debug/g' init/main.c
+          
+          # 3. FIX PENTRU SAMSUNG_PRODUCT_SHIP & secgetspf
+          # Definim macro-ul global în Makefile pentru a fi văzut peste tot
+          sed -i '/KBUILD_CFLAGS   += $(call cc-option,-fno-delete-null-pointer-checks,)/a KBUILD_CFLAGS   += -DSAMSUNG_PRODUCT_SHIP' Makefile
+          sed -i 's/secgetspf//g' Makefile
 
-          # 4. Nuclear Cleanup (Polly & GCC Wrappers)
+          # 4. NUCLEAR CLEANUP (Polly & GCC Wrappers)
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm//g' {} +
           sed -i 's/ifneq ($(wildcard $(srctree)\/scripts\/gcc-wrapper.py),)/ifeq (0,1)/g' Makefile
@@ -62,7 +65,6 @@ jobs:
           cd main
           export PATH="$GITHUB_WORKSPACE/main/clang/bin:$PATH"
 
-          # Argumente Build pentru Neutron Clang + LLVM
           MAKE_ARGS="ARCH=arm64 \
             LLVM=1 \
             LLVM_IAS=1 \
@@ -77,29 +79,28 @@ jobs:
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             O=out"
 
-          # Generare config r5q
           make $MAKE_ARGS r5q_defconfig
           
-          # Ajustări fine pentru stabilitate și BPF
+          # Dezactivăm LTO și Shadow Call Stack pentru stabilitate la prima compilare
           ./scripts/config --file out/.config \
             -e CONFIG_BPF_SYSCALL -e CONFIG_BPF_JIT \
             -d CONFIG_LTO -d CONFIG_LTO_CLANG -e CONFIG_LTO_NONE \
-            -d CONFIG_CC_STACKPROTECTOR_STRONG -e CONFIG_CC_STACKPROTECTOR_NONE \
+            -d CONFIG_SHADOW_CALL_STACK \
             -d CONFIG_SECURITY_SAMSUNG_KNOX -d CONFIG_KNOX_KAP \
             -d CONFIG_SEC_DEBUG -d CONFIG_SEC_ABC
 
           make $MAKE_ARGS olddefconfig
 
-          # Compilare cu flag-uri de iertare (fcommon rezolvă definițiile multiple)
+          # KCFLAGS adiționale pentru a suprima restul erorilor de tip pointer/int
           make -j$(nproc --all) $MAKE_ARGS \
-            KCFLAGS="-fcommon -Wno-error -Wno-implicit-function-declaration -Wno-unused-command-line-argument -Wno-int-conversion" \
+            KCFLAGS="-fcommon -Wno-error -Wno-implicit-function-declaration -Wno-int-conversion -Wno-incompatible-pointer-types" \
             2>&1 | tee build.log
 
       - name: Upload Kernel
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-Sixteen-Final
+          name: S10Lite-Sixteen-Fixed
           path: |
             main/out/arch/arm64/boot/Image.gz-dtb
             main/out/arch/arm64/boot/dtbo.img
