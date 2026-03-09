@@ -1,4 +1,4 @@
-name: S10 Lite (Sixteen - Sync Fix)
+name: S10 Lite (Sixteen - Final Clean Build)
 
 on:
   workflow_dispatch:
@@ -37,28 +37,28 @@ jobs:
           cp royna/arch/arm64/configs/r5q_defconfig main/arch/arm64/configs/r5q_defconfig
           cd main
           
-          # 1. SYNC setup_arch: Fortam 1 singur argument peste tot pentru a evita "too many/few"
-          # In main.c
-          sed -i 's/setup_arch(&command_line, NULL);/setup_arch(&command_line);/g' init/main.c
-          sed -i 's/setup_arch(&command_line);/setup_arch(&command_line);/g' init/main.c
-          # In setup.c (asiguram ca definitia primeste doar char**)
+          # 1. FIX DEFINITIV setup_arch (Rezolva eroarea de sintaxa C)
+          # Folosim un regex mai precis pentru a curata linia din main.c
+          sed -i 's/setup_arch(.*);/setup_arch(\&command_line);/g' init/main.c
+          
+          # 2. Sync setup_arch implementation in arch/arm64
+          # Ne asiguram ca definitia functiei accepta doar char**
           sed -i 's/void setup_arch(char \*\*cmdline_p, .*/void setup_arch(char \*\*cmdline_p)/g' arch/arm64/kernel/setup.c
 
-          # 2. FIX Debug Functions (as_is_debug_level)
-          # O definim global ca sa nu mai urle compilatorul
-          echo "#define as_is_debug_level() (0)" >> include/linux/printk.h
+          # 3. FIX Debug & Samsung (as_is_debug_level)
+          # Injectam macro-ul in printk.h pentru a fi vizibil global
+          sed -i '/#define _LINUX_PRINTK_H/a #define as_is_debug_level() (0)' include/linux/printk.h
           sed -i 's/initcall_sec_debug/initcall_debug/g' init/main.c
 
-          # 3. CLEANUP Samsung Macros
-          sed -i 's/secgetspf//g' Makefile
+          # 4. FIX frozen & cgroup
           find include/linux -name "cgroup.h" -exec sed -i 's/task->frozen/0/g' {} +
 
-          # 4. NUCLEAR CLEANUP (Polly & GCC Wrappers)
+          # 5. NUCLEAR CLEANUP (Polly & GCC Wrappers)
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm//g' {} +
           sed -i 's/ifneq ($(wildcard $(srctree)\/scripts\/gcc-wrapper.py),)/ifeq (0,1)/g' Makefile
           
-          # 5. VDSO & ASM Fixes
+          # 6. VDSO & ASM Fixes
           if [ -f arch/arm64/kernel/vdso/Makefile ]; then
             sed -i 's/-static//g' arch/arm64/kernel/vdso/Makefile
           fi
@@ -83,18 +83,19 @@ jobs:
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             O=out"
 
+          # Generare config
           make $MAKE_ARGS r5q_defconfig
           
+          # Dezactivam modulele care cauzeaza conflicte la linkare
           ./scripts/config --file out/.config \
             -e CONFIG_BPF_SYSCALL -e CONFIG_BPF_JIT \
             -d CONFIG_LTO -d CONFIG_LTO_CLANG -e CONFIG_LTO_NONE \
-            -d CONFIG_SHADOW_CALL_STACK \
             -d CONFIG_SECURITY_SAMSUNG_KNOX -d CONFIG_KNOX_KAP \
             -d CONFIG_SEC_DEBUG
 
           make $MAKE_ARGS olddefconfig
 
-          # Build final cu flag-uri de ignorare redefiniri
+          # Build Final
           make -j$(nproc --all) $MAKE_ARGS \
             KCFLAGS="-fcommon -Wno-error -Wno-implicit-function-declaration -Wno-macro-redefined -Wno-incompatible-pointer-types" \
             2>&1 | tee build.log
@@ -103,7 +104,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-Sixteen-v3
+          name: S10Lite-Sixteen-v4-Final
           path: |
             main/out/arch/arm64/boot/Image.gz-dtb
             main/out/arch/arm64/boot/dtbo.img
