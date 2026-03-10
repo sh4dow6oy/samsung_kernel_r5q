@@ -1,4 +1,4 @@
-name: Build Roynas R5Q - OpenELA Upstream 4.14.356
+name: Build Roynas R5Q - Final OpenELA
 on:
   workflow_dispatch:
 
@@ -18,7 +18,7 @@ jobs:
         with:
           repository: Roynas-Android-Playground/kernel_samsung_r3q
           ref: master
-          fetch-depth: 0 # Esențial pentru merge-ul real de la OpenELA
+          fetch-depth: 0
 
       - name: Install Dependencies
         run: |
@@ -30,26 +30,10 @@ jobs:
         run: |
           git config --global user.email "${{ env.AUTHOR }}@github.com"
           git config --global user.name "${{ env.AUTHOR }}"
-          
-          # Adăugăm remote-ul OpenELA (Open Enterprise Linux Association)
           git remote add openela https://github.com/openela/kernel-lts.git
           git fetch openela ${{ env.OPENELA_TAG }}
-          
-          echo "Începe procesul de merge pentru ${{ env.OPENELA_TAG }}..."
-          # Strategia 'ours' este critică pentru a păstra driverele Samsung funcționale (camera/gpu)
-          git merge FETCH_HEAD -m "Merge tag '${{ env.OPENELA_TAG }}' into upstream" --strategy-option ours || echo "Conflicte rezolvate automat."
-
-      - name: Setup ELTS Metadata
-        run: |
-          # Creăm structura de urmărire ELTS (ca la pascua28)
-          mkdir -p .elts/upstream
-          cat <<EOF > .elts/upstream/4.14.${{ env.SUBLEVEL }}.yaml
-          version: 4.14.${{ env.SUBLEVEL }}
-          tag: ${{ env.OPENELA_TAG }}
-          source: OpenELA
-          author: ${{ env.AUTHOR }}
-          merged_at: $(date +%Y-%m-%d)
-          EOF
+          # Merge cu strategia 'ours' pentru a proteja driverele Samsung
+          git merge FETCH_HEAD -m "Merge tag '${{ env.OPENELA_TAG }}'" --strategy-option ours || echo "Conflicte gestionate."
 
       - name: Setup Neutron Clang
         run: |
@@ -61,7 +45,7 @@ jobs:
         run: |
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           
-          # --- APLICARE BRANDING & SPOOF (About Phone) ---
+          # --- 1. BRANDING & SPOOF ---
           sed -i 's/^VERSION =.*/VERSION = 4/' Makefile
           sed -i 's/^PATCHLEVEL =.*/PATCHLEVEL = 14/' Makefile
           sed -i "s/^SUBLEVEL =.*/SUBLEVEL = ${{ env.SUBLEVEL }}/" Makefile
@@ -70,23 +54,18 @@ jobs:
           export KBUILD_BUILD_USER="${{ env.AUTHOR }}"
           export KBUILD_BUILD_HOST="Android"
 
-          # 1. NUCLEAR CLEANUP (Neutron Clang specific)
+          # --- 2. vDSO FIX (Commit c36d774 LineageOS) ---
+          # Eliminăm flag-urile incompatibile cu LLD pentru vDSO
+          find arch/arm64/kernel/vdso -name "Makefile*" -exec sed -i 's/-Wl,-n//g' {} +
+          find arch/arm64/kernel/vdso -name "Makefile*" -exec sed -i 's/-Wl,-T//g' {} +
+
+          # --- 3. NUCLEAR CLEANUP (Fixes pentru erorile din LOG.txt) ---
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm//g' {} +
-
-          # 2. VDSO FIX
-          if [ -f arch/arm64/kernel/vdso/Makefile ]; then
-            sed -i 's/-static//g' arch/arm64/kernel/vdso/Makefile
-            sed -i 's/$(LDFLAGS)/$(filter-out -static,$(LDFLAGS))/g' arch/arm64/kernel/vdso/Makefile
-          fi
-
-          # 3. KERNELSU & SAMSUNG CLEANUP
-          sed -i '/kernelsu/d' drivers/android/Kconfig || true
-          sed -i '/kernelsu/d' drivers/android/Makefile || true
-          rm -rf drivers/kernelsu
+          # Fix pentru gcc-wrapper.py care apare în log ca avertisment
           sed -i 's/ifneq ($(wildcard $(srctree)\/scripts\/gcc-wrapper.py),)/ifeq (0,1)/g' Makefile
 
-          # 4. Argumente Build
+          # --- 4. ARGUMENTE BUILD ---
           MAKE_ARGS="ARCH=arm64 \
             LLVM=1 \
             LLVM_IAS=1 \
@@ -101,7 +80,7 @@ jobs:
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             O=out"
 
-          # 5. Configurare (Spoofing LOCALVERSION)
+          # --- 5. CONFIGURARE ---
           make $MAKE_ARGS ${{ env.DEFCONFIG }}
           
           ./scripts/config --file out/.config \
@@ -110,36 +89,27 @@ jobs:
             --set-str CONFIG_LOCALVERSION "-${{ env.AUTHOR }}" \
             -d CONFIG_LTO -d CONFIG_LTO_CLANG -e CONFIG_LTO_NONE \
             -d CONFIG_CC_STACKPROTECTOR_STRONG -e CONFIG_CC_STACKPROTECTOR_NONE \
-            -d CONFIG_SHADOW_CALL_STACK -d CONFIG_KNOX_KAP -d CONFIG_SECURITY_SAMSUNG_KNOX \
             -d CONFIG_ASSIST_KSU -d CONFIG_KSU
             
           make $MAKE_ARGS olddefconfig
 
-          # 6. Compilare Finală
-          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -Wno-error -Wno-unknown-warning-option"
+          # --- 6. COMPILARE (KCFLAGS adăugate pentru a ignora warning-urile din LOG.txt) ---
+          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -Wno-error -Wno-unknown-warning-option -Wno-unused-variable -Wno-unused-function"
 
       - name: Package with AnyKernel3
         run: |
           IMAGE="$GITHUB_WORKSPACE/out/arch/arm64/boot/Image.gz-dtb"
-          if [ ! -f "$IMAGE" ]; then
-            IMAGE="$GITHUB_WORKSPACE/out/arch/arm64/boot/Image.gz"
-          fi
+          if [ ! -f "$IMAGE" ]; then IMAGE="$GITHUB_WORKSPACE/out/arch/arm64/boot/Image.gz"; fi
           DTBO="$GITHUB_WORKSPACE/out/arch/arm64/boot/dtbo.img"
-
           git clone https://github.com/osm0sis/AnyKernel3.git
           rm -rf AnyKernel3/.git
-
           cp $IMAGE AnyKernel3/Image.gz
           [ -f "$DTBO" ] && cp $DTBO AnyKernel3/dtbo.img
-
           sed -i 's/device.name1=maguro/device.name1=${{ env.DEVICE }}/g' AnyKernel3/anykernel.sh
-          sed -i 's/device.name2=toroplus/device.name2=SM-G770F/g' AnyKernel3/anykernel.sh
+          cd AnyKernel3 && zip -r9 ../4.14.${{ env.SUBLEVEL }}-${{ env.AUTHOR }}.zip *
 
-          cd AnyKernel3
-          zip -r9 ../4.14.${{ env.SUBLEVEL }}-${{ env.AUTHOR }}.zip *
-
-      - name: Upload Flashable Kernel
+      - name: Upload Kernel
         uses: actions/upload-artifact@v4
         with:
           name: Kernel-4.14.${{ env.SUBLEVEL }}-${{ env.AUTHOR }}
-          path: 4.14.${{ env.SUBLEVEL }}-${{ env.AUTHOR }}.zip
+          path: "*.zip"
