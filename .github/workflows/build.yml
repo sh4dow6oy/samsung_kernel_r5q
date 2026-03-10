@@ -48,11 +48,15 @@ jobs:
           sed -i 's/bool bpf_dump_raw_ok(void)/bool bpf_dump_raw_ok(void) { return true; } \/\/ /' kernel/bpf/core.c || true
           sed -i '/check_helper_call(struct bpf_verifier_env/a \	if (env->prog->type == BPF_PROG_TYPE_UNSPEC) return -EINVAL;' kernel/bpf/verifier.c || true
 
-          # --- PATCH SELINUX GENFSCON (PENTRU GSI/ONEUI 7) ---
-          # Această modificare face kernel-ul să ignore erorile de context din vendor_sepolicy.cil
-          # permițând boot-ul chiar dacă regulile de securitate sunt vechi.
-          
-          sed -i 's/if (IS_ERR(newc)) {/if (0) { \/\/ Ignorăm erorile genfscon/g' security/selinux/ss/services.c || true
+          # --- PATCH SELINUX GENFSCON (FIX PENTRU EROARE COMPILARE) ---
+          # Folosim o metodă mai sigură care nu strică acoladele fișierului
+          sed -i 's/if (IS_ERR(newc))/if (false \&\& IS_ERR(newc))/g' security/selinux/ss/services.c || true
+
+          # --- FIX PENTRU EBPF SYSCALL ---
+          # Verificăm dacă funcția există înainte de a aplica patch-ul
+          if grep -q "SECCLASS_BPF" security/selinux/hooks.c; then
+            sed -i 's/return avc_has_perm(sid, target_sid, SECCLASS_BPF, bpf_perm, NULL);/return 0; \/\/ Forced by sh4dow6oy/g' security/selinux/hooks.c
+          fi
           
           # --- FIX PENTRU EBPF SYSCALL ---
           # Forțăm sistemul să permită apelurile BPF chiar dacă SELinux este activ
