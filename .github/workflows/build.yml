@@ -1,4 +1,4 @@
-name: Build Roynas R5Q - sh4dow6oy 4.14.356
+name: Build Roynas R5Q - Android 15 Ready
 on:
   workflow_dispatch:
 
@@ -23,13 +23,29 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y bc build-essential flex bison lz4 libssl-dev libelf-dev \
-          ccache python3 python-is-python3 libarchive-tools wget zstd libtinfo6 zip
+          ccache python3 python-is-python3 libarchive-tools wget zstd libtinfo6 zip curl
 
       - name: Setup Neutron Clang
         run: |
           mkdir clang
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
+
+      - name: Import BPF Logic from Lineage-23.0
+        run: |
+          echo "Se importă fișierele eBPF native pentru suport Android 15..."
+          BASE_RAW="https://raw.githubusercontent.com/acroreiser/android_kernel_lenovo_a6010/lineage-23.0"
+          
+          # Inlocuim fisierele critice pentru ca Android 15 sa aiba suport real
+          curl -sL "$BASE_RAW/include/uapi/linux/bpf.h" -o include/uapi/linux/bpf.h
+          curl -sL "$BASE_RAW/kernel/bpf/core.c" -o kernel/bpf/core.c
+          curl -sL "$BASE_RAW/kernel/bpf/verifier.c" -o kernel/bpf/verifier.c
+          curl -sL "$BASE_RAW/kernel/bpf/helpers.c" -o kernel/bpf/helpers.c
+          
+          # Compilatorul JIT pentru ARM64 (vital pentru viteza retelei in A15)
+          curl -sL "$BASE_RAW/arch/arm64/net/bpf_jit_comp.c" -o arch/arm64/net/bpf_jit_comp.c
+          
+          echo "Importul BPF a fost finalizat."
 
       - name: Build Kernel
         run: |
@@ -42,29 +58,23 @@ jobs:
           sed -i "s/^EXTRAVERSION =.*/EXTRAVERSION = -${{ env.AUTHOR }}/" Makefile
           
           export KBUILD_BUILD_USER="${{ env.AUTHOR }}"
-          export KBUILD_BUILD_HOST="Android"
+          export KBUILD_BUILD_HOST="Android-15"
 
-          # --- 2. BPF JIT & INSTRUCTION BACKPORTS ---
-          # Implementăm suportul pentru vizibilitate programe JIT și instrucțiuni noi
-          echo "Applying BPF JIT visibility & instruction backports..."
-          sed -i 's/BPF_JGE, BPF_JGT, BPF_JSET/BPF_JGE, BPF_JGT, BPF_JSET, BPF_JLT, BPF_JLE, BPF_JSLT, BPF_JSLE/g' include/uapi/linux/bpf.h || true
-
-          # --- 3. vDSO FIX (Commit c36d774 LineageOS) ---
+          # --- 2. vDSO FIX (Compatibilitate Neutron/LLD) ---
           find arch/arm64/kernel/vdso -name "Makefile*" -exec sed -i 's/-Wl,-n//g' {} +
           find arch/arm64/kernel/vdso -name "Makefile*" -exec sed -i 's/-Wl,-T//g' {} +
 
-          # --- 4. FIX EROARE KCONFIG (KernelSU Cleanup) ---
+          # --- 3. FIX EROARE KCONFIG (Rezolva eroarea din LOG.txt) ---
           sed -i '/kernelsu/d' drivers/android/Kconfig || true
           sed -i '/kernelsu/d' drivers/android/Makefile || true
           rm -rf drivers/kernelsu
-          rm -rf drivers/android/kernelsu
 
-          # --- 5. NUCLEAR CLEANUP & NEUTRON FIXES ---
+          # --- 4. NUCLEAR CLEANUP & NEUTRON FIXES ---
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm//g' {} +
           sed -i 's/ifneq ($(wildcard $(srctree)\/scripts\/gcc-wrapper.py),)/ifeq (0,1)/g' Makefile
 
-          # --- 6. ARGUMENTE BUILD ---
+          # --- 5. ARGUMENTE BUILD ---
           MAKE_ARGS="ARCH=arm64 \
             LLVM=1 \
             LLVM_IAS=1 \
@@ -79,41 +89,39 @@ jobs:
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             O=out"
 
-          # --- 7. CONFIGURARE ---
+          # --- 6. CONFIGURARE (Setari specifice Android 15) ---
           make $MAKE_ARGS ${{ env.DEFCONFIG }}
           
           ./scripts/config --file out/.config \
-            -e CONFIG_BPF_JIT_ALWAYS_ON \
+            -e CONFIG_BPF \
             -e CONFIG_BPF_SYSCALL \
             -e CONFIG_BPF_JIT \
+            -e CONFIG_BPF_JIT_ALWAYS_ON \
+            -e CONFIG_NET_CLS_BPF \
+            -e CONFIG_CGROUP_BPF \
             -d CONFIG_LOCALVERSION_AUTO \
             --set-str CONFIG_LOCALVERSION "-${{ env.AUTHOR }}" \
             -d CONFIG_LTO -d CONFIG_LTO_CLANG -e CONFIG_LTO_NONE \
-            -d CONFIG_CC_STACKPROTECTOR_STRONG -e CONFIG_CC_STACKPROTECTOR_NONE \
             -d CONFIG_ASSIST_KSU -d CONFIG_KSU
             
           make $MAKE_ARGS olddefconfig
 
-          # --- 8. COMPILARE ---
-          # KCFLAGS ignoră erorile de tip "unused variable" din pci-msm.c văzute în LOG.txt
+          # --- 7. COMPILARE FINALĂ ---
+          # KCFLAGS pentru a ignora warning-urile din pci-msm.c care opresc build-ul
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -Wno-error -Wno-unknown-warning-option -Wno-unused-variable -Wno-unused-function -Wno-implicit-function-declaration"
 
       - name: Package with AnyKernel3
         run: |
           IMAGE="$GITHUB_WORKSPACE/out/arch/arm64/boot/Image.gz-dtb"
-          if [ ! -f "$IMAGE" ]; then
-            IMAGE="$GITHUB_WORKSPACE/out/arch/arm64/boot/Image.gz"
-          fi
-          DTBO="$GITHUB_WORKSPACE/out/arch/arm64/boot/dtbo.img"
+          if [ ! -f "$IMAGE" ]; then IMAGE="$GITHUB_WORKSPACE/out/arch/arm64/boot/Image.gz"; fi
           git clone https://github.com/osm0sis/AnyKernel3.git
           rm -rf AnyKernel3/.git
           cp $IMAGE AnyKernel3/Image.gz
-          [ -f "$DTBO" ] && cp $DTBO AnyKernel3/dtbo.img
           sed -i 's/device.name1=maguro/device.name1=${{ env.DEVICE }}/g' AnyKernel3/anykernel.sh
-          cd AnyKernel3 && zip -r9 ../4.14.${{ env.SUBLEVEL }}-${{ env.AUTHOR }}.zip *
+          cd AnyKernel3 && zip -r9 ../Kernel-A15-sh4dow6oy.zip *
 
       - name: Upload Kernel
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-4.14.${{ env.SUBLEVEL }}-${{ env.AUTHOR }}
+          name: Kernel-A15-sh4dow6oy
           path: "*.zip"
