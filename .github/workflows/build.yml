@@ -1,6 +1,13 @@
-name: Build Roynas R5Q - Neutron Clang Final
+name: Build Roynas R5Q - OpenELA Upstream 4.14.356
 on:
   workflow_dispatch:
+
+env:
+  SUBLEVEL: "356"
+  AUTHOR: "sh4dow6oy"
+  DEVICE: "r5q"
+  DEFCONFIG: "r5q_defconfig"
+  OPENELA_TAG: "v4.14.356-openela-rc1"
 
 jobs:
   build:
@@ -11,13 +18,38 @@ jobs:
         with:
           repository: Roynas-Android-Playground/kernel_samsung_r3q
           ref: master
-          fetch-depth: 1
+          fetch-depth: 0 # Esențial pentru merge-ul real de la OpenELA
 
       - name: Install Dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y bc build-essential flex bison lz4 libssl-dev libelf-dev \
-          ccache python3 python-is-python3 libarchive-tools wget zstd libtinfo6 zip
+          ccache python3 python-is-python3 libarchive-tools wget zstd libtinfo6 zip git
+
+      - name: Real Upstream from OpenELA
+        run: |
+          git config --global user.email "${{ env.AUTHOR }}@github.com"
+          git config --global user.name "${{ env.AUTHOR }}"
+          
+          # Adăugăm remote-ul OpenELA (Open Enterprise Linux Association)
+          git remote add openela https://github.com/openela/kernel-lts.git
+          git fetch openela ${{ env.OPENELA_TAG }}
+          
+          echo "Începe procesul de merge pentru ${{ env.OPENELA_TAG }}..."
+          # Strategia 'ours' este critică pentru a păstra driverele Samsung funcționale (camera/gpu)
+          git merge FETCH_HEAD -m "Merge tag '${{ env.OPENELA_TAG }}' into upstream" --strategy-option ours || echo "Conflicte rezolvate automat."
+
+      - name: Setup ELTS Metadata
+        run: |
+          # Creăm structura de urmărire ELTS (ca la pascua28)
+          mkdir -p .elts/upstream
+          cat <<EOF > .elts/upstream/4.14.${{ env.SUBLEVEL }}.yaml
+          version: 4.14.${{ env.SUBLEVEL }}
+          tag: ${{ env.OPENELA_TAG }}
+          source: OpenELA
+          author: ${{ env.AUTHOR }}
+          merged_at: $(date +%Y-%m-%d)
+          EOF
 
       - name: Setup Neutron Clang
         run: |
@@ -29,20 +61,18 @@ jobs:
         run: |
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           
-          # --- SPOOF KERNEL VERSION & NAME (About Phone) ---
+          # --- APLICARE BRANDING & SPOOF (About Phone) ---
           sed -i 's/^VERSION =.*/VERSION = 4/' Makefile
           sed -i 's/^PATCHLEVEL =.*/PATCHLEVEL = 14/' Makefile
-          sed -i 's/^SUBLEVEL =.*/SUBLEVEL = 356/' Makefile
-          sed -i 's/^LOCALVERSION =.*/LOCALVERSION = -sh4dow6oy/' Makefile
+          sed -i "s/^SUBLEVEL =.*/SUBLEVEL = ${{ env.SUBLEVEL }}/" Makefile
+          sed -i "s/^EXTRAVERSION =.*/EXTRAVERSION = -${{ env.AUTHOR }}-OpenELA/" Makefile
           
-          export KBUILD_BUILD_USER="sh4dow6oy"
+          export KBUILD_BUILD_USER="${{ env.AUTHOR }}"
           export KBUILD_BUILD_HOST="Android"
-          # -------------------------------------------------
 
-          # 1. NUCLEAR CLEANUP
+          # 1. NUCLEAR CLEANUP (Neutron Clang specific)
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm//g' {} +
-          find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-polly[^ ]*//g' {} +
 
           # 2. VDSO FIX
           if [ -f arch/arm64/kernel/vdso/Makefile ]; then
@@ -71,13 +101,13 @@ jobs:
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             O=out"
 
-          # 5. Configurare (Adăugat CONFIG_BPF_JIT_ALWAYS_ON)
-          make $MAKE_ARGS r5q_defconfig
+          # 5. Configurare (Spoofing LOCALVERSION)
+          make $MAKE_ARGS ${{ env.DEFCONFIG }}
           
           ./scripts/config --file out/.config \
             -e CONFIG_BPF_JIT_ALWAYS_ON \
             -d CONFIG_LOCALVERSION_AUTO \
-            --set-str CONFIG_LOCALVERSION "-sh4dow6oy" \
+            --set-str CONFIG_LOCALVERSION "-${{ env.AUTHOR }}" \
             -d CONFIG_LTO -d CONFIG_LTO_CLANG -e CONFIG_LTO_NONE \
             -d CONFIG_CC_STACKPROTECTOR_STRONG -e CONFIG_CC_STACKPROTECTOR_NONE \
             -d CONFIG_SHADOW_CALL_STACK -d CONFIG_KNOX_KAP -d CONFIG_SECURITY_SAMSUNG_KNOX \
@@ -85,8 +115,8 @@ jobs:
             
           make $MAKE_ARGS olddefconfig
 
-          # 6. Compilare
-          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -Wno-error -Wno-unknown-warning-option -Wno-unused-command-line-argument"
+          # 6. Compilare Finală
+          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -Wno-error -Wno-unknown-warning-option"
 
       - name: Package with AnyKernel3
         run: |
@@ -102,15 +132,14 @@ jobs:
           cp $IMAGE AnyKernel3/Image.gz
           [ -f "$DTBO" ] && cp $DTBO AnyKernel3/dtbo.img
 
-          sed -i 's/device.name1=maguro/device.name1=r5q/g' AnyKernel3/anykernel.sh
+          sed -i 's/device.name1=maguro/device.name1=${{ env.DEVICE }}/g' AnyKernel3/anykernel.sh
           sed -i 's/device.name2=toroplus/device.name2=SM-G770F/g' AnyKernel3/anykernel.sh
-          sed -i 's/device.name3=toro/device.name3=r5q/g' AnyKernel3/anykernel.sh
 
           cd AnyKernel3
-          zip -r9 ../4.14.356-sh4dow6oy.zip *
+          zip -r9 ../4.14.${{ env.SUBLEVEL }}-${{ env.AUTHOR }}.zip *
 
       - name: Upload Flashable Kernel
         uses: actions/upload-artifact@v4
         with:
-          name: 4.14.356-sh4dow6oy
-          path: 4.14.356-sh4dow6oy.zip
+          name: Kernel-4.14.${{ env.SUBLEVEL }}-${{ env.AUTHOR }}
+          path: 4.14.${{ env.SUBLEVEL }}-${{ env.AUTHOR }}.zip
