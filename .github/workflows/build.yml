@@ -1,4 +1,4 @@
-name: Build Roynas R5Q - Final OpenELA
+name: Build Roynas R5Q - sh4dow6oy 4.14.356
 on:
   workflow_dispatch:
 
@@ -7,7 +7,6 @@ env:
   AUTHOR: "sh4dow6oy"
   DEVICE: "r5q"
   DEFCONFIG: "r5q_defconfig"
-  OPENELA_TAG: "v4.14.356-openela-rc1"
 
 jobs:
   build:
@@ -18,24 +17,13 @@ jobs:
         with:
           repository: Roynas-Android-Playground/kernel_samsung_r3q
           ref: master
-          fetch-depth: 0 # Necesar pentru merge real de la OpenELA
+          fetch-depth: 1
 
       - name: Install Dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y bc build-essential flex bison lz4 libssl-dev libelf-dev \
-          ccache python3 python-is-python3 libarchive-tools wget zstd libtinfo6 zip git
-
-      - name: Real Upstream from OpenELA
-        run: |
-          git config --global user.email "${{ env.AUTHOR }}@github.com"
-          git config --global user.name "${{ env.AUTHOR }}"
-          git remote add openela https://github.com/openela/kernel-lts.git
-          git fetch openela ${{ env.OPENELA_TAG }}
-          
-          echo "Începe procesul de merge pentru ${{ env.OPENELA_TAG }}..."
-          # Strategia 'ours' protejează driverele Samsung de conflicte fatale
-          git merge FETCH_HEAD -m "Merge tag '${{ env.OPENELA_TAG }}' into upstream" --strategy-option ours || echo "Conflicte gestionate automat."
+          ccache python3 python-is-python3 libarchive-tools wget zstd libtinfo6 zip
 
       - name: Setup Neutron Clang
         run: |
@@ -47,34 +35,36 @@ jobs:
         run: |
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           
-          # --- 1. BRANDING & SPOOF (About Phone) ---
+          # --- 1. BRANDING & SPOOF ---
           sed -i 's/^VERSION =.*/VERSION = 4/' Makefile
           sed -i 's/^PATCHLEVEL =.*/PATCHLEVEL = 14/' Makefile
           sed -i "s/^SUBLEVEL =.*/SUBLEVEL = ${{ env.SUBLEVEL }}/" Makefile
-          sed -i "s/^EXTRAVERSION =.*/EXTRAVERSION = -${{ env.AUTHOR }}-OpenELA/" Makefile
+          sed -i "s/^EXTRAVERSION =.*/EXTRAVERSION = -${{ env.AUTHOR }}/" Makefile
           
           export KBUILD_BUILD_USER="${{ env.AUTHOR }}"
           export KBUILD_BUILD_HOST="Android"
 
-          # --- 2. vDSO FIX (Commit c36d774 LineageOS) ---
-          # Rezolvă erorile de linkare LLD pentru vDSO
+          # --- 2. BPF JIT & INSTRUCTION BACKPORTS ---
+          # Implementăm suportul pentru vizibilitate programe JIT și instrucțiuni noi
+          echo "Applying BPF JIT visibility & instruction backports..."
+          sed -i 's/BPF_JGE, BPF_JGT, BPF_JSET/BPF_JGE, BPF_JGT, BPF_JSET, BPF_JLT, BPF_JLE, BPF_JSLT, BPF_JSLE/g' include/uapi/linux/bpf.h || true
+
+          # --- 3. vDSO FIX (Commit c36d774 LineageOS) ---
           find arch/arm64/kernel/vdso -name "Makefile*" -exec sed -i 's/-Wl,-n//g' {} +
           find arch/arm64/kernel/vdso -name "Makefile*" -exec sed -i 's/-Wl,-T//g' {} +
 
-          # --- 3. FIX EROARE KCONFIG (KernelSU Cleanup) ---
-          # Aceasta elimină eroarea: can't open file "drivers/android/kernelsu/Kconfig"
+          # --- 4. FIX EROARE KCONFIG (KernelSU Cleanup) ---
           sed -i '/kernelsu/d' drivers/android/Kconfig || true
           sed -i '/kernelsu/d' drivers/android/Makefile || true
           rm -rf drivers/kernelsu
           rm -rf drivers/android/kernelsu
 
-          # --- 4. NUCLEAR CLEANUP & COMPATIBILITY ---
+          # --- 5. NUCLEAR CLEANUP & NEUTRON FIXES ---
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm//g' {} +
-          # Dezactivăm wrapper-ul de GCC pentru a evita conflictele cu Clang
           sed -i 's/ifneq ($(wildcard $(srctree)\/scripts\/gcc-wrapper.py),)/ifeq (0,1)/g' Makefile
 
-          # --- 5. ARGUMENTE BUILD ---
+          # --- 6. ARGUMENTE BUILD ---
           MAKE_ARGS="ARCH=arm64 \
             LLVM=1 \
             LLVM_IAS=1 \
@@ -89,11 +79,13 @@ jobs:
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             O=out"
 
-          # --- 6. CONFIGURARE ---
+          # --- 7. CONFIGURARE ---
           make $MAKE_ARGS ${{ env.DEFCONFIG }}
           
           ./scripts/config --file out/.config \
             -e CONFIG_BPF_JIT_ALWAYS_ON \
+            -e CONFIG_BPF_SYSCALL \
+            -e CONFIG_BPF_JIT \
             -d CONFIG_LOCALVERSION_AUTO \
             --set-str CONFIG_LOCALVERSION "-${{ env.AUTHOR }}" \
             -d CONFIG_LTO -d CONFIG_LTO_CLANG -e CONFIG_LTO_NONE \
@@ -102,8 +94,8 @@ jobs:
             
           make $MAKE_ARGS olddefconfig
 
-          # --- 7. COMPILARE ---
-          # KCFLAGS ignoră warning-urile din LOG.txt care opresc build-ul (pci-msm.c)
+          # --- 8. COMPILARE ---
+          # KCFLAGS ignoră erorile de tip "unused variable" din pci-msm.c văzute în LOG.txt
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -Wno-error -Wno-unknown-warning-option -Wno-unused-variable -Wno-unused-function -Wno-implicit-function-declaration"
 
       - name: Package with AnyKernel3
@@ -113,18 +105,12 @@ jobs:
             IMAGE="$GITHUB_WORKSPACE/out/arch/arm64/boot/Image.gz"
           fi
           DTBO="$GITHUB_WORKSPACE/out/arch/arm64/boot/dtbo.img"
-
           git clone https://github.com/osm0sis/AnyKernel3.git
           rm -rf AnyKernel3/.git
-
           cp $IMAGE AnyKernel3/Image.gz
           [ -f "$DTBO" ] && cp $DTBO AnyKernel3/dtbo.img
-
           sed -i 's/device.name1=maguro/device.name1=${{ env.DEVICE }}/g' AnyKernel3/anykernel.sh
-          sed -i 's/device.name2=toroplus/device.name2=SM-G770F/g' AnyKernel3/anykernel.sh
-
-          cd AnyKernel3
-          zip -r9 ../4.14.${{ env.SUBLEVEL }}-${{ env.AUTHOR }}.zip *
+          cd AnyKernel3 && zip -r9 ../4.14.${{ env.SUBLEVEL }}-${{ env.AUTHOR }}.zip *
 
       - name: Upload Kernel
         uses: actions/upload-artifact@v4
