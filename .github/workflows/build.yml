@@ -1,4 +1,4 @@
-name: Build Roynas R5Q - Android 15 Full BPF & Disable KSU
+name: Build Roynas R5Q - Android 15 Final Fix
 on:
   workflow_dispatch:
 
@@ -31,34 +31,29 @@ jobs:
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
 
-      - name: Apply Android 15 BPF Patches & Disable KernelSU
+      - name: Patch BPF & Networking (Anti-Duplicate Fix)
         run: |
-          echo "Aplicăm patch-urile BPF și eliminăm KernelSU..."
+          echo "Aplicăm patch-urile BPF evitând duplicatele..."
 
-          # --- 1. BPF UAPI & DEFS (Commit b825f17 + NUMA Fix) ---
-          sed -i '/BPF_JSET/a \	BPF_JLT    = 0xa0, \/* LT */ \n	BPF_JLE    = 0xb0, \/* LE */ \n	BPF_JSLT   = 0xc0, \/* SLT */ \n	BPF_JSLE   = 0xd0, \/* SLE */' include/uapi/linux/bpf.h
-          sed -i '/BPF_F_RDONLY/a #define BPF_F_NUMA_NODE (1U << 2)' include/uapi/linux/bpf.h
+          # 1. UAPI Headers - Adăugăm doar dacă lipsesc
+          if ! grep -q "BPF_JLT" include/uapi/linux/bpf.h; then
+            sed -i '/BPF_JSET/a \	BPF_JLT    = 0xa0, \/* LT */ \n	BPF_JLE    = 0xb0, \/* LE */ \n	BPF_JSLT   = 0xc0, \/* SLT */ \n	BPF_JSLE   = 0xd0, \/* SLE */' include/uapi/linux/bpf.h
+          fi
 
-          # --- 2. BPF CORE VISIBILITY (Commit 263e252) ---
+          # 2. Fix BPF_F_NUMA_NODE (Eroarea din sysctl.c)
+          if ! grep -q "BPF_F_NUMA_NODE" include/uapi/linux/bpf.h; then
+            sed -i '/BPF_F_RDONLY/a #define BPF_F_NUMA_NODE (1U << 2)' include/uapi/linux/bpf.h
+          fi
+
+          # 3. BPF Core Visibility (Commit 263e252)
           sed -i 's/bool bpf_dump_raw_ok(void)/bool bpf_dump_raw_ok(void) { return true; } \/\/ /' kernel/bpf/core.c || true
 
-          # --- 3. BPF VERIFIER (Commit 12733ea) ---
-          sed -i '/check_helper_call(struct bpf_verifier_env/a \	if (env->prog->type == BPF_PROG_TYPE_UNSPEC) return -EINVAL;' kernel/bpf/verifier.c || true
-
-          # --- 4. NET JIT ARM64 BACKPORT (Networking Fix) ---
-          # 
-          sed -i '/case BPF_JMP | BPF_JSET | BPF_X:/a \		case BPF_JMP | BPF_JLT | BPF_X:\n		case BPF_JMP | BPF_JLE | BPF_X:\n		case BPF_JMP | BPF_JSLT | BPF_X:\n		case BPF_JMP | BPF_JSLE | BPF_X:' arch/arm64/net/bpf_jit_comp.c || true
-
-          # --- 5. DISABLE KERNELSU (Nuclear Clean) ---
-          # Eliminăm liniile din Kconfig și Makefile care cauzează erori de parsare
+          # 4. KernelSU Nuclear Disable
           sed -i '/kernelsu/d' drivers/android/Kconfig || true
           sed -i '/kernelsu/d' drivers/android/Makefile || true
-          sed -i '/ksu/d' drivers/android/Kconfig || true
-          sed -i '/ksu/d' drivers/android/Makefile || true
           rm -rf drivers/kernelsu
-          rm -rf drivers/android/kernelsu
 
-          # --- 6. vDSO & CLEANUP ---
+          # 5. vDSO Fix
           find arch/arm64/kernel/vdso -name "Makefile*" -exec sed -i 's/-Wl,-n//g' {} +
           find arch/arm64/kernel/vdso -name "Makefile*" -exec sed -i 's/-Wl,-T//g' {} +
 
@@ -70,34 +65,14 @@ jobs:
           sed -i "s/^SUBLEVEL =.*/SUBLEVEL = ${{ env.SUBLEVEL }}/" Makefile
           sed -i "s/^EXTRAVERSION =.*/EXTRAVERSION = -${{ env.AUTHOR }}-A15/" Makefile
           
-          MAKE_ARGS="ARCH=arm64 \
-            LLVM=1 \
-            LLVM_IAS=1 \
-            CC=clang \
-            LD=ld.lld \
-            AR=llvm-ar \
-            NM=llvm-nm \
-            OBJCOPY=llvm-objcopy \
-            OBJDUMP=llvm-objdump \
-            STRIP=llvm-strip \
-            CROSS_COMPILE=aarch64-linux-gnu- \
-            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-            O=out"
+          MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
 
-          # Configurare Android 15 & BPF
-          # 
+          # Configurare Android 15
           make $MAKE_ARGS ${{ env.DEFCONFIG }}
-          
           ./scripts/config --file out/.config \
-            -e CONFIG_BPF \
-            -e CONFIG_BPF_SYSCALL \
-            -e CONFIG_BPF_JIT \
-            -e CONFIG_BPF_JIT_ALWAYS_ON \
-            -e CONFIG_NET_CLS_BPF \
-            -e CONFIG_NET_ACT_BPF \
-            -e CONFIG_CGROUP_BPF \
-            -d CONFIG_ASSIST_KSU \
-            -d CONFIG_KSU \
+            -e CONFIG_BPF -e CONFIG_BPF_SYSCALL -e CONFIG_BPF_JIT -e CONFIG_BPF_JIT_ALWAYS_ON \
+            -e CONFIG_NET_CLS_BPF -e CONFIG_CGROUP_BPF \
+            -d CONFIG_KSU -d CONFIG_ASSIST_KSU \
             -d CONFIG_LTO -d CONFIG_LTO_CLANG -e CONFIG_LTO_NONE
           
           make $MAKE_ARGS olddefconfig
@@ -111,11 +86,10 @@ jobs:
           if [ ! -f "$IMAGE" ]; then IMAGE="$GITHUB_WORKSPACE/out/arch/arm64/boot/Image.gz"; fi
           git clone https://github.com/osm0sis/AnyKernel3.git
           cp $IMAGE AnyKernel3/Image.gz
-          sed -i 's/device.name1=maguro/device.name1=${{ env.DEVICE }}/g' AnyKernel3/anykernel.sh
-          cd AnyKernel3 && zip -r9 ../Kernel-R5Q-A15-FINAL.zip *
+          cd AnyKernel3 && zip -r9 ../Kernel-R5Q-A15-Fixed.zip *
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-R5Q-A15-Ready
+          name: Kernel-A15-Fixed
           path: "*.zip"
