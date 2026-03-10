@@ -33,9 +33,9 @@ jobs:
 
       - name: Patch for OneUI 7 & Android 15
         run: |
-          echo "Aplicăm fix-urile pentru versiune, BPF și Partiții Dinamice..."
-
-          # 1. FORȚARE SUBLEVEL (Să nu mai apară .190 în dmesg)
+          echo "Aplicăm fix-urile pentru versiune, BPF și SELinux..."
+          
+          # 1. FORȚARE SUBLEVEL
           sed -i "s/^SUBLEVEL =.*/SUBLEVEL = ${{ env.SUBLEVEL }}/" Makefile
           
           # 2. BPF UAPI (JLT, JLE + NUMA Fix)
@@ -48,26 +48,22 @@ jobs:
           sed -i 's/bool bpf_dump_raw_ok(void)/bool bpf_dump_raw_ok(void) { return true; } \/\/ /' kernel/bpf/core.c || true
           sed -i '/check_helper_call(struct bpf_verifier_env/a \	if (env->prog->type == BPF_PROG_TYPE_UNSPEC) return -EINVAL;' kernel/bpf/verifier.c || true
 
-          # --- PATCH SELINUX GENFSCON (FIX PENTRU EROARE COMPILARE) ---
-          # Folosim o metodă mai sigură care nu strică acoladele fișierului
-          sed -i 's/if (IS_ERR(newc))/if (false \&\& IS_ERR(newc))/g' security/selinux/ss/services.c || true
+          # 4. FIX SELINUX SERVICES (Metoda sigură cu #if 0)
+          # Căutăm linia cu IS_ERR(newc) și o izolăm pentru a nu opri boot-ul la genfscon
+          sed -i '/if (IS_ERR(newc)) {/,/}/ s/if (IS_ERR(newc)) {/#if 0\nif (IS_ERR(newc)) {/' security/selinux/ss/services.c
+          sed -i '/#if 0/,/}/ s/}/}\n#endif/' security/selinux/ss/services.c
 
-          # --- FIX PENTRU EBPF SYSCALL ---
-          # Verificăm dacă funcția există înainte de a aplica patch-ul
+          # 5. FIX SELINUX HOOKS (BPF Permission)
           if grep -q "SECCLASS_BPF" security/selinux/hooks.c; then
-            sed -i 's/return avc_has_perm(sid, target_sid, SECCLASS_BPF, bpf_perm, NULL);/return 0; \/\/ Forced by sh4dow6oy/g' security/selinux/hooks.c
+            sed -i 's/return avc_has_perm(sid, target_sid, SECCLASS_BPF, bpf_perm, NULL);/return 0; \/* Forced by sh4dow6oy *\//g' security/selinux/hooks.c
           fi
-          
-          # --- FIX PENTRU EBPF SYSCALL ---
-          # Forțăm sistemul să permită apelurile BPF chiar dacă SELinux este activ
-          sed -i 's/return avc_has_perm(sid, target_sid, SECCLASS_BPF, bpf_perm, NULL);/return 0;/g' security/selinux/hooks.c || true
-          
-          # 4. NUCLEAR KERNELSU DISABLE (Evităm conflictele de Binder)
+
+          # 6. NUCLEAR KERNELSU DISABLE
           sed -i '/kernelsu/d' drivers/android/Kconfig || true
           sed -i '/kernelsu/d' drivers/android/Makefile || true
           rm -rf drivers/kernelsu
 
-          # 5. vDSO Fix (Pentru Linker-ul Neutron)
+          # 7. vDSO Fix
           find arch/arm64/kernel/vdso -name "Makefile*" -exec sed -i 's/-Wl,-n//g' {} +
           find arch/arm64/kernel/vdso -name "Makefile*" -exec sed -i 's/-Wl,-T//g' {} +
 
