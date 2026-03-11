@@ -56,8 +56,8 @@ jobs:
         cp -r phoenix/include/linux/cgroup* include/linux/ || true
 
         echo "Import BinderFS"
-        rm -rf fs/binderfs
-        cp -r phoenix/fs/binderfs fs/
+        rm -rf drivers/android
+        cp -r phoenix/drivers/android
 
         echo "Import Android binder updates"
         rm -rf drivers/android
