@@ -55,12 +55,14 @@ jobs:
           sed -i 's/bool bpf_dump_raw_ok(void)/bool bpf_dump_raw_ok(void) { return true; } \/\/ /' kernel/bpf/core.c || true
 
           # SELinux patches
-          python3 -c '
+              python3 -c '
               import os
+              
               files = [
                   ("security/selinux/ss/services.c", "if (IS_ERR(newc)) {", "if (false && IS_ERR(newc)) {"),
                   ("security/selinux/hooks.c", "SECCLASS_BPF", "return 0; /* Forced */")
               ]
+              
               for path, match, replace in files:
                   if os.path.exists(path):
                       with open(path, "r") as f:
