@@ -4,27 +4,47 @@ on:
   workflow_dispatch:
 
 env:
-  SUBLEVEL: "356"
+  SUBLEVEL: "356"             # Forțăm kernel-ul la 4.14.356 pentru compatibilitate Android 15
   AUTHOR: "sh4dow6oy"
   DEVICE: "r5q"
   DEFCONFIG: "r5q_defconfig"
+  KERNEL_REPO: "Roynas-Android-Playground/kernel_samsung_r3q"
+  PHOENIX_REPO: "PhoenixKernel/linux"
+  PHOENIX_BRANCH: "android-4.14-phoenix"
 
 jobs:
   build:
     runs-on: ubuntu-24.04
     steps:
-      - name: Checkout Kernel Source
+      - name: Checkout Phoenix Kernel Base
         uses: actions/checkout@v4
         with:
-          repository: Roynas-Android-Playground/kernel_samsung_r3q
-          ref: master
+          repository: ${{ env.PHOENIX_REPO }}
+          ref: ${{ env.PHOENIX_BRANCH }}
+          path: phoenix_kernel
           fetch-depth: 1
+
+      - name: Checkout Device Specific Kernel
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.KERNEL_REPO }}
+          ref: master
+          path: device_kernel
+          fetch-depth: 1
+
+      - name: Merge Phoenix Base into Device Kernel
+        run: |
+          cd device_kernel
+          git init
+          git remote add phoenix ../phoenix_kernel
+          git fetch phoenix
+          git merge --allow-unrelated-histories -X theirs phoenix/${{ env.PHOENIX_BRANCH }} -m "Merge Phoenix android-4.14-phoenix base"
 
       - name: Install Dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y bc build-essential flex bison lz4 libssl-dev libelf-dev \
-          ccache python3 python-is-python3 libarchive-tools wget zstd libtinfo6 zip rsync
+          ccache python3 python-is-python3 libarchive-tools wget zstd libtinfo6 zip
 
       - name: Setup Neutron Clang
         run: |
@@ -32,40 +52,74 @@ jobs:
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
 
-      - name: Pull Exynos9611 Patch Commit
+      - name: Apply OneUI 7 + Android 15 + NET_BPF + CGROUPS + BINDERFS Patches
         run: |
-          echo "Aplicăm toate fișierele din commit-ul Android 15 (842 fișiere)..."
-          git clone --depth=1 --branch bd7d6490a278cea619f533e7eb7a1056fb01e02e https://github.com/Exynos9611Development/android_kernel_samsung_universal9611 temp_commit
-          rsync -a --exclude='.git' temp_commit/ ./   # Copiază tot conținutul commit-ului în workspace
-          rm -rf temp_commit
-
-      - name: Apply OneUI7 & Android 15 fixes
-        run: |
-          # Fix sublevel
-          sed -i "s/^SUBLEVEL =.*/SUBLEVEL = ${{ env.SUBLEVEL }}/" Makefile
+          cd device_kernel
+          echo "Aplicăm patch-urile device-specific și Android 15..."
           
-          # Remove kernelsu
-          sed -i '/kernelsu/d' drivers/android/Kconfig || true
-          sed -i '/kernelsu/d' drivers/android/Makefile || true
-          rm -rf drivers/kernelsu
+          # Forțăm sublevel
+          sed -i "s/^SUBLEVEL =.*/SUBLEVEL = ${{ env.SUBLEVEL }}/" Makefile
+          sed -i "s/^EXTRAVERSION =.*/EXTRAVERSION = -${{ env.AUTHOR }}-OneUI7/" Makefile
+          
+          # BPF & UAPI
+          if ! grep -q "BPF_JLT" include/uapi/linux/bpf.h; then
+            sed -i '/BPF_JSET/a \	BPF_JLT    = 0xa0, \/* LT */ \n	BPF_JLE    = 0xb0, \/* LE */ \n	BPF_JSLT   = 0xc0, \/* SLT */ \n	BPF_JSLE   = 0xd0, \/* SLE */' include/uapi/linux/bpf.h
+          fi
+          sed -i '/BPF_F_RDONLY/a #define BPF_F_NUMA_NODE (1U << 2)' include/uapi/linux/bpf.h
+          sed -i 's/bool bpf_dump_raw_ok(void)/bool bpf_dump_raw_ok(void) { return true; } \/\/ /' kernel/bpf/core.c || true
 
-          # vDSO Fix
-          find arch/arm64/kernel/vdso -name "Makefile*" -exec sed -i 's/-Wl,-n//g' {} +
-          find arch/arm64/kernel/vdso -name "Makefile*" -exec sed -i 's/-Wl,-T//g' {} +
+          # SELinux hooks (BPF / Genfscon bypass)
+          python3 - << 'EOF'
+              import os
+              
+              files = [
+                  ("security/selinux/ss/services.c", "if (IS_ERR(newc)) {", "if (false && IS_ERR(newc)) {"),
+                  ("security/selinux/hooks.c", "SECCLASS_BPF", "return 0; /* Forced */")
+              ]
+              
+              for path, match, replace in files:
+                  if os.path.exists(path):
+                      with open(path, "r") as f:
+                          data = f.read()
+                      if "hooks.c" in path:
+                          lines = data.splitlines()
+                          new_lines = []
+                          for line in lines:
+                              if match in line and "return" in line:
+                                  new_lines.append(replace)
+                              else:
+                                  new_lines.append(line)
+                          data = "\n".join(new_lines)
+                      else:
+                          data = data.replace(match, replace)
+                      with open(path, "w") as f:
+                          f.write(data)
+              EOF
+              
+                        # Remove kernelsu
+                        sed -i '/kernelsu/d' drivers/android/Kconfig || true
+                        sed -i '/kernelsu/d' drivers/android/Makefile || true
+                        rm -rf drivers/kernelsu
+              
+                        # vDSO Fix
+                        find arch/arm64/kernel/vdso -name "Makefile*" -exec sed -i 's/-Wl,-n//g' {} +
+                        find arch/arm64/kernel/vdso -name "Makefile*" -exec sed -i 's/-Wl,-T//g' {} +
 
       - name: Build Kernel
         run: |
+          cd device_kernel
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
-          sed -i "s/^EXTRAVERSION =.*/EXTRAVERSION = -${{ env.AUTHOR }}-OneUI7/" Makefile
 
           MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
           
+          # Apply defconfig
           make $MAKE_ARGS ${{ env.DEFCONFIG }}
           
+          # Enable Android 15 features
           ./scripts/config --file out/.config \
             -e CONFIG_BPF -e CONFIG_BPF_SYSCALL -e CONFIG_BPF_JIT -e CONFIG_BPF_JIT_ALWAYS_ON \
             -e CONFIG_NET_CLS_BPF -e CONFIG_CGROUP_BPF \
-            -e CONFIG_ANDROID_BINDERFS \
+            -e CONFIG_ANDROID_BINDERFS -e CONFIG_ANDROID_BINDER_IPC \
             -e CONFIG_OVERLAY_FS \
             -d CONFIG_KSU -d CONFIG_ASSIST_KSU \
             -d CONFIG_LTO -d CONFIG_LTO_CLANG -e CONFIG_LTO_NONE
@@ -75,8 +129,9 @@ jobs:
 
       - name: Package for Recovery
         run: |
-          IMAGE="$GITHUB_WORKSPACE/out/arch/arm64/boot/Image.gz-dtb"
-          if [ ! -f "$IMAGE" ]; then IMAGE="$GITHUB_WORKSPACE/out/arch/arm64/boot/Image.gz"; fi
+          cd device_kernel
+          IMAGE="$GITHUB_WORKSPACE/device_kernel/out/arch/arm64/boot/Image.gz-dtb"
+          if [ ! -f "$IMAGE" ]; then IMAGE="$GITHUB_WORKSPACE/device_kernel/out/arch/arm64/boot/Image.gz"; fi
           git clone https://github.com/osm0sis/AnyKernel3.git
           cp $IMAGE AnyKernel3/Image.gz
           sed -i 's/device.name1=maguro/device.name1=${{ env.DEVICE }}/g' AnyKernel3/anykernel.sh
@@ -86,4 +141,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: Kernel-OneUI7-R5Q
-          path: "*.zip"
+          path: "device_kernel/Kernel-OneUI7-Ready.zip"
