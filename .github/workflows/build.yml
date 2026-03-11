@@ -22,19 +22,17 @@ jobs:
           ref: master
           fetch-depth: 0
 
-      - name: Add LineageOS Remote
+      - name: Checkout LineageOS Android 15
         run: |
-          git remote add lineage https://github.com/${{ env.LINEAGE_REPO }}.git
-          git fetch lineage lineage-23.2
+          git clone --depth 1 --branch lineage-23.2 https://github.com/${{ env.LINEAGE_REPO }}.git lineage_temp
 
       - name: Apply Android 15 files from LineageOS
         run: |
           echo "Aplicăm fișierele oficiale Android 15 din LineageOS..."
-          cp -r $(git rev-parse --show-toplevel)/.git/refs/remotes/lineage/lineage-23.2/kernel/bpf/* kernel/bpf/
-          cp -r $(git rev-parse --show-toplevel)/.git/refs/remotes/lineage/lineage-23.2/security/selinux/* security/selinux/
-          cp -r $(git rev-parse --show-toplevel)/.git/refs/remotes/lineage/lineage-23.2/drivers/android/* drivers/android/
-          cp -r $(git rev-parse --show-toplevel)/.git/refs/remotes/lineage/lineage-23.2/fs/eroFS/* fs/eroFS/ || true
-          cp -r $(git rev-parse --show-toplevel)/.git/refs/remotes/lineage/lineage-23.2/fs/overlayfs/* fs/overlayfs/ || true
+          cp -r lineage_temp/kernel/bpf/* kernel/bpf/
+          cp -r lineage_temp/security/selinux/* security/selinux/
+          cp -r lineage_temp/drivers/android/* drivers/android/
+          cp -r lineage_temp/fs/overlayfs/* fs/overlayfs/ || true
 
       - name: Install Dependencies
         run: |
@@ -51,7 +49,6 @@ jobs:
       - name: Apply OneUI 7, NET_BPF, CGROUPS & BINDERFS Patches
         run: |
           echo "Aplicăm patch-urile suplimentare OneUI 7 + NET_BPF + CGROUPS + BinderFS..."
-
           sed -i "s/^SUBLEVEL =.*/SUBLEVEL = ${{ env.SUBLEVEL }}/" Makefile
 
           # BPF & UAPI
@@ -90,15 +87,15 @@ jobs:
               EOF
               
                         python3 patch_selinux.py
-
-          # Remove KernelSU
-          sed -i '/kernelsu/d' drivers/android/Kconfig || true
-          sed -i '/kernelsu/d' drivers/android/Makefile || true
-          rm -rf drivers/kernelsu
-
-          # vDSO Fix
-          find arch/arm64/kernel/vdso -name "Makefile*" -exec sed -i 's/-Wl,-n//g' {} +
-          find arch/arm64/kernel/vdso -name "Makefile*" -exec sed -i 's/-Wl,-T//g' {} +
+              
+                        # Remove KernelSU
+                        sed -i '/kernelsu/d' drivers/android/Kconfig || true
+                        sed -i '/kernelsu/d' drivers/android/Makefile || true
+                        rm -rf drivers/kernelsu
+              
+                        # vDSO Fix
+                        find arch/arm64/kernel/vdso -name "Makefile*" -exec sed -i 's/-Wl,-n//g' {} +
+                        find arch/arm64/kernel/vdso -name "Makefile*" -exec sed -i 's/-Wl,-T//g' {} +
 
       - name: Build Kernel with Full Android 15 Support
         run: |
@@ -112,7 +109,6 @@ jobs:
             -e CONFIG_BPF -e CONFIG_BPF_SYSCALL -e CONFIG_BPF_JIT -e CONFIG_BPF_JIT_ALWAYS_ON \
             -e CONFIG_NET_CLS_BPF -e CONFIG_NET_ACT_BPF -e CONFIG_CGROUP_BPF -e CONFIG_BPFILTER \
             -e CONFIG_ANDROID_BINDERFS -e CONFIG_ANDROID_BINDER_IPC \
-            -e CONFIG_EROFS_FS -e CONFIG_EROFS_FS_ZIP -e CONFIG_EROFS_FS_CLUSTER_PAGE_LIMIT \
             -e CONFIG_OVERLAY_FS \
             -d CONFIG_KSU -d CONFIG_ASSIST_KSU \
             -d CONFIG_LTO -d CONFIG_LTO_CLANG -e CONFIG_LTO_NONE
