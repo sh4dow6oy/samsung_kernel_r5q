@@ -24,10 +24,10 @@ jobs:
 
       - name: Add LineageOS Remote
         run: |
-          git remote add lineage https://github.com/${{ env.LINEAGE_REPO }}.git
+          git remote add lineage https://github.com/LineageOS/android_kernel_google_msm-4.14.git
           git fetch lineage
           echo "LineageOS remote adăugat. Puteți verifica commit-urile de Android 15:"
-          git log lineage/master --oneline -n 5
+          git log lineage/lineage-23.2 --oneline -n 5
 
       - name: Install Dependencies
         run: |
