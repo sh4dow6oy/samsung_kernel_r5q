@@ -1,4 +1,4 @@
-name: Build Roynas R5Q - OneUI 7 (Android 15) Ready
+name: Build Roynas R5Q - OneUI 7 (Android 15 Minimal)
 
 on:
   workflow_dispatch:
@@ -9,7 +9,6 @@ env:
   DEVICE: "r5q"
   DEFCONFIG: "r5q_defconfig"
   KERNEL_REPO: "Roynas-Android-Playground/kernel_samsung_r3q"
-  LINEAGE_REPO: "LineageOS/android_kernel_google_msm-4.14"
 
 jobs:
   build:
@@ -20,19 +19,7 @@ jobs:
         with:
           repository: ${{ env.KERNEL_REPO }}
           ref: master
-          fetch-depth: 0
-
-      - name: Checkout LineageOS Android 15
-        run: |
-          git clone --depth 1 --branch lineage-23.2 https://github.com/${{ env.LINEAGE_REPO }}.git lineage_temp
-
-      - name: Apply Android 15 files from LineageOS
-        run: |
-          echo "Aplicăm fișierele oficiale Android 15 din LineageOS..."
-          cp -r lineage_temp/kernel/bpf/* kernel/bpf/
-          cp -r lineage_temp/security/selinux/* security/selinux/
-          cp -r lineage_temp/drivers/android/* drivers/android/
-          cp -r lineage_temp/fs/overlayfs/* fs/overlayfs/ || true
+          fetch-depth: 1
 
       - name: Install Dependencies
         run: |
@@ -46,25 +33,26 @@ jobs:
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
 
-      - name: Apply OneUI 7, NET_BPF, CGROUPS & BINDERFS Patches
+      - name: Apply OneUI 7 + Android 15 Minimal Patches
         run: |
-          echo "Aplicăm patch-urile suplimentare OneUI 7 + NET_BPF + CGROUPS + BinderFS..."
+          echo "Aplicăm patch-urile compatibile kernel 4.14 pentru OneUI 7 + Android 15..."
           sed -i "s/^SUBLEVEL =.*/SUBLEVEL = ${{ env.SUBLEVEL }}/" Makefile
 
-          # BPF & UAPI
+          # --- BPF UAPI minimal ---
           if ! grep -q "BPF_JLT" include/uapi/linux/bpf.h; then
             sed -i '/BPF_JSET/a \	BPF_JLT    = 0xa0, \/* LT */ \n	BPF_JLE    = 0xb0, \/* LE */ \n	BPF_JSLT   = 0xc0, \/* SLT */ \n	BPF_JSLE   = 0xd0, \/* SLE */' include/uapi/linux/bpf.h
           fi
           sed -i '/BPF_F_RDONLY/a #define BPF_F_NUMA_NODE (1U << 2)' include/uapi/linux/bpf.h
+          # Simplu stub pentru funcția bpf_dump_raw_ok
           sed -i 's/bool bpf_dump_raw_ok(void)/bool bpf_dump_raw_ok(void) { return true; } \/\/ /' kernel/bpf/core.c || true
 
-          # SELinux patches using temporary Python file
+          # --- SELinux fix minimal ---
           cat << 'EOF' > patch_selinux.py
               import os
               
               files = [
                   ("security/selinux/ss/services.c", "if (IS_ERR(newc)) {", "if (false && IS_ERR(newc)) {"),
-                  ("security/selinux/hooks.c", "SECCLASS_BPF", "return 0; /* Forced */")
+                  ("security/selinux/hooks.c", "SECCLASS_BPF", "return 0; /* Forced minimal for 4.14 */")
               ]
               
               for path, match, replace in files:
@@ -85,29 +73,30 @@ jobs:
                       with open(path, "w") as f:
                           f.write(data)
               EOF
-              
                         python3 patch_selinux.py
               
-                        # Remove KernelSU
+                        # --- Remove KernelSU ---
                         sed -i '/kernelsu/d' drivers/android/Kconfig || true
                         sed -i '/kernelsu/d' drivers/android/Makefile || true
                         rm -rf drivers/kernelsu
               
-                        # vDSO Fix
+                        # --- vDSO fix ---
                         find arch/arm64/kernel/vdso -name "Makefile*" -exec sed -i 's/-Wl,-n//g' {} +
                         find arch/arm64/kernel/vdso -name "Makefile*" -exec sed -i 's/-Wl,-T//g' {} +
 
-      - name: Build Kernel with Full Android 15 Support
+      - name: Build Kernel
         run: |
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
-          sed -i "s/^EXTRAVERSION =.*/EXTRAVERSION = -${{ env.AUTHOR }}-OneUI7-Full/" Makefile
+          sed -i "s/^EXTRAVERSION =.*/EXTRAVERSION = -${{ env.AUTHOR }}-OneUI7-Minimal/" Makefile
 
           MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
 
           make $MAKE_ARGS ${{ env.DEFCONFIG }}
+
+          # Enable minimal Android 15 features
           ./scripts/config --file out/.config \
             -e CONFIG_BPF -e CONFIG_BPF_SYSCALL -e CONFIG_BPF_JIT -e CONFIG_BPF_JIT_ALWAYS_ON \
-            -e CONFIG_NET_CLS_BPF -e CONFIG_NET_ACT_BPF -e CONFIG_CGROUP_BPF -e CONFIG_BPFILTER \
+            -e CONFIG_NET_CLS_BPF -e CONFIG_CGROUP_BPF \
             -e CONFIG_ANDROID_BINDERFS -e CONFIG_ANDROID_BINDER_IPC \
             -e CONFIG_OVERLAY_FS \
             -d CONFIG_KSU -d CONFIG_ASSIST_KSU \
@@ -123,10 +112,10 @@ jobs:
           git clone https://github.com/osm0sis/AnyKernel3.git
           cp $IMAGE AnyKernel3/Image.gz
           sed -i 's/device.name1=maguro/device.name1=${{ env.DEVICE }}/g' AnyKernel3/anykernel.sh
-          cd AnyKernel3 && zip -r9 ../Kernel-OneUI7-Full-$(date +%Y%m%d%H%M).zip *
+          cd AnyKernel3 && zip -r9 ../Kernel-OneUI7-Minimal-$(date +%Y%m%d%H%M).zip *
 
       - name: Upload Kernel Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-OneUI7-R5Q-Full
+          name: Kernel-OneUI7-R5Q-Minimal
           path: "*.zip"
