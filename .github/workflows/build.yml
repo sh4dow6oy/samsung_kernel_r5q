@@ -1,124 +1,157 @@
-name: Build Roynas R5Q - OneUI 7 (Android 15) Ready
+name: Build R5Q Kernel OneUI7 Android15
 
 on:
   workflow_dispatch:
 
 env:
-  SUBLEVEL: "356"
-  AUTHOR: "sh4dow6oy"
-  DEVICE: "r5q"
-  DEFCONFIG: "r5q_defconfig"
+  DEVICE: r5q
+  DEFCONFIG: r5q_defconfig
+  AUTHOR: sh4dow6oy
+  SUBLEVEL: 356
 
 jobs:
   build:
     runs-on: ubuntu-24.04
+
     steps:
-      - name: Checkout Roynas kernel
-        uses: actions/checkout@v4
-        with:
-          repository: Roynas-Android-Playground/kernel_samsung_r3q
-          ref: master
-          fetch-depth: 0  # full history
 
-      - name: Install Dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y bc build-essential flex bison lz4 libssl-dev libelf-dev \
-          ccache python3 python-is-python3 libarchive-tools wget zstd libtinfo6 zip git
+# Clone kernel
+    - name: Checkout Kernel
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
 
-      - name: Setup Neutron Clang
-        run: |
-          mkdir clang
-          wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
-          tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
+# Dependencies
+    - name: Install dependencies
+      run: |
+        sudo apt update
+        sudo apt install -y \
+        bc bison build-essential curl flex git lz4 \
+        libssl-dev libelf-dev zip unzip \
+        python3 python-is-python3 \
+        zstd ccache
 
-      - name: Merge PhoenixKernel Android 4.14
-        run: |
-          cd device_kernel
-          git init
-          git remote add phoenix https://github.com/PhoenixKernel/linux.git
-          git fetch phoenix android-4.14-phoenix --depth=0
-          git merge --allow-unrelated-histories -X theirs phoenix/android-4.14-phoenix -m "Merge PhoenixKernel android-4.14-phoenix"
-          cd ..
+# Clang
+    - name: Setup Neutron Clang
+      run: |
+        mkdir clang
+        wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
+        tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
 
-      - name: Apply OneUI 7 + Android 15 + NET_BPF + CGROUPS + BINDERFS patches
-        run: |
-          echo "Aplicăm patch-urile..."
-          sed -i "s/^SUBLEVEL =.*/SUBLEVEL = ${{ env.SUBLEVEL }}/" Makefile
+# Import Android 15 subsystems
+    - name: Import Android15 subsystems (Phoenix)
+      run: |
+        echo "Cloning Phoenix kernel..."
+        git clone --depth=1 https://github.com/PhoenixKernel/linux.git -b android-4.14-phoenix phoenix
 
-          # BPF & UAPI
-          if ! grep -q "BPF_JLT" include/uapi/linux/bpf.h; then
-            sed -i '/BPF_JSET/a \	BPF_JLT    = 0xa0, \/* LT */ \n	BPF_JLE    = 0xb0, \/* LE */ \n	BPF_JSLT   = 0xc0, \/* SLT */ \n	BPF_JSLE   = 0xd0, \/* SLE */' include/uapi/linux/bpf.h
-          fi
-          sed -i '/BPF_F_RDONLY/a #define BPF_F_NUMA_NODE (1U << 2)' include/uapi/linux/bpf.h
-          sed -i 's/bool bpf_dump_raw_ok(void)/bool bpf_dump_raw_ok(void) { return true; } \/\/ /' kernel/bpf/core.c || true
+        echo "Import BPF"
+        rm -rf kernel/bpf
+        cp -r phoenix/kernel/bpf kernel/
 
-          # SELinux patches
-          python3 - <<'EOF'
-              import os
-              files = [
-                  ("security/selinux/ss/services.c", "if (IS_ERR(newc)) {", "if (false && IS_ERR(newc)) {"),
-                  ("security/selinux/hooks.c", "SECCLASS_BPF", "return 0; /* Forced */")
-              ]
-              for path, match, replace in files:
-                  if os.path.exists(path):
-                      with open(path, "r") as f:
-                          data = f.read()
-                      if "hooks.c" in path:
-                          lines = data.splitlines()
-                          new_lines = []
-                          for line in lines:
-                              if match in line and "return" in line:
-                                  new_lines.append(replace)
-                              else:
-                                  new_lines.append(line)
-                          data = "\n".join(new_lines)
-                      else:
-                          data = data.replace(match, replace)
-                      with open(path, "w") as f:
-                          f.write(data)
-              EOF
-              
-                        # Remove kernelsu
-                        sed -i '/kernelsu/d' drivers/android/Kconfig || true
-                        sed -i '/kernelsu/d' drivers/android/Makefile || true
-                        rm -rf drivers/kernelsu
-              
-                        # vDSO fix
-                        find arch/arm64/kernel/vdso -name "Makefile*" -exec sed -i 's/-Wl,-n//g' {} +
-                        find arch/arm64/kernel/vdso -name "Makefile*" -exec sed -i 's/-Wl,-T//g' {} +
+        cp -r phoenix/include/linux/bpf* include/linux/ || true
+        cp -r phoenix/include/uapi/linux/bpf* include/uapi/linux/ || true
 
-      - name: Build Kernel
-        run: |
-          export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
-          sed -i "s/^EXTRAVERSION =.*/EXTRAVERSION = -${{ env.AUTHOR }}-OneUI7/" Makefile
+        echo "Import CGROUP"
+        cp -r phoenix/kernel/cgroup kernel/ || true
+        cp -r phoenix/include/linux/cgroup* include/linux/ || true
 
-          MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
+        echo "Import BinderFS"
+        rm -rf fs/binderfs
+        cp -r phoenix/fs/binderfs fs/
 
-          make $MAKE_ARGS ${{ env.DEFCONFIG }}
+        echo "Import Android binder updates"
+        rm -rf drivers/android
+        cp -r phoenix/drivers/android drivers/
 
-          ./scripts/config --file out/.config \
-            -e CONFIG_BPF -e CONFIG_BPF_SYSCALL -e CONFIG_BPF_JIT -e CONFIG_BPF_JIT_ALWAYS_ON \
-            -e CONFIG_NET_CLS_BPF -e CONFIG_CGROUP_BPF \
-            -e CONFIG_ANDROID_BINDERFS \
-            -e CONFIG_OVERLAY_FS \
-            -d CONFIG_KSU -d CONFIG_ASSIST_KSU \
-            -d CONFIG_LTO -d CONFIG_LTO_CLANG -e CONFIG_LTO_NONE
+        rm -rf phoenix
 
-          make $MAKE_ARGS olddefconfig
-          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -Wno-error -Wno-unused-variable -Wno-unused-function -Wno-implicit-function-declaration"
+# Kernel patches
+    - name: Apply Android15 patches
+      run: |
 
-      - name: Package for Recovery
-        run: |
-          IMAGE="$GITHUB_WORKSPACE/out/arch/arm64/boot/Image.gz-dtb"
-          if [ ! -f "$IMAGE" ]; then IMAGE="$GITHUB_WORKSPACE/out/arch/arm64/boot/Image.gz"; fi
-          git clone https://github.com/osm0sis/AnyKernel3.git
-          cp $IMAGE AnyKernel3/Image.gz
-          sed -i 's/device.name1=maguro/device.name1=${{ env.DEVICE }}/g' AnyKernel3/anykernel.sh
-          cd AnyKernel3 && zip -r9 ../Kernel-OneUI7-Ready.zip *
+        echo "Set kernel version"
+        sed -i "s/^SUBLEVEL =.*/SUBLEVEL = ${{ env.SUBLEVEL }}/" Makefile
+        sed -i "s/^EXTRAVERSION =.*/EXTRAVERSION = -${{ env.AUTHOR }}-OneUI7/" Makefile
 
-      - name: Upload Kernel
-        uses: actions/upload-artifact@v4
-        with:
-          name: Kernel-OneUI7-R5Q
-          path: "*.zip"
+        echo "Remove kernelsu"
+        sed -i '/kernelsu/d' drivers/android/Kconfig || true
+        sed -i '/kernelsu/d' drivers/android/Makefile || true
+        rm -rf drivers/kernelsu
+
+        echo "SELinux fix"
+        sed -i 's/if (IS_ERR(newc))/if (false \&\& IS_ERR(newc))/' security/selinux/ss/services.c || true
+
+        echo "vDSO linker fix"
+        find arch/arm64/kernel/vdso -name "Makefile*" -exec sed -i 's/-Wl,-n//g' {} +
+        find arch/arm64/kernel/vdso -name "Makefile*" -exec sed -i 's/-Wl,-T//g' {} +
+
+# Build kernel
+    - name: Build Kernel
+      run: |
+
+        export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
+
+        MAKE_ARGS="
+        ARCH=arm64
+        LLVM=1
+        LLVM_IAS=1
+        CC=clang
+        LD=ld.lld
+        AR=llvm-ar
+        NM=llvm-nm
+        OBJCOPY=llvm-objcopy
+        OBJDUMP=llvm-objdump
+        STRIP=llvm-strip
+        CROSS_COMPILE=aarch64-linux-gnu-
+        CROSS_COMPILE_ARM32=arm-linux-gnueabi-
+        O=out
+        "
+
+        make $MAKE_ARGS $DEFCONFIG
+
+        ./scripts/config --file out/.config \
+        -e CONFIG_BPF \
+        -e CONFIG_BPF_SYSCALL \
+        -e CONFIG_BPF_JIT \
+        -e CONFIG_BPF_JIT_ALWAYS_ON \
+        -e CONFIG_CGROUPS \
+        -e CONFIG_CGROUP_BPF \
+        -e CONFIG_ANDROID_BINDER_IPC \
+        -e CONFIG_ANDROID_BINDERFS \
+        -e CONFIG_OVERLAY_FS \
+        -d CONFIG_KSU \
+        -d CONFIG_ASSIST_KSU \
+        -d CONFIG_LTO \
+        -d CONFIG_LTO_CLANG \
+        -e CONFIG_LTO_NONE
+
+        make $MAKE_ARGS olddefconfig
+
+        make -j$(nproc) $MAKE_ARGS \
+        KCFLAGS="-fcommon -Wno-error"
+
+# Package kernel
+    - name: Package AnyKernel3
+      run: |
+
+        IMAGE="out/arch/arm64/boot/Image.gz-dtb"
+
+        if [ ! -f "$IMAGE" ]; then
+          IMAGE="out/arch/arm64/boot/Image.gz"
+        fi
+
+        git clone https://github.com/osm0sis/AnyKernel3.git
+
+        cp $IMAGE AnyKernel3/Image.gz
+
+        sed -i "s/device.name1=.*/device.name1=${{ env.DEVICE }}/g" AnyKernel3/anykernel.sh
+
+        cd AnyKernel3
+        zip -r9 ../Kernel-${{ env.DEVICE }}-OneUI7.zip *
+
+# Upload
+    - name: Upload Kernel
+      uses: actions/upload-artifact@v4
+      with:
+        name: Kernel-R5Q-OneUI7
+        path: Kernel-*.zip
