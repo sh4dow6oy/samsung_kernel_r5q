@@ -33,9 +33,9 @@ jobs:
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
 
-      - name: Apply OneUI 7 & Android 15 Patches
+      - name: Apply OneUI 7, Android 15, NET_BPF, CGROUPS & BINDERFS Patches
         run: |
-          echo "Aplicăm patch-urile pentru OneUI 7 / Android 15..."
+          echo "Aplicăm patch-urile pentru OneUI 7 + Android 15 + NET_BPF + CGROUPS + BINDERFS..."
 
           # Forțăm SUBLEVEL
           sed -i "s/^SUBLEVEL =.*/SUBLEVEL = ${{ env.SUBLEVEL }}/" Makefile
@@ -82,19 +82,19 @@ jobs:
                       find arch/arm64/kernel/vdso -name "Makefile*" -exec sed -i 's/-Wl,-n//g' {} +
                       find arch/arm64/kernel/vdso -name "Makefile*" -exec sed -i 's/-Wl,-T//g' {} +
 
-      - name: Build Kernel
+      - name: Build Kernel with Full Android 15 Support
         run: |
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
-          sed -i "s/^EXTRAVERSION =.*/EXTRAVERSION = -${{ env.AUTHOR }}-OneUI7/" Makefile
+          sed -i "s/^EXTRAVERSION =.*/EXTRAVERSION = -${{ env.AUTHOR }}-OneUI7-Full/" Makefile
 
           MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
 
           make $MAKE_ARGS ${{ env.DEFCONFIG }}
           ./scripts/config --file out/.config \
             -e CONFIG_BPF -e CONFIG_BPF_SYSCALL -e CONFIG_BPF_JIT -e CONFIG_BPF_JIT_ALWAYS_ON \
-            -e CONFIG_NET_CLS_BPF -e CONFIG_CGROUP_BPF \
-            -e CONFIG_EROFS_FS -e CONFIG_EROFS_FS_ZIP -e CONFIG_EROFS_FS_CLUSTER_PAGE_LIMIT \
+            -e CONFIG_NET_CLS_BPF -e CONFIG_NET_ACT_BPF -e CONFIG_CGROUP_BPF -e CONFIG_BPFILTER \
             -e CONFIG_ANDROID_BINDERFS -e CONFIG_ANDROID_BINDER_IPC \
+            -e CONFIG_EROFS_FS -e CONFIG_EROFS_FS_ZIP -e CONFIG_EROFS_FS_CLUSTER_PAGE_LIMIT \
             -e CONFIG_OVERLAY_FS \
             -d CONFIG_KSU -d CONFIG_ASSIST_KSU \
             -d CONFIG_LTO -d CONFIG_LTO_CLANG -e CONFIG_LTO_NONE
@@ -109,10 +109,10 @@ jobs:
           git clone https://github.com/osm0sis/AnyKernel3.git
           cp $IMAGE AnyKernel3/Image.gz
           sed -i 's/device.name1=maguro/device.name1=${{ env.DEVICE }}/g' AnyKernel3/anykernel.sh
-          cd AnyKernel3 && zip -r9 ../Kernel-OneUI7-Ready-$(date +%Y%m%d%H%M).zip *
+          cd AnyKernel3 && zip -r9 ../Kernel-OneUI7-Full-$(date +%Y%m%d%H%M).zip *
 
       - name: Upload Kernel Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-OneUI7-R5Q
+          name: Kernel-OneUI7-R5Q-Full
           path: "*.zip"
