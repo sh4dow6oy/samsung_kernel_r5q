@@ -1,27 +1,22 @@
-name: Build R5Q Kernel OneUI7 Android15
+name: Build Samsung R5Q Kernel (AOSP ASB Merge)
 
 on:
   workflow_dispatch:
 
-env:
-  DEVICE: r5q
-  DEFCONFIG: r5q_defconfig
-  AUTHOR: sh4dow6oy
-  SUBLEVEL: 356
-
 jobs:
   build:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-22.04
 
     steps:
 
 # Clone kernel
-    - name: Checkout Kernel
+    - name: Checkout Samsung Kernel
       uses: actions/checkout@v4
       with:
+        repository: Roynas-Android-Playground/kernel_samsung_r3q
         fetch-depth: 0
 
-# Dependencies
+# Install deps
     - name: Install dependencies
       run: |
         sudo apt update
@@ -31,123 +26,67 @@ jobs:
         python3 python-is-python3 \
         zstd ccache
 
-# Clang
-    - name: Setup Neutron Clang
+# Setup clang
+    - name: Setup Clang
       run: |
-        mkdir clang
-        wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
-        tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
+        git clone https://github.com/llvm/llvm-project --depth=1 clang-src
+        cd clang-src
+        mkdir build
+        cd build
+        cmake -G "Unix Makefiles" -DLLVM_ENABLE_PROJECTS=clang ../llvm
+        make -j$(nproc)
+        sudo make install
 
-# Import Android 15 subsystems
-    - name: Import Android15 subsystems (Phoenix)
-      run: |
-        echo "Cloning Phoenix kernel..."
-        git clone --depth=1 https://github.com/PhoenixKernel/linux.git -b android-4.14-phoenix phoenix
-
-        echo "Import BPF"
-        rm -rf kernel/bpf
-        cp -r phoenix/kernel/bpf kernel/
-
-        cp -r phoenix/include/linux/bpf* include/linux/ || true
-        cp -r phoenix/include/uapi/linux/bpf* include/uapi/linux/ || true
-
-        echo "Import CGROUP"
-        cp -r phoenix/kernel/cgroup kernel/ || true
-        cp -r phoenix/include/linux/cgroup* include/linux/ || true
-        
-        echo "Import Android binder updates"
-        rm -rf drivers/android
-        cp -r phoenix/drivers/android drivers/
-
-        rm -rf phoenix
-
-# Kernel patches
-    - name: Apply Android15 patches
+# Merge AOSP kernel
+    - name: Merge Android ASB kernel
       run: |
 
-        echo "Set kernel version"
-        sed -i "s/^SUBLEVEL =.*/SUBLEVEL = ${{ env.SUBLEVEL }}/" Makefile
-        sed -i "s/^EXTRAVERSION =.*/EXTRAVERSION = -${{ env.AUTHOR }}-OneUI7/" Makefile
+        git remote add aosp https://android.googlesource.com/kernel/common
 
-        echo "Remove kernelsu"
-        sed -i '/kernelsu/d' drivers/android/Kconfig || true
-        sed -i '/kernelsu/d' drivers/android/Makefile || true
-        rm -rf drivers/kernelsu
+        git fetch aosp refs/tags/ASB-2024-01-05_4.14-stable
 
-        echo "SELinux fix"
-        sed -i 's/if (IS_ERR(newc))/if (false \&\& IS_ERR(newc))/' security/selinux/ss/services.c || true
+        git checkout -b merge-aosp
 
-        echo "vDSO linker fix"
-        find arch/arm64/kernel/vdso -name "Makefile*" -exec sed -i 's/-Wl,-n//g' {} +
-        find arch/arm64/kernel/vdso -name "Makefile*" -exec sed -i 's/-Wl,-T//g' {} +
+        git merge aosp/ASB-2024-01-05_4.14-stable \
+        --allow-unrelated-histories \
+        -X theirs \
+        -m "Merge Android ASB 2024-01-05"
+
+# Restore Samsung parts
+    - name: Restore Samsung configs
+      run: |
+
+        git checkout HEAD -- arch/arm64/configs/r5q_defconfig || true
+        git checkout HEAD -- drivers/samsung || true
+        git checkout HEAD -- arch/arm64/boot/dts/samsung || true
 
 # Build kernel
-    - name: Build Kernel
+    - name: Build kernel
       run: |
 
-        export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
+        export ARCH=arm64
+        export SUBARCH=arm64
 
-        MAKE_ARGS="
-        ARCH=arm64
-        LLVM=1
-        LLVM_IAS=1
-        CC=clang
-        LD=ld.lld
-        AR=llvm-ar
-        NM=llvm-nm
-        OBJCOPY=llvm-objcopy
-        OBJDUMP=llvm-objdump
+        export CROSS_COMPILE=aarch64-linux-gnu-
+        export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
+
+        mkdir out
+
+        make O=out r5q_defconfig
+
+        make -j$(nproc) O=out \
+        CC=clang \
+        LD=ld.lld \
+        AR=llvm-ar \
+        NM=llvm-nm \
+        OBJCOPY=llvm-objcopy \
+        OBJDUMP=llvm-objdump \
         STRIP=llvm-strip
-        CROSS_COMPILE=aarch64-linux-gnu-
-        CROSS_COMPILE_ARM32=arm-linux-gnueabi-
-        O=out
-        "
 
-        make $MAKE_ARGS $DEFCONFIG
-
-        ./scripts/config --file out/.config \
-        -e CONFIG_BPF \
-        -e CONFIG_BPF_SYSCALL \
-        -e CONFIG_BPF_JIT \
-        -e CONFIG_BPF_JIT_ALWAYS_ON \
-        -e CONFIG_CGROUPS \
-        -e CONFIG_CGROUP_BPF \
-        -e CONFIG_ANDROID_BINDER_IPC \
-        -e CONFIG_ANDROID_BINDERFS \
-        -e CONFIG_OVERLAY_FS \
-        -d CONFIG_KSU \
-        -d CONFIG_ASSIST_KSU \
-        -d CONFIG_LTO \
-        -d CONFIG_LTO_CLANG \
-        -e CONFIG_LTO_NONE
-
-        make $MAKE_ARGS olddefconfig
-
-        make -j$(nproc) $MAKE_ARGS \
-        KCFLAGS="-fcommon -Wno-error"
-
-# Package kernel
-    - name: Package AnyKernel3
-      run: |
-
-        IMAGE="out/arch/arm64/boot/Image.gz-dtb"
-
-        if [ ! -f "$IMAGE" ]; then
-          IMAGE="out/arch/arm64/boot/Image.gz"
-        fi
-
-        git clone https://github.com/osm0sis/AnyKernel3.git
-
-        cp $IMAGE AnyKernel3/Image.gz
-
-        sed -i "s/device.name1=.*/device.name1=${{ env.DEVICE }}/g" AnyKernel3/anykernel.sh
-
-        cd AnyKernel3
-        zip -r9 ../Kernel-${{ env.DEVICE }}-OneUI7.zip *
-
-# Upload
-    - name: Upload Kernel
+# Upload result
+    - name: Upload kernel image
       uses: actions/upload-artifact@v4
       with:
-        name: Kernel-R5Q-OneUI7
-        path: Kernel-*.zip
+        name: R5Q-Kernel-Image
+        path: |
+          out/arch/arm64/boot/Image*
