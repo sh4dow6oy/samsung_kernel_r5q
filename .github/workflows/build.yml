@@ -63,33 +63,33 @@ jobs:
 
           # SELinux patches using temporary Python file
           cat << 'EOF' > patch_selinux.py
-import os
-
-files = [
-    ("security/selinux/ss/services.c", "if (IS_ERR(newc)) {", "if (false && IS_ERR(newc)) {"),
-    ("security/selinux/hooks.c", "SECCLASS_BPF", "return 0; /* Forced */")
-]
-
-for path, match, replace in files:
-    if os.path.exists(path):
-        with open(path, "r") as f:
-            data = f.read()
-        if "hooks.c" in path:
-            lines = data.splitlines()
-            new_lines = []
-            for line in lines:
-                if match in line and "return" in line:
-                    new_lines.append(replace)
-                else:
-                    new_lines.append(line)
-            data = "\n".join(new_lines)
-        else:
-            data = data.replace(match, replace)
-        with open(path, "w") as f:
-            f.write(data)
-EOF
-
-          python3 patch_selinux.py
+              import os
+              
+              files = [
+                  ("security/selinux/ss/services.c", "if (IS_ERR(newc)) {", "if (false && IS_ERR(newc)) {"),
+                  ("security/selinux/hooks.c", "SECCLASS_BPF", "return 0; /* Forced */")
+              ]
+              
+              for path, match, replace in files:
+                  if os.path.exists(path):
+                      with open(path, "r") as f:
+                          data = f.read()
+                      if "hooks.c" in path:
+                          lines = data.splitlines()
+                          new_lines = []
+                          for line in lines:
+                              if match in line and "return" in line:
+                                  new_lines.append(replace)
+                              else:
+                                  new_lines.append(line)
+                          data = "\n".join(new_lines)
+                      else:
+                          data = data.replace(match, replace)
+                      with open(path, "w") as f:
+                          f.write(data)
+              EOF
+              
+                        python3 patch_selinux.py
 
           # Remove KernelSU
           sed -i '/kernelsu/d' drivers/android/Kconfig || true
