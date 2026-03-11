@@ -9,6 +9,7 @@ env:
   DEVICE: "r5q"
   DEFCONFIG: "r5q_defconfig"
   KERNEL_REPO: "Roynas-Android-Playground/kernel_samsung_r3q"
+  LINEAGE_REPO: "LineageOS/android_kernel_google_msm-4.14"
 
 jobs:
   build:
@@ -20,6 +21,13 @@ jobs:
           repository: ${{ env.KERNEL_REPO }}
           ref: master
           fetch-depth: 0
+
+      - name: Add LineageOS Remote
+        run: |
+          git remote add lineage https://github.com/${{ env.LINEAGE_REPO }}.git
+          git fetch lineage
+          echo "LineageOS remote adăugat. Puteți verifica commit-urile de Android 15:"
+          git log lineage/master --oneline -n 5
 
       - name: Install Dependencies
         run: |
@@ -37,7 +45,6 @@ jobs:
         run: |
           echo "Aplicăm patch-urile pentru OneUI 7 + Android 15 + NET_BPF + CGROUPS + BINDERFS..."
 
-          # Forțăm SUBLEVEL
           sed -i "s/^SUBLEVEL =.*/SUBLEVEL = ${{ env.SUBLEVEL }}/" Makefile
 
           # BPF & UAPI
@@ -49,38 +56,36 @@ jobs:
 
           # SELinux patches
           python3 -c '
-            import os
-            files = [
-                ("security/selinux/ss/services.c", "if (IS_ERR(newc)) {", "if (false && IS_ERR(newc)) {"),
-                ("security/selinux/hooks.c", "SECCLASS_BPF", "return 0; /* Forced */")
-            ]
-            for path, match, replace in files:
-                if os.path.exists(path):
-                    with open(path, "r") as f:
-                        data = f.read()
-                    if "hooks.c" in path:
-                        lines = data.splitlines()
-                        new_lines = []
-                        for line in lines:
-                            if match in line and "return" in line:
-                                new_lines.append(replace)
-                            else:
-                                new_lines.append(line)
-                        data = "\n".join(new_lines)
-                    else:
-                        data = data.replace(match, replace)
-                    with open(path, "w") as f:
-                        f.write(data)
-            '
-            
-                      # Remove KernelSU
-                      sed -i '/kernelsu/d' drivers/android/Kconfig || true
-                      sed -i '/kernelsu/d' drivers/android/Makefile || true
-                      rm -rf drivers/kernelsu
-            
-                      # vDSO Fix
-                      find arch/arm64/kernel/vdso -name "Makefile*" -exec sed -i 's/-Wl,-n//g' {} +
-                      find arch/arm64/kernel/vdso -name "Makefile*" -exec sed -i 's/-Wl,-T//g' {} +
+              import os
+              files = [
+                  ("security/selinux/ss/services.c", "if (IS_ERR(newc)) {", "if (false && IS_ERR(newc)) {"),
+                  ("security/selinux/hooks.c", "SECCLASS_BPF", "return 0; /* Forced */")
+              ]
+              for path, match, replace in files:
+                  if os.path.exists(path):
+                      with open(path, "r") as f:
+                          data = f.read()
+                      if "hooks.c" in path:
+                          lines = data.splitlines()
+                          new_lines = []
+                          for line in lines:
+                              if match in line and "return" in line:
+                                  new_lines.append(replace)
+                              else:
+                                  new_lines.append(line)
+                          data = "\n".join(new_lines)
+                      else:
+                          data = data.replace(match, replace)
+                      with open(path, "w") as f:
+                          f.write(data)
+              '
+              
+                        sed -i '/kernelsu/d' drivers/android/Kconfig || true
+                        sed -i '/kernelsu/d' drivers/android/Makefile || true
+                        rm -rf drivers/kernelsu
+              
+                        find arch/arm64/kernel/vdso -name "Makefile*" -exec sed -i 's/-Wl,-n//g' {} +
+                        find arch/arm64/kernel/vdso -name "Makefile*" -exec sed -i 's/-Wl,-T//g' {} +
 
       - name: Build Kernel with Full Android 15 Support
         run: |
