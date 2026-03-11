@@ -33,6 +33,13 @@ jobs:
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
 
+      - name: Remove KernelSU references before defconfig
+        run: |
+          echo "Eliminăm KernelSU complet pentru a evita erorile r5q_defconfig..."
+          sed -i '/^[[:space:]]*source "drivers\/android\/kernelsu\/Kconfig"/d' drivers/android/Kconfig
+          sed -i '/kernelsu/d' drivers/android/Makefile || true
+          rm -rf drivers/kernelsu || true
+
       - name: Apply OneUI 7 + Android 15 Minimal Patches
         run: |
           echo "Aplicăm patch-urile compatibile kernel 4.14 pentru OneUI 7 + Android 15..."
@@ -74,13 +81,6 @@ jobs:
               EOF
                         python3 patch_selinux.py
               
-                    - name: Remove KernelSU references
-                      run: |
-                        echo "Eliminăm KernelSU pentru a evita erorile r5q_defconfig..."
-                        sed -i '/^[[:space:]]*source "drivers\/android\/kernelsu\/Kconfig"/d' drivers/android/Kconfig
-                        sed -i '/kernelsu/d' drivers/android/Makefile || true
-                        rm -rf drivers/kernelsu || true
-              
                     - name: vDSO fix
                       run: |
                         find arch/arm64/kernel/vdso -name "Makefile*" -exec sed -i 's/-Wl,-n//g' {} +
@@ -93,6 +93,7 @@ jobs:
 
           MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
 
+          # Aplica defconfig fără KernelSU
           make $MAKE_ARGS ${{ env.DEFCONFIG }}
 
           # Enable minimal Android 15 features
