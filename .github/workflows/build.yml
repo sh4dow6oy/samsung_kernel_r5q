@@ -24,10 +24,17 @@ jobs:
 
       - name: Add LineageOS Remote
         run: |
-          git remote add lineage https://github.com/LineageOS/android_kernel_google_msm-4.14.git
-          git fetch lineage
-          echo "LineageOS remote adăugat. Puteți verifica commit-urile de Android 15:"
-          git log lineage/lineage-23.2 --oneline -n 5
+          git remote add lineage https://github.com/${{ env.LINEAGE_REPO }}.git
+          git fetch lineage lineage-23.2
+
+      - name: Apply Android 15 files from LineageOS
+        run: |
+          echo "Aplicăm fișierele oficiale Android 15 din LineageOS..."
+          cp -r $(git rev-parse --show-toplevel)/.git/refs/remotes/lineage/lineage-23.2/kernel/bpf/* kernel/bpf/
+          cp -r $(git rev-parse --show-toplevel)/.git/refs/remotes/lineage/lineage-23.2/security/selinux/* security/selinux/
+          cp -r $(git rev-parse --show-toplevel)/.git/refs/remotes/lineage/lineage-23.2/drivers/android/* drivers/android/
+          cp -r $(git rev-parse --show-toplevel)/.git/refs/remotes/lineage/lineage-23.2/fs/eroFS/* fs/eroFS/ || true
+          cp -r $(git rev-parse --show-toplevel)/.git/refs/remotes/lineage/lineage-23.2/fs/overlayfs/* fs/overlayfs/ || true
 
       - name: Install Dependencies
         run: |
@@ -41,9 +48,9 @@ jobs:
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
 
-      - name: Apply OneUI 7, Android 15, NET_BPF, CGROUPS & BINDERFS Patches
+      - name: Apply OneUI 7, NET_BPF, CGROUPS & BINDERFS Patches
         run: |
-          echo "Aplicăm patch-urile pentru OneUI 7 + Android 15 + NET_BPF + CGROUPS + BINDERFS..."
+          echo "Aplicăm patch-urile suplimentare OneUI 7 + NET_BPF + CGROUPS + BinderFS..."
 
           sed -i "s/^SUBLEVEL =.*/SUBLEVEL = ${{ env.SUBLEVEL }}/" Makefile
 
@@ -54,8 +61,8 @@ jobs:
           sed -i '/BPF_F_RDONLY/a #define BPF_F_NUMA_NODE (1U << 2)' include/uapi/linux/bpf.h
           sed -i 's/bool bpf_dump_raw_ok(void)/bool bpf_dump_raw_ok(void) { return true; } \/\/ /' kernel/bpf/core.c || true
 
-# SELinux patches
-python3 -c '
+          # SELinux patches using temporary Python file
+          cat << 'EOF' > patch_selinux.py
 import os
 
 files = [
@@ -80,7 +87,18 @@ for path, match, replace in files:
             data = data.replace(match, replace)
         with open(path, "w") as f:
             f.write(data)
-'
+EOF
+
+          python3 patch_selinux.py
+
+          # Remove KernelSU
+          sed -i '/kernelsu/d' drivers/android/Kconfig || true
+          sed -i '/kernelsu/d' drivers/android/Makefile || true
+          rm -rf drivers/kernelsu
+
+          # vDSO Fix
+          find arch/arm64/kernel/vdso -name "Makefile*" -exec sed -i 's/-Wl,-n//g' {} +
+          find arch/arm64/kernel/vdso -name "Makefile*" -exec sed -i 's/-Wl,-T//g' {} +
 
       - name: Build Kernel with Full Android 15 Support
         run: |
