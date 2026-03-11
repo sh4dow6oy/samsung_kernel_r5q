@@ -1,23 +1,25 @@
 name: Build Roynas R5Q - OneUI 7 (Android 15) Ready
+
 on:
   workflow_dispatch:
 
 env:
-  SUBLEVEL: "356" # Forțăm kernel-ul la 4.14.356 pentru compatibilitate Android 15
+  SUBLEVEL: "356"
   AUTHOR: "sh4dow6oy"
   DEVICE: "r5q"
   DEFCONFIG: "r5q_defconfig"
+  KERNEL_REPO: "Roynas-Android-Playground/kernel_samsung_r3q"
 
 jobs:
   build:
     runs-on: ubuntu-24.04
     steps:
-      - name: Checkout Source
+      - name: Checkout Kernel Source
         uses: actions/checkout@v4
         with:
-          repository: Roynas-Android-Playground/kernel_samsung_r3q
+          repository: ${{ env.KERNEL_REPO }}
           ref: master
-          fetch-depth: 1
+          fetch-depth: 0
 
       - name: Install Dependencies
         run: |
@@ -31,66 +33,63 @@ jobs:
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
 
-      - name: Patch for OneUI 7 & Android 15
+      - name: Apply OneUI 7 & Android 15 Patches
         run: |
-                echo "Aplicăm fix-urile avansate pentru OneUI 7..."
-                
-                # 1. FORȚARE SUBLEVEL
-                sed -i "s/^SUBLEVEL =.*/SUBLEVEL = ${{ env.SUBLEVEL }}/" Makefile
-                
-                # 2. BPF UAPI & CORE (Metoda simplă)
-                if ! grep -q "BPF_JLT" include/uapi/linux/bpf.h; then
-                  sed -i '/BPF_JSET/a \	BPF_JLT    = 0xa0, \/* LT */ \n	BPF_JLE    = 0xb0, \/* LE */ \n	BPF_JSLT   = 0xc0, \/* SLT */ \n	BPF_JSLE   = 0xd0, \/* SLE */' include/uapi/linux/bpf.h
-                fi
-                sed -i '/BPF_F_RDONLY/a #define BPF_F_NUMA_NODE (1U << 2)' include/uapi/linux/bpf.h
-                sed -i 's/bool bpf_dump_raw_ok(void)/bool bpf_dump_raw_ok(void) { return true; } \/\/ /' kernel/bpf/core.c || true
-      
-                # 3. PYTHON PATCH PENTRU SELINUX (Elimină erorile de sintaxă)
-                python3 -c '
-                import os
-      
-                # Patch pentru services.c (Genfscon bypass)
-                file_path = "security/selinux/ss/services.c"
-                if os.path.exists(file_path):
-                    with open(file_path, "r") as f:
-                        data = f.read()
-                    # Dezactivăm verificarea erorii la genfscon fără a strica structura
-                    data = data.replace("if (IS_ERR(newc)) {", "if (false && IS_ERR(newc)) {")
-                    with open(file_path, "w") as f:
-                        f.write(data)
-      
-                # Patch pentru hooks.c (BPF Permission bypass)
-                file_path = "security/selinux/hooks.c"
-                if os.path.exists(file_path):
-                    with open(file_path, "r") as f:
-                        lines = f.readlines()
-                    with open(file_path, "w") as f:
-                        for line in lines:
-                            if "SECCLASS_BPF" in line and "return" in line:
-                                f.write("                return 0; /* Forced by sh4dow6oy */\n")
-                            else:
-                                f.write(line)
-                '
-      
-                # 4. NUCLEAR KERNELSU DISABLE
-                sed -i '/kernelsu/d' drivers/android/Kconfig || true
-                sed -i '/kernelsu/d' drivers/android/Makefile || true
-                rm -rf drivers/kernelsu
-      
-                # 5. vDSO Fix
-                find arch/arm64/kernel/vdso -name "Makefile*" -exec sed -i 's/-Wl,-n//g' {} +
-                find arch/arm64/kernel/vdso -name "Makefile*" -exec sed -i 's/-Wl,-T//g' {} +
+          echo "Aplicăm patch-urile pentru OneUI 7 / Android 15..."
+
+          # Forțăm SUBLEVEL
+          sed -i "s/^SUBLEVEL =.*/SUBLEVEL = ${{ env.SUBLEVEL }}/" Makefile
+
+          # BPF & UAPI
+          if ! grep -q "BPF_JLT" include/uapi/linux/bpf.h; then
+            sed -i '/BPF_JSET/a \	BPF_JLT    = 0xa0, \/* LT */ \n	BPF_JLE    = 0xb0, \/* LE */ \n	BPF_JSLT   = 0xc0, \/* SLT */ \n	BPF_JSLE   = 0xd0, \/* SLE */' include/uapi/linux/bpf.h
+          fi
+          sed -i '/BPF_F_RDONLY/a #define BPF_F_NUMA_NODE (1U << 2)' include/uapi/linux/bpf.h
+          sed -i 's/bool bpf_dump_raw_ok(void)/bool bpf_dump_raw_ok(void) { return true; } \/\/ /' kernel/bpf/core.c || true
+
+          # SELinux patches
+          python3 -c '
+import os
+files = [
+    ("security/selinux/ss/services.c", "if (IS_ERR(newc)) {", "if (false && IS_ERR(newc)) {"),
+    ("security/selinux/hooks.c", "SECCLASS_BPF", "return 0; /* Forced */")
+]
+for path, match, replace in files:
+    if os.path.exists(path):
+        with open(path, "r") as f:
+            data = f.read()
+        if "hooks.c" in path:
+            lines = data.splitlines()
+            new_lines = []
+            for line in lines:
+                if match in line and "return" in line:
+                    new_lines.append(replace)
+                else:
+                    new_lines.append(line)
+            data = "\n".join(new_lines)
+        else:
+            data = data.replace(match, replace)
+        with open(path, "w") as f:
+            f.write(data)
+'
+
+          # Remove KernelSU
+          sed -i '/kernelsu/d' drivers/android/Kconfig || true
+          sed -i '/kernelsu/d' drivers/android/Makefile || true
+          rm -rf drivers/kernelsu
+
+          # vDSO Fix
+          find arch/arm64/kernel/vdso -name "Makefile*" -exec sed -i 's/-Wl,-n//g' {} +
+          find arch/arm64/kernel/vdso -name "Makefile*" -exec sed -i 's/-Wl,-T//g' {} +
 
       - name: Build Kernel
         run: |
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           sed -i "s/^EXTRAVERSION =.*/EXTRAVERSION = -${{ env.AUTHOR }}-OneUI7/" Makefile
-          
+
           MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
 
-          # Configurare cu suport EROFS și Partiții Dinamice pentru Android 15
           make $MAKE_ARGS ${{ env.DEFCONFIG }}
-          
           ./scripts/config --file out/.config \
             -e CONFIG_BPF -e CONFIG_BPF_SYSCALL -e CONFIG_BPF_JIT -e CONFIG_BPF_JIT_ALWAYS_ON \
             -e CONFIG_NET_CLS_BPF -e CONFIG_CGROUP_BPF \
@@ -99,10 +98,8 @@ jobs:
             -e CONFIG_OVERLAY_FS \
             -d CONFIG_KSU -d CONFIG_ASSIST_KSU \
             -d CONFIG_LTO -d CONFIG_LTO_CLANG -e CONFIG_LTO_NONE
-          
-          make $MAKE_ARGS olddefconfig
 
-          # Compilare finală
+          make $MAKE_ARGS olddefconfig
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -Wno-error -Wno-unused-variable -Wno-unused-function -Wno-implicit-function-declaration"
 
       - name: Package for Recovery
@@ -111,11 +108,10 @@ jobs:
           if [ ! -f "$IMAGE" ]; then IMAGE="$GITHUB_WORKSPACE/out/arch/arm64/boot/Image.gz"; fi
           git clone https://github.com/osm0sis/AnyKernel3.git
           cp $IMAGE AnyKernel3/Image.gz
-          # Setăm numele device-ului în scriptul de instalare
           sed -i 's/device.name1=maguro/device.name1=${{ env.DEVICE }}/g' AnyKernel3/anykernel.sh
-          cd AnyKernel3 && zip -r9 ../Kernel-OneUI7-Ready.zip *
+          cd AnyKernel3 && zip -r9 ../Kernel-OneUI7-Ready-$(date +%Y%m%d%H%M).zip *
 
-      - name: Upload Kernel
+      - name: Upload Kernel Artifact
         uses: actions/upload-artifact@v4
         with:
           name: Kernel-OneUI7-R5Q
