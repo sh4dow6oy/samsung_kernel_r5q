@@ -5,7 +5,7 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest # Folosim 24.04 pentru compatibilitate cu Neutron Clang
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout Source
         uses: actions/checkout@v4
@@ -18,8 +18,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y bc build-essential flex bison lz4 libssl-dev libelf-dev \
-          ccache python3 python-is-python3 libarchive-tools wget zstd libtinfo6 zip \
-          gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi libncurses5
+          ccache python3 python-is-python3 libarchive-tools wget zstd zip \
+          gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi libncurses-dev libtinfo6
 
       - name: Setup Neutron Clang
         run: |
@@ -34,24 +34,25 @@ jobs:
           export KBUILD_BUILD_HOST="GithubActions"
 
           # 1. FIX PENTRU EROAREA USBPD (ERR_PTR & ENODEV)
-          # Aceasta a fost eroarea care a oprit compilarea anterior
-          sed -i '1i #include <linux/err.h>' include/linux/usb/usbpd.h
-          sed -i '1i #include <linux/errno.h>' include/linux/usb/usbpd.h
+          # Injectăm headerele necesare direct în fișierul problematic
+          if [ -f include/linux/usb/usbpd.h ]; then
+            sed -i '1i #include <linux/err.h>' include/linux/usb/usbpd.h
+            sed -i '1i #include <linux/errno.h>' include/linux/usb/usbpd.h
+          fi
 
-          # 2. FIX PENTRU DTC (Eroare yylloc specifică Ubuntu 24.04)
+          # 2. FIX PENTRU DTC (Eroare yylloc pe Ubuntu 24.04)
           sed -i 's/^YYLTYPE yylloc;/extern YYLTYPE yylloc;/g' scripts/dtc/dtc-lexer.lex.c_shipped || true
 
           # 3. NUCLEAR CLEANUP
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm//g' {} +
           
-          # 4. VDSO FIX (Previne erorile de linking static)
+          # 4. VDSO FIX
           if [ -f arch/arm64/kernel/vdso/Makefile ]; then
             sed -i 's/-static//g' arch/arm64/kernel/vdso/Makefile
           fi
 
-          # 5. Argumente Build
-          # Am adăugat HOSTCC/HOSTCXX pentru a rezolva eroarea de GLIBC
+          # 5. Argumente Build (Folosim HOSTCC=gcc pentru a evita erorile de GLIBC)
           MAKE_ARGS="ARCH=arm64 \
             LLVM=1 \
             LLVM_IAS=1 \
@@ -71,7 +72,7 @@ jobs:
           # 6. Configurare
           make $MAKE_ARGS r5q_defconfig
           
-          # Dezactivăm LTO și Knox care pot cauza crash-uri la boot sau erori de compilare
+          # Dezactivăm modulele care cauzează probleme la compilare sau boot
           ./scripts/config --file out/.config \
             -d CONFIG_LTO -d CONFIG_LTO_CLANG -e CONFIG_LTO_NONE \
             -d CONFIG_CC_STACKPROTECTOR_STRONG -e CONFIG_CC_STACKPROTECTOR_NONE \
@@ -80,7 +81,7 @@ jobs:
             
           make $MAKE_ARGS olddefconfig
 
-          # 7. Compilare Propriu-zisă
+          # 7. Compilare
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -Wno-error -Wno-implicit-function-declaration -Wno-unknown-warning-option"
 
       - name: Package with AnyKernel3
@@ -97,7 +98,7 @@ jobs:
           cp $IMAGE AnyKernel3/Image.gz
           [ -f "$DTBO" ] && cp $DTBO AnyKernel3/dtbo.img
           
-          # Ajustăm anykernel.sh pentru S10 Lite (r5q)
+          # Configurare pentru S10 Lite (r5q)
           sed -i 's/device.name1=maguro/device.name1=r5q/g' AnyKernel3/anykernel.sh
           sed -i 's/device.name2=toroplus/device.name2=SM-G770F/g' AnyKernel3/anykernel.sh
           sed -i 's/device.name3=toro/device.name3=r5q/g' AnyKernel3/anykernel.sh
