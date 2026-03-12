@@ -1,92 +1,97 @@
-name: Build Samsung R5Q Kernel (AOSP ASB Merge)
-
+name: Build Roynas R5Q - Neutron Clang Final
 on:
   workflow_dispatch:
 
 jobs:
   build:
-    runs-on: ubuntu-22.04
-
+    runs-on: ubuntu-24.04
     steps:
+      - name: Checkout Source
+        uses: actions/checkout@v4
+        with:
+          repository: sh4dow6oy/android_kernel_qcom_sm8150_419
+          ref: master
+          fetch-depth: 1
 
-# Clone kernel
-    - name: Checkout Samsung Kernel
-      uses: actions/checkout@v4
-      with:
-        repository: Roynas-Android-Playground/kernel_samsung_r3q
-        fetch-depth: 0
-
-# Install deps
-    - name: Install dependencies
-      run: |
-        sudo apt update
-        sudo apt install -y \
-        bc bison build-essential curl flex git lz4 \
-        libssl-dev libelf-dev zip unzip \
-        python3 python-is-python3 \
-        zstd ccache
-
-# Setup clang
-    - name: Setup Clang
-      run: |
-        git clone https://github.com/llvm/llvm-project --depth=1 clang-src
-        cd clang-src
-        mkdir build
-        cd build
-        cmake -G "Unix Makefiles" -DLLVM_ENABLE_PROJECTS=clang ../llvm
-        make -j$(nproc)
-        sudo make install
-
-# Merge AOSP kernel
-    - name: Merge Android ASB kernel
-      run: |
-
-        git remote add aosp https://android.googlesource.com/kernel/common
-
-        git fetch aosp refs/tags/ASB-2024-01-05_4.14-stable
-
-        git checkout -b merge-aosp
-
-        git merge aosp/ASB-2024-01-05_4.14-stable \
-        --allow-unrelated-histories \
-        -X theirs \
-        -m "Merge Android ASB 2024-01-05"
-
-# Restore Samsung parts
-    - name: Restore Samsung configs
-      run: |
-
-        git checkout HEAD -- arch/arm64/configs/r5q_defconfig || true
-        git checkout HEAD -- drivers/samsung || true
-        git checkout HEAD -- arch/arm64/boot/dts/samsung || true
-
-# Build kernel
-    - name: Build kernel
-      run: |
-
-        export ARCH=arm64
-        export SUBARCH=arm64
-
-        export CROSS_COMPILE=aarch64-linux-gnu-
-        export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
-
-        mkdir out
-
-        make O=out r5q_defconfig
-
-        make -j$(nproc) O=out \
-        CC=clang \
-        LD=ld.lld \
-        AR=llvm-ar \
-        NM=llvm-nm \
-        OBJCOPY=llvm-objcopy \
-        OBJDUMP=llvm-objdump \
-        STRIP=llvm-strip
-
-# Upload result
-    - name: Upload kernel image
-      uses: actions/upload-artifact@v4
-      with:
-        name: R5Q-Kernel-Image
-        path: |
-          out/arch/arm64/boot/Image*
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bc build-essential flex bison lz4 libssl-dev libelf-dev \
+          ccache python3 python-is-python3 libarchive-tools wget zstd libtinfo6 zip
+      - name: Setup Neutron Clang
+        run: |
+          mkdir clang
+          wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
+          tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
+      - name: Build Kernel
+        run: |
+          export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
+          
+          # 1. NUCLEAR CLEANUP (Prevenim Error 1)
+          find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
+          find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm//g' {} +
+          find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-polly[^ ]*//g' {} +
+          
+          # 2. VDSO FIX (Anti -static)
+          if [ -f arch/arm64/kernel/vdso/Makefile ]; then
+            sed -i 's/-static//g' arch/arm64/kernel/vdso/Makefile
+            sed -i 's/$(LDFLAGS)/$(filter-out -static,$(LDFLAGS))/g' arch/arm64/kernel/vdso/Makefile
+          fi
+          # 3. KERNELSU & SAMSUNG CLEANUP
+          sed -i '/kernelsu/d' drivers/android/Kconfig || true
+          sed -i '/kernelsu/d' drivers/android/Makefile || true
+          rm -rf drivers/kernelsu
+          sed -i 's/ifneq ($(wildcard $(srctree)\/scripts\/gcc-wrapper.py),)/ifeq (0,1)/g' Makefile
+          # 4. Argumente Build
+          MAKE_ARGS="ARCH=arm64 \
+            LLVM=1 \
+            LLVM_IAS=1 \
+            CC=clang \
+            LD=ld.lld \
+            AR=llvm-ar \
+            NM=llvm-nm \
+            OBJCOPY=llvm-objcopy \
+            OBJDUMP=llvm-objdump \
+            STRIP=llvm-strip \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            O=out"
+          # 5. Configurare
+          make $MAKE_ARGS r5q_defconfig
+          ./scripts/config --file out/.config \
+            -d CONFIG_LTO -d CONFIG_LTO_CLANG -e CONFIG_LTO_NONE \
+            -d CONFIG_CC_STACKPROTECTOR_STRONG -e CONFIG_CC_STACKPROTECTOR_NONE \
+            -d CONFIG_SHADOW_CALL_STACK -d CONFIG_KNOX_KAP -d CONFIG_SECURITY_SAMSUNG_KNOX \
+            -d CONFIG_ASSIST_KSU -d CONFIG_KSU
+          make $MAKE_ARGS olddefconfig
+          
+          # 6. Compilare
+          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -Wno-error -Wno-unknown-warning-option -Wno-unused-command-line-argument"
+      - name: Package with AnyKernel3
+        run: |
+          # Identificăm fișierele generate
+          IMAGE="$GITHUB_WORKSPACE/out/arch/arm64/boot/Image.gz-dtb"
+          if [ ! -f "$IMAGE" ]; then
+            IMAGE="$GITHUB_WORKSPACE/out/arch/arm64/boot/Image.gz"
+          fi
+          DTBO="$GITHUB_WORKSPACE/out/arch/arm64/boot/dtbo.img"
+          # Clonăm AnyKernel3 pentru ambalare
+          git clone https://github.com/osm0sis/AnyKernel3.git
+          rm -rf AnyKernel3/.git
+          
+          # Copiem kernelul și DTBO în folderul AnyKernel
+          cp $IMAGE AnyKernel3/Image.gz
+          [ -f "$DTBO" ] && cp $DTBO AnyKernel3/dtbo.img
+          # Configurăm anykernel.sh pentru S10 Lite (r5q)
+          sed -i 's/device.name1=maguro/device.name1=r5q/g' AnyKernel3/anykernel.sh
+          sed -i 's/device.name2=toroplus/device.name2=SM-G770F/g' AnyKernel3/anykernel.sh
+          sed -i 's/device.name3=toro/device.name3=r5q/g' AnyKernel3/anykernel.sh
+          
+          # Creăm arhiva ZIP finală
+          cd AnyKernel3
+          zip -r9 ../Kernel-S10Lite-R5Q-Neutron.zip *
+      - name: Upload Flashable Kernel
+        uses: actions/upload-artifact@v4
+        with:
+          name: Kernel-S10Lite-R5Q
+          path: Kernel-S10Lite-R5Q-Neutron.zip
