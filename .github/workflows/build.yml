@@ -33,26 +33,29 @@ jobs:
           export KBUILD_BUILD_USER="Roynas"
           export KBUILD_BUILD_HOST="GithubActions"
 
-          # 1. FIX PENTRU EROAREA USBPD (ERR_PTR & ENODEV)
-          # Injectăm headerele necesare direct în fișierul problematic
+          # 1. FIX USBPD (ERR_PTR)
           if [ -f include/linux/usb/usbpd.h ]; then
             sed -i '1i #include <linux/err.h>' include/linux/usb/usbpd.h
             sed -i '1i #include <linux/errno.h>' include/linux/usb/usbpd.h
           fi
 
-          # 2. FIX PENTRU DTC (Eroare yylloc pe Ubuntu 24.04)
-          sed -i 's/^YYLTYPE yylloc;/extern YYLTYPE yylloc;/g' scripts/dtc/dtc-lexer.lex.c_shipped || true
-
-          # 3. NUCLEAR CLEANUP
-          find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
-          find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm//g' {} +
-          
-          # 4. VDSO FIX
-          if [ -f arch/arm64/kernel/vdso/Makefile ]; then
-            sed -i 's/-static//g' arch/arm64/kernel/vdso/Makefile
+          # 2. FIX BLUETOOTH SOC IDs (Eroarea QCA_HSP)
+          if [ -f drivers/bluetooth/bluetooth-power.c ]; then
+            sed -i '40i #define QCA_HSP_SOC_ID_0100 0x400A0100' drivers/bluetooth/bluetooth-power.c
+            sed -i '41i #define QCA_HSP_SOC_ID_0110 0x400A0110' drivers/bluetooth/bluetooth-power.c
+            sed -i '42i #define QCA_HSP_SOC_ID_0200 0x400A0200' drivers/bluetooth/bluetooth-power.c
+            sed -i '43i #define QCA_HSP_SOC_ID_0210 0x400A0210' drivers/bluetooth/bluetooth-power.c
+            sed -i '44i #define QCA_HSP_SOC_ID_1211 0x400B0200' drivers/bluetooth/bluetooth-power.c
           fi
 
-          # 5. Argumente Build (Folosim HOSTCC=gcc pentru a evita erorile de GLIBC)
+          # 3. FIX DTC (Ubuntu 24.04 yylloc)
+          sed -i 's/^YYLTYPE yylloc;/extern YYLTYPE yylloc;/g' scripts/dtc/dtc-lexer.lex.c_shipped || true
+
+          # 4. CLEANUP POLLY
+          find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
+          find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm//g' {} +
+
+          # 5. ARGUMENTE BUILD
           MAKE_ARGS="ARCH=arm64 \
             LLVM=1 \
             LLVM_IAS=1 \
@@ -69,42 +72,28 @@ jobs:
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             O=out"
 
-          # 6. Configurare
+          # 6. CONFIGURARE
           make $MAKE_ARGS r5q_defconfig
-          
-          # Dezactivăm modulele care cauzează probleme la compilare sau boot
           ./scripts/config --file out/.config \
             -d CONFIG_LTO -d CONFIG_LTO_CLANG -e CONFIG_LTO_NONE \
             -d CONFIG_CC_STACKPROTECTOR_STRONG -e CONFIG_CC_STACKPROTECTOR_NONE \
-            -d CONFIG_SHADOW_CALL_STACK -d CONFIG_KNOX_KAP -d CONFIG_SECURITY_SAMSUNG_KNOX \
             -e CONFIG_SECTION_MISMATCH_WARN_ONLY
-            
           make $MAKE_ARGS olddefconfig
 
-          # 7. Compilare
+          # 7. COMPILARE (Aici folosim -fcommon)
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -Wno-error -Wno-implicit-function-declaration -Wno-unknown-warning-option"
 
       - name: Package with AnyKernel3
         run: |
           IMAGE="$GITHUB_WORKSPACE/out/arch/arm64/boot/Image.gz-dtb"
-          if [ ! -f "$IMAGE" ]; then
-            IMAGE="$GITHUB_WORKSPACE/out/arch/arm64/boot/Image.gz"
-          fi
+          if [ ! -f "$IMAGE" ]; then IMAGE="$GITHUB_WORKSPACE/out/arch/arm64/boot/Image.gz"; fi
           DTBO="$GITHUB_WORKSPACE/out/arch/arm64/boot/dtbo.img"
-          
           git clone https://github.com/osm0sis/AnyKernel3.git
           rm -rf AnyKernel3/.git
-          
           cp $IMAGE AnyKernel3/Image.gz
           [ -f "$DTBO" ] && cp $DTBO AnyKernel3/dtbo.img
-          
-          # Configurare pentru S10 Lite (r5q)
           sed -i 's/device.name1=maguro/device.name1=r5q/g' AnyKernel3/anykernel.sh
-          sed -i 's/device.name2=toroplus/device.name2=SM-G770F/g' AnyKernel3/anykernel.sh
-          sed -i 's/device.name3=toro/device.name3=r5q/g' AnyKernel3/anykernel.sh
-          
-          cd AnyKernel3
-          zip -r9 ../Kernel-S10Lite-R5Q-Neutron.zip *
+          cd AnyKernel3 && zip -r9 ../Kernel-S10Lite-R5Q-Neutron.zip *
 
       - name: Upload Flashable Kernel
         uses: actions/upload-artifact@v4
