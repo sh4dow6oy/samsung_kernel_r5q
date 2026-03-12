@@ -5,7 +5,7 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-22.04 # Schimbat la 22.04 pentru stabilitate biblioteci
+    runs-on: ubuntu-latest # Folosim 24.04 pentru compatibilitate cu Neutron Clang
     steps:
       - name: Checkout Source
         uses: actions/checkout@v4
@@ -34,24 +34,29 @@ jobs:
           export KBUILD_BUILD_HOST="GithubActions"
 
           # 1. FIX PENTRU EROAREA USBPD (ERR_PTR & ENODEV)
-          # Inserăm headerele lipsă la începutul fișierului care a dat eroare
+          # Aceasta a fost eroarea care a oprit compilarea anterior
           sed -i '1i #include <linux/err.h>' include/linux/usb/usbpd.h
           sed -i '1i #include <linux/errno.h>' include/linux/usb/usbpd.h
 
-          # 2. NUCLEAR CLEANUP & FLAGS FIX
-          # Eliminăm Polly și alte flag-uri care pot cauza conflicte cu LLVM
+          # 2. FIX PENTRU DTC (Eroare yylloc specifică Ubuntu 24.04)
+          sed -i 's/^YYLTYPE yylloc;/extern YYLTYPE yylloc;/g' scripts/dtc/dtc-lexer.lex.c_shipped || true
+
+          # 3. NUCLEAR CLEANUP
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm//g' {} +
           
-          # 3. VDSO FIX (Anti -static)
+          # 4. VDSO FIX (Previne erorile de linking static)
           if [ -f arch/arm64/kernel/vdso/Makefile ]; then
             sed -i 's/-static//g' arch/arm64/kernel/vdso/Makefile
           fi
 
-          # 4. Argumente Build
+          # 5. Argumente Build
+          # Am adăugat HOSTCC/HOSTCXX pentru a rezolva eroarea de GLIBC
           MAKE_ARGS="ARCH=arm64 \
             LLVM=1 \
             LLVM_IAS=1 \
+            HOSTCC=gcc \
+            HOSTCXX=g++ \
             CC=clang \
             LD=ld.lld \
             AR=llvm-ar \
@@ -63,10 +68,10 @@ jobs:
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             O=out"
 
-          # 5. Configurare
+          # 6. Configurare
           make $MAKE_ARGS r5q_defconfig
           
-          # Dezactivăm LTO și alte protecții care pot sparge build-ul pe Clang nespecific
+          # Dezactivăm LTO și Knox care pot cauza crash-uri la boot sau erori de compilare
           ./scripts/config --file out/.config \
             -d CONFIG_LTO -d CONFIG_LTO_CLANG -e CONFIG_LTO_NONE \
             -d CONFIG_CC_STACKPROTECTOR_STRONG -e CONFIG_CC_STACKPROTECTOR_NONE \
@@ -75,8 +80,7 @@ jobs:
             
           make $MAKE_ARGS olddefconfig
 
-          # 6. Compilare
-          # Adăugăm -Wno-implicit-function-declaration ca siguranță extra
+          # 7. Compilare Propriu-zisă
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -Wno-error -Wno-implicit-function-declaration -Wno-unknown-warning-option"
 
       - name: Package with AnyKernel3
@@ -93,9 +97,10 @@ jobs:
           cp $IMAGE AnyKernel3/Image.gz
           [ -f "$DTBO" ] && cp $DTBO AnyKernel3/dtbo.img
           
-          # Configurare AnyKernel pentru r5q
+          # Ajustăm anykernel.sh pentru S10 Lite (r5q)
           sed -i 's/device.name1=maguro/device.name1=r5q/g' AnyKernel3/anykernel.sh
           sed -i 's/device.name2=toroplus/device.name2=SM-G770F/g' AnyKernel3/anykernel.sh
+          sed -i 's/device.name3=toro/device.name3=r5q/g' AnyKernel3/anykernel.sh
           
           cd AnyKernel3
           zip -r9 ../Kernel-S10Lite-R5Q-Neutron.zip *
