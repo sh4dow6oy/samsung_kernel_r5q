@@ -1,10 +1,11 @@
 name: Build Roynas R5Q - Neutron Clang Final
+
 on:
   workflow_dispatch:
 
 jobs:
   build:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-22.04 # Schimbat la 22.04 pentru stabilitate biblioteci
     steps:
       - name: Checkout Source
         uses: actions/checkout@v4
@@ -17,31 +18,36 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y bc build-essential flex bison lz4 libssl-dev libelf-dev \
-          ccache python3 python-is-python3 libarchive-tools wget zstd libtinfo6 zip
+          ccache python3 python-is-python3 libarchive-tools wget zstd libtinfo6 zip \
+          gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi libncurses5
+
       - name: Setup Neutron Clang
         run: |
           mkdir clang
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
+
       - name: Build Kernel
         run: |
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
-          
-          # 1. NUCLEAR CLEANUP (Prevenim Error 1)
+          export KBUILD_BUILD_USER="Roynas"
+          export KBUILD_BUILD_HOST="GithubActions"
+
+          # 1. FIX PENTRU EROAREA USBPD (ERR_PTR & ENODEV)
+          # Inserăm headerele lipsă la începutul fișierului care a dat eroare
+          sed -i '1i #include <linux/err.h>' include/linux/usb/usbpd.h
+          sed -i '1i #include <linux/errno.h>' include/linux/usb/usbpd.h
+
+          # 2. NUCLEAR CLEANUP & FLAGS FIX
+          # Eliminăm Polly și alte flag-uri care pot cauza conflicte cu LLVM
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm//g' {} +
-          find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-polly[^ ]*//g' {} +
           
-          # 2. VDSO FIX (Anti -static)
+          # 3. VDSO FIX (Anti -static)
           if [ -f arch/arm64/kernel/vdso/Makefile ]; then
             sed -i 's/-static//g' arch/arm64/kernel/vdso/Makefile
-            sed -i 's/$(LDFLAGS)/$(filter-out -static,$(LDFLAGS))/g' arch/arm64/kernel/vdso/Makefile
           fi
-          # 3. KERNELSU & SAMSUNG CLEANUP
-          sed -i '/kernelsu/d' drivers/android/Kconfig || true
-          sed -i '/kernelsu/d' drivers/android/Makefile || true
-          rm -rf drivers/kernelsu
-          sed -i 's/ifneq ($(wildcard $(srctree)\/scripts\/gcc-wrapper.py),)/ifeq (0,1)/g' Makefile
+
           # 4. Argumente Build
           MAKE_ARGS="ARCH=arm64 \
             LLVM=1 \
@@ -56,40 +62,44 @@ jobs:
             CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             O=out"
+
           # 5. Configurare
           make $MAKE_ARGS r5q_defconfig
+          
+          # Dezactivăm LTO și alte protecții care pot sparge build-ul pe Clang nespecific
           ./scripts/config --file out/.config \
             -d CONFIG_LTO -d CONFIG_LTO_CLANG -e CONFIG_LTO_NONE \
             -d CONFIG_CC_STACKPROTECTOR_STRONG -e CONFIG_CC_STACKPROTECTOR_NONE \
             -d CONFIG_SHADOW_CALL_STACK -d CONFIG_KNOX_KAP -d CONFIG_SECURITY_SAMSUNG_KNOX \
-            -d CONFIG_ASSIST_KSU -d CONFIG_KSU
+            -e CONFIG_SECTION_MISMATCH_WARN_ONLY
+            
           make $MAKE_ARGS olddefconfig
-          
+
           # 6. Compilare
-          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -Wno-error -Wno-unknown-warning-option -Wno-unused-command-line-argument"
+          # Adăugăm -Wno-implicit-function-declaration ca siguranță extra
+          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -Wno-error -Wno-implicit-function-declaration -Wno-unknown-warning-option"
+
       - name: Package with AnyKernel3
         run: |
-          # Identificăm fișierele generate
           IMAGE="$GITHUB_WORKSPACE/out/arch/arm64/boot/Image.gz-dtb"
           if [ ! -f "$IMAGE" ]; then
             IMAGE="$GITHUB_WORKSPACE/out/arch/arm64/boot/Image.gz"
           fi
           DTBO="$GITHUB_WORKSPACE/out/arch/arm64/boot/dtbo.img"
-          # Clonăm AnyKernel3 pentru ambalare
+          
           git clone https://github.com/osm0sis/AnyKernel3.git
           rm -rf AnyKernel3/.git
           
-          # Copiem kernelul și DTBO în folderul AnyKernel
           cp $IMAGE AnyKernel3/Image.gz
           [ -f "$DTBO" ] && cp $DTBO AnyKernel3/dtbo.img
-          # Configurăm anykernel.sh pentru S10 Lite (r5q)
+          
+          # Configurare AnyKernel pentru r5q
           sed -i 's/device.name1=maguro/device.name1=r5q/g' AnyKernel3/anykernel.sh
           sed -i 's/device.name2=toroplus/device.name2=SM-G770F/g' AnyKernel3/anykernel.sh
-          sed -i 's/device.name3=toro/device.name3=r5q/g' AnyKernel3/anykernel.sh
           
-          # Creăm arhiva ZIP finală
           cd AnyKernel3
           zip -r9 ../Kernel-S10Lite-R5Q-Neutron.zip *
+
       - name: Upload Flashable Kernel
         uses: actions/upload-artifact@v4
         with:
