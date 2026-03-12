@@ -48,6 +48,13 @@ jobs:
             sed -i '44i #define QCA_HSP_SOC_ID_1211 0x400B0200' drivers/bluetooth/bluetooth-power.c
           fi
 
+          # Fix pentru headerele Samsung lipsă (sec_debug.h, sec_class.h)
+          mkdir -p include/linux
+          [ -f drivers/samsung/debug/sec_debug.h ] && ln -sf ../../drivers/samsung/debug/sec_debug.h include/linux/sec_debug.h
+          [ -f drivers/samsung/misc/sec_class.h ] && ln -sf ../../drivers/samsung/misc/sec_class.h include/linux/sec_class.h
+          # Uneori e nevoie și de sec_debug_sched_log.h
+          [ -f drivers/samsung/debug/sec_debug_sched_log.h ] && ln -sf ../../drivers/samsung/debug/sec_debug_sched_log.h include/linux/sec_debug_sched_log.h
+
           # 3. FIX DTC (Ubuntu 24.04 yylloc)
           sed -i 's/^YYLTYPE yylloc;/extern YYLTYPE yylloc;/g' scripts/dtc/dtc-lexer.lex.c_shipped || true
 
