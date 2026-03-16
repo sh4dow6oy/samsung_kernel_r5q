@@ -1,5 +1,4 @@
-name: Build Roynas R5Q - Neutron Clang Final
-
+name: Build Roynas R5Q - Neutron Clang Raw
 on:
   workflow_dispatch:
 
@@ -33,12 +32,14 @@ jobs:
           export KBUILD_BUILD_USER="Roynas"
           export KBUILD_BUILD_HOST="GithubActions"
 
-          # 1. CREĂM LINK-URILE PENTRU HEADERELE SAMSUNG (NECESAR PENTRU INIT/MAIN.C)
-          # Aceasta NU este un "fix" de cod, ci o configurare de mediu.
-          # Samsung a mutat aceste fișiere în afara căii standard de include a Linux.
+          # 1. PREGĂTIRE HEADERE SAMSUNG (Fără a modifica codul sursă)
+          # Creăm link-uri simbolice pentru a ajuta init/main.c și driverele de input
           mkdir -p include/linux
           find drivers/samsung -name "sec_debug.h" -exec ln -sf ../../{} include/linux/sec_debug.h \;
           find drivers/samsung -name "sec_class.h" -exec ln -sf ../../{} include/linux/sec_class.h \;
+          
+          # Fix DTC (necesar pentru orice build de kernel pe Ubuntu recent)
+          [ -f scripts/dtc/dtc-lexer.lex.c_shipped ] && sed -i 's/^YYLTYPE yylloc;/extern YYLTYPE yylloc;/g' scripts/dtc/dtc-lexer.lex.c_shipped || true
 
           # 2. ARGUMENTE BUILD
           MAKE_ARGS="ARCH=arm64 \
@@ -57,27 +58,39 @@ jobs:
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             O=out"
 
-          # 3. CONFIGURARE
+          # 3. GENERARE CONFIG
           make $MAKE_ARGS r5q_defconfig
-          
-          # 4. DEZACTIVARE LTO (Fără asta, build-ul va eșua la linking în 100% din cazuri)
-          ./scripts/config --file out/.config -d CONFIG_LTO -d CONFIG_LTO_CLANG -e CONFIG_LTO_NONE
-          
+
+          # 4. AJUSTĂRI CONFIG PENTRU COMPILATOARE MODERNE
+          # Dezactivăm LTO deoarece Neutron Clang 19/20 are incompatibilități cu LLVM-ul vechi din sursa 4.19
+          ./scripts/config --file out/.config \
+            -d CONFIG_LTO \
+            -d CONFIG_LTO_CLANG \
+            -e CONFIG_LTO_NONE \
+            -d CONFIG_CC_STACKPROTECTOR_STRONG \
+            -e CONFIG_CC_STACKPROTECTOR_NONE \
+            -e CONFIG_SECTION_MISMATCH_WARN_ONLY
+
           make $MAKE_ARGS olddefconfig
 
-          # 5. COMPILARE CU TOLERANȚĂ MAXIMĂ (FĂRĂ FIX-URI DE COD)
-          # Folosim -w pentru a ignora warning-urile care Neutron le consideră erori
-          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -w"
+          # 5. COMPILARE FINALĂ
+          # Folosim KCFLAGS pentru a forța toleranța la erori de sintaxă Samsung
+          # -fcommon: rezolvă erorile de tip "multiple definition"
+          # -w: dezactivează toate warning-urile (Neutron este extrem de strict altfel)
+          # -Wno-error: asigură că niciun warning nu este tratat ca eroare
+          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -w -Wno-error -Wno-implicit-function-declaration -Wno-int-conversion"
 
       - name: Package with AnyKernel3
         run: |
           IMAGE="$GITHUB_WORKSPACE/out/arch/arm64/boot/Image.gz-dtb"
           if [ ! -f "$IMAGE" ]; then IMAGE="$GITHUB_WORKSPACE/out/arch/arm64/boot/Image.gz"; fi
           DTBO="$GITHUB_WORKSPACE/out/arch/arm64/boot/dtbo.img"
+          
           git clone https://github.com/osm0sis/AnyKernel3.git
           rm -rf AnyKernel3/.git
           cp $IMAGE AnyKernel3/Image.gz
           [ -f "$DTBO" ] && cp $DTBO AnyKernel3/dtbo.img
+          
           sed -i 's/device.name1=maguro/device.name1=r5q/g' AnyKernel3/anykernel.sh
           cd AnyKernel3 && zip -r9 ../Kernel-S10Lite-R5Q-Neutron.zip *
 
