@@ -34,15 +34,14 @@ jobs:
 
           # --- FIX-URI CHIRURGICALE (SED) ---
           
-          # 1. Fix pinctrl-msm.c: Forward declaration pentru msm_gpio_is_valid
-          # Introducem declaratia la inceputul fisierului pentru a evita "conflicting types"
+          # 1. Fix Pinctrl: Forward declaration pentru msm_gpio_is_valid
           sed -i '30i bool msm_gpio_is_valid(int gpionum);' drivers/pinctrl/qcom/pinctrl-msm.c
 
-          # 2. Fix conflict declarații debug partition (Display vs Debug)
+          # 2. Fix Display: Comment extern declarations
           find drivers/gpu/drm/msm -name "ss_dsi_panel_debug.h" -exec sed -i 's/extern bool read_debug_partition/\/\/ extern bool read_debug_partition/g' {} +
           find drivers/gpu/drm/msm -name "ss_dsi_panel_debug.h" -exec sed -i 's/extern bool write_debug_partition/\/\/ extern bool write_debug_partition/g' {} +
           
-          # 3. Fix redefinition error în trace_event_perf.c
+          # 3. Fix Tracing: Delete duplicate line 433
           sed -i '433d' kernel/trace/trace_event_perf.c || true
           
           # 4. Fix DTC & Samsung Headers
@@ -83,7 +82,11 @@ jobs:
           make $MAKE_ARGS olddefconfig
 
           # --- COMPILARE FINALĂ ---
-          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -w -Wno-error -Dinitcall_sec_debug=initcall_debug -Wno-implicit-function-declaration -Wno-int-conversion"
+          # Adăugăm -DPON_RESTART_REASON_CROSS_FAIL=0 pentru a defini simbolul lipsă din mers
+          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -w -Wno-error \
+            -Dinitcall_sec_debug=initcall_debug \
+            -DPON_RESTART_REASON_CROSS_FAIL=0 \
+            -Wno-implicit-function-declaration -Wno-int-conversion"
 
       - name: Package with AnyKernel3
         run: |
