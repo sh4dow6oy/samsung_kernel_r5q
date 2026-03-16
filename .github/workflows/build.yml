@@ -24,8 +24,8 @@ jobs:
       - name: Setup Neutron Clang
         run: |
           mkdir clang
-          wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
-          tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
+          wget -q https://github.com/Ylarod/setup-ndk-clang/releases/download/prebuilt/clang-linux-x86-ndk-r29-r563880c.tar.zst
+          tar -I zstd -xf clang-linux-x86-ndk-r29-r563880c.tar.zst -C clang
 
       - name: Build Kernel
         run: |
