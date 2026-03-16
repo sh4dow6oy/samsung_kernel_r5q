@@ -37,7 +37,7 @@ jobs:
           # 1. Fix Pinctrl: Forward declaration pentru msm_gpio_is_valid
           sed -i '30i bool msm_gpio_is_valid(int gpionum);' drivers/pinctrl/qcom/pinctrl-msm.c
 
-          # 2. Fix Display: Comment extern declarations
+          # 2. Fix Display: Comment extern declarations in Samsung panel debug
           find drivers/gpu/drm/msm -name "ss_dsi_panel_debug.h" -exec sed -i 's/extern bool read_debug_partition/\/\/ extern bool read_debug_partition/g' {} +
           find drivers/gpu/drm/msm -name "ss_dsi_panel_debug.h" -exec sed -i 's/extern bool write_debug_partition/\/\/ extern bool write_debug_partition/g' {} +
           
@@ -82,10 +82,12 @@ jobs:
           make $MAKE_ARGS olddefconfig
 
           # --- COMPILARE FINALĂ ---
-          # Adăugăm -DPON_RESTART_REASON_CROSS_FAIL=0 pentru a defini simbolul lipsă din mers
+          # Adăugăm macrouri pentru a mapa structurile de senzori la noile nume din USB Type-C
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -w -Wno-error \
             -Dinitcall_sec_debug=initcall_debug \
             -DPON_RESTART_REASON_CROSS_FAIL=0 \
+            -DPD_NOTI_ATTACH_TYPEDEF=CC_NOTI_ATTACH_TYPEDEF \
+            -DPDIC_NOTIFY_ID_ATTACH=CCIC_NOTIFY_ID_ATTACH \
             -Wno-implicit-function-declaration -Wno-int-conversion"
 
       - name: Package with AnyKernel3
