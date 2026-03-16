@@ -55,6 +55,23 @@ jobs:
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm//g' {} +
 
+          # FIX AGRESIV PENTRU GPIO_KEYS (Samsung modifications)
+          if [ -f drivers/input/keyboard/gpio_keys.c ]; then
+              # 1. Definim SECLOG și KEY_WINK dacă lipsesc
+              sed -i '30i #ifndef SECLOG\n#define SECLOG "[SEC_INPUT]"\n#endif' drivers/input/keyboard/gpio_keys.c
+              sed -i '31i #ifndef KEY_WINK\n#define KEY_WINK 123\n#endif' drivers/input/keyboard/gpio_keys.c
+          
+              # 2. Reparăm eroarea de pointer (const struct)
+              sed -i 's/struct gpio_keys_button \*button = \&pdata->buttons\[i\];/const struct gpio_keys_button *button = \&pdata->buttons[i];/g' drivers/input/keyboard/gpio_keys.c
+          
+              # 3. Neutralizăm câmpurile de wakeup specifice Samsung (care lipsesc din structurile de kernel standard)
+              # În loc să modificăm structura globală, comentăm sau forțăm 0 în fișierul .c
+              sed -i 's/button->button->wakeup_default/0/g' drivers/input/keyboard/gpio_keys.c
+              sed -i 's/button->wakeup_default =/ \/\/ /g' drivers/input/keyboard/gpio_keys.c
+              sed -i 's/pdata->wakeup_enable =/ \/\/ /g' drivers/input/keyboard/gpio_keys.c
+              sed -i 's/if (pdata->wakeup_enable)/if (0)/g' drivers/input/keyboard/gpio_keys.c
+          fi
+
           # 5. ARGUMENTE BUILD
           MAKE_ARGS="ARCH=arm64 \
             LLVM=1 \
