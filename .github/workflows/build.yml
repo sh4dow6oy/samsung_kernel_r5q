@@ -1,4 +1,4 @@
-name: Build Roynas R5Q - Neutron Clang Raw (No DTB)
+name: Build Roynas R5Q - Neutron Clang Raw
 on:
   workflow_dispatch:
 
@@ -32,7 +32,7 @@ jobs:
           export KBUILD_BUILD_USER="Roynas"
           export KBUILD_BUILD_HOST="GithubActions"
 
-          # --- FIX-URI CHIRURGICALE ---
+          # --- FIX-URI CHIRURGICALE (SED) ---
           sed -i '30i bool msm_gpio_is_valid(int gpionum);' drivers/pinctrl/qcom/pinctrl-msm.c
           find drivers/gpu/drm/msm -name "ss_dsi_panel_debug.h" -exec sed -i 's/extern bool read_debug_partition/\/\/ extern bool read_debug_partition/g' {} +
           find drivers/gpu/drm/msm -name "ss_dsi_panel_debug.h" -exec sed -i 's/extern bool write_debug_partition/\/\/ extern bool write_debug_partition/g' {} +
@@ -41,7 +41,6 @@ jobs:
           
           mkdir -p include/linux
           find drivers/samsung -name "sec_debug.h" -exec ln -sf ../../{} include/linux/sec_debug.h \;
-          find drivers/samsung -name "sec_class.h" -exec ln -sf ../../{} include/linux/sec_class.h \;
 
           # --- ARGUMENTE BUILD ---
           MAKE_ARGS="ARCH=arm64 \
@@ -66,44 +65,37 @@ jobs:
             -d CONFIG_LTO \
             -d CONFIG_LTO_CLANG \
             -e CONFIG_LTO_NONE \
-            -d CONFIG_CC_STACKPROTECTOR_STRONG \
-            -e CONFIG_CC_STACKPROTECTOR_NONE \
             -d CONFIG_SECURITY_SMACK \
             -d CONFIG_SEC_DEBUG \
-            -d CONFIG_SEC_DEBUG_SOFTDOG \
             -e CONFIG_SECTION_MISMATCH_WARN_ONLY
           make $MAKE_ARGS olddefconfig
 
           # --- COMPILARE ---
+          # Fix critic: -Dsec_debug_get_p_reason=0 rezolvă link-ul final
           KCFLAGS_CUSTOM="-fcommon -w -Wno-error \
             -Dinitcall_sec_debug=initcall_debug \
             -DPON_RESTART_REASON_CROSS_FAIL=0 \
             -DPD_NOTI_ATTACH_TYPEDEF=CC_NOTI_ATTACH_TYPEDEF \
             -DPDIC_NOTIFY_ID_ATTACH=CCIC_NOTIFY_ID_ATTACH \
-            -DSEC_DEBUG_MODEM_SEPARATE_EN=0"
+            -DSEC_DEBUG_MODEM_SEPARATE_EN=0 \
+            -Dsec_debug_get_p_reason=0"
 
-          # Compilăm DOAR Image.gz (fără DTB/DTBO)
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="$KCFLAGS_CUSTOM" Image.gz
 
       - name: Package with AnyKernel3
         run: |
-          IMAGE="$GITHUB_WORKSPACE/out/arch/arm64/boot/Image.gz"
-          
-          if [ ! -f "$IMAGE" ]; then 
-            echo "EROARE: Kernelul nu s-a compilat!"
+          if [ -f out/arch/arm64/boot/Image.gz ]; then
+            git clone https://github.com/osm0sis/AnyKernel3.git
+            cp out/arch/arm64/boot/Image.gz AnyKernel3/
+            sed -i 's/device.name1=maguro/device.name1=r5q/g' AnyKernel3/anykernel.sh
+            cd AnyKernel3 && zip -r9 ../Kernel-S10Lite-R5Q.zip *
+          else
+            echo "Build failed: Image.gz not found"
             exit 1
           fi
-          
-          git clone https://github.com/osm0sis/AnyKernel3.git
-          rm -rf AnyKernel3/.git
-          cp $IMAGE AnyKernel3/Image.gz
-          
-          # Notă: AnyKernel3 va folosi DTB-ul deja existent pe telefon (partiția DTBO/DTB a telefonului)
-          sed -i 's/device.name1=maguro/device.name1=r5q/g' AnyKernel3/anykernel.sh
-          cd AnyKernel3 && zip -r9 ../Kernel-S10Lite-R5Q-NoDTB.zip *
 
-      - name: Upload Flashable Kernel
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-S10Lite-R5Q-Pure
-          path: Kernel-S10Lite-R5Q-NoDTB.zip
+          name: Kernel-S10Lite-R5Q
+          path: Kernel-S10Lite-R5Q.zip
