@@ -71,14 +71,17 @@ jobs:
           make $MAKE_ARGS olddefconfig
 
           # --- COMPILARE ---
-          # Fix critic: -Dsec_debug_get_p_reason=0 rezolvă link-ul final
+          # Fix-uri pentru toate simbolurile Samsung "undefined" găsite în log-ul tău
           KCFLAGS_CUSTOM="-fcommon -w -Wno-error \
             -Dinitcall_sec_debug=initcall_debug \
             -DPON_RESTART_REASON_CROSS_FAIL=0 \
             -DPD_NOTI_ATTACH_TYPEDEF=CC_NOTI_ATTACH_TYPEDEF \
             -DPDIC_NOTIFY_ID_ATTACH=CCIC_NOTIFY_ID_ATTACH \
             -DSEC_DEBUG_MODEM_SEPARATE_EN=0 \
-            -Dsec_debug_get_p_reason=0"
+            -Dsec_debug_get_p_reason=0 \
+            -Dsec_debug_get_reboot_reason=0 \
+            -Dsec_debug_set_reboot_reason=(void) \
+            -Dsec_debug_get_upload_cause=0"
 
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="$KCFLAGS_CUSTOM" Image.gz
 
