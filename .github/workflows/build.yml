@@ -61,11 +61,14 @@ jobs:
               sed -i '30i #ifndef SECLOG\n#define SECLOG "[SEC_INPUT]"\n#endif' drivers/input/keyboard/gpio_keys.c
               sed -i '31i #ifndef KEY_WINK\n#define KEY_WINK 123\n#endif' drivers/input/keyboard/gpio_keys.c
           
-              # 2. Reparăm eroarea de pointer prin forțarea tipului (casting)
-              # Căutăm linia cu eroarea și adăugăm (struct gpio_keys_button *) în fața variabilei button
+              # 2. Reparăm eroarea de la linia 1077 (inițializarea)
+              # Schimbăm "struct gpio_keys_button *button" în "const struct gpio_keys_button *button"
+              sed -i 's/struct gpio_keys_button \*button = \&pdata->buttons\[i\];/const struct gpio_keys_button *button = \&pdata->buttons[i];/g' drivers/input/keyboard/gpio_keys.c
+          
+              # 3. Reparăm eroarea de la linia 1090 (apelul funcției) prin cast
               sed -i 's/button, i, child);/(struct gpio_keys_button *)button, i, child);/g' drivers/input/keyboard/gpio_keys.c
           
-              # 3. Neutralizăm câmpurile de wakeup Samsung
+              # 4. Neutralizăm restul logicilor Samsung
               sed -i 's/button->button->wakeup_default/0/g' drivers/input/keyboard/gpio_keys.c
               sed -i 's/button->wakeup_default =/ \/\/ /g' drivers/input/keyboard/gpio_keys.c
               sed -i 's/pdata->wakeup_enable =/ \/\/ /g' drivers/input/keyboard/gpio_keys.c
