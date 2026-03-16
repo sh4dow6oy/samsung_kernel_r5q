@@ -18,7 +18,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y bc build-essential flex bison lz4 libssl-dev libelf-dev \
           ccache python3 python-is-python3 libarchive-tools wget zstd zip \
-          gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi libncurses-dev libtinfo6 dtc
+          gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi libncurses-dev libtinfo6
 
       - name: Setup Neutron Clang
         run: |
@@ -32,19 +32,25 @@ jobs:
           export KBUILD_BUILD_USER="Roynas"
           export KBUILD_BUILD_HOST="GithubActions"
 
-          # --- FIX-URI CHIRURGICALE ---
+          # --- FIX-URI CHIRURGICALE (SED) ---
+          
+          # 1. Fix Pinctrl: Forward declaration pentru msm_gpio_is_valid
           sed -i '30i bool msm_gpio_is_valid(int gpionum);' drivers/pinctrl/qcom/pinctrl-msm.c
+
+          # 2. Fix Display: Comment extern declarations
           find drivers/gpu/drm/msm -name "ss_dsi_panel_debug.h" -exec sed -i 's/extern bool read_debug_partition/\/\/ extern bool read_debug_partition/g' {} +
           find drivers/gpu/drm/msm -name "ss_dsi_panel_debug.h" -exec sed -i 's/extern bool write_debug_partition/\/\/ extern bool write_debug_partition/g' {} +
-          sed -i '433d' kernel/trace/trace_event_perf.c || true
-          [ -f scripts/dtc/dtc-lexer.lex.c_shipped ] && sed -i 's/^YYLTYPE yylloc;/extern YYLTYPE yylloc;/g' scripts/dtc/dtc-lexer.lex.c_shipped || true
           
+          # 3. Fix Tracing: Delete duplicate line 433
+          sed -i '433d' kernel/trace/trace_event_perf.c || true
+          
+          # 4. Fix DTC & Samsung Headers
+          [ -f scripts/dtc/dtc-lexer.lex.c_shipped ] && sed -i 's/^YYLTYPE yylloc;/extern YYLTYPE yylloc;/g' scripts/dtc/dtc-lexer.lex.c_shipped || true
           mkdir -p include/linux
           find drivers/samsung -name "sec_debug.h" -exec ln -sf ../../{} include/linux/sec_debug.h \;
           find drivers/samsung -name "sec_class.h" -exec ln -sf ../../{} include/linux/sec_class.h \;
 
           # --- ARGUMENTE BUILD ---
-          # Am adaugat LD_LIBRARY_PATH pentru Clang si am forțat LDFLAGS pentru a ignora definitiile multiple la link-uire
           MAKE_ARGS="ARCH=arm64 \
             LLVM=1 \
             LLVM_IAS=1 \
@@ -75,35 +81,25 @@ jobs:
             -e CONFIG_SECTION_MISMATCH_WARN_ONLY
           make $MAKE_ARGS olddefconfig
 
-          # --- COMPILARE ---
-          # Definim flag-urile de eroare direct in comanda make
-          KCFLAGS_CUSTOM="-fcommon -w -Wno-error \
+          # --- COMPILARE FINALĂ ---
+          # Adăugăm -DSEC_DEBUG_MODEM_SEPARATE_EN=0 pentru a trece de eroarea din drivers/soc/qcom
+          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -w -Wno-error \
             -Dinitcall_sec_debug=initcall_debug \
             -DPON_RESTART_REASON_CROSS_FAIL=0 \
             -DPD_NOTI_ATTACH_TYPEDEF=CC_NOTI_ATTACH_TYPEDEF \
             -DPDIC_NOTIFY_ID_ATTACH=CCIC_NOTIFY_ID_ATTACH \
-            -DSEC_DEBUG_MODEM_SEPARATE_EN=0"
-
-          # Pasul 1: Compilăm DTB-urile (aici pare să fie blocajul)
-          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="$KCFLAGS_CUSTOM" dtbs
-          
-          # Pasul 2: Compilăm restul Kernel-ului
-          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="$KCFLAGS_CUSTOM"
+            -DSEC_DEBUG_MODEM_SEPARATE_EN=0 \
+            -Wno-implicit-function-declaration -Wno-int-conversion"
 
       - name: Package with AnyKernel3
         run: |
-          # Verificăm unde a generat Samsung fișierele (uneori sunt în out/arch/arm64/boot/dts/...)
           IMAGE="$GITHUB_WORKSPACE/out/arch/arm64/boot/Image.gz-dtb"
           if [ ! -f "$IMAGE" ]; then IMAGE="$GITHUB_WORKSPACE/out/arch/arm64/boot/Image.gz"; fi
-          
-          # Căutăm dtbo.img în tot folderul out
-          DTBO=$(find out/ -name "dtbo.img" | head -n 1)
-          
+          DTBO="$GITHUB_WORKSPACE/out/arch/arm64/boot/dtbo.img"
           git clone https://github.com/osm0sis/AnyKernel3.git
           rm -rf AnyKernel3/.git
           cp $IMAGE AnyKernel3/Image.gz
-          [ -n "$DTBO" ] && cp "$DTBO" AnyKernel3/dtbo.img || echo "DTBO not found, skipping..."
-          
+          [ -f "$DTBO" ] && cp $DTBO AnyKernel3/dtbo.img
           sed -i 's/device.name1=maguro/device.name1=r5q/g' AnyKernel3/anykernel.sh
           cd AnyKernel3 && zip -r9 ../Kernel-S10Lite-R5Q-Neutron.zip *
 
