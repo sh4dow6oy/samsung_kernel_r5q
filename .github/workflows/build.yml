@@ -10,8 +10,8 @@ jobs:
       - name: Checkout Source
         uses: actions/checkout@v4
         with:
-          repository: sh4dow6oy/android_kernel_qcom_sm8150_419
-          ref: master
+          repository: sh4dow6oy/android_kernel_samsung_sm7150
+          ref: sixteen
           fetch-depth: 1
 
       - name: Install Dependencies
@@ -32,57 +32,6 @@ jobs:
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           export KBUILD_BUILD_USER="Roynas"
           export KBUILD_BUILD_HOST="GithubActions"
-
-          # 1. FIX USBPD (ERR_PTR)
-          if [ -f include/linux/usb/usbpd.h ]; then
-            sed -i '1i #include <linux/err.h>' include/linux/usb/usbpd.h
-            sed -i '1i #include <linux/errno.h>' include/linux/usb/usbpd.h
-          fi
-
-          # 2. FIX BLUETOOTH SOC IDs (Eroarea QCA_HSP)
-          if [ -f drivers/bluetooth/bluetooth-power.c ]; then
-            sed -i '40i #define QCA_HSP_SOC_ID_0100 0x400A0100' drivers/bluetooth/bluetooth-power.c
-            sed -i '41i #define QCA_HSP_SOC_ID_0110 0x400A0110' drivers/bluetooth/bluetooth-power.c
-            sed -i '42i #define QCA_HSP_SOC_ID_0200 0x400A0200' drivers/bluetooth/bluetooth-power.c
-            sed -i '43i #define QCA_HSP_SOC_ID_0210 0x400A0210' drivers/bluetooth/bluetooth-power.c
-            sed -i '44i #define QCA_HSP_SOC_ID_1211 0x400B0200' drivers/bluetooth/bluetooth-power.c
-          fi
-
-          # 3. FIX DTC (Ubuntu 24.04 yylloc)
-          sed -i 's/^YYLTYPE yylloc;/extern YYLTYPE yylloc;/g' scripts/dtc/dtc-lexer.lex.c_shipped || true
-
-          # 4. CLEANUP POLLY
-          find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
-          find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm//g' {} +
-
-          # FIX AGRESIV PENTRU GPIO_KEYS (Samsung modifications)
-          if [ -f drivers/input/keyboard/gpio_keys.c ]; then
-              # 1. Definim SECLOG și KEY_WINK
-              sed -i '30i #ifndef SECLOG\n#define SECLOG "[SEC_INPUT]"\n#endif' drivers/input/keyboard/gpio_keys.c
-              sed -i '31i #ifndef KEY_WINK\n#define KEY_WINK 123\n#endif' drivers/input/keyboard/gpio_keys.c
-          
-              # 2. Reparăm eroarea de la linia 1077 (inițializarea)
-              # Schimbăm "struct gpio_keys_button *button" în "const struct gpio_keys_button *button"
-              sed -i 's/struct gpio_keys_button \*button = \&pdata->buttons\[i\];/const struct gpio_keys_button *button = \&pdata->buttons[i];/g' drivers/input/keyboard/gpio_keys.c
-          
-              # 3. Reparăm eroarea de la linia 1090 (apelul funcției) prin cast
-              sed -i 's/button, i, child);/(struct gpio_keys_button *)button, i, child);/g' drivers/input/keyboard/gpio_keys.c
-          
-              # 4. Neutralizăm restul logicilor Samsung
-              sed -i 's/button->button->wakeup_default/0/g' drivers/input/keyboard/gpio_keys.c
-              sed -i 's/button->wakeup_default =/ \/\/ /g' drivers/input/keyboard/gpio_keys.c
-              sed -i 's/pdata->wakeup_enable =/ \/\/ /g' drivers/input/keyboard/gpio_keys.c
-              sed -i 's/if (pdata->wakeup_enable)/if (0)/g' drivers/input/keyboard/gpio_keys.c
-          fi
-
-          # FIX PENTRU qpnp-power-on (Erorile SECLOG de la Power-On)
-          if [ -f drivers/input/misc/qpnp-power-on.c ]; then
-              # Injectăm definițiile imediat după headerele de sistem
-              sed -i '40i #ifndef SECLOG\n#define SECLOG "[SEC_POWER]"\n#endif' drivers/input/misc/qpnp-power-on.c
-          fi
-          
-          # Optimizăm loop-ul SECLOG pentru a fi mai agresiv în tot folderul drivers/input
-          find drivers/input -name "*.c" -exec sed -i '15i #ifndef SECLOG\n#define SECLOG "[SEC_INPUT]"\n#endif' {} +
 
           # 5. ARGUMENTE BUILD
           MAKE_ARGS="ARCH=arm64 \
