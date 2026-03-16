@@ -70,6 +70,10 @@ jobs:
             -d CONFIG_CC_STACKPROTECTOR_STRONG \
             -e CONFIG_CC_STACKPROTECTOR_NONE \
             -e CONFIG_SECTION_MISMATCH_WARN_ONLY
+            -d CONFIG_SEC_DEBUG
+            -d CONFIG_SEC_DEBUG_SCHED_LOG
+            -d CONFIG_SEC_DEBUG_AUTO_SUMMARY
+            -d CONFIG_SEC_DEBUG_SOFTDOG
 
           make $MAKE_ARGS olddefconfig
 
