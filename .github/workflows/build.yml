@@ -32,14 +32,18 @@ jobs:
           export KBUILD_BUILD_USER="Roynas"
           export KBUILD_BUILD_HOST="GithubActions"
 
-          # 1. FIX-URI CHIRURGICALE ÎN CODUL SURSĂ (SED)
-          # Rezolvă redefinirea 'event' în kernel/trace/trace_event_perf.c (linia 433)
-          sed -i '433d' kernel/trace/trace_event_perf.c
+          # 1. FIX-URI CHIRURGICALE (SED)
+          # Fix conflict declarații debug partition (Display vs Debug)
+          sed -i 's/extern bool read_debug_partition/ \/\/ extern bool read_debug_partition/g' gpu/drm/msm/samsung/ss_dsi_panel_debug.h || true
+          sed -i 's/extern bool write_debug_partition/ \/\/ extern bool write_debug_partition/g' gpu/drm/msm/samsung/ss_dsi_panel_debug.h || true
           
-          # Fix DTC (pentru compatibilitate cu Ubuntu modern)
+          # Fix redefinition error în trace_event_perf.c
+          sed -i '433d' kernel/trace/trace_event_perf.c || true
+          
+          # Fix DTC
           [ -f scripts/dtc/dtc-lexer.lex.c_shipped ] && sed -i 's/^YYLTYPE yylloc;/extern YYLTYPE yylloc;/g' scripts/dtc/dtc-lexer.lex.c_shipped || true
           
-          # Pregătire headere Samsung (necesare pentru link-uri simbolice)
+          # Pregătire headere Samsung
           mkdir -p include/linux
           find drivers/samsung -name "sec_debug.h" -exec ln -sf ../../{} include/linux/sec_debug.h \;
           find drivers/samsung -name "sec_class.h" -exec ln -sf ../../{} include/linux/sec_class.h \;
@@ -64,8 +68,7 @@ jobs:
           # 3. CONFIGURARE
           make $MAKE_ARGS r5q_defconfig
 
-          # 4. DEZACTIVARE MODULE PROBLEMATICE (SMACK, LTO, SEC_DEBUG)
-          # Smack este dezactivat pentru că dă erori de 'not assignable' pe Clang 19
+          # 4. DEZACTIVARE MODULE PROBLEMATICE
           ./scripts/config --file out/.config \
             -d CONFIG_LTO \
             -d CONFIG_LTO_CLANG \
@@ -80,22 +83,17 @@ jobs:
           make $MAKE_ARGS olddefconfig
 
           # 5. COMPILARE FINALĂ
-          # Folosim -Dinitcall_sec_debug ca fallback global pentru variabila Samsung lipsă
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -w -Wno-error -Dinitcall_sec_debug=initcall_debug -Wno-implicit-function-declaration -Wno-int-conversion"
 
       - name: Package with AnyKernel3
         run: |
-          # Identificare locație kernel imagine
           IMAGE="$GITHUB_WORKSPACE/out/arch/arm64/boot/Image.gz-dtb"
           if [ ! -f "$IMAGE" ]; then IMAGE="$GITHUB_WORKSPACE/out/arch/arm64/boot/Image.gz"; fi
           DTBO="$GITHUB_WORKSPACE/out/arch/arm64/boot/dtbo.img"
-          
           git clone https://github.com/osm0sis/AnyKernel3.git
           rm -rf AnyKernel3/.git
           cp $IMAGE AnyKernel3/Image.gz
           [ -f "$DTBO" ] && cp $DTBO AnyKernel3/dtbo.img
-          
-          # Ajustare nume dispozitiv în scriptul de flash
           sed -i 's/device.name1=maguro/device.name1=r5q/g' AnyKernel3/anykernel.sh
           cd AnyKernel3 && zip -r9 ../Kernel-S10Lite-R5Q-Neutron.zip *
 
