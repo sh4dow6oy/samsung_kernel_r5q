@@ -75,6 +75,15 @@ jobs:
               sed -i 's/if (pdata->wakeup_enable)/if (0)/g' drivers/input/keyboard/gpio_keys.c
           fi
 
+          # FIX PENTRU qpnp-power-on (Erorile SECLOG de la Power-On)
+          if [ -f drivers/input/misc/qpnp-power-on.c ]; then
+              # Injectăm definițiile imediat după headerele de sistem
+              sed -i '40i #ifndef SECLOG\n#define SECLOG "[SEC_POWER]"\n#endif' drivers/input/misc/qpnp-power-on.c
+          fi
+          
+          # Optimizăm loop-ul SECLOG pentru a fi mai agresiv în tot folderul drivers/input
+          find drivers/input -name "*.c" -exec sed -i '15i #ifndef SECLOG\n#define SECLOG "[SEC_INPUT]"\n#endif' {} +
+
           # 5. ARGUMENTE BUILD
           MAKE_ARGS="ARCH=arm64 \
             LLVM=1 \
