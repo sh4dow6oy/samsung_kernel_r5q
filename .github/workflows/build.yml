@@ -33,7 +33,13 @@ jobs:
           export KBUILD_BUILD_USER="Roynas"
           export KBUILD_BUILD_HOST="GithubActions"
 
-          # 5. ARGUMENTE BUILD
+          # Pregătim calea headerelor Samsung fără a modifica codul sursă
+          # Aceasta este necesar pentru ca init/main.c să găsească sec_debug.h
+          mkdir -p include/linux
+          find drivers/samsung -name "sec_debug.h" -exec ln -sf ../../{} include/linux/sec_debug.h \;
+          find drivers/samsung -name "sec_class.h" -exec ln -sf ../../{} include/linux/sec_class.h \;
+
+          # Argumente Build (LLVM_IAS=0 poate ajuta dacă asamblorul Neutron e prea strict)
           MAKE_ARGS="ARCH=arm64 \
             LLVM=1 \
             LLVM_IAS=1 \
@@ -50,16 +56,15 @@ jobs:
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             O=out"
 
-          # 6. CONFIGURARE
           make $MAKE_ARGS r5q_defconfig
-          ./scripts/config --file out/.config \
-            -d CONFIG_LTO -d CONFIG_LTO_CLANG -e CONFIG_LTO_NONE \
-            -d CONFIG_CC_STACKPROTECTOR_STRONG -e CONFIG_CC_STACKPROTECTOR_NONE \
-            -e CONFIG_SECTION_MISMATCH_WARN_ONLY
+          
+          # Dezactivăm LTO (esențial, altfel va crapa la final oricum)
+          ./scripts/config --file out/.config -d CONFIG_LTO -d CONFIG_LTO_CLANG -e CONFIG_LTO_NONE
+          
           make $MAKE_ARGS olddefconfig
-
-          # 7. COMPILARE (Aici folosim -fcommon)
-          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -Wno-error -Wno-implicit-function-declaration -Wno-unknown-warning-option"
+          
+          # Adăugăm flag-uri de toleranță pentru compilator
+          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -Wno-everything"
 
       - name: Package with AnyKernel3
         run: |
