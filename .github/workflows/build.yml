@@ -32,25 +32,26 @@ jobs:
           export KBUILD_BUILD_USER="Roynas"
           export KBUILD_BUILD_HOST="GithubActions"
 
-          # 1. REPARĂ CONFLICTELE DE COD (CHIRURGIE GLOBALĂ)
+          # --- FIX-URI CHIRURGICALE (SED) ---
           
-          # Căutăm și comentăm orice declarație 'extern' de debug partition care blochează build-ul
-          # Folosim 'find' pentru a fi siguri că găsim fișierul indiferent de adâncimea folderelor
+          # 1. Fix pinctrl-msm.c: Forward declaration pentru msm_gpio_is_valid
+          # Introducem declaratia la inceputul fisierului pentru a evita "conflicting types"
+          sed -i '30i bool msm_gpio_is_valid(int gpionum);' drivers/pinctrl/qcom/pinctrl-msm.c
+
+          # 2. Fix conflict declarații debug partition (Display vs Debug)
           find drivers/gpu/drm/msm -name "ss_dsi_panel_debug.h" -exec sed -i 's/extern bool read_debug_partition/\/\/ extern bool read_debug_partition/g' {} +
           find drivers/gpu/drm/msm -name "ss_dsi_panel_debug.h" -exec sed -i 's/extern bool write_debug_partition/\/\/ extern bool write_debug_partition/g' {} +
           
-          # Rezolvă redefinirea 'event' în kernel/trace/trace_event_perf.c (linia 433)
+          # 3. Fix redefinition error în trace_event_perf.c
           sed -i '433d' kernel/trace/trace_event_perf.c || true
           
-          # Fix DTC (compatibilitate Ubuntu modern)
+          # 4. Fix DTC & Samsung Headers
           [ -f scripts/dtc/dtc-lexer.lex.c_shipped ] && sed -i 's/^YYLTYPE yylloc;/extern YYLTYPE yylloc;/g' scripts/dtc/dtc-lexer.lex.c_shipped || true
-          
-          # Symlinks necesare pentru Samsung Debug
           mkdir -p include/linux
           find drivers/samsung -name "sec_debug.h" -exec ln -sf ../../{} include/linux/sec_debug.h \;
           find drivers/samsung -name "sec_class.h" -exec ln -sf ../../{} include/linux/sec_class.h \;
 
-          # 2. ARGUMENTE BUILD
+          # --- ARGUMENTE BUILD ---
           MAKE_ARGS="ARCH=arm64 \
             LLVM=1 \
             LLVM_IAS=1 \
@@ -67,10 +68,8 @@ jobs:
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             O=out"
 
-          # 3. CONFIGURARE
+          # --- CONFIGURARE ---
           make $MAKE_ARGS r5q_defconfig
-
-          # 4. AJUSTĂRI CONFIG (Dezactivare Smack și LTO)
           ./scripts/config --file out/.config \
             -d CONFIG_LTO \
             -d CONFIG_LTO_CLANG \
@@ -81,11 +80,9 @@ jobs:
             -d CONFIG_SEC_DEBUG \
             -d CONFIG_SEC_DEBUG_SOFTDOG \
             -e CONFIG_SECTION_MISMATCH_WARN_ONLY
-
           make $MAKE_ARGS olddefconfig
 
-          # 5. COMPILARE FINALĂ
-          # -Dinitcall_sec_debug=initcall_debug repară eroarea din main.c fără editare de fișier
+          # --- COMPILARE FINALĂ ---
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -w -Wno-error -Dinitcall_sec_debug=initcall_debug -Wno-implicit-function-declaration -Wno-int-conversion"
 
       - name: Package with AnyKernel3
@@ -93,12 +90,10 @@ jobs:
           IMAGE="$GITHUB_WORKSPACE/out/arch/arm64/boot/Image.gz-dtb"
           if [ ! -f "$IMAGE" ]; then IMAGE="$GITHUB_WORKSPACE/out/arch/arm64/boot/Image.gz"; fi
           DTBO="$GITHUB_WORKSPACE/out/arch/arm64/boot/dtbo.img"
-          
           git clone https://github.com/osm0sis/AnyKernel3.git
           rm -rf AnyKernel3/.git
           cp $IMAGE AnyKernel3/Image.gz
           [ -f "$DTBO" ] && cp $DTBO AnyKernel3/dtbo.img
-          
           sed -i 's/device.name1=maguro/device.name1=r5q/g' AnyKernel3/anykernel.sh
           cd AnyKernel3 && zip -r9 ../Kernel-S10Lite-R5Q-Neutron.zip *
 
