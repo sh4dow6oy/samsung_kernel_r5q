@@ -33,21 +33,26 @@ jobs:
           export KBUILD_BUILD_HOST="GithubActions"
 
           # --- FIX-URI CHIRURGICALE ---
+          # 1. Trace & Audio
           sed -i '0,/struct perf_event \*event;/! s/struct perf_event \*event;/\/\/ duplicat sters/g' kernel/trace/trace_event_perf.c
           find techpack/audio -name "wcd-mbhc-adc.c" -exec sed -i 's/mbhc->slow_insertion/0/g' {} +
           sed -i '30i bool msm_gpio_is_valid(int gpionum);' drivers/pinctrl/qcom/pinctrl-msm.c
           
+          # 2. ELIMINARE CONFLICTE SAMSUNG (Cea mai importantă parte acum)
+          # Ștergem definițiile care se bat cu stubs-urile noastre din fișierele Samsung
+          find drivers/samsung -name "sec_debug.h" -exec sed -i '/static inline bool sec_debug_is_enabled/,/}/d' {} +
+          find drivers/samsung -name "sec_debug_user_reset.h" -exec sed -i '/static inline void sec_debug_store_bug_string/,/}/d' {} +
+
+          # 3. Pregătire headere
           mkdir -p include/linux
           find drivers/samsung -name "sec_debug.h" -exec ln -sf ../../{} include/linux/sec_debug.h \;
 
-          # --- STUBS CU VERIFICARE (IFNDEF) ---
-          # Această metodă previne erorile "conflicting types"
+          # --- STUBS DEFINITIVE (Incorporate) ---
           cat <<EOF > include/linux/sec_debug_stubs.h
           #ifndef _SEC_DEBUG_STUBS_H
           #define _SEC_DEBUG_STUBS_H
           #include <linux/types.h>
 
-          #ifndef __SEC_DEBUG_STUBS_DEFINED
           static inline void sec_debug_set_reboot_reason(int reason) {}
           static inline int sec_debug_get_reboot_reason(void) { return 0; }
           static inline int sec_debug_get_p_reason(void) { return 0; }
@@ -61,11 +66,8 @@ jobs:
           static inline int set_usb_enable_state(int en) { return 0; }
           static inline int set_usb_enumeration_state(int en) { return 0; }
           static inline int get_usb_enumeration_state(void) { return 0; }
-          
-          // Fix pentru conflicting types: folosim denumiri care sa nu se bata cu Samsung daca sunt deja definite
-          #define sec_debug_store_bug_string(file, line) do {} while (0)
-          #define sec_debug_is_enabled() (false)
-          
+          static inline void sec_debug_store_bug_string(const char *file, unsigned bug_line) {}
+          static inline bool sec_debug_is_enabled(void) { return false; }
           static inline int audio_register_wdsp_state_cb(void *a, void *b) { return 0; }
           static inline int audio_register_mad_mic_state_cb(void *a, void *b) { return 0; }
           static inline void* get_wsa_sysfs_ptr(void) { return NULL; }
@@ -76,10 +78,9 @@ jobs:
           static inline void prox_factory_init_work(void *w) {}
           static inline const char* scsi_trace_parse_cdb(void *a, void *b, int c) { return ""; }
           #endif
-          #endif
           EOF
 
-          # Injectăm la începutul headerului samsung
+          # Injectăm stub-urile la începutul headerului principal
           sed -i '1i #include <linux/sec_debug_stubs.h>' include/linux/sec_debug.h
 
           # Dummy secgetspf
