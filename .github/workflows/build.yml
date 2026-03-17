@@ -40,6 +40,9 @@ jobs:
 
           # 2. FIX-URI SURSĂ (Patch-uri automate prin sed)
           
+          # Fix USB PD (No member named 'desc' in 'struct usbpd')
+          sed -i '5755s/devm_kfree/\/\/devm_kfree/' drivers/usb/pd/policy_engine.c
+
           # Fix Initcall (Eroarea initcall_sec_debug)
           sed -i 's/initcall_sec_debug/initcall_debug/g' init/main.c
           
@@ -47,7 +50,7 @@ jobs:
           sed -i '0,/struct perf_event \*event;/! s/struct perf_event \*event;/\/\/ duplicat/g' kernel/trace/trace_event_perf.c
           
           # Fix Imagis Touch (Incomplete definition tsp_dump_callbacks)
-          find drivers/input/touchscreen/imagis_40xx -name "ist40xx.c" -exec sed -i '/dump_callbacks.inform_dump/s/^/\/\//' {} +
+          find drivers/input/touchscreen -name "ist40xx.c" -exec sed -i '/dump_callbacks.inform_dump/s/^/\/\//' {} +
 
           # Fix Wi-Fi / PLD (Garda de protecție redefinire pld_context)
           find drivers/staging/qca-wifi-host-cmn -name "pld.h" -exec sed -i '/struct pld_context {/i #ifndef __PLD_CONTEXT_GUARD\n#define __PLD_CONTEXT_GUARD' {} +
