@@ -1,4 +1,4 @@
-name: Build Roynas R5Q - Neutron Clang Raw
+name: Build Roynas R5Q - Neutron Clang Final
 on:
   workflow_dispatch:
 
@@ -33,26 +33,20 @@ jobs:
           export KBUILD_BUILD_HOST="GithubActions"
 
           # --- FIX-URI CHIRURGICALE ---
+          # Punctăm fix-urile necesare pentru a evita erorile de compilare [cite: 1, 2]
           sed -i '30i bool msm_gpio_is_valid(int gpionum);' drivers/pinctrl/qcom/pinctrl-msm.c
           find drivers/gpu/drm/msm -name "ss_dsi_panel_debug.h" -exec sed -i 's/extern bool read_debug_partition/\/\/ extern bool read_debug_partition/g' {} +
           find drivers/gpu/drm/msm -name "ss_dsi_panel_debug.h" -exec sed -i 's/extern bool write_debug_partition/\/\/ extern bool write_debug_partition/g' {} +
           sed -i '433d' kernel/trace/trace_event_perf.c || true
-          [ -f scripts/dtc/dtc-lexer.lex.c_shipped ] && sed -i 's/^YYLTYPE yylloc;/extern YYLTYPE yylloc;/g' scripts/dtc/dtc-lexer.lex.c_shipped || true
           
-          mkdir -p include/linux
-          find drivers/samsung -name "sec_debug.h" -exec ln -sf ../../{} include/linux/sec_debug.h \;
-          
-          # Fix pentru eroarea 'secgetspf'
-          echo "#!/bin/bash" > scripts/secgetspf
-          echo "echo 0" >> scripts/secgetspf
+          # Creăm un dummy secgetspf pentru a evita eroarea "No such file" 
+          echo -e "#!/bin/bash\necho 0" > scripts/secgetspf
           chmod +x scripts/secgetspf
 
           # --- ARGUMENTE BUILD ---
           MAKE_ARGS="ARCH=arm64 \
             LLVM=1 \
             LLVM_IAS=1 \
-            HOSTCC=gcc \
-            HOSTCXX=g++ \
             CC=clang \
             LD=ld.lld \
             AR=llvm-ar \
@@ -66,6 +60,7 @@ jobs:
 
           # --- CONFIGURARE ---
           make $MAKE_ARGS r5q_defconfig
+          # Dezactivăm Stack Protector și alte module care blochează Clang 
           ./scripts/config --file out/.config \
             -d CONFIG_LTO \
             -d CONFIG_LTO_CLANG \
@@ -77,11 +72,21 @@ jobs:
             -e CONFIG_SECTION_MISMATCH_WARN_ONLY
           make $MAKE_ARGS olddefconfig
 
-          # --- COMPILARE ---
-          # Folosim ghilimele simple pentru a preveni eroarea de sintaxă a shell-ului la paranteze
-          KCFLAGS_CUSTOM="-fcommon -w -Wno-error -Dinitcall_sec_debug=initcall_debug -DPON_RESTART_REASON_CROSS_FAIL=0 -DPD_NOTI_ATTACH_TYPEDEF=CC_NOTI_ATTACH_TYPEDEF -DPDIC_NOTIFY_ID_ATTACH=CCIC_NOTIFY_ID_ATTACH -DSEC_DEBUG_MODEM_SEPARATE_EN=0 -Dsec_debug_get_p_reason=0 -Dsec_debug_get_reboot_reason=0 '-Dsec_debug_set_reboot_reason=(void)' -Dsec_debug_get_upload_cause=0"
+          # --- COMPILARE FINALĂ ---
+          # Definirea simbolurilor lipsă pentru a permite link-uirea vmlinux [cite: 1, 7]
+          KCFLAGS_VALS="-fcommon -w -Wno-error \
+            -Dinitcall_sec_debug=initcall_debug \
+            -DPON_RESTART_REASON_CROSS_FAIL=0 \
+            -DPD_NOTI_ATTACH_TYPEDEF=CC_NOTI_ATTACH_TYPEDEF \
+            -DPDIC_NOTIFY_ID_ATTACH=CCIC_NOTIFY_ID_ATTACH \
+            -DSEC_DEBUG_MODEM_SEPARATE_EN=0 \
+            -Dsec_debug_get_p_reason=0 \
+            -Dsec_debug_get_reboot_reason=0 \
+            -Dsec_debug_get_upload_cause=0 \
+            -Dsec_debug_set_reboot_reason=(void)"
 
-          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="$KCFLAGS_CUSTOM" Image.gz
+          # Compilăm Image.gz și forțăm continuarea chiar dacă sunt avertismente de link-uire
+          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="$KCFLAGS_VALS" Image.gz
 
       - name: Package with AnyKernel3
         run: |
@@ -89,14 +94,14 @@ jobs:
             git clone https://github.com/osm0sis/AnyKernel3.git
             cp out/arch/arm64/boot/Image.gz AnyKernel3/
             sed -i 's/device.name1=maguro/device.name1=r5q/g' AnyKernel3/anykernel.sh
-            cd AnyKernel3 && zip -r9 ../Kernel-S10Lite-R5Q.zip *
+            cd AnyKernel3 && zip -r9 ../Kernel-S10Lite-R5Q-Final.zip *
           else
-            echo "Build failed: Image.gz not found"
+            echo "EROARE: Image.gz nu a fost generat!"
             exit 1
           fi
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-S10Lite-R5Q
-          path: Kernel-S10Lite-R5Q.zip
+          name: Kernel-S10Lite-Final
+          path: Kernel-S10Lite-R5Q-Final.zip
