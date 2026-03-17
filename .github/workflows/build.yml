@@ -34,35 +34,36 @@ jobs:
           export KBUILD_BUILD_USER="Roynas"
           export KBUILD_BUILD_HOST="PureSource"
 
-          # 1. GENERARE HEADERE (Metoda Standard)
+          # 1. GENERARE HEADERE
           make ARCH=arm64 O=out headers_install
 
-          # 2. FIX-URI DIRECTE ÎN SURSĂ (Pentru a trece de erorile Samsung)
-          # Rezolvăm eroarea 'initcall_sec_debug'
+          # 2. FIX-URI DIRECTE ÎN SURSĂ
+          # Fix initcall (Samsung Debug)
           sed -i 's/initcall_sec_debug/initcall_debug/g' init/main.c
           
-          # Fix redefinire event în trace
+          # Fix Trace Perf (Redefinition)
           sed -i '0,/struct perf_event \*event;/! s/struct perf_event \*event;/\/\/ duplicat/g' kernel/trace/trace_event_perf.c
           
-          # Fix-uri globale pentru membrii lipsă din structura bateriei sursei (APDO Fix)
-          # Aceasta previne erorile "no member named now_isApdo" în compilarea statică
-          echo "Aplicare patch-uri pentru driverul de baterie intern..."
+          # --- FIX AUDIO (slow_insertion error) ---
+          find techpack/audio -name "wcd-mbhc-adc.c" -exec sed -i 's/mbhc->slow_insertion/0/g' {} +
+          
+          # --- FIX TOUCHSCREEN (ist40xx.c incomplete definition) ---
+          # Comentăm liniile care încearcă să acceseze dump_callbacks
+          sed -i 's/dump_callbacks.inform_dump = dump_tsp_log;/\/\/ fix_touch/g' drivers/input/touchscreen/imagis_40xx/ist40xx.c
+
+          # Fix Baterie (APDO & void* errors)
           find drivers/battery_v2 -type f -exec sed -i 's/battery->pd_list.now_isApdo/0/g' {} +
           find drivers/battery_v2 -type f -exec sed -i 's/battery->pd_list.num_apdo/0/g' {} +
           find drivers/battery_v2 -type f -exec sed -i 's/battery->pdic_info.sink_status.has_apdo/0/g' {} +
-          
-          # Fix pentru macro-ul problematic din sec_battery.c (eroarea void*)
           sed -i 's/psy_do_property.*POWER_SUPPLY_EXT_PROP_DIRECT_CLEAR_ERR.*/\/\/ fix void*/g' drivers/battery_v2/sec_battery.c
 
-          # 3. CONFIGURARE (Merge r5q + a70q fragment pentru SM7150)
+          # 3. CONFIGURARE (Merge r5q + a70q fragment)
           MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
           
           wget -O arch/arm64/configs/a70q_fragment.config https://raw.githubusercontent.com/pascua28/android_kernel_samsung_sm7150/sixteen/arch/arm64/configs/a70q.config
           
-          # Fuzionăm r5q_defconfig cu fragmentul a70q
           scripts/kconfig/merge_config.sh -m -O out arch/arm64/configs/r5q_defconfig arch/arm64/configs/a70q_fragment.config
           
-          # Optimizări finale și dezactivare SEC_DEBUG
           ./scripts/config --file out/.config \
             -d CONFIG_SEC_DEBUG \
             -d CONFIG_SECURITY_SMACK \
@@ -72,8 +73,7 @@ jobs:
             
           make $MAKE_ARGS olddefconfig
 
-          # 4. COMPILARE FINALĂ (Statică)
-          # Toate driverele vor fi incluse în Image.gz
+          # 4. COMPILARE FINALĂ
           KCFLAGS_BASE="-fcommon -w -Wno-error -DPON_RESTART_REASON_CROSS_FAIL=0 -I$(pwd)/out/usr/include"
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="$KCFLAGS_BASE" Image.gz
 
@@ -82,10 +82,10 @@ jobs:
           git clone https://github.com/osm0sis/AnyKernel3.git
           cp kernel/out/arch/arm64/boot/Image.gz AnyKernel3/
           sed -i 's/device.name1=maguro/device.name1=r5q/g' AnyKernel3/anykernel.sh
-          cd AnyKernel3 && zip -r9 ../Kernel-R5Q-PureSource.zip *
+          cd AnyKernel3 && zip -r9 ../Kernel-R5Q-PureSource-Stable.zip *
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-R5Q-Source
-          path: Kernel-R5Q-PureSource.zip
+          name: Kernel-R5Q-Result
+          path: Kernel-R5Q-PureSource-Stable.zip
