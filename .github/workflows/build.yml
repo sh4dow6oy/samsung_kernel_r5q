@@ -1,4 +1,4 @@
-name: Build Roynas R5Q - SM8150 Final Fix
+name: Build Roynas R5Q - SM8150 Ultimate Fix
 on:
   workflow_dispatch:
 
@@ -32,7 +32,7 @@ jobs:
           cd kernel
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           export KBUILD_BUILD_USER="Roynas"
-          export KBUILD_BUILD_HOST="S10Lite-Vendor"
+          export KBUILD_BUILD_HOST="S10Lite-Fix"
 
           # 1. GENERARE HEADERE
           make ARCH=arm64 O=out headers_install
@@ -41,20 +41,18 @@ jobs:
           sed -i 's/initcall_sec_debug/initcall_debug/g' init/main.c
           sed -i '0,/struct perf_event \*event;/! s/struct perf_event \*event;/\/\/ duplicat/g' kernel/trace/trace_event_perf.c
           
-          # --- FIX BLKTRACE (u64 vs kernfs_node_id) ---
-          sed -i 's/u64 cgid/union kernfs_node_id *cgid/g' kernel/trace/blktrace.c
-          
           # --- FIX AUDIO ---
           find techpack/audio -name "wcd-mbhc-adc.c" -exec sed -i 's/mbhc->slow_insertion/0/g' {} +
           
           # --- FIX TOUCH ---
           find drivers/input/touchscreen -name "*.c" -exec sed -i 's/dump_callbacks.inform_dump = dump_tsp_log;/\/\/ fix_touch/g' {} +
 
-          # --- FIX BATERIE (Comentăm liniile problematice în loc de 0 = true) ---
-          find drivers/battery_v2 -type f -exec sed -i 's/.*now_isApdo.*/\/\/ fix_apdo/g' {} +
-          find drivers/battery_v2 -type f -exec sed -i 's/.*num_apdo.*/\/\/ fix_apdo/g' {} +
-          find drivers/battery_v2 -type f -exec sed -i 's/.*has_apdo.*/\/\/ fix_apdo/g' {} +
-          sed -i 's/psy_do_property.*POWER_SUPPLY_EXT_PROP_DIRECT_CLEAR_ERR.*/\/\/ fix void*/g' drivers/battery_v2/sec_battery.c
+          # --- FIX BATERIE (Rezolvă "expression is not assignable") ---
+          # Comentăm liniile care conțin variabilele problematice APDO
+          find drivers/battery_v2 -type f -exec sed -i '/now_isApdo/s/^/\/\//' {} +
+          find drivers/battery_v2 -type f -exec sed -i '/num_apdo/s/^/\/\//' {} +
+          find drivers/battery_v2 -type f -exec sed -i '/has_apdo/s/^/\/\//' {} +
+          sed -i '/POWER_SUPPLY_EXT_PROP_DIRECT_CLEAR_ERR/s/^/\/\//' drivers/battery_v2/sec_battery.c
 
           # 3. CONFIGURARE (R5Q + Vendor SM8150)
           MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
@@ -63,7 +61,10 @@ jobs:
             arch/arm64/configs/r5q_defconfig \
             arch/arm64/configs/vendor/sm8150_defconfig
           
+          # DEZACTIVĂM BLK_DEV_IO_TRACE pentru a scăpa de erorile blktrace.c
+          # Dezactivăm și restul setărilor problematice
           ./scripts/config --file out/.config \
+            -d CONFIG_BLK_DEV_IO_TRACE \
             -d CONFIG_SEC_DEBUG \
             -d CONFIG_SECURITY_SMACK \
             -d CONFIG_KSU -d CONFIG_KSU_NEXT \
@@ -81,10 +82,10 @@ jobs:
           git clone https://github.com/osm0sis/AnyKernel3.git
           cp kernel/out/arch/arm64/boot/Image.gz AnyKernel3/
           sed -i 's/device.name1=maguro/device.name1=r5q/g' AnyKernel3/anykernel.sh
-          cd AnyKernel3 && zip -r9 ../Kernel-R5Q-SM8150-Final.zip *
+          cd AnyKernel3 && zip -r9 ../Kernel-R5Q-SM8150-Stable.zip *
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-R5Q-Stable
-          path: Kernel-R5Q-SM8150-Final.zip
+          name: Kernel-Result
+          path: Kernel-R5Q-SM8150-Stable.zip
