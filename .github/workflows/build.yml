@@ -40,10 +40,18 @@ jobs:
           # 2. FIX-URI SURSĂ
           sed -i 's/initcall_sec_debug/initcall_debug/g' init/main.c
           sed -i '0,/struct perf_event \*event;/! s/struct perf_event \*event;/\/\/ duplicat/g' kernel/trace/trace_event_perf.c
+          
+          # --- FIX DISPLAY DEBUG (Conflict static vs extern) ---
+          # Comentăm declarațiile extern din driverul de ecran care intră în conflict cu sec_debug
+          find drivers/gpu/drm/msm/samsung -name "ss_dsi_panel_debug.h" -exec sed -i '/extern bool.*_debug_partition/s/^/\/\//' {} +
+
+          # --- FIX AUDIO ---
           find techpack/audio -name "wcd-mbhc-adc.c" -exec sed -i 's/mbhc->slow_insertion/0/g' {} +
+          
+          # --- FIX TOUCH ---
           find drivers/input/touchscreen -name "*.c" -exec sed -i '/dump_callbacks.inform_dump/s/^/\/\//' {} +
 
-          # Fix Baterie
+          # --- FIX BATERIE ---
           find drivers/battery_v2 -type f -exec sed -i '/now_isApdo/s/^/\/\//' {} +
           find drivers/battery_v2 -type f -exec sed -i '/num_apdo/s/^/\/\//' {} +
           find drivers/battery_v2 -type f -exec sed -i '/has_apdo/s/^/\/\//' {} +
@@ -59,7 +67,6 @@ jobs:
             arch/arm64/configs/vendor/sm8150_defconfig \
             arch/arm64/configs/a70q_fragment.config
           
-          # DEZACTIVARE CORESIGHT, TRACING ȘI DEBUG
           ./scripts/config --file out/.config \
             -d CONFIG_QCOM_KGSL_CORESIGHT \
             -d CONFIG_CORESIGHT \
