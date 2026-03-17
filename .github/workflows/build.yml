@@ -1,4 +1,4 @@
-name: Build Roynas R5Q - SM8150 Vendor Hybrid
+name: Build Roynas R5Q - SM8150 Final Fix
 on:
   workflow_dispatch:
 
@@ -37,31 +37,32 @@ jobs:
           # 1. GENERARE HEADERE
           make ARCH=arm64 O=out headers_install
 
-          # 2. FIX-URI SURSĂ (Audio, Touch, Baterie)
-          # Fix initcall & Trace
+          # 2. FIX-URI SURSĂ
           sed -i 's/initcall_sec_debug/initcall_debug/g' init/main.c
           sed -i '0,/struct perf_event \*event;/! s/struct perf_event \*event;/\/\/ duplicat/g' kernel/trace/trace_event_perf.c
           
-          # Fix Audio (slow_insertion)
+          # --- FIX BLKTRACE (u64 vs kernfs_node_id) ---
+          sed -i 's/u64 cgid/union kernfs_node_id *cgid/g' kernel/trace/blktrace.c
+          
+          # --- FIX AUDIO ---
           find techpack/audio -name "wcd-mbhc-adc.c" -exec sed -i 's/mbhc->slow_insertion/0/g' {} +
           
-          # Fix Touchscreen generic
+          # --- FIX TOUCH ---
           find drivers/input/touchscreen -name "*.c" -exec sed -i 's/dump_callbacks.inform_dump = dump_tsp_log;/\/\/ fix_touch/g' {} +
 
-          # Fix Baterie S10 Lite
-          find drivers/battery_v2 -type f -exec sed -i 's/battery->pd_list.now_isApdo/0/g' {} +
-          find drivers/battery_v2 -type f -exec sed -i 's/battery->pdic_info.sink_status.has_apdo/0/g' {} +
+          # --- FIX BATERIE (Comentăm liniile problematice în loc de 0 = true) ---
+          find drivers/battery_v2 -type f -exec sed -i 's/.*now_isApdo.*/\/\/ fix_apdo/g' {} +
+          find drivers/battery_v2 -type f -exec sed -i 's/.*num_apdo.*/\/\/ fix_apdo/g' {} +
+          find drivers/battery_v2 -type f -exec sed -i 's/.*has_apdo.*/\/\/ fix_apdo/g' {} +
           sed -i 's/psy_do_property.*POWER_SUPPLY_EXT_PROP_DIRECT_CLEAR_ERR.*/\/\/ fix void*/g' drivers/battery_v2/sec_battery.c
 
           # 3. CONFIGURARE (R5Q + Vendor SM8150)
           MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
           
-          # Folosim scriptul de merge pentru a combina R5Q cu baza Vendor SM8150
           scripts/kconfig/merge_config.sh -m -O out \
             arch/arm64/configs/r5q_defconfig \
             arch/arm64/configs/vendor/sm8150_defconfig
           
-          # Curățenie finală pentru stabilitate build (No KSU, No SEC_DEBUG)
           ./scripts/config --file out/.config \
             -d CONFIG_SEC_DEBUG \
             -d CONFIG_SECURITY_SMACK \
@@ -80,10 +81,10 @@ jobs:
           git clone https://github.com/osm0sis/AnyKernel3.git
           cp kernel/out/arch/arm64/boot/Image.gz AnyKernel3/
           sed -i 's/device.name1=maguro/device.name1=r5q/g' AnyKernel3/anykernel.sh
-          cd AnyKernel3 && zip -r9 ../Kernel-R5Q-SM8150-Vendor.zip *
+          cd AnyKernel3 && zip -r9 ../Kernel-R5Q-SM8150-Final.zip *
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-R5Q-Vendor
-          path: Kernel-R5Q-SM8150-Vendor.zip
+          name: Kernel-R5Q-Stable
+          path: Kernel-R5Q-SM8150-Final.zip
