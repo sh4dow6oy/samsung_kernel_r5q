@@ -32,7 +32,7 @@ jobs:
           export KBUILD_BUILD_USER="Roynas"
           export KBUILD_BUILD_HOST="GithubActions"
 
-          # --- FIX-URI CHIRURGICALE (SED) ---
+          # --- FIX-URI CHIRURGICALE ---
           sed -i '30i bool msm_gpio_is_valid(int gpionum);' drivers/pinctrl/qcom/pinctrl-msm.c
           find drivers/gpu/drm/msm -name "ss_dsi_panel_debug.h" -exec sed -i 's/extern bool read_debug_partition/\/\/ extern bool read_debug_partition/g' {} +
           find drivers/gpu/drm/msm -name "ss_dsi_panel_debug.h" -exec sed -i 's/extern bool write_debug_partition/\/\/ extern bool write_debug_partition/g' {} +
@@ -41,6 +41,11 @@ jobs:
           
           mkdir -p include/linux
           find drivers/samsung -name "sec_debug.h" -exec ln -sf ../../{} include/linux/sec_debug.h \;
+          
+          # Fix pentru eroarea 'secgetspf'
+          echo "#!/bin/bash" > scripts/secgetspf
+          echo "echo 0" >> scripts/secgetspf
+          chmod +x scripts/secgetspf
 
           # --- ARGUMENTE BUILD ---
           MAKE_ARGS="ARCH=arm64 \
@@ -65,23 +70,16 @@ jobs:
             -d CONFIG_LTO \
             -d CONFIG_LTO_CLANG \
             -e CONFIG_LTO_NONE \
+            -d CONFIG_CC_STACKPROTECTOR_STRONG \
+            -e CONFIG_CC_STACKPROTECTOR_NONE \
             -d CONFIG_SECURITY_SMACK \
             -d CONFIG_SEC_DEBUG \
             -e CONFIG_SECTION_MISMATCH_WARN_ONLY
           make $MAKE_ARGS olddefconfig
 
           # --- COMPILARE ---
-          # Fix-uri pentru toate simbolurile Samsung "undefined" găsite în log-ul tău
-          KCFLAGS_CUSTOM="-fcommon -w -Wno-error \
-            -Dinitcall_sec_debug=initcall_debug \
-            -DPON_RESTART_REASON_CROSS_FAIL=0 \
-            -DPD_NOTI_ATTACH_TYPEDEF=CC_NOTI_ATTACH_TYPEDEF \
-            -DPDIC_NOTIFY_ID_ATTACH=CCIC_NOTIFY_ID_ATTACH \
-            -DSEC_DEBUG_MODEM_SEPARATE_EN=0 \
-            -Dsec_debug_get_p_reason=0 \
-            -Dsec_debug_get_reboot_reason=0 \
-            -Dsec_debug_set_reboot_reason=(void) \
-            -Dsec_debug_get_upload_cause=0"
+          # Folosim ghilimele simple pentru a preveni eroarea de sintaxă a shell-ului la paranteze
+          KCFLAGS_CUSTOM="-fcommon -w -Wno-error -Dinitcall_sec_debug=initcall_debug -DPON_RESTART_REASON_CROSS_FAIL=0 -DPD_NOTI_ATTACH_TYPEDEF=CC_NOTI_ATTACH_TYPEDEF -DPDIC_NOTIFY_ID_ATTACH=CCIC_NOTIFY_ID_ATTACH -DSEC_DEBUG_MODEM_SEPARATE_EN=0 -Dsec_debug_get_p_reason=0 -Dsec_debug_get_reboot_reason=0 '-Dsec_debug_set_reboot_reason=(void)' -Dsec_debug_get_upload_cause=0"
 
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="$KCFLAGS_CUSTOM" Image.gz
 
