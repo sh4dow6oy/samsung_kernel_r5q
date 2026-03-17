@@ -1,18 +1,24 @@
-name: Build R5Q Kernel - FULL FINAL
-
+name: Build Roynas R5Q - Neutron Clang Final
 on:
   workflow_dispatch:
 
 jobs:
   build:
-    runs-on: ubuntu-22.04
-
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout Source
         uses: actions/checkout@v4
         with:
           repository: sh4dow6oy/android_kernel_samsung_sm7150
           ref: sixteen
+          path: kernel
+          fetch-depth: 1
+
+      - name: Checkout Drivers (r3q)
+        uses: actions/checkout@v4
+        with:
+          repository: Roynas-Android-Playground/kernel_samsung_r3q
+          path: r3q_source
           fetch-depth: 1
 
       - name: Install Dependencies
@@ -20,115 +26,75 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y bc build-essential flex bison lz4 libssl-dev libelf-dev \
           ccache python3 python-is-python3 libarchive-tools wget zstd zip \
-          gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi libncurses-dev
+          gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi libncurses-dev libtinfo6
 
-      - name: Setup Clang 17
+      - name: Setup Neutron Clang
         run: |
           mkdir clang
-          wget -q https://github.com/llvm/llvm-project/releases/download/llvmorg-17.0.6/clang+llvm-17.0.6-x86_64-linux-gnu-ubuntu-22.04.tar.xz
-          tar -xf clang+llvm-17.0.6-x86_64-linux-gnu-ubuntu-22.04.tar.xz -C clang --strip-components=1
-
-      - name: Fix Samsung Scripts
-        run: |
-          echo -e "#!/bin/bash\necho 0" > scripts/secgetspf
-          chmod +x scripts/secgetspf
-
-      - name: Add Sec Debug Compatibility Layer
-        run: |
-          mkdir -p include/linux
-          cat << 'EOF' > include/linux/sec_debug_compat.h
-          #pragma once
-
-          #define initcall_sec_debug 0
-
-          static inline int do_one_initcall_sec_debug(void *fn)
-          {
-              return 0;
-          }
-
-          static inline void sec_debug_sched_msg(const char *msg) {}
-          static inline void sec_debug_summary_save_die_info(const char *str, void *regs) {}
-          EOF
-
-      - name: Add Minimal Dummy Symbols
-        run: |
-          mkdir -p drivers/misc
-          cat << 'EOF' > drivers/misc/dummy_symbols.c
-          #include <linux/kernel.h>
-
-          void sec_debug_store_bug_string(const char *s) {}
-          int sec_debug_is_enabled(void) { return 0; }
-          int is_boot_recovery(void) { return 0; }
-
-          void scsi_trace_parse_cdb() {}
-          EOF
-
-          echo 'obj-y += dummy_symbols.o' >> drivers/misc/Makefile
+          wget -q https://github.com/Ylarod/setup-ndk-clang/releases/download/prebuilt/clang-linux-x86-ndk-r29-r563880c.tar.zst
+          tar -I zstd -xf clang-linux-x86-ndk-r29-r563880c.tar.zst -C clang
 
       - name: Build Kernel
         run: |
-          set -e
-
+          cd kernel
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
-          export PATH="$GITHUB_WORKSPACE/scripts:$PATH"
-
           export KBUILD_BUILD_USER="Roynas"
-          export KBUILD_BUILD_HOST="GitHub"
+          export KBUILD_BUILD_HOST="GithubActions"
 
-          export KCFLAGS="-include linux/sec_debug_compat.h"
+          # --- 1. IMPORT DRIVERE DIN r3q (Înlocuire foldere problematice) ---
+          echo "Inlocuiesc driverele cu cele din r3q..."
+          rm -rf drivers/battery_v2
+          cp -r ../r3q_source/drivers/battery_v2 drivers/
+          
+          rm -rf drivers/samsung
+          cp -r ../r3q_source/drivers/samsung drivers/
+          
+          # Actualizăm link-ul către sec_debug.h pentru a folosi versiunea din r3q
+          mkdir -p include/linux
+          find drivers/samsung -name "sec_debug.h" -exec ln -sf ../../{} include/linux/sec_debug.h \;
 
-          MAKE_ARGS="ARCH=arm64 \
-            LLVM=1 LLVM_IAS=1 \
-            CC=clang \
-            LD=ld.lld \
-            HOSTCC=gcc \
-            HOSTLD=ld \
-            AR=llvm-ar NM=llvm-nm \
-            OBJCOPY=llvm-objcopy \
-            OBJDUMP=llvm-objdump \
-            STRIP=llvm-strip \
-            CROSS_COMPILE=aarch64-linux-gnu- \
-            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-            O=out"
+          # --- 2. FIX-URI GENERALE ---
+          # Fix Audio Techpack
+          find techpack/audio -name "wcd-mbhc-adc.c" -exec sed -i 's/mbhc->slow_insertion/0/g' {} +
+          # Fix redefinire event
+          sed -i '0,/struct perf_event \*event;/! s/struct perf_event \*event;/\/\/ duplicat sters/g' kernel/trace/trace_event_perf.c
+          # Fix Pinctrl
+          sed -i '30i bool msm_gpio_is_valid(int gpionum);' drivers/pinctrl/qcom/pinctrl-msm.c
 
-          # CONFIG
+          # 3. Dummy secgetspf
+          echo -e "#!/bin/bash\necho 0" > scripts/secgetspf
+          chmod +x scripts/secgetspf
+
+          # --- 4. ARGUMENTE BUILD ---
+          MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
+
+          # --- 5. CONFIGURARE ---
           make $MAKE_ARGS r5q_defconfig
-
           ./scripts/config --file out/.config \
-          -d CONFIG_SEC_DEBUG \
-          -d CONFIG_USB_CONFIGFS \
-          -d CONFIG_USB_G_ANDROID \
-          -d CONFIG_SAMSUNG_BATTERY \
-          -d CONFIG_MOTOR \
-          -d CONFIG_ADSP_FACTORY \
-          -d CONFIG_CC_STACKPROTECTOR \
-          -d CONFIG_CC_STACKPROTECTOR_STRONG \
-          -e CONFIG_CC_STACKPROTECTOR_NONE \
-          -e CONFIG_SECTION_MISMATCH_WARN_ONLY
-
+            -d CONFIG_LTO -d CONFIG_LTO_CLANG -e CONFIG_LTO_NONE \
+            -d CONFIG_CC_STACKPROTECTOR_STRONG -e CONFIG_CC_STACKPROTECTOR_NONE \
+            -d CONFIG_SECURITY_SMACK -d CONFIG_SEC_DEBUG -e CONFIG_SECTION_MISMATCH_WARN_ONLY
           make $MAKE_ARGS olddefconfig
 
-          # BUILD
-          make -j4 $MAKE_ARGS Image.gz 2>&1 | tee build.log
+          # --- 6. COMPILARE FINALĂ ---
+          # Adăugăm flag-uri pentru compatibilitate Samsung
+          KCFLAGS_CLEAN="-fcommon -w -Wno-error -Dinitcall_sec_debug=initcall_debug -DPON_RESTART_REASON_CROSS_FAIL=0 -DPD_NOTI_ATTACH_TYPEDEF=CC_NOTI_ATTACH_TYPEDEF -DPDIC_NOTIFY_ID_ATTACH=CCIC_NOTIFY_ID_ATTACH -DSEC_DEBUG_MODEM_SEPARATE_EN=0"
+          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="$KCFLAGS_CLEAN" Image.gz
 
-      - name: Package AnyKernel3
+      - name: Package with AnyKernel3
         run: |
-          if [ -f out/arch/arm64/boot/Image.gz ]; then
+          if [ -f kernel/out/arch/arm64/boot/Image.gz ]; then
             git clone https://github.com/osm0sis/AnyKernel3.git
-            cp out/arch/arm64/boot/Image.gz AnyKernel3/
-
-            sed -i 's/device.name1=.*/device.name1=r5q/' AnyKernel3/anykernel.sh
-
-            cd AnyKernel3
-            zip -r9 ../Kernel-R5Q-FULL.zip *
+            cp kernel/out/arch/arm64/boot/Image.gz AnyKernel3/
+            sed -i 's/device.name1=maguro/device.name1=r5q/g' AnyKernel3/anykernel.sh
+            cd AnyKernel3 && zip -r9 ../Kernel-S10Lite-R5Q-Final.zip *
           else
-            echo "Build failed!"
-            cat build.log
+            echo "EROARE: Image.gz nu a fost generat!"
             exit 1
           fi
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-R5Q-FULL
-          path: Kernel-R5Q-FULL.zip
+          name: Kernel-S10Lite-Final
+          path: Kernel-S10Lite-R5Q-Final.zip
