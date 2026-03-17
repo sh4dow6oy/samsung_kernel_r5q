@@ -41,27 +41,29 @@ jobs:
           export KBUILD_BUILD_USER="Roynas"
           export KBUILD_BUILD_HOST="GithubActions"
 
-          # --- 1. IMPORT DRIVERE DIN r3q (Înlocuire foldere problematice) ---
-          echo "Inlocuiesc driverele cu cele din r3q..."
-          rm -rf drivers/battery_v2
+          # --- 1. IMPORT DRIVERE DIN r3q ---
+          echo "Inlocuiesc driverele si headerele cu cele din r3q..."
+          rm -rf drivers/battery_v2 drivers/samsung
           cp -r ../r3q_source/drivers/battery_v2 drivers/
-          
-          rm -rf drivers/samsung
           cp -r ../r3q_source/drivers/samsung drivers/
           
-          # Actualizăm link-ul către sec_debug.h pentru a folosi versiunea din r3q
-          mkdir -p include/linux
-          find drivers/samsung -name "sec_debug.h" -exec ln -sf ../../{} include/linux/sec_debug.h \;
+          # --- 2. FIX CRITIC: MAPEAZA FOLDERUL MANAGER ---
+          # Creăm calea exactă cerută de #include-ul din sec_battery.h
+          mkdir -p include/linux/usb/manager/
+          
+          # Copiem fișierul notifier din locația lui originală în include/linux/...
+          # În r3q se află de obicei în include/linux/usb/typec/ sau direct în drivers
+          find ../r3q_source -name "usb_typec_manager_notifier.h" -exec cp {} include/linux/usb/manager/ \;
+          
+          # Dacă fișierul este căutat ca <linux/usb/manager/...> dar în sursă e la alt nivel:
+          cp include/linux/usb/manager/usb_typec_manager_notifier.h include/linux/usb/ 2>/dev/null || true
 
-          # --- 2. FIX-URI GENERALE ---
-          # Fix Audio Techpack
+          # --- 3. FIX-URI GENERALE ---
           find techpack/audio -name "wcd-mbhc-adc.c" -exec sed -i 's/mbhc->slow_insertion/0/g' {} +
-          # Fix redefinire event
           sed -i '0,/struct perf_event \*event;/! s/struct perf_event \*event;/\/\/ duplicat sters/g' kernel/trace/trace_event_perf.c
-          # Fix Pinctrl
           sed -i '30i bool msm_gpio_is_valid(int gpionum);' drivers/pinctrl/qcom/pinctrl-msm.c
 
-          # 3. Dummy secgetspf
+          # Dummy secgetspf
           echo -e "#!/bin/bash\necho 0" > scripts/secgetspf
           chmod +x scripts/secgetspf
 
@@ -76,9 +78,10 @@ jobs:
             -d CONFIG_SECURITY_SMACK -d CONFIG_SEC_DEBUG -e CONFIG_SECTION_MISMATCH_WARN_ONLY
           make $MAKE_ARGS olddefconfig
 
-          # --- 6. COMPILARE FINALĂ ---
-          # Adăugăm flag-uri pentru compatibilitate Samsung
-          KCFLAGS_CLEAN="-fcommon -w -Wno-error -Dinitcall_sec_debug=initcall_debug -DPON_RESTART_REASON_CROSS_FAIL=0 -DPD_NOTI_ATTACH_TYPEDEF=CC_NOTI_ATTACH_TYPEDEF -DPDIC_NOTIFY_ID_ATTACH=CCIC_NOTIFY_ID_ATTACH -DSEC_DEBUG_MODEM_SEPARATE_EN=0"
+          # --- 6. COMPILARE ---
+          # Adăugăm flag-ul de include local pentru a fi siguri că vede folderul include/ creat de noi
+          KCFLAGS_CLEAN="-fcommon -w -Wno-error -I$(pwd)/include -Dinitcall_sec_debug=initcall_debug -DPON_RESTART_REASON_CROSS_FAIL=0 -DPD_NOTI_ATTACH_TYPEDEF=CC_NOTI_ATTACH_TYPEDEF -DPDIC_NOTIFY_ID_ATTACH=CCIC_NOTIFY_ID_ATTACH -DSEC_DEBUG_MODEM_SEPARATE_EN=0"
+          
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="$KCFLAGS_CLEAN" Image.gz
 
       - name: Package with AnyKernel3
