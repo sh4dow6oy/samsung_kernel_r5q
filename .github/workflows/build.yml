@@ -34,20 +34,21 @@ jobs:
 
           # --- FIX-URI CHIRURGICALE ---
           
-          # 1. Fix redefinition of 'event' (Abordare nouă, mai sigură)
-          # Această comandă caută declarația și o comentează pe a doua apariție în tot fișierul
+          # 1. Fix Audio Techpack: Eliminăm referințele la slow_insertion (membrul lipsă)
+          # Înlocuim "mbhc->slow_insertion" cu "0" pentru a trece de verificări
+          find techpack/audio -name "wcd-mbhc-adc.c" -exec sed -i 's/mbhc->slow_insertion/0/g' {} +
+
+          # 2. Fix redefinition of 'event' în kernel/trace
           sed -i '0,/struct perf_event \*event;/! s/struct perf_event \*event;/\/\/ duplicat sters/g' kernel/trace/trace_event_perf.c
 
-          # 2. Fix Pinctrl & Display
+          # 3. Fix Pinctrl & Display
           sed -i '30i bool msm_gpio_is_valid(int gpionum);' drivers/pinctrl/qcom/pinctrl-msm.c
           find drivers/gpu/drm/msm -name "ss_dsi_panel_debug.h" -exec sed -i 's/extern bool read_debug_partition/\/\/ extern bool read_debug_partition/g' {} +
           find drivers/gpu/drm/msm -name "ss_dsi_panel_debug.h" -exec sed -i 's/extern bool write_debug_partition/\/\/ extern bool write_debug_partition/g' {} +
           
-          # 3. Pregătire headere Samsung
+          # 4. Pregătire headere Samsung & Injectare definitii
           mkdir -p include/linux
           find drivers/samsung -name "sec_debug.h" -exec ln -sf ../../{} include/linux/sec_debug.h \;
-          
-          # 4. INJECTARE DEFINIȚII (Ocolește eroarea de shell "(" unexpected)
           {
             echo "#define sec_debug_set_reboot_reason(x) do {} while (0)"
             echo "#define sec_debug_get_reboot_reason() (0)"
