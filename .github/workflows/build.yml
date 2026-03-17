@@ -34,29 +34,49 @@ jobs:
 
           # --- FIX-URI CHIRURGICALE ---
           
-          # 1. Fix Audio Techpack: Eliminăm referințele la slow_insertion (membrul lipsă)
-          # Înlocuim "mbhc->slow_insertion" cu "0" pentru a trece de verificări
+          # Fix Trace redefinition
+          sed -i '0,/struct perf_event \*event;/! s/struct perf_event \*event;/\/\/ duplicat sters/g' kernel/trace/trace_event_perf.c
+          
+          # Fix Audio slow_insertion
           find techpack/audio -name "wcd-mbhc-adc.c" -exec sed -i 's/mbhc->slow_insertion/0/g' {} +
 
-          # 2. Fix redefinition of 'event' în kernel/trace
-          sed -i '0,/struct perf_event \*event;/! s/struct perf_event \*event;/\/\/ duplicat sters/g' kernel/trace/trace_event_perf.c
-
-          # 3. Fix Pinctrl & Display
+          # Fix Pinctrl
           sed -i '30i bool msm_gpio_is_valid(int gpionum);' drivers/pinctrl/qcom/pinctrl-msm.c
-          find drivers/gpu/drm/msm -name "ss_dsi_panel_debug.h" -exec sed -i 's/extern bool read_debug_partition/\/\/ extern bool read_debug_partition/g' {} +
-          find drivers/gpu/drm/msm -name "ss_dsi_panel_debug.h" -exec sed -i 's/extern bool write_debug_partition/\/\/ extern bool write_debug_partition/g' {} +
           
-          # 4. Pregătire headere Samsung & Injectare definitii
+          # Pregatire headere
           mkdir -p include/linux
           find drivers/samsung -name "sec_debug.h" -exec ln -sf ../../{} include/linux/sec_debug.h \;
+
+          # --- INJECTARE MASIVA DE SIMBOLURI (STUBS) ---
+          # Adaugam definitii goale pentru a pacali linker-ul (ld.lld)
           {
             echo "#define sec_debug_set_reboot_reason(x) do {} while (0)"
             echo "#define sec_debug_get_reboot_reason() (0)"
             echo "#define sec_debug_get_p_reason() (0)"
             echo "#define sec_debug_get_upload_cause() (0)"
+            echo "#define enable_emergency_dload_mode(x) do {} while (0)"
+            echo "#define ois_reset_register(x) (0)"
+            echo "#define sec_kn_register_notifier(x) (0)"
+            echo "#define manager_notifier_register(x) (0)"
+            echo "#define manager_notifier_unregister(x) (0)"
+            echo "#define manager_hw_param_update(x) (0)"
+            echo "#define set_usb_enable_state(x) (0)"
+            echo "#define set_usb_enumeration_state(x) (0)"
+            echo "#define get_usb_enumeration_state() (0)"
+            echo "#define sec_debug_store_bug_string(x) do {} while (0)"
+            echo "#define audio_register_wdsp_state_cb(x,y) (0)"
+            echo "#define audio_register_mad_mic_state_cb(x,y) (0)"
+            echo "#define get_wsa_sysfs_ptr() (NULL)"
+            echo "#define setSensorCallback(x,y) do {} while (0)"
+            echo "#define sec_get_pps_voltage() (0)"
+            echo "#define is_boot_recovery() (0)"
+            echo "#define accel_factory_init_work(x) do {} while (0)"
+            echo "#define prox_factory_init_work(x) do {} while (0)"
+            echo "#define scsi_trace_parse_cdb(x,y,z) \"\""
+            echo "#define sec_debug_is_enabled() (0)"
           } >> include/linux/sec_debug.h
 
-          # 5. Dummy secgetspf
+          # Dummy secgetspf
           echo -e "#!/bin/bash\necho 0" > scripts/secgetspf
           chmod +x scripts/secgetspf
 
@@ -89,6 +109,7 @@ jobs:
           make $MAKE_ARGS olddefconfig
 
           # --- COMPILARE FINALĂ ---
+          # Folosim -fcommon pentru a ignora definitiile multiple (cum e ncm_wq)
           KCFLAGS_CLEAN="-fcommon -w -Wno-error -Dinitcall_sec_debug=initcall_debug -DPON_RESTART_REASON_CROSS_FAIL=0 -DPD_NOTI_ATTACH_TYPEDEF=CC_NOTI_ATTACH_TYPEDEF -DPDIC_NOTIFY_ID_ATTACH=CCIC_NOTIFY_ID_ATTACH -DSEC_DEBUG_MODEM_SEPARATE_EN=0"
 
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="$KCFLAGS_CLEAN" Image.gz
