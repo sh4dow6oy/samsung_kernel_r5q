@@ -41,29 +41,31 @@ jobs:
           export KBUILD_BUILD_USER="Roynas"
           export KBUILD_BUILD_HOST="GithubActions"
 
-          # --- 1. IMPORT DRIVERE DIN r3q ---
-          echo "Inlocuiesc driverele si headerele cu cele din r3q..."
+          # --- 1. IMPORT MASIV DIN r3q (Sincronizare foldere și headere) ---
+          echo "Sincronizez driverele si headerele lipsa din r3q..."
+          
+          # Înlocuim driverele de bază
           rm -rf drivers/battery_v2 drivers/samsung
           cp -r ../r3q_source/drivers/battery_v2 drivers/
           cp -r ../r3q_source/drivers/samsung drivers/
           
-          # --- 2. FIX CRITIC: MAPEAZA FOLDERUL MANAGER ---
-          # Creăm calea exactă cerută de #include-ul din sec_battery.h
+          # IMPORT HEADERE LINUX (Rezolvă eroarea ccic_notifier.h și restul)
+          # Copiem tot ce este în include/linux din r3q peste include/linux-ul nostru
+          # Folosim 'cp -rn' pentru a nu suprascrie fișierele existente, doar pentru a adăuga ce lipsește
           mkdir -p include/linux/usb/manager/
+          mkdir -p include/linux/ccic/
+          cp -rn ../r3q_source/include/linux/* include/linux/
           
-          # Copiem fișierul notifier din locația lui originală în include/linux/...
-          # În r3q se află de obicei în include/linux/usb/typec/ sau direct în drivers
+          # Fix specific pentru calea managerului USB (uneori Samsung le pune ciudat)
           find ../r3q_source -name "usb_typec_manager_notifier.h" -exec cp {} include/linux/usb/manager/ \;
-          
-          # Dacă fișierul este căutat ca <linux/usb/manager/...> dar în sursă e la alt nivel:
-          cp include/linux/usb/manager/usb_typec_manager_notifier.h include/linux/usb/ 2>/dev/null || true
+          find ../r3q_source -name "ccic_notifier.h" -exec cp {} include/linux/ccic/ \;
 
-          # --- 3. FIX-URI GENERALE ---
+          # --- 2. FIX-URI GENERALE ---
           find techpack/audio -name "wcd-mbhc-adc.c" -exec sed -i 's/mbhc->slow_insertion/0/g' {} +
           sed -i '0,/struct perf_event \*event;/! s/struct perf_event \*event;/\/\/ duplicat sters/g' kernel/trace/trace_event_perf.c
           sed -i '30i bool msm_gpio_is_valid(int gpionum);' drivers/pinctrl/qcom/pinctrl-msm.c
 
-          # Dummy secgetspf
+          # 3. Dummy secgetspf
           echo -e "#!/bin/bash\necho 0" > scripts/secgetspf
           chmod +x scripts/secgetspf
 
@@ -78,9 +80,9 @@ jobs:
             -d CONFIG_SECURITY_SMACK -d CONFIG_SEC_DEBUG -e CONFIG_SECTION_MISMATCH_WARN_ONLY
           make $MAKE_ARGS olddefconfig
 
-          # --- 6. COMPILARE ---
-          # Adăugăm flag-ul de include local pentru a fi siguri că vede folderul include/ creat de noi
-          KCFLAGS_CLEAN="-fcommon -w -Wno-error -I$(pwd)/include -Dinitcall_sec_debug=initcall_debug -DPON_RESTART_REASON_CROSS_FAIL=0 -DPD_NOTI_ATTACH_TYPEDEF=CC_NOTI_ATTACH_TYPEDEF -DPDIC_NOTIFY_ID_ATTACH=CCIC_NOTIFY_ID_ATTACH -DSEC_DEBUG_MODEM_SEPARATE_EN=0"
+          # --- 6. COMPILARE FINALĂ ---
+          # Flag-uri de compatibilitate
+          KCFLAGS_CLEAN="-fcommon -w -Wno-error -Dinitcall_sec_debug=initcall_debug -DPON_RESTART_REASON_CROSS_FAIL=0 -DPD_NOTI_ATTACH_TYPEDEF=CC_NOTI_ATTACH_TYPEDEF -DPDIC_NOTIFY_ID_ATTACH=CCIC_NOTIFY_ID_ATTACH -DSEC_DEBUG_MODEM_SEPARATE_EN=0"
           
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="$KCFLAGS_CLEAN" Image.gz
 
