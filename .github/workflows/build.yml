@@ -38,44 +38,52 @@ jobs:
           mkdir -p out
           make ARCH=arm64 O=out headers_install
 
-          # 2. FIX-URI SURSĂ (Specializate pentru ramura 'sixteen')
+          # 2. FIX-URI SURSĂ (Patch-uri automate prin sed)
           
-          # --- WIFI FIX (Protecție Redefinire PLD Context) ---
-          # Aplicăm o gardă de macro pentru a preveni Clang să re-declare structura pld_context
+          # Fix Initcall (Eroarea undeclared 'initcall_sec_debug')
+          sed -i 's/initcall_sec_debug/initcall_debug/g' init/main.c
+          
+          # Fix Perf Event (Duplicat în kernel/trace)
+          sed -i '0,/struct perf_event \*event;/! s/struct perf_event \*event;/\/\/ duplicat/g' kernel/trace/trace_event_perf.c
+          
+          # Fix Wi-Fi / PLD (Garda de protecție pentru redefinire pld_context)
           find drivers/staging/qca-wifi-host-cmn -name "pld.h" -exec sed -i '/struct pld_context {/i #ifndef __PLD_CONTEXT_GUARD\n#define __PLD_CONTEXT_GUARD' {} +
           find drivers/staging/qca-wifi-host-cmn -name "pld.h" -exec sed -i '/};/a #endif' {} +
 
-          # --- FIX PINCTRL (Eroarea de tip msm_gpio_is_valid) ---
+          # Fix Pinctrl (Prototip lipsă msm_gpio_is_valid)
           sed -i '/#include <linux\/pinctrl\/pinctrl.h>/a bool msm_gpio_is_valid(int gpionum);' drivers/pinctrl/qcom/pinctrl-msm.c
           
-          # --- FIX SENSORS & DISPLAY (Conflicte de tipuri) ---
+          # Fix Sensors (Redenumire PD în CC)
           sed -i 's/PD_NOTI_ATTACH_TYPEDEF/CC_NOTI_ATTACH_TYPEDEF/g' drivers/sensors/sx9360.c
           sed -i 's/PDIC_NOTIFY_ID_ATTACH/CCIC_NOTIFY_ID_ATTACH/g' drivers/sensors/sx9360.c
+          
+          # Fix Display Debug (Conflict extern vs static)
           find drivers/gpu/drm/msm/samsung -name "ss_dsi_panel_debug.h" -exec sed -i '/extern bool.*_debug_partition/s/^/\/\//' {} +
 
-          # --- FIX BATERIE (Expression not assignable) ---
+          # Fix Baterie (Expression not assignable)
           find drivers/battery_v2 -type f -exec sed -i '/now_isApdo\|num_apdo\|has_apdo/s/^/\/\//' {} +
           sed -i '/POWER_SUPPLY_EXT_PROP_DIRECT_CLEAR_ERR/s/^/\/\//' drivers/battery_v2/sec_battery.c
 
-          # 3. CONFIGURARE (Merge Strategie: R5Q + SM8150 + A70Q Fragment)
+          # 3. CONFIGURARE (Strategia Merge Triple)
           MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
           
+          # Fuzionăm: Baza R5Q + SM8150 Vendor + A70Q Fragment
           ARCH=arm64 ./scripts/kconfig/merge_config.sh -m -O out \
             arch/arm64/configs/r5q_defconfig \
             arch/arm64/configs/vendor/sm8150_defconfig \
             arch/arm64/configs/a70q.config
           
-          # Eliminăm flag-urile de debug care forțează erori în codul Samsung
+          # Dezactivăm manual flag-urile care forțează erori în codul Samsung pe Clang
           ./scripts/config --file out/.config \
-            -d CONFIG_SEC_DEBUG -d CONFIG_BLK_DEV_IO_TRACE \
             -d CONFIG_QCOM_KGSL_CORESIGHT -d CONFIG_CORESIGHT \
+            -d CONFIG_BLK_DEV_IO_TRACE -d CONFIG_SEC_DEBUG \
             -d CONFIG_SECURITY_SMACK -d CONFIG_KSU \
             -d CONFIG_LTO -d CONFIG_LTO_CLANG -e CONFIG_LTO_NONE \
             -e CONFIG_SECTION_MISMATCH_WARN_ONLY
             
           make $MAKE_ARGS olddefconfig
 
-          # 4. COMPILARE
+          # 4. COMPILARE FINALĂ
           KCFLAGS_BASE="-fcommon -w -Wno-error -Wno-format -DPON_RESTART_REASON_CROSS_FAIL=0 -I$(pwd)/out/usr/include"
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="$KCFLAGS_BASE" Image.gz
 
