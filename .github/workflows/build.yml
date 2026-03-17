@@ -1,11 +1,11 @@
-name: Build R5Q Kernel - Final Clean
+name: Build R5Q Kernel - FULL FINAL
 
 on:
   workflow_dispatch:
 
 jobs:
   build:
-    runs-on: ubuntu-22.04   # 🔥 IMPORTANT (evită probleme glibc)
+    runs-on: ubuntu-22.04
 
     steps:
       - name: Checkout Source
@@ -22,7 +22,7 @@ jobs:
           ccache python3 python-is-python3 libarchive-tools wget zstd zip \
           gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi libncurses-dev
 
-      - name: Setup Clang 17 (Modern & Compatible)
+      - name: Setup Clang 17
         run: |
           mkdir clang
           wget -q https://github.com/llvm/llvm-project/releases/download/llvmorg-17.0.6/clang+llvm-17.0.6-x86_64-linux-gnu-ubuntu-22.04.tar.xz
@@ -32,7 +32,23 @@ jobs:
         run: |
           echo -e "#!/bin/bash\necho 0" > scripts/secgetspf
           chmod +x scripts/secgetspf
-          export PATH="$GITHUB_WORKSPACE/scripts:$PATH"
+
+      - name: Add Sec Debug Compatibility Layer
+        run: |
+          mkdir -p include/linux
+          cat << 'EOF' > include/linux/sec_debug_compat.h
+          #pragma once
+
+          #define initcall_sec_debug 0
+
+          static inline int do_one_initcall_sec_debug(void *fn)
+          {
+              return 0;
+          }
+
+          static inline void sec_debug_sched_msg(const char *msg) {}
+          static inline void sec_debug_summary_save_die_info(const char *str, void *regs) {}
+          EOF
 
       - name: Add Minimal Dummy Symbols
         run: |
@@ -54,8 +70,12 @@ jobs:
           set -e
 
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
+          export PATH="$GITHUB_WORKSPACE/scripts:$PATH"
+
           export KBUILD_BUILD_USER="Roynas"
           export KBUILD_BUILD_HOST="GitHub"
+
+          export KCFLAGS="-include linux/sec_debug_compat.h"
 
           MAKE_ARGS="ARCH=arm64 \
             LLVM=1 LLVM_IAS=1 \
@@ -71,10 +91,9 @@ jobs:
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             O=out"
 
-          # Defconfig
+          # CONFIG
           make $MAKE_ARGS r5q_defconfig
 
-          # 🔥 CLEAN CONFIG (bootable focus)
           ./scripts/config --file out/.config \
             -d CONFIG_SEC_DEBUG \
             -d CONFIG_USB_CONFIGFS \
@@ -86,7 +105,7 @@ jobs:
 
           make $MAKE_ARGS olddefconfig
 
-          # Build safe
+          # BUILD
           make -j4 $MAKE_ARGS Image.gz 2>&1 | tee build.log
 
       - name: Package AnyKernel3
@@ -98,7 +117,7 @@ jobs:
             sed -i 's/device.name1=.*/device.name1=r5q/' AnyKernel3/anykernel.sh
 
             cd AnyKernel3
-            zip -r9 ../Kernel-R5Q-Final.zip *
+            zip -r9 ../Kernel-R5Q-FULL.zip *
           else
             echo "Build failed!"
             cat build.log
@@ -108,5 +127,5 @@ jobs:
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-R5Q-Final
-          path: Kernel-R5Q-Final.zip
+          name: Kernel-R5Q-FULL
+          path: Kernel-R5Q-FULL.zip
