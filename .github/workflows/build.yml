@@ -1,4 +1,4 @@
-name: Build Roynas R5Q - Ultra Stable
+name: Build Roynas R5Q - Stable Final
 on:
   workflow_dispatch:
 
@@ -41,15 +41,20 @@ jobs:
           export KBUILD_BUILD_USER="Roynas"
           export KBUILD_BUILD_HOST="StableAction"
 
-          # --- 1. GENERARE HEADERE (Simulare gen_headers_arm64.bp) ---
+          # --- 1. GENERARE HEADERE (Fix pentru eroarea argument mode) ---
           echo "Generând headerele Samsung..."
-          mkdir -p out
-          python3 kernel_headers.py --header_arch arm64 --rel_addr . --out_dir ./out
+          mkdir -p out/gen
+          python3 kernel_headers.py headers \
+            --header_arch arm64 \
+            --gen_dir ./out/gen \
+            --arch_asm_kbuild arch/arm64/include/uapi/asm/Kbuild \
+            --asm_generic_kbuild include/uapi/asm-generic/Kbuild \
+            --arch_include_uapi arch/arm64/include/uapi/linux/Kbuild
 
           # --- 2. FIX-URI CHIRURGICALE SURSĂ ---
-          # Rezolvăm eroarea 'initcall_sec_debug'
+          # Rezolvăm eroarea 'initcall_sec_debug' (main.c)
           sed -i 's/initcall_sec_debug/initcall_debug/g' init/main.c
-          # Fix redefinire event în trace
+          # Fix redefinire event în trace (perf)
           sed -i '0,/struct perf_event \*event;/! s/struct perf_event \*event;/\/\/ duplicat/g' kernel/trace/trace_event_perf.c
           # Fix Audio Techpack (slow_insertion)
           find techpack/audio -name "wcd-mbhc-adc.c" -exec sed -i 's/mbhc->slow_insertion/0/g' {} +
@@ -62,10 +67,10 @@ jobs:
           find ../external_modules/battery_v2 -type f -exec sed -i 's/now_isApdo/0/g' {} +
           find ../external_modules/battery_v2 -type f -exec sed -i 's/num_apdo/0/g' {} +
           find ../external_modules/battery_v2 -type f -exec sed -i 's/has_apdo/0/g' {} +
-          # Comentăm linia problematică psy_do_property (eroarea void*)
+          # Fix pentru macro-ul psy_do_property care cauza eroarea 'void*'
           sed -i 's/psy_do_property.*POWER_SUPPLY_EXT_PROP_DIRECT_CLEAR_ERR.*/\/\/ fix void*/g' ../external_modules/battery_v2/sec_battery.c
 
-          # --- 4. CONFIGURARE KERNEL (User Mode) ---
+          # --- 4. CONFIGURARE KERNEL (User Mode / Stable) ---
           MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
           
           make $MAKE_ARGS r5q_defconfig
@@ -77,12 +82,14 @@ jobs:
             -d CONFIG_DEBUG_FS \
             -d CONFIG_SLUB_DEBUG \
             -d CONFIG_LTO -d CONFIG_LTO_CLANG -e CONFIG_LTO_NONE \
-            -d CONFIG_CC_STACKPROTECTOR_STRONG -e CONFIG_CC_STACKPROTECTOR_NONE
+            -d CONFIG_CC_STACKPROTECTOR_STRONG -e CONFIG_CC_STACKPROTECTOR_NONE \
+            -e CONFIG_SECTION_MISMATCH_WARN_ONLY
             
           make $MAKE_ARGS olddefconfig
 
           # --- 5. COMPILARE KERNEL ---
-          KCFLAGS_BASE="-fcommon -w -Wno-error -DPON_RESTART_REASON_CROSS_FAIL=0 -I$(pwd)/out/usr/include"
+          # Includem calea unde scriptul a generat headerele
+          KCFLAGS_BASE="-fcommon -w -Wno-error -DPON_RESTART_REASON_CROSS_FAIL=0 -I$(pwd)/out/gen/include"
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="$KCFLAGS_BASE" Image.gz
 
           # --- 6. COMPILARE MODUL BATERIE ---
@@ -94,7 +101,7 @@ jobs:
           git clone https://github.com/osm0sis/AnyKernel3.git
           cp kernel/out/arch/arm64/boot/Image.gz AnyKernel3/
           
-          # Injectăm modulele .ko
+          # Injectăm modulele .ko în AnyKernel
           find external_modules/battery_v2 -name "*.ko" -exec cp {} AnyKernel3/ \;
           
           # Configurare AnyKernel3 pentru R5Q
@@ -106,5 +113,5 @@ jobs:
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-R5Q-Result
+          name: Kernel-R5Q-Stable-Result
           path: Kernel-R5Q-Stable-Final.zip
