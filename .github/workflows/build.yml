@@ -1,4 +1,4 @@
-name: Build Roynas R5Q - SM8150 Ultimate Hybrid
+name: Build Roynas R5Q - SM8150 Hybrid Final
 on:
   workflow_dispatch:
 
@@ -37,36 +37,33 @@ jobs:
           # 1. GENERARE HEADERE
           make ARCH=arm64 O=out headers_install
 
-          # 2. FIX-URI SURSĂ
+          # 2. FIX-URI SURSĂ (Samsung Clang Specific)
           sed -i 's/initcall_sec_debug/initcall_debug/g' init/main.c
           sed -i '0,/struct perf_event \*event;/! s/struct perf_event \*event;/\/\/ duplicat/g' kernel/trace/trace_event_perf.c
           
-          # --- FIX DISPLAY DEBUG (Conflict static vs extern) ---
-          # Comentăm declarațiile extern din driverul de ecran care intră în conflict cu sec_debug
+          # Fix Conflict Display Debug (Static vs Extern)
           find drivers/gpu/drm/msm/samsung -name "ss_dsi_panel_debug.h" -exec sed -i '/extern bool.*_debug_partition/s/^/\/\//' {} +
 
-          # --- FIX AUDIO ---
+          # Fix Audio & Touch
           find techpack/audio -name "wcd-mbhc-adc.c" -exec sed -i 's/mbhc->slow_insertion/0/g' {} +
-          
-          # --- FIX TOUCH ---
           find drivers/input/touchscreen -name "*.c" -exec sed -i '/dump_callbacks.inform_dump/s/^/\/\//' {} +
 
-          # --- FIX BATERIE ---
+          # Fix Baterie
           find drivers/battery_v2 -type f -exec sed -i '/now_isApdo/s/^/\/\//' {} +
           find drivers/battery_v2 -type f -exec sed -i '/num_apdo/s/^/\/\//' {} +
           find drivers/battery_v2 -type f -exec sed -i '/has_apdo/s/^/\/\//' {} +
           sed -i '/POWER_SUPPLY_EXT_PROP_DIRECT_CLEAR_ERR/s/^/\/\//' drivers/battery_v2/sec_battery.c
 
-          # 3. CONFIGURARE (Merge Triple)
+          # 3. CONFIGURARE (Merge Strategie: R5Q + SM8150 Vendor + A70Q Fragment)
           MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
           
-          wget -O arch/arm64/configs/a70q_fragment.config https://raw.githubusercontent.com/pascua28/android_kernel_samsung_sm7150/sixteen/arch/arm64/configs/a70q.config
-          
+          # Folosim chiar fișierul indicat de tine pentru a respecta fragmentul original
           scripts/kconfig/merge_config.sh -m -O out \
             arch/arm64/configs/r5q_defconfig \
             arch/arm64/configs/vendor/sm8150_defconfig \
-            arch/arm64/configs/a70q_fragment.config
+            arch/arm64/configs/a70q.config
           
+          # Curățenie flag-uri problematice
           ./scripts/config --file out/.config \
             -d CONFIG_QCOM_KGSL_CORESIGHT \
             -d CONFIG_CORESIGHT \
