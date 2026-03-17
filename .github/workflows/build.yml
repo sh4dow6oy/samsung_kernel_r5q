@@ -33,54 +33,54 @@ jobs:
           export KBUILD_BUILD_HOST="GithubActions"
 
           # --- FIX-URI CHIRURGICALE ---
-          # 1. Trace & Audio
           sed -i '0,/struct perf_event \*event;/! s/struct perf_event \*event;/\/\/ duplicat sters/g' kernel/trace/trace_event_perf.c
           find techpack/audio -name "wcd-mbhc-adc.c" -exec sed -i 's/mbhc->slow_insertion/0/g' {} +
           sed -i '30i bool msm_gpio_is_valid(int gpionum);' drivers/pinctrl/qcom/pinctrl-msm.c
           
-          # 2. ELIMINARE CONFLICTE SAMSUNG (Cea mai importantă parte acum)
-          # Ștergem definițiile care se bat cu stubs-urile noastre din fișierele Samsung
-          find drivers/samsung -name "sec_debug.h" -exec sed -i '/static inline bool sec_debug_is_enabled/,/}/d' {} +
-          find drivers/samsung -name "sec_debug_user_reset.h" -exec sed -i '/static inline void sec_debug_store_bug_string/,/}/d' {} +
-
-          # 3. Pregătire headere
+          # Creăm ierarhia necesară
           mkdir -p include/linux
           find drivers/samsung -name "sec_debug.h" -exec ln -sf ../../{} include/linux/sec_debug.h \;
 
-          # --- STUBS DEFINITIVE (Incorporate) ---
+          # --- FIX DEFINITIV PENTRU REDEFINIRE ---
+          # Creăm un header care folosește MACRO-uri simple în loc de funcții inline.
+          # Macro-urile vor "înghiți" orice declarație ulterioară de funcție cu același nume.
           cat <<EOF > include/linux/sec_debug_stubs.h
           #ifndef _SEC_DEBUG_STUBS_H
           #define _SEC_DEBUG_STUBS_H
-          #include <linux/types.h>
 
-          static inline void sec_debug_set_reboot_reason(int reason) {}
-          static inline int sec_debug_get_reboot_reason(void) { return 0; }
-          static inline int sec_debug_get_p_reason(void) { return 0; }
-          static inline int sec_debug_get_upload_cause(void) { return 0; }
-          static inline void enable_emergency_dload_mode(int en) {}
-          static inline int ois_reset_register(void *p) { return 0; }
-          static inline int sec_kn_register_notifier(void *nb) { return 0; }
-          static inline int manager_notifier_register(void *nb, int type) { return 0; }
-          static inline int manager_notifier_unregister(void *nb) { return 0; }
-          static inline unsigned long manager_hw_param_update(int param) { return 0; }
-          static inline int set_usb_enable_state(int en) { return 0; }
-          static inline int set_usb_enumeration_state(int en) { return 0; }
-          static inline int get_usb_enumeration_state(void) { return 0; }
-          static inline void sec_debug_store_bug_string(const char *file, unsigned bug_line) {}
-          static inline bool sec_debug_is_enabled(void) { return false; }
-          static inline int audio_register_wdsp_state_cb(void *a, void *b) { return 0; }
-          static inline int audio_register_mad_mic_state_cb(void *a, void *b) { return 0; }
-          static inline void* get_wsa_sysfs_ptr(void) { return NULL; }
-          static inline void setSensorCallback(int a, void *b) {}
-          static inline int sec_get_pps_voltage(void) { return 0; }
-          static inline unsigned int is_boot_recovery(void) { return 0; }
-          static inline void accel_factory_init_work(void *w) {}
-          static inline void prox_factory_init_work(void *w) {}
-          static inline const char* scsi_trace_parse_cdb(void *a, void *b, int c) { return ""; }
+          #define sec_debug_set_reboot_reason(...) do {} while (0)
+          #define sec_debug_get_reboot_reason(...) (0)
+          #define sec_debug_get_p_reason(...) (0)
+          #define sec_debug_get_upload_cause(...) (0)
+          #define enable_emergency_dload_mode(...) do {} while (0)
+          #define ois_reset_register(...) (0)
+          #define sec_kn_register_notifier(...) (0)
+          #define manager_notifier_register(...) (0)
+          #define manager_notifier_unregister(...) (0)
+          #define manager_hw_param_update(...) (0)
+          #define set_usb_enable_state(...) (0)
+          #define set_usb_enumeration_state(...) (0)
+          #define get_usb_enumeration_state(...) (0)
+          #define audio_register_wdsp_state_cb(...) (0)
+          #define audio_register_mad_mic_state_cb(...) (0)
+          #define get_wsa_sysfs_ptr(...) (NULL)
+          #define setSensorCallback(...) do {} while (0)
+          #define sec_get_pps_voltage(...) (0)
+          #define is_boot_recovery(...) (0)
+          #define accel_factory_init_work(...) do {} while (0)
+          #define prox_factory_init_work(...) do {} while (0)
+          #define scsi_trace_parse_cdb(...) ""
+          
+          #define sec_debug_store_bug_string(...) do {} while (0)
+          #define sec_debug_is_enabled(...) (false)
+
           #endif
           EOF
 
-          # Injectăm stub-urile la începutul headerului principal
+          # Injectăm stub-ul chiar la începutul fișierului problematic din Samsung
+          # Acest lucru va face ca orice definiție "static inline" ulterioară din acel fișier să fie invalidată de macro-ul nostru
+          find drivers/samsung -name "sec_debug.h" -exec sed -i '1i #include <linux/sec_debug_stubs.h>' {} +
+          find drivers/samsung -name "sec_debug_user_reset.h" -exec sed -i '1i #include <linux/sec_debug_stubs.h>' {} +
           sed -i '1i #include <linux/sec_debug_stubs.h>' include/linux/sec_debug.h
 
           # Dummy secgetspf
