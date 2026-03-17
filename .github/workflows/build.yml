@@ -1,4 +1,4 @@
-name: Build Roynas R5Q - SM8150 Ultimate Hybrid (Verbose)
+name: Build Roynas R5Q - SM8150 Ultimate Hybrid
 on:
   workflow_dispatch:
 
@@ -39,30 +39,23 @@ jobs:
           make ARCH=arm64 O=out headers_install
 
           # 2. FIX-URI SURSĂ (Patch-uri automate prin sed)
+          
+          # --- FIX WIFI (Redefinition of pld_context) ---
+          # Comentăm structura care se re-definește pentru a lăsa doar prima instanță
+          find drivers/net/wireless/qualcomm/wcn39xx -name "pld.h" -exec sed -i '122,130s/^/\/\//' {} +
+
+          # --- TOATE FIX-URILE ANTERIOARE (Pinctrl, Sensors, Display, Battery) ---
           sed -i 's/initcall_sec_debug/initcall_debug/g' init/main.c
           sed -i '0,/struct perf_event \*event;/! s/struct perf_event \*event;/\/\/ duplicat/g' kernel/trace/trace_event_perf.c
-          
-          # Fix Pinctrl (Conflicting types msm_gpio_is_valid)
           sed -i '/#include <linux\/pinctrl\/pinctrl.h>/a bool msm_gpio_is_valid(int gpionum);' drivers/pinctrl/qcom/pinctrl-msm.c
-          
-          # Fix Sensors (Redenumire PD în CC pentru Type-C notifier)
           sed -i 's/PD_NOTI_ATTACH_TYPEDEF/CC_NOTI_ATTACH_TYPEDEF/g' drivers/sensors/sx9360.c
           sed -i 's/PDIC_NOTIFY_ID_ATTACH/CCIC_NOTIFY_ID_ATTACH/g' drivers/sensors/sx9360.c
-          
-          # Fix Display Debug (Conflict static inline vs extern)
           find drivers/gpu/drm/msm/samsung -name "ss_dsi_panel_debug.h" -exec sed -i '/extern bool.*_debug_partition/s/^/\/\//' {} +
-
-          # Fix Audio & Touch
           find techpack/audio -name "wcd-mbhc-adc.c" -exec sed -i 's/mbhc->slow_insertion/0/g' {} +
-          find drivers/input/touchscreen -name "*.c" -exec sed -i '/dump_callbacks.inform_dump/s/^/\/\//' {} +
-
-          # Fix Baterie
           find drivers/battery_v2 -type f -exec sed -i '/now_isApdo\|num_apdo\|has_apdo/s/^/\/\//' {} +
-          sed -i '/POWER_SUPPLY_EXT_PROP_DIRECT_CLEAR_ERR/s/^/\/\//' drivers/battery_v2/sec_battery.c
 
-          # 3. CONFIGURARE (Merge Triple Strategie)
-          # Am adăugat export explicit pentru a asigura că sub-procesele make văd argumentele
-          export MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
+          # 3. CONFIGURARE
+          MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
           
           ARCH=arm64 ./scripts/kconfig/merge_config.sh -m -O out \
             arch/arm64/configs/r5q_defconfig \
@@ -70,20 +63,18 @@ jobs:
             arch/arm64/configs/a70q.config
           
           ./scripts/config --file out/.config \
-            -d CONFIG_QCOM_KGSL_CORESIGHT \
-            -d CONFIG_CORESIGHT \
-            -d CONFIG_BLK_DEV_IO_TRACE \
-            -d CONFIG_SEC_DEBUG \
-            -d CONFIG_SECURITY_SMACK \
-            -d CONFIG_KSU -d CONFIG_KSU_NEXT \
+            -d CONFIG_QCOM_KGSL_CORESIGHT -d CONFIG_CORESIGHT \
+            -d CONFIG_BLK_DEV_IO_TRACE -d CONFIG_SEC_DEBUG \
+            -d CONFIG_SECURITY_SMACK -d CONFIG_KSU \
             -d CONFIG_LTO -d CONFIG_LTO_CLANG -e CONFIG_LTO_NONE \
             -e CONFIG_SECTION_MISMATCH_WARN_ONLY
             
           make $MAKE_ARGS olddefconfig
 
-          # 4. COMPILARE CU VERBOSE MODE ACTIVAT (V=1)
-          KCFLAGS_BASE="-fcommon -w -Wno-error -DPON_RESTART_REASON_CROSS_FAIL=0 -I$(pwd)/out/usr/include"
-          make -j$(nproc --all) $MAKE_ARGS V=1 KCFLAGS="$KCFLAGS_BASE" Image.gz
+          # 4. COMPILARE FINALĂ (Fără V=1 pentru a reduce mărimea log-ului acum că știm eroarea)
+          # Am adăugat -Wno-format pentru a trece de erorile audio de tip printf
+          KCFLAGS_BASE="-fcommon -w -Wno-error -Wno-format -DPON_RESTART_REASON_CROSS_FAIL=0 -I$(pwd)/out/usr/include"
+          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="$KCFLAGS_BASE" Image.gz
 
       - name: Package with AnyKernel3
         run: |
@@ -95,5 +86,5 @@ jobs:
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-R5Q-Hybrid
+          name: Kernel-R5Q-Final
           path: Kernel-R5Q-SM8150-Hybrid.zip
