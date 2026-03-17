@@ -1,4 +1,4 @@
-name: Build Roynas R5Q - Stable Final
+name: Build Roynas R5Q - Pure Source Stable
 on:
   workflow_dispatch:
 
@@ -6,19 +6,12 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Kernel Source
+      - name: Checkout Source
         uses: actions/checkout@v4
         with:
           repository: sh4dow6oy/android_kernel_samsung_sm7150
           ref: sixteen
           path: kernel
-          fetch-depth: 1
-
-      - name: Checkout Drivers (r3q)
-        uses: actions/checkout@v4
-        with:
-          repository: Roynas-Android-Playground/kernel_samsung_r3q
-          path: r3q_source
           fetch-depth: 1
 
       - name: Install Dependencies
@@ -39,65 +32,60 @@ jobs:
           cd kernel
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           export KBUILD_BUILD_USER="Roynas"
-          export KBUILD_BUILD_HOST="StableAction"
+          export KBUILD_BUILD_HOST="PureSource"
 
-          # --- 1. GENERARE HEADERE (Metoda Standard - Fără script Python problematic) ---
-          echo "Generând headerele UAPI..."
+          # 1. GENERARE HEADERE (Metoda Standard)
           make ARCH=arm64 O=out headers_install
 
-          # --- 2. FIX-URI CHIRURGICALE SURSĂ ---
+          # 2. FIX-URI DIRECTE ÎN SURSĂ (Pentru a trece de erorile Samsung)
+          # Rezolvăm eroarea 'initcall_sec_debug'
           sed -i 's/initcall_sec_debug/initcall_debug/g' init/main.c
-          sed -i '0,/struct perf_event \*event;/! s/struct perf_event \*event;/\/\/ duplicat/g' kernel/trace/trace_event_perf.c
-          find techpack/audio -name "wcd-mbhc-adc.c" -exec sed -i 's/mbhc->slow_insertion/0/g' {} +
-
-          # --- 3. PREGĂTIRE DRIVER BATERIE (Extern din r3q) ---
-          mkdir -p ../external_modules
-          cp -r ../r3q_source/drivers/battery_v2 ../external_modules/
           
-          find ../external_modules/battery_v2 -type f -exec sed -i 's/now_isApdo/0/g' {} +
-          find ../external_modules/battery_v2 -type f -exec sed -i 's/num_apdo/0/g' {} +
-          find ../external_modules/battery_v2 -type f -exec sed -i 's/has_apdo/0/g' {} +
-          sed -i 's/psy_do_property.*POWER_SUPPLY_EXT_PROP_DIRECT_CLEAR_ERR.*/\/\/ fix void*/g' ../external_modules/battery_v2/sec_battery.c
+          # Fix redefinire event în trace
+          sed -i '0,/struct perf_event \*event;/! s/struct perf_event \*event;/\/\/ duplicat/g' kernel/trace/trace_event_perf.c
+          
+          # Fix-uri globale pentru membrii lipsă din structura bateriei sursei (APDO Fix)
+          # Aceasta previne erorile "no member named now_isApdo" în compilarea statică
+          echo "Aplicare patch-uri pentru driverul de baterie intern..."
+          find drivers/battery_v2 -type f -exec sed -i 's/battery->pd_list.now_isApdo/0/g' {} +
+          find drivers/battery_v2 -type f -exec sed -i 's/battery->pd_list.num_apdo/0/g' {} +
+          find drivers/battery_v2 -type f -exec sed -i 's/battery->pdic_info.sink_status.has_apdo/0/g' {} +
+          
+          # Fix pentru macro-ul problematic din sec_battery.c (eroarea void*)
+          sed -i 's/psy_do_property.*POWER_SUPPLY_EXT_PROP_DIRECT_CLEAR_ERR.*/\/\/ fix void*/g' drivers/battery_v2/sec_battery.c
 
-          # --- 4. CONFIGURARE KERNEL ---
+          # 3. CONFIGURARE (Merge r5q + a70q fragment pentru SM7150)
           MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
           
-          make $MAKE_ARGS r5q_defconfig
+          wget -O arch/arm64/configs/a70q_fragment.config https://raw.githubusercontent.com/pascua28/android_kernel_samsung_sm7150/sixteen/arch/arm64/configs/a70q.config
           
+          # Fuzionăm r5q_defconfig cu fragmentul a70q
+          scripts/kconfig/merge_config.sh -m -O out arch/arm64/configs/r5q_defconfig arch/arm64/configs/a70q_fragment.config
+          
+          # Optimizări finale și dezactivare SEC_DEBUG
           ./scripts/config --file out/.config \
-            -d CONFIG_BATTERY_SAMSUNG \
-            -d CONFIG_BATTERY_SAMSUNG_V2 \
             -d CONFIG_SEC_DEBUG \
+            -d CONFIG_SECURITY_SMACK \
             -d CONFIG_DEBUG_FS \
-            -d CONFIG_SLUB_DEBUG \
             -d CONFIG_LTO -d CONFIG_LTO_CLANG -e CONFIG_LTO_NONE \
-            -d CONFIG_CC_STACKPROTECTOR_STRONG -e CONFIG_CC_STACKPROTECTOR_NONE \
             -e CONFIG_SECTION_MISMATCH_WARN_ONLY
             
           make $MAKE_ARGS olddefconfig
 
-          # --- 5. COMPILARE KERNEL ---
-          # Folosim calea standard de include generată de headers_install
+          # 4. COMPILARE FINALĂ (Statică)
+          # Toate driverele vor fi incluse în Image.gz
           KCFLAGS_BASE="-fcommon -w -Wno-error -DPON_RESTART_REASON_CROSS_FAIL=0 -I$(pwd)/out/usr/include"
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="$KCFLAGS_BASE" Image.gz
-
-          # --- 6. COMPILARE MODUL BATERIE ---
-          echo "Compilând driverul de baterie ca modul extern..."
-          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="$KCFLAGS_BASE -I$GITHUB_WORKSPACE/external_modules/battery_v2/include" M=$GITHUB_WORKSPACE/external_modules/battery_v2 modules
 
       - name: Package with AnyKernel3
         run: |
           git clone https://github.com/osm0sis/AnyKernel3.git
           cp kernel/out/arch/arm64/boot/Image.gz AnyKernel3/
-          find external_modules/battery_v2 -name "*.ko" -exec cp {} AnyKernel3/ \;
-          
           sed -i 's/device.name1=maguro/device.name1=r5q/g' AnyKernel3/anykernel.sh
-          sed -i 's/device.name2=toro/device.name2=r5qxx/g' AnyKernel3/anykernel.sh
-          
-          cd AnyKernel3 && zip -r9 ../Kernel-R5Q-Stable-Final.zip *
+          cd AnyKernel3 && zip -r9 ../Kernel-R5Q-PureSource.zip *
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-R5Q-Stable-Result
-          path: Kernel-R5Q-Stable-Final.zip
+          name: Kernel-R5Q-Source
+          path: Kernel-R5Q-PureSource.zip
