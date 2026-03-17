@@ -34,9 +34,9 @@ jobs:
 
           # --- FIX-URI CHIRURGICALE ---
           
-          # 1. Fix redefinition of 'event' în kernel/trace/trace_event_perf.c
-          # Ștergem linia 433 DOAR dacă conține declarația duplicat
-          sed -i '431,435s/struct perf_event \*event;//2' kernel/trace/trace_event_perf.c
+          # 1. Fix redefinition of 'event' (Abordare nouă, mai sigură)
+          # Această comandă caută declarația și o comentează pe a doua apariție în tot fișierul
+          sed -i '0,/struct perf_event \*event;/! s/struct perf_event \*event;/\/\/ duplicat sters/g' kernel/trace/trace_event_perf.c
 
           # 2. Fix Pinctrl & Display
           sed -i '30i bool msm_gpio_is_valid(int gpionum);' drivers/pinctrl/qcom/pinctrl-msm.c
@@ -48,7 +48,6 @@ jobs:
           find drivers/samsung -name "sec_debug.h" -exec ln -sf ../../{} include/linux/sec_debug.h \;
           
           # 4. INJECTARE DEFINIȚII (Ocolește eroarea de shell "(" unexpected)
-          # Folosim "do-while(0)" pentru a anula apelurile de funcții fără a strica logica
           {
             echo "#define sec_debug_set_reboot_reason(x) do {} while (0)"
             echo "#define sec_debug_get_reboot_reason() (0)"
