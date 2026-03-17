@@ -1,10 +1,12 @@
-name: Build Roynas R5Q - Neutron Clang Final
+name: Build R5Q Kernel - Bootable
+
 on:
   workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout Source
         uses: actions/checkout@v4
@@ -18,105 +20,80 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y bc build-essential flex bison lz4 libssl-dev libelf-dev \
           ccache python3 python-is-python3 libarchive-tools wget zstd zip \
-          gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi libncurses-dev libtinfo6
+          gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi libncurses-dev
 
-      - name: Setup Neutron Clang
+      - name: Setup Proton Clang
         run: |
-          mkdir clang
-          wget -q https://github.com/Ylarod/setup-ndk-clang/releases/download/prebuilt/clang-linux-x86-ndk-r29-r563880c.tar.zst
-          tar -I zstd -xf clang-linux-x86-ndk-r29-r563880c.tar.zst -C clang
+          git clone --depth=1 https://github.com/kdrag0n/proton-clang.git clang
+
+      - name: Fix secgetspf
+        run: |
+          echo -e "#!/bin/bash\necho 0" > scripts/secgetspf
+          chmod +x scripts/secgetspf
+          export PATH="$GITHUB_WORKSPACE/scripts:$PATH"
 
       - name: Build Kernel
         run: |
+          set -e
+
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           export KBUILD_BUILD_USER="Roynas"
-          export KBUILD_BUILD_HOST="GithubActions"
+          export KBUILD_BUILD_HOST="Github"
 
-          # --- FIX-URI CHIRURGICALE ---
-          sed -i '0,/struct perf_event \*event;/! s/struct perf_event \*event;/\/\/ duplicat sters/g' kernel/trace/trace_event_perf.c
-          find techpack/audio -name "wcd-mbhc-adc.c" -exec sed -i 's/mbhc->slow_insertion/0/g' {} +
-          sed -i '30i bool msm_gpio_is_valid(int gpionum);' drivers/pinctrl/qcom/pinctrl-msm.c
-          
-          # Creăm ierarhia necesară
-          mkdir -p include/linux
-          find drivers/samsung -name "sec_debug.h" -exec ln -sf ../../{} include/linux/sec_debug.h \;
+          MAKE_ARGS="ARCH=arm64 \
+            LLVM=1 LLVM_IAS=1 \
+            CC=clang LD=ld.lld \
+            AR=llvm-ar NM=llvm-nm \
+            OBJCOPY=llvm-objcopy \
+            OBJDUMP=llvm-objdump \
+            STRIP=llvm-strip \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            O=out"
 
-          # --- FIX DEFINITIV PENTRU REDEFINIRE ---
-          # Creăm un header care folosește MACRO-uri simple în loc de funcții inline.
-          # Macro-urile vor "înghiți" orice declarație ulterioară de funcție cu același nume.
-          cat <<EOF > include/linux/sec_debug_stubs.h
-          #ifndef _SEC_DEBUG_STUBS_H
-          #define _SEC_DEBUG_STUBS_H
-
-          #define sec_debug_set_reboot_reason(...) do {} while (0)
-          #define sec_debug_get_reboot_reason(...) (0)
-          #define sec_debug_get_p_reason(...) (0)
-          #define sec_debug_get_upload_cause(...) (0)
-          #define enable_emergency_dload_mode(...) do {} while (0)
-          #define ois_reset_register(...) (0)
-          #define sec_kn_register_notifier(...) (0)
-          #define manager_notifier_register(...) (0)
-          #define manager_notifier_unregister(...) (0)
-          #define manager_hw_param_update(...) (0)
-          #define set_usb_enable_state(...) (0)
-          #define set_usb_enumeration_state(...) (0)
-          #define get_usb_enumeration_state(...) (0)
-          #define audio_register_wdsp_state_cb(...) (0)
-          #define audio_register_mad_mic_state_cb(...) (0)
-          #define get_wsa_sysfs_ptr(...) (NULL)
-          #define setSensorCallback(...) do {} while (0)
-          #define sec_get_pps_voltage(...) (0)
-          #define is_boot_recovery(...) (0)
-          #define accel_factory_init_work(...) do {} while (0)
-          #define prox_factory_init_work(...) do {} while (0)
-          #define scsi_trace_parse_cdb(...) ""
-          
-          #define sec_debug_store_bug_string(...) do {} while (0)
-          #define sec_debug_is_enabled(...) (false)
-
-          #endif
-          EOF
-
-          # Injectăm stub-ul chiar la începutul fișierului problematic din Samsung
-          # Acest lucru va face ca orice definiție "static inline" ulterioară din acel fișier să fie invalidată de macro-ul nostru
-          find drivers/samsung -name "sec_debug.h" -exec sed -i '1i #include <linux/sec_debug_stubs.h>' {} +
-          find drivers/samsung -name "sec_debug_user_reset.h" -exec sed -i '1i #include <linux/sec_debug_stubs.h>' {} +
-          sed -i '1i #include <linux/sec_debug_stubs.h>' include/linux/sec_debug.h
-
-          # Dummy secgetspf
-          echo -e "#!/bin/bash\necho 0" > scripts/secgetspf
-          chmod +x scripts/secgetspf
-
-          # --- ARGUMENTE BUILD ---
-          MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
-
-          # --- CONFIGURARE ---
+          # Defconfig
           make $MAKE_ARGS r5q_defconfig
+
+          # 🔥 CURĂȚARE REALĂ (important)
           ./scripts/config --file out/.config \
-            -d CONFIG_LTO -d CONFIG_LTO_CLANG -e CONFIG_LTO_NONE \
-            -d CONFIG_CC_STACKPROTECTOR_STRONG -e CONFIG_CC_STACKPROTECTOR_NONE \
-            -d CONFIG_SECURITY_SMACK -d CONFIG_SEC_DEBUG -e CONFIG_SECTION_MISMATCH_WARN_ONLY
+            -d CONFIG_SEC_DEBUG \
+            -d CONFIG_SEC_DEBUG_EXTRA_INFO \
+            -d CONFIG_USB_CONFIGFS \
+            -d CONFIG_USB_G_ANDROID \
+            -d CONFIG_SAMSUNG_BATTERY \
+            -d CONFIG_BATTERY_SAMSUNG \
+            -d CONFIG_MOTOR \
+            -d CONFIG_ADSP_FACTORY \
+            -d CONFIG_QCOM_WCD934X \
+            -d CONFIG_SND_SOC_WCD_MBHC \
+            -d CONFIG_SND_SOC_SAMSUNG \
+            -d CONFIG_SEC_SYSFS \
+            -d CONFIG_SEC_FACTORY \
+            -e CONFIG_SECTION_MISMATCH_WARN_ONLY
+
           make $MAKE_ARGS olddefconfig
 
-          # --- COMPILARE FINALĂ ---
-          KCFLAGS_CLEAN="-fcommon -w -Wno-error -Dinitcall_sec_debug=initcall_debug -DPON_RESTART_REASON_CROSS_FAIL=0 -DPD_NOTI_ATTACH_TYPEDEF=CC_NOTI_ATTACH_TYPEDEF -DPDIC_NOTIFY_ID_ATTACH=CCIC_NOTIFY_ID_ATTACH -DSEC_DEBUG_MODEM_SEPARATE_EN=0"
-          
-          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="$KCFLAGS_CLEAN" Image.gz
+          # 🔥 BUILD SAFE
+          make -j4 $MAKE_ARGS Image.gz 2>&1 | tee build.log
 
-      - name: Package with AnyKernel3
+      - name: Package AnyKernel3
         run: |
           if [ -f out/arch/arm64/boot/Image.gz ]; then
             git clone https://github.com/osm0sis/AnyKernel3.git
             cp out/arch/arm64/boot/Image.gz AnyKernel3/
-            sed -i 's/device.name1=maguro/device.name1=r5q/g' AnyKernel3/anykernel.sh
-            cd AnyKernel3 && zip -r9 ../Kernel-S10Lite-R5Q-Final.zip *
+
+            sed -i 's/device.name1=.*/device.name1=r5q/' AnyKernel3/anykernel.sh
+
+            cd AnyKernel3
+            zip -r9 ../Kernel-R5Q-Bootable.zip *
           else
-            echo "EROARE: Image.gz nu a fost generat!"
+            echo "Build failed!"
+            cat build.log
             exit 1
           fi
 
-      - name: Upload Artifact
+      - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-S10Lite-Final
-          path: Kernel-S10Lite-R5Q-Final.zip
+          name: Kernel-R5Q-Bootable
+          path: Kernel-R5Q-Bootable.zip
