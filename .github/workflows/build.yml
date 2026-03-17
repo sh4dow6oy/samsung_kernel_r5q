@@ -37,16 +37,17 @@ jobs:
           find techpack/audio -name "wcd-mbhc-adc.c" -exec sed -i 's/mbhc->slow_insertion/0/g' {} +
           sed -i '30i bool msm_gpio_is_valid(int gpionum);' drivers/pinctrl/qcom/pinctrl-msm.c
           
-          # Pregatire headere Samsung
           mkdir -p include/linux
           find drivers/samsung -name "sec_debug.h" -exec ln -sf ../../{} include/linux/sec_debug.h \;
 
-          # --- SOLUȚIE DEFINITIVĂ PENTRU SIMBOLURI LIPSĂ (STUBS INLINE) ---
-          # Ștergem conținutul vechi și injectăm funcții reale care returnează 0
+          # --- STUBS CU VERIFICARE (IFNDEF) ---
+          # Această metodă previne erorile "conflicting types"
           cat <<EOF > include/linux/sec_debug_stubs.h
           #ifndef _SEC_DEBUG_STUBS_H
           #define _SEC_DEBUG_STUBS_H
           #include <linux/types.h>
+
+          #ifndef __SEC_DEBUG_STUBS_DEFINED
           static inline void sec_debug_set_reboot_reason(int reason) {}
           static inline int sec_debug_get_reboot_reason(void) { return 0; }
           static inline int sec_debug_get_p_reason(void) { return 0; }
@@ -60,7 +61,11 @@ jobs:
           static inline int set_usb_enable_state(int en) { return 0; }
           static inline int set_usb_enumeration_state(int en) { return 0; }
           static inline int get_usb_enumeration_state(void) { return 0; }
-          static inline void sec_debug_store_bug_string(char *s) {}
+          
+          // Fix pentru conflicting types: folosim denumiri care sa nu se bata cu Samsung daca sunt deja definite
+          #define sec_debug_store_bug_string(file, line) do {} while (0)
+          #define sec_debug_is_enabled() (false)
+          
           static inline int audio_register_wdsp_state_cb(void *a, void *b) { return 0; }
           static inline int audio_register_mad_mic_state_cb(void *a, void *b) { return 0; }
           static inline void* get_wsa_sysfs_ptr(void) { return NULL; }
@@ -70,12 +75,12 @@ jobs:
           static inline void accel_factory_init_work(void *w) {}
           static inline void prox_factory_init_work(void *w) {}
           static inline const char* scsi_trace_parse_cdb(void *a, void *b, int c) { return ""; }
-          static inline int sec_debug_is_enabled(void) { return 0; }
+          #endif
           #endif
           EOF
 
-          # Injectăm header-ul nostru în vmlinux.h sau un header global
-          echo "#include <linux/sec_debug_stubs.h>" >> include/linux/sec_debug.h
+          # Injectăm la începutul headerului samsung
+          sed -i '1i #include <linux/sec_debug_stubs.h>' include/linux/sec_debug.h
 
           # Dummy secgetspf
           echo -e "#!/bin/bash\necho 0" > scripts/secgetspf
@@ -93,7 +98,6 @@ jobs:
           make $MAKE_ARGS olddefconfig
 
           # --- COMPILARE FINALĂ ---
-          # Adaugam -Dinitcall_sec_debug=initcall_debug pentru a rezolva problema cu macro-ul Samsung original
           KCFLAGS_CLEAN="-fcommon -w -Wno-error -Dinitcall_sec_debug=initcall_debug -DPON_RESTART_REASON_CROSS_FAIL=0 -DPD_NOTI_ATTACH_TYPEDEF=CC_NOTI_ATTACH_TYPEDEF -DPDIC_NOTIFY_ID_ATTACH=CCIC_NOTIFY_ID_ATTACH -DSEC_DEBUG_MODEM_SEPARATE_EN=0"
           
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="$KCFLAGS_CLEAN" Image.gz
