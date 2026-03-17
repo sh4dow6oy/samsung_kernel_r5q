@@ -1,4 +1,4 @@
-name: Build Roynas R5Q - Final Stable
+name: Build Roynas R5Q - Ultra Stable
 on:
   workflow_dispatch:
 
@@ -6,7 +6,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Source
+      - name: Checkout Kernel Source
         uses: actions/checkout@v4
         with:
           repository: sh4dow6oy/android_kernel_samsung_sm7150
@@ -39,33 +39,37 @@ jobs:
           cd kernel
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           export KBUILD_BUILD_USER="Roynas"
-          export KBUILD_BUILD_HOST="StableBuild"
+          export KBUILD_BUILD_HOST="StableAction"
 
-          # 1. FIX-URI CHIRURGICALE SURSĂ
-          # Fix initcall_sec_debug (Eroarea din main.c)
+          # --- 1. GENERARE HEADERE (Simulare gen_headers_arm64.bp) ---
+          echo "Generând headerele Samsung..."
+          mkdir -p out
+          python3 kernel_headers.py --header_arch arm64 --rel_addr . --out_dir ./out
+
+          # --- 2. FIX-URI CHIRURGICALE SURSĂ ---
+          # Rezolvăm eroarea 'initcall_sec_debug'
           sed -i 's/initcall_sec_debug/initcall_debug/g' init/main.c
-          
           # Fix redefinire event în trace
           sed -i '0,/struct perf_event \*event;/! s/struct perf_event \*event;/\/\/ duplicat/g' kernel/trace/trace_event_perf.c
-          
-          # Fix Audio Techpack (slow_insertion missing)
+          # Fix Audio Techpack (slow_insertion)
           find techpack/audio -name "wcd-mbhc-adc.c" -exec sed -i 's/mbhc->slow_insertion/0/g' {} +
 
-          # 2. PREGĂTIRE DRIVERE EXTERNE (Baterie)
-          # Mutăm bateria din r3q într-un folder extern pentru a evita conflictele statice
+          # --- 3. PREGĂTIRE DRIVER BATERIE (Extern din r3q) ---
           mkdir -p ../external_modules
           cp -r ../r3q_source/drivers/battery_v2 ../external_modules/
           
-          # Fix-uri automate pentru structura bateriei în modulul extern
-          find ../external_modules/battery_v2 -type f -exec sed -i 's/battery->pd_list.now_isApdo/0/g' {} +
-          find ../external_modules/battery_v2 -type f -exec sed -i 's/battery->pd_list.num_apdo/0/g' {} +
-          find ../external_modules/battery_v2 -type f -exec sed -i 's/battery->pdic_info.sink_status.has_apdo/0/g' {} +
+          # Fix-uri automate pentru structura bateriei în modulul extern (APDO fix)
+          find ../external_modules/battery_v2 -type f -exec sed -i 's/now_isApdo/0/g' {} +
+          find ../external_modules/battery_v2 -type f -exec sed -i 's/num_apdo/0/g' {} +
+          find ../external_modules/battery_v2 -type f -exec sed -i 's/has_apdo/0/g' {} +
+          # Comentăm linia problematică psy_do_property (eroarea void*)
+          sed -i 's/psy_do_property.*POWER_SUPPLY_EXT_PROP_DIRECT_CLEAR_ERR.*/\/\/ fix void*/g' ../external_modules/battery_v2/sec_battery.c
 
-          # 3. ARGUMENTE BUILD
+          # --- 4. CONFIGURARE KERNEL (User Mode) ---
           MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
-
-          # 4. CONFIGURARE (Mod "User" / Stable)
+          
           make $MAKE_ARGS r5q_defconfig
+          
           ./scripts/config --file out/.config \
             -d CONFIG_BATTERY_SAMSUNG \
             -d CONFIG_BATTERY_SAMSUNG_V2 \
@@ -74,13 +78,14 @@ jobs:
             -d CONFIG_SLUB_DEBUG \
             -d CONFIG_LTO -d CONFIG_LTO_CLANG -e CONFIG_LTO_NONE \
             -d CONFIG_CC_STACKPROTECTOR_STRONG -e CONFIG_CC_STACKPROTECTOR_NONE
+            
           make $MAKE_ARGS olddefconfig
 
-          # 5. COMPILARE KERNEL
-          KCFLAGS_BASE="-fcommon -w -Wno-error -DPON_RESTART_REASON_CROSS_FAIL=0"
+          # --- 5. COMPILARE KERNEL ---
+          KCFLAGS_BASE="-fcommon -w -Wno-error -DPON_RESTART_REASON_CROSS_FAIL=0 -I$(pwd)/out/usr/include"
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="$KCFLAGS_BASE" Image.gz
 
-          # 6. COMPILARE MODUL EXTERN (Baterie)
+          # --- 6. COMPILARE MODUL BATERIE ---
           echo "Compilând driverul de baterie ca modul extern..."
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="$KCFLAGS_BASE -I$GITHUB_WORKSPACE/external_modules/battery_v2/include" M=$GITHUB_WORKSPACE/external_modules/battery_v2 modules
 
@@ -89,17 +94,17 @@ jobs:
           git clone https://github.com/osm0sis/AnyKernel3.git
           cp kernel/out/arch/arm64/boot/Image.gz AnyKernel3/
           
-          # Colectăm toate modulele .ko generate
+          # Injectăm modulele .ko
           find external_modules/battery_v2 -name "*.ko" -exec cp {} AnyKernel3/ \;
           
           # Configurare AnyKernel3 pentru R5Q
           sed -i 's/device.name1=maguro/device.name1=r5q/g' AnyKernel3/anykernel.sh
           sed -i 's/device.name2=toro/device.name2=r5qxx/g' AnyKernel3/anykernel.sh
           
-          cd AnyKernel3 && zip -r9 ../Kernel-R5Q-Stable.zip *
+          cd AnyKernel3 && zip -r9 ../Kernel-R5Q-Stable-Final.zip *
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-R5Q-Stable
-          path: Kernel-R5Q-Stable.zip
+          name: Kernel-R5Q-Result
+          path: Kernel-R5Q-Stable-Final.zip
