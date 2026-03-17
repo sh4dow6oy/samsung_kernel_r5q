@@ -33,52 +33,51 @@ jobs:
           export KBUILD_BUILD_HOST="GithubActions"
 
           # --- FIX-URI CHIRURGICALE ---
-          
-          # 1. Fix redefinition of 'event'
           sed -i '0,/struct perf_event \*event;/! s/struct perf_event \*event;/\/\/ duplicat sters/g' kernel/trace/trace_event_perf.c
-          
-          # 2. Fix Audio & Pinctrl
           find techpack/audio -name "wcd-mbhc-adc.c" -exec sed -i 's/mbhc->slow_insertion/0/g' {} +
           sed -i '30i bool msm_gpio_is_valid(int gpionum);' drivers/pinctrl/qcom/pinctrl-msm.c
           
-          # 3. Comentăm declarațiile extern din sec_battery.c care fac conflict cu macro-urile
-          sed -i 's/extern bool get_usb_enumeration_state/\/\/ extern bool get_usb_enumeration_state/g' drivers/battery_v2/sec_battery.c
-          sed -i 's/extern int manager_notifier_register/\/\/ extern int manager_notifier_register/g' drivers/battery_v2/sec_battery.c
-
-          # 4. Pregătire headere
+          # Pregatire headere Samsung
           mkdir -p include/linux
           find drivers/samsung -name "sec_debug.h" -exec ln -sf ../../{} include/linux/sec_debug.h \;
 
-          # --- INJECTARE MASIVA DE STUBS (VARIADIC) ---
-          # Folosim "..." pentru a accepta orice numar de argumente
-          {
-            echo "#define sec_debug_set_reboot_reason(...) do {} while (0)"
-            echo "#define sec_debug_get_reboot_reason(...) (0)"
-            echo "#define sec_debug_get_p_reason(...) (0)"
-            echo "#define sec_debug_get_upload_cause(...) (0)"
-            echo "#define enable_emergency_dload_mode(...) do {} while (0)"
-            echo "#define ois_reset_register(...) (0)"
-            echo "#define sec_kn_register_notifier(...) (0)"
-            echo "#define manager_notifier_register(...) (0)"
-            echo "#define manager_notifier_unregister(...) (0)"
-            echo "#define manager_hw_param_update(...) (0)"
-            echo "#define set_usb_enable_state(...) (0)"
-            echo "#define set_usb_enumeration_state(...) (0)"
-            echo "#define get_usb_enumeration_state(...) (0)"
-            echo "#define sec_debug_store_bug_string(...) do {} while (0)"
-            echo "#define audio_register_wdsp_state_cb(...) (0)"
-            echo "#define audio_register_mad_mic_state_cb(...) (0)"
-            echo "#define get_wsa_sysfs_ptr(...) (NULL)"
-            echo "#define setSensorCallback(...) do {} while (0)"
-            echo "#define sec_get_pps_voltage(...) (0)"
-            echo "#define is_boot_recovery(...) (0)"
-            echo "#define accel_factory_init_work(...) do {} while (0)"
-            echo "#define prox_factory_init_work(...) do {} while (0)"
-            echo "#define scsi_trace_parse_cdb(...) \"\""
-            echo "#define sec_debug_is_enabled(...) (0)"
-          } >> include/linux/sec_debug.h
+          # --- SOLUȚIE DEFINITIVĂ PENTRU SIMBOLURI LIPSĂ (STUBS INLINE) ---
+          # Ștergem conținutul vechi și injectăm funcții reale care returnează 0
+          cat <<EOF > include/linux/sec_debug_stubs.h
+          #ifndef _SEC_DEBUG_STUBS_H
+          #define _SEC_DEBUG_STUBS_H
+          #include <linux/types.h>
+          static inline void sec_debug_set_reboot_reason(int reason) {}
+          static inline int sec_debug_get_reboot_reason(void) { return 0; }
+          static inline int sec_debug_get_p_reason(void) { return 0; }
+          static inline int sec_debug_get_upload_cause(void) { return 0; }
+          static inline void enable_emergency_dload_mode(int en) {}
+          static inline int ois_reset_register(void *p) { return 0; }
+          static inline int sec_kn_register_notifier(void *nb) { return 0; }
+          static inline int manager_notifier_register(void *nb, int type) { return 0; }
+          static inline int manager_notifier_unregister(void *nb) { return 0; }
+          static inline unsigned long manager_hw_param_update(int param) { return 0; }
+          static inline int set_usb_enable_state(int en) { return 0; }
+          static inline int set_usb_enumeration_state(int en) { return 0; }
+          static inline int get_usb_enumeration_state(void) { return 0; }
+          static inline void sec_debug_store_bug_string(char *s) {}
+          static inline int audio_register_wdsp_state_cb(void *a, void *b) { return 0; }
+          static inline int audio_register_mad_mic_state_cb(void *a, void *b) { return 0; }
+          static inline void* get_wsa_sysfs_ptr(void) { return NULL; }
+          static inline void setSensorCallback(int a, void *b) {}
+          static inline int sec_get_pps_voltage(void) { return 0; }
+          static inline unsigned int is_boot_recovery(void) { return 0; }
+          static inline void accel_factory_init_work(void *w) {}
+          static inline void prox_factory_init_work(void *w) {}
+          static inline const char* scsi_trace_parse_cdb(void *a, void *b, int c) { return ""; }
+          static inline int sec_debug_is_enabled(void) { return 0; }
+          #endif
+          EOF
 
-          # 5. Dummy secgetspf
+          # Injectăm header-ul nostru în vmlinux.h sau un header global
+          echo "#include <linux/sec_debug_stubs.h>" >> include/linux/sec_debug.h
+
+          # Dummy secgetspf
           echo -e "#!/bin/bash\necho 0" > scripts/secgetspf
           chmod +x scripts/secgetspf
 
@@ -94,7 +93,9 @@ jobs:
           make $MAKE_ARGS olddefconfig
 
           # --- COMPILARE FINALĂ ---
+          # Adaugam -Dinitcall_sec_debug=initcall_debug pentru a rezolva problema cu macro-ul Samsung original
           KCFLAGS_CLEAN="-fcommon -w -Wno-error -Dinitcall_sec_debug=initcall_debug -DPON_RESTART_REASON_CROSS_FAIL=0 -DPD_NOTI_ATTACH_TYPEDEF=CC_NOTI_ATTACH_TYPEDEF -DPDIC_NOTIFY_ID_ATTACH=CCIC_NOTIFY_ID_ATTACH -DSEC_DEBUG_MODEM_SEPARATE_EN=0"
+          
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="$KCFLAGS_CLEAN" Image.gz
 
       - name: Package with AnyKernel3
