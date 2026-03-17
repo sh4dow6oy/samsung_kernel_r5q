@@ -46,18 +46,17 @@ jobs:
           cp -r ../r3q_source/drivers/battery_v2 drivers/
           cp -r ../r3q_source/drivers/samsung drivers/
           
-          # --- 2. FIX-URI PENTRU STRUCTURILE BATERIEI (APDO Fix) ---
-          # Inlocuim referintele la membrii lipsa cu 0 pentru a trece de compilare
-          # Acesta este un fix rapid pentru 'no member named now_isApdo/num_apdo/has_apdo'
+          # --- 2. FIX-URI AGRESIVE BATERIE (sec_battery.c) ---
+          # Ștergem/Comentăm referințele la membrii lipsă
           sed -i 's/battery->pd_list.now_isApdo/0/g' drivers/battery_v2/sec_battery.c
           sed -i 's/battery->pd_list.num_apdo/0/g' drivers/battery_v2/sec_battery.c
           sed -i 's/battery->pdic_info.sink_status.has_apdo/0/g' drivers/battery_v2/sec_battery.c
           
-          # Rezolvam eroarea 'use of undeclared identifier val' de la linia 8609
-          # De obicei este un pointer catre o variabila de tip union power_supply_propval
-          sed -i '8609s/, val);/, NULL);/' drivers/battery_v2/sec_battery.c
+          # FIX PENTRU EROAREA psy_do_property (Liniile 8608-8609)
+          # Comentăm întregul apel care cauzează eroarea de tip "void *"
+          sed -i '8608,8609s/^/\/\//' drivers/battery_v2/sec_battery.c
 
-          # --- 3. IMPORT HEADERE SI SYNC ---
+          # --- 3. SINCRONIZARE HEADERE ---
           mkdir -p include/linux/usb/manager/
           mkdir -p include/linux/ccic/
           cp -rn ../r3q_source/include/linux/* include/linux/
@@ -83,8 +82,7 @@ jobs:
             -d CONFIG_SECURITY_SMACK -d CONFIG_SEC_DEBUG -e CONFIG_SECTION_MISMATCH_WARN_ONLY
           make $MAKE_ARGS olddefconfig
 
-          # --- 7. COMPILARE FINALĂ ---
-          # Adaugam calea driverului de baterie la include-uri pentru a forta folosirea headerelor locale
+          # --- 7. COMPILARE ---
           KCFLAGS_CLEAN="-fcommon -w -Wno-error -Idrivers/battery_v2/include -Dinitcall_sec_debug=initcall_debug -DPON_RESTART_REASON_CROSS_FAIL=0 -DPD_NOTI_ATTACH_TYPEDEF=CC_NOTI_ATTACH_TYPEDEF -DPDIC_NOTIFY_ID_ATTACH=CCIC_NOTIFY_ID_ATTACH -DSEC_DEBUG_MODEM_SEPARATE_EN=0"
           
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="$KCFLAGS_CLEAN" Image.gz
