@@ -40,17 +40,20 @@ jobs:
 
           # 2. FIX-URI SURSĂ (Patch-uri automate prin sed)
           
-          # Fix Initcall (Eroarea undeclared 'initcall_sec_debug')
+          # Fix Initcall (Eroarea initcall_sec_debug)
           sed -i 's/initcall_sec_debug/initcall_debug/g' init/main.c
           
-          # Fix Perf Event (Duplicat în kernel/trace)
+          # Fix Perf Event (Duplicat kernel/trace)
           sed -i '0,/struct perf_event \*event;/! s/struct perf_event \*event;/\/\/ duplicat/g' kernel/trace/trace_event_perf.c
           
-          # Fix Wi-Fi / PLD (Garda de protecție pentru redefinire pld_context)
+          # Fix Imagis Touch (Incomplete definition tsp_dump_callbacks)
+          find drivers/input/touchscreen/imagis_40xx -name "ist40xx.c" -exec sed -i '/dump_callbacks.inform_dump/s/^/\/\//' {} +
+
+          # Fix Wi-Fi / PLD (Garda de protecție redefinire pld_context)
           find drivers/staging/qca-wifi-host-cmn -name "pld.h" -exec sed -i '/struct pld_context {/i #ifndef __PLD_CONTEXT_GUARD\n#define __PLD_CONTEXT_GUARD' {} +
           find drivers/staging/qca-wifi-host-cmn -name "pld.h" -exec sed -i '/};/a #endif' {} +
 
-          # Fix Pinctrl (Prototip lipsă msm_gpio_is_valid)
+          # Fix Pinctrl (Prototip msm_gpio_is_valid)
           sed -i '/#include <linux\/pinctrl\/pinctrl.h>/a bool msm_gpio_is_valid(int gpionum);' drivers/pinctrl/qcom/pinctrl-msm.c
           
           # Fix Sensors (Redenumire PD în CC)
@@ -60,20 +63,18 @@ jobs:
           # Fix Display Debug (Conflict extern vs static)
           find drivers/gpu/drm/msm/samsung -name "ss_dsi_panel_debug.h" -exec sed -i '/extern bool.*_debug_partition/s/^/\/\//' {} +
 
-          # Fix Baterie (Expression not assignable)
+          # Fix Baterie
           find drivers/battery_v2 -type f -exec sed -i '/now_isApdo\|num_apdo\|has_apdo/s/^/\/\//' {} +
           sed -i '/POWER_SUPPLY_EXT_PROP_DIRECT_CLEAR_ERR/s/^/\/\//' drivers/battery_v2/sec_battery.c
 
-          # 3. CONFIGURARE (Strategia Merge Triple)
+          # 3. CONFIGURARE
           MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
           
-          # Fuzionăm: Baza R5Q + SM8150 Vendor + A70Q Fragment
           ARCH=arm64 ./scripts/kconfig/merge_config.sh -m -O out \
             arch/arm64/configs/r5q_defconfig \
             arch/arm64/configs/vendor/sm8150_defconfig \
             arch/arm64/configs/a70q.config
           
-          # Dezactivăm manual flag-urile care forțează erori în codul Samsung pe Clang
           ./scripts/config --file out/.config \
             -d CONFIG_QCOM_KGSL_CORESIGHT -d CONFIG_CORESIGHT \
             -d CONFIG_BLK_DEV_IO_TRACE -d CONFIG_SEC_DEBUG \
@@ -92,7 +93,7 @@ jobs:
           git clone https://github.com/osm0sis/AnyKernel3.git
           cp kernel/out/arch/arm64/boot/Image.gz AnyKernel3/
           sed -i 's/device.name1=maguro/device.name1=r5q/g' AnyKernel3/anykernel.sh
-          cd AnyKernel3 && zip -r9 ../Kernel-R5Q-SM8150-Hybrid.zip *
+          cd AnyKernel3 && zip -r9 ../Kernel-R5Q-SM8150-Final.zip *
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
