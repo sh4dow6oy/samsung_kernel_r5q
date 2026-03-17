@@ -41,8 +41,11 @@ jobs:
           sed -i 's/initcall_sec_debug/initcall_debug/g' init/main.c
           sed -i '0,/struct perf_event \*event;/! s/struct perf_event \*event;/\/\/ duplicat/g' kernel/trace/trace_event_perf.c
           
+          # --- FIX SENSORS (Redenumire PD în CC pentru Type-C) ---
+          sed -i 's/PD_NOTI_ATTACH_TYPEDEF/CC_NOTI_ATTACH_TYPEDEF/g' drivers/sensors/sx9360.c
+          sed -i 's/PDIC_NOTIFY_ID_ATTACH/CCIC_NOTIFY_ID_ATTACH/g' drivers/sensors/sx9360.c
+
           # --- FIX PINCTRL (Conflicting types msm_gpio_is_valid) ---
-          # Injectăm prototipul funcției după include-uri pentru a evita implicit declaration
           sed -i '/#include <linux\/pinctrl\/pinctrl.h>/a bool msm_gpio_is_valid(int gpionum);' drivers/pinctrl/qcom/pinctrl-msm.c
 
           # --- FIX DISPLAY DEBUG (Conflict static vs extern) ---
@@ -58,7 +61,7 @@ jobs:
           find drivers/battery_v2 -type f -exec sed -i '/has_apdo/s/^/\/\//' {} +
           sed -i '/POWER_SUPPLY_EXT_PROP_DIRECT_CLEAR_ERR/s/^/\/\//' drivers/battery_v2/sec_battery.c
 
-          # 3. CONFIGURARE (Merge Strategie: R5Q + SM8150 Vendor + A70Q Fragment)
+          # 3. CONFIGURARE (R5Q + SM8150 Vendor + A70Q Fragment)
           MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
           
           scripts/kconfig/merge_config.sh -m -O out \
