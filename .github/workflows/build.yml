@@ -34,41 +34,46 @@ jobs:
           export KBUILD_BUILD_USER="Roynas"
           export KBUILD_BUILD_HOST="S10Lite-Hybrid"
 
-          # 1. GENERARE HEADERE
-          make ARCH=arm64 O=out headers_install
+          # 1. PREGĂTIRE DIRECTOR ȘI HEADERE
+          mkdir -p out
+          [cite_start]make ARCH=arm64 O=out headers_install [cite: 1]
 
-          # 2. FIX-URI SURSĂ
+          # 2. FIX-URI SURSĂ (Patch-uri automate prin sed)
+          # Fix Initcall
           sed -i 's/initcall_sec_debug/initcall_debug/g' init/main.c
+          
+          # Fix Perf Event (Duplicat)
           sed -i '0,/struct perf_event \*event;/! s/struct perf_event \*event;/\/\/ duplicat/g' kernel/trace/trace_event_perf.c
           
-          # --- FIX SENSORS (Redenumire PD în CC pentru Type-C) ---
+          # Fix Pinctrl (Conflicting types msm_gpio_is_valid)
+          # Injectăm prototipul funcției pentru a preveni declararea implicită de tip int
+          sed -i '/#include <linux\/pinctrl\/pinctrl.h>/a bool msm_gpio_is_valid(int gpionum);' drivers/pinctrl/qcom/pinctrl-msm.c
+          
+          # Fix Sensors (Redenumire PD în CC pentru Type-C notifier)
           sed -i 's/PD_NOTI_ATTACH_TYPEDEF/CC_NOTI_ATTACH_TYPEDEF/g' drivers/sensors/sx9360.c
           sed -i 's/PDIC_NOTIFY_ID_ATTACH/CCIC_NOTIFY_ID_ATTACH/g' drivers/sensors/sx9360.c
-
-          # --- FIX PINCTRL (Conflicting types msm_gpio_is_valid) ---
-          sed -i '/#include <linux\/pinctrl\/pinctrl.h>/a bool msm_gpio_is_valid(int gpionum);' drivers/pinctrl/qcom/pinctrl-msm.c
-
-          # --- FIX DISPLAY DEBUG (Conflict static vs extern) ---
+          
+          # Fix Display Debug (Conflict static inline vs extern)
           find drivers/gpu/drm/msm/samsung -name "ss_dsi_panel_debug.h" -exec sed -i '/extern bool.*_debug_partition/s/^/\/\//' {} +
 
-          # --- FIX AUDIO & TOUCH ---
+          # Fix Audio & Touch
           find techpack/audio -name "wcd-mbhc-adc.c" -exec sed -i 's/mbhc->slow_insertion/0/g' {} +
           find drivers/input/touchscreen -name "*.c" -exec sed -i '/dump_callbacks.inform_dump/s/^/\/\//' {} +
 
-          # --- FIX BATERIE ---
-          find drivers/battery_v2 -type f -exec sed -i '/now_isApdo/s/^/\/\//' {} +
-          find drivers/battery_v2 -type f -exec sed -i '/num_apdo/s/^/\/\//' {} +
-          find drivers/battery_v2 -type f -exec sed -i '/has_apdo/s/^/\/\//' {} +
+          # Fix Baterie (Comentăm liniile care cauzează "expression is not assignable")
+          find drivers/battery_v2 -type f -exec sed -i '/now_isApdo\|num_apdo\|has_apdo/s/^/\/\//' {} +
           sed -i '/POWER_SUPPLY_EXT_PROP_DIRECT_CLEAR_ERR/s/^/\/\//' drivers/battery_v2/sec_battery.c
 
-          # 3. CONFIGURARE (R5Q + SM8150 Vendor + A70Q Fragment)
+          # 3. CONFIGURARE (Merge Triple Strategie)
           MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
           
-          scripts/kconfig/merge_config.sh -m -O out \
+          # Fuzionăm baza R5Q cu Vendor SM8150 și fragmentul specific A70Q
+          ARCH=arm64 ./scripts/kconfig/merge_config.sh -m -O out \
             arch/arm64/configs/r5q_defconfig \
             arch/arm64/configs/vendor/sm8150_defconfig \
-            arch/arm64/configs/a70q.config
+            [cite_start]arch/arm64/configs/a70q.config [cite: 8]
           
+          # Dezactivăm modulele problematice care cauzează erori de re-declarație sau tipuri de date
           ./scripts/config --file out/.config \
             -d CONFIG_QCOM_KGSL_CORESIGHT \
             -d CONFIG_CORESIGHT \
@@ -79,7 +84,7 @@ jobs:
             -d CONFIG_LTO -d CONFIG_LTO_CLANG -e CONFIG_LTO_NONE \
             -e CONFIG_SECTION_MISMATCH_WARN_ONLY
             
-          make $MAKE_ARGS olddefconfig
+          [cite_start]make $MAKE_ARGS olddefconfig [cite: 1]
 
           # 4. COMPILARE
           KCFLAGS_BASE="-fcommon -w -Wno-error -DPON_RESTART_REASON_CROSS_FAIL=0 -I$(pwd)/out/usr/include"
@@ -90,10 +95,10 @@ jobs:
           git clone https://github.com/osm0sis/AnyKernel3.git
           cp kernel/out/arch/arm64/boot/Image.gz AnyKernel3/
           sed -i 's/device.name1=maguro/device.name1=r5q/g' AnyKernel3/anykernel.sh
-          cd AnyKernel3 && zip -r9 ../Kernel-R5Q-SM8150-Final.zip *
+          cd AnyKernel3 && zip -r9 ../Kernel-R5Q-SM8150-Hybrid.zip *
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-R5Q-Final
-          path: Kernel-R5Q-SM8150-Final.zip
+          name: Kernel-R5Q-Hybrid
+          path: Kernel-R5Q-SM8150-Hybrid.zip
