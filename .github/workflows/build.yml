@@ -1,11 +1,11 @@
-name: Build R5Q Kernel - Bootable
+name: Build R5Q Kernel - Final Clean
 
 on:
   workflow_dispatch:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04   # 🔥 IMPORTANT (evită probleme glibc)
 
     steps:
       - name: Checkout Source
@@ -22,15 +22,32 @@ jobs:
           ccache python3 python-is-python3 libarchive-tools wget zstd zip \
           gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi libncurses-dev
 
-      - name: Setup Proton Clang
+      - name: Setup Clang 17 (Modern & Compatible)
         run: |
-          git clone --depth=1 https://github.com/kdrag0n/proton-clang.git clang
+          mkdir clang
+          wget -q https://github.com/llvm/llvm-project/releases/download/llvmorg-17.0.6/clang+llvm-17.0.6-x86_64-linux-gnu-ubuntu-22.04.tar.xz
+          tar -xf clang+llvm-17.0.6-x86_64-linux-gnu-ubuntu-22.04.tar.xz -C clang --strip-components=1
 
-      - name: Fix secgetspf
+      - name: Fix Samsung Scripts
         run: |
           echo -e "#!/bin/bash\necho 0" > scripts/secgetspf
           chmod +x scripts/secgetspf
           export PATH="$GITHUB_WORKSPACE/scripts:$PATH"
+
+      - name: Add Minimal Dummy Symbols
+        run: |
+          mkdir -p drivers/misc
+          cat << 'EOF' > drivers/misc/dummy_symbols.c
+          #include <linux/kernel.h>
+
+          void sec_debug_store_bug_string(const char *s) {}
+          int sec_debug_is_enabled(void) { return 0; }
+          int is_boot_recovery(void) { return 0; }
+
+          void scsi_trace_parse_cdb() {}
+          EOF
+
+          echo 'obj-y += dummy_symbols.o' >> drivers/misc/Makefile
 
       - name: Build Kernel
         run: |
@@ -38,11 +55,14 @@ jobs:
 
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           export KBUILD_BUILD_USER="Roynas"
-          export KBUILD_BUILD_HOST="Github"
+          export KBUILD_BUILD_HOST="GitHub"
 
           MAKE_ARGS="ARCH=arm64 \
             LLVM=1 LLVM_IAS=1 \
-            CC=clang LD=ld.lld \
+            CC=clang \
+            LD=ld.lld \
+            HOSTCC=gcc \
+            HOSTLD=ld \
             AR=llvm-ar NM=llvm-nm \
             OBJCOPY=llvm-objcopy \
             OBJDUMP=llvm-objdump \
@@ -54,26 +74,19 @@ jobs:
           # Defconfig
           make $MAKE_ARGS r5q_defconfig
 
-          # 🔥 CURĂȚARE REALĂ (important)
+          # 🔥 CLEAN CONFIG (bootable focus)
           ./scripts/config --file out/.config \
             -d CONFIG_SEC_DEBUG \
-            -d CONFIG_SEC_DEBUG_EXTRA_INFO \
             -d CONFIG_USB_CONFIGFS \
             -d CONFIG_USB_G_ANDROID \
             -d CONFIG_SAMSUNG_BATTERY \
-            -d CONFIG_BATTERY_SAMSUNG \
             -d CONFIG_MOTOR \
             -d CONFIG_ADSP_FACTORY \
-            -d CONFIG_QCOM_WCD934X \
-            -d CONFIG_SND_SOC_WCD_MBHC \
-            -d CONFIG_SND_SOC_SAMSUNG \
-            -d CONFIG_SEC_SYSFS \
-            -d CONFIG_SEC_FACTORY \
             -e CONFIG_SECTION_MISMATCH_WARN_ONLY
 
           make $MAKE_ARGS olddefconfig
 
-          # 🔥 BUILD SAFE
+          # Build safe
           make -j4 $MAKE_ARGS Image.gz 2>&1 | tee build.log
 
       - name: Package AnyKernel3
@@ -85,15 +98,15 @@ jobs:
             sed -i 's/device.name1=.*/device.name1=r5q/' AnyKernel3/anykernel.sh
 
             cd AnyKernel3
-            zip -r9 ../Kernel-R5Q-Bootable.zip *
+            zip -r9 ../Kernel-R5Q-Final.zip *
           else
             echo "Build failed!"
             cat build.log
             exit 1
           fi
 
-      - name: Upload
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-R5Q-Bootable
-          path: Kernel-R5Q-Bootable.zip
+          name: Kernel-R5Q-Final
+          path: Kernel-R5Q-Final.zip
