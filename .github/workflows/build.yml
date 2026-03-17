@@ -1,4 +1,4 @@
-name: Build Roynas R5Q - External Module Mode
+name: Build Roynas R5Q - Final Stable
 on:
   workflow_dispatch:
 
@@ -34,49 +34,72 @@ jobs:
           wget -q https://github.com/Ylarod/setup-ndk-clang/releases/download/prebuilt/clang-linux-x86-ndk-r29-r563880c.tar.zst
           tar -I zstd -xf clang-linux-x86-ndk-r29-r563880c.tar.zst -C clang
 
-      - name: Build Kernel & External Modules
+      - name: Build Kernel
         run: |
           cd kernel
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           export KBUILD_BUILD_USER="Roynas"
-          export KBUILD_BUILD_HOST="GithubActions"
+          export KBUILD_BUILD_HOST="StableBuild"
 
-          # 1. PREP DRIVERS (r3q)
-          rm -rf drivers/battery_v2
-          cp -r ../r3q_source/drivers/battery_v2 drivers/
+          # 1. FIX-URI CHIRURGICALE SURSĂ
+          # Fix initcall_sec_debug (Eroarea din main.c)
+          sed -i 's/initcall_sec_debug/initcall_debug/g' init/main.c
+          
+          # Fix redefinire event în trace
+          sed -i '0,/struct perf_event \*event;/! s/struct perf_event \*event;/\/\/ duplicat/g' kernel/trace/trace_event_perf.c
+          
+          # Fix Audio Techpack (slow_insertion missing)
+          find techpack/audio -name "wcd-mbhc-adc.c" -exec sed -i 's/mbhc->slow_insertion/0/g' {} +
 
-          # 2. ARGUMENTE BUILD
+          # 2. PREGĂTIRE DRIVERE EXTERNE (Baterie)
+          # Mutăm bateria din r3q într-un folder extern pentru a evita conflictele statice
+          mkdir -p ../external_modules
+          cp -r ../r3q_source/drivers/battery_v2 ../external_modules/
+          
+          # Fix-uri automate pentru structura bateriei în modulul extern
+          find ../external_modules/battery_v2 -type f -exec sed -i 's/battery->pd_list.now_isApdo/0/g' {} +
+          find ../external_modules/battery_v2 -type f -exec sed -i 's/battery->pd_list.num_apdo/0/g' {} +
+          find ../external_modules/battery_v2 -type f -exec sed -i 's/battery->pdic_info.sink_status.has_apdo/0/g' {} +
+
+          # 3. ARGUMENTE BUILD
           MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
 
-          # 3. CONFIGURARE (Dezactivăm bateria din nucleu)
+          # 4. CONFIGURARE (Mod "User" / Stable)
           make $MAKE_ARGS r5q_defconfig
           ./scripts/config --file out/.config \
             -d CONFIG_BATTERY_SAMSUNG \
             -d CONFIG_BATTERY_SAMSUNG_V2 \
-            -d CONFIG_LTO -d CONFIG_LTO_CLANG -e CONFIG_LTO_NONE
+            -d CONFIG_SEC_DEBUG \
+            -d CONFIG_DEBUG_FS \
+            -d CONFIG_SLUB_DEBUG \
+            -d CONFIG_LTO -d CONFIG_LTO_CLANG -e CONFIG_LTO_NONE \
+            -d CONFIG_CC_STACKPROTECTOR_STRONG -e CONFIG_CC_STACKPROTECTOR_NONE
           make $MAKE_ARGS olddefconfig
 
-          # 4. COMPILARE KERNEL (Fără baterie)
-          KCFLAGS_BASE="-fcommon -w -Wno-error"
+          # 5. COMPILARE KERNEL
+          KCFLAGS_BASE="-fcommon -w -Wno-error -DPON_RESTART_REASON_CROSS_FAIL=0"
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="$KCFLAGS_BASE" Image.gz
 
-          # 5. COMPILARE MODUL EXTERN (Baterie)
-          # Ne mutăm în folderul driverului și îl compilăm folosind kernelul proaspăt construit ca referință
-          echo "Compilez driverul de baterie ca modul extern..."
-          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="$KCFLAGS_BASE -Idrivers/battery_v2/include" M=drivers/battery_v2 modules
+          # 6. COMPILARE MODUL EXTERN (Baterie)
+          echo "Compilând driverul de baterie ca modul extern..."
+          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="$KCFLAGS_BASE -I$GITHUB_WORKSPACE/external_modules/battery_v2/include" M=$GITHUB_WORKSPACE/external_modules/battery_v2 modules
 
       - name: Package with AnyKernel3
         run: |
           git clone https://github.com/osm0sis/AnyKernel3.git
           cp kernel/out/arch/arm64/boot/Image.gz AnyKernel3/
-          # Copiem modulele .ko generate (dacă există)
-          find kernel/drivers/battery_v2 -name "*.ko" -exec cp {} AnyKernel3/ \;
           
+          # Colectăm toate modulele .ko generate
+          find external_modules/battery_v2 -name "*.ko" -exec cp {} AnyKernel3/ \;
+          
+          # Configurare AnyKernel3 pentru R5Q
           sed -i 's/device.name1=maguro/device.name1=r5q/g' AnyKernel3/anykernel.sh
-          cd AnyKernel3 && zip -r9 ../Kernel-R5Q-ExternalModules.zip *
+          sed -i 's/device.name2=toro/device.name2=r5qxx/g' AnyKernel3/anykernel.sh
+          
+          cd AnyKernel3 && zip -r9 ../Kernel-R5Q-Stable.zip *
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-R5Q-External
-          path: Kernel-R5Q-ExternalModules.zip
+          name: Kernel-R5Q-Stable
+          path: Kernel-R5Q-Stable.zip
