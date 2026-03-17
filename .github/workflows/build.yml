@@ -37,32 +37,32 @@ jobs:
           # 1. GENERARE HEADERE
           make ARCH=arm64 O=out headers_install
 
-          # 2. FIX-URI SURSĂ (Audio, Touch, Baterie, Initcall)
+          # 2. FIX-URI SURSĂ
           sed -i 's/initcall_sec_debug/initcall_debug/g' init/main.c
           sed -i '0,/struct perf_event \*event;/! s/struct perf_event \*event;/\/\/ duplicat/g' kernel/trace/trace_event_perf.c
           find techpack/audio -name "wcd-mbhc-adc.c" -exec sed -i 's/mbhc->slow_insertion/0/g' {} +
           find drivers/input/touchscreen -name "*.c" -exec sed -i '/dump_callbacks.inform_dump/s/^/\/\//' {} +
 
-          # Fix Baterie (Comentăm liniile care dau erori "not assignable")
+          # Fix Baterie
           find drivers/battery_v2 -type f -exec sed -i '/now_isApdo/s/^/\/\//' {} +
           find drivers/battery_v2 -type f -exec sed -i '/num_apdo/s/^/\/\//' {} +
           find drivers/battery_v2 -type f -exec sed -i '/has_apdo/s/^/\/\//' {} +
           sed -i '/POWER_SUPPLY_EXT_PROP_DIRECT_CLEAR_ERR/s/^/\/\//' drivers/battery_v2/sec_battery.c
 
-          # 3. CONFIGURARE TRIPLE-MERGE
+          # 3. CONFIGURARE (Merge Triple)
           MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
           
-          # Descărcăm setările de la A70q
           wget -O arch/arm64/configs/a70q_fragment.config https://raw.githubusercontent.com/pascua28/android_kernel_samsung_sm7150/sixteen/arch/arm64/configs/a70q.config
           
-          # Fuzionăm: R5Q (Bază) + SM8150 Vendor (Procesor) + A70q (Drivere/Periferice)
           scripts/kconfig/merge_config.sh -m -O out \
             arch/arm64/configs/r5q_defconfig \
             arch/arm64/configs/vendor/sm8150_defconfig \
             arch/arm64/configs/a70q_fragment.config
           
-          # Dezactivăm Tracing și Debug-ul Samsung care crapă build-ul
+          # DEZACTIVARE CORESIGHT, TRACING ȘI DEBUG
           ./scripts/config --file out/.config \
+            -d CONFIG_QCOM_KGSL_CORESIGHT \
+            -d CONFIG_CORESIGHT \
             -d CONFIG_BLK_DEV_IO_TRACE \
             -d CONFIG_SEC_DEBUG \
             -d CONFIG_SECURITY_SMACK \
@@ -72,7 +72,7 @@ jobs:
             
           make $MAKE_ARGS olddefconfig
 
-          # 4. COMPILARE FINALĂ
+          # 4. COMPILARE
           KCFLAGS_BASE="-fcommon -w -Wno-error -DPON_RESTART_REASON_CROSS_FAIL=0 -I$(pwd)/out/usr/include"
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="$KCFLAGS_BASE" Image.gz
 
@@ -81,10 +81,10 @@ jobs:
           git clone https://github.com/osm0sis/AnyKernel3.git
           cp kernel/out/arch/arm64/boot/Image.gz AnyKernel3/
           sed -i 's/device.name1=maguro/device.name1=r5q/g' AnyKernel3/anykernel.sh
-          cd AnyKernel3 && zip -r9 ../Kernel-R5Q-SM8150-Hybrid.zip *
+          cd AnyKernel3 && zip -r9 ../Kernel-R5Q-SM8150-Final.zip *
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-R5Q-Hybrid
-          path: Kernel-R5Q-SM8150-Hybrid.zip
+          name: Kernel-R5Q-Final
+          path: Kernel-R5Q-SM8150-Final.zip
