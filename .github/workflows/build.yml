@@ -95,13 +95,16 @@ jobs:
           make $MAKE_ARGS r5q_defconfig
 
           ./scripts/config --file out/.config \
-            -d CONFIG_SEC_DEBUG \
-            -d CONFIG_USB_CONFIGFS \
-            -d CONFIG_USB_G_ANDROID \
-            -d CONFIG_SAMSUNG_BATTERY \
-            -d CONFIG_MOTOR \
-            -d CONFIG_ADSP_FACTORY \
-            -e CONFIG_SECTION_MISMATCH_WARN_ONLY
+          -d CONFIG_SEC_DEBUG \
+          -d CONFIG_USB_CONFIGFS \
+          -d CONFIG_USB_G_ANDROID \
+          -d CONFIG_SAMSUNG_BATTERY \
+          -d CONFIG_MOTOR \
+          -d CONFIG_ADSP_FACTORY \
+          -d CONFIG_CC_STACKPROTECTOR \
+          -d CONFIG_CC_STACKPROTECTOR_STRONG \
+          -e CONFIG_CC_STACKPROTECTOR_NONE \
+          -e CONFIG_SECTION_MISMATCH_WARN_ONLY
 
           make $MAKE_ARGS olddefconfig
 
