@@ -34,84 +34,67 @@ jobs:
 
           # --- FIX-URI CHIRURGICALE ---
           
-          # Fix Trace redefinition
+          # 1. Fix redefinition of 'event'
           sed -i '0,/struct perf_event \*event;/! s/struct perf_event \*event;/\/\/ duplicat sters/g' kernel/trace/trace_event_perf.c
           
-          # Fix Audio slow_insertion
+          # 2. Fix Audio & Pinctrl
           find techpack/audio -name "wcd-mbhc-adc.c" -exec sed -i 's/mbhc->slow_insertion/0/g' {} +
-
-          # Fix Pinctrl
           sed -i '30i bool msm_gpio_is_valid(int gpionum);' drivers/pinctrl/qcom/pinctrl-msm.c
           
-          # Pregatire headere
+          # 3. Comentăm declarațiile extern din sec_battery.c care fac conflict cu macro-urile
+          sed -i 's/extern bool get_usb_enumeration_state/\/\/ extern bool get_usb_enumeration_state/g' drivers/battery_v2/sec_battery.c
+          sed -i 's/extern int manager_notifier_register/\/\/ extern int manager_notifier_register/g' drivers/battery_v2/sec_battery.c
+
+          # 4. Pregătire headere
           mkdir -p include/linux
           find drivers/samsung -name "sec_debug.h" -exec ln -sf ../../{} include/linux/sec_debug.h \;
 
-          # --- INJECTARE MASIVA DE SIMBOLURI (STUBS) ---
-          # Adaugam definitii goale pentru a pacali linker-ul (ld.lld)
+          # --- INJECTARE MASIVA DE STUBS (VARIADIC) ---
+          # Folosim "..." pentru a accepta orice numar de argumente
           {
-            echo "#define sec_debug_set_reboot_reason(x) do {} while (0)"
-            echo "#define sec_debug_get_reboot_reason() (0)"
-            echo "#define sec_debug_get_p_reason() (0)"
-            echo "#define sec_debug_get_upload_cause() (0)"
-            echo "#define enable_emergency_dload_mode(x) do {} while (0)"
-            echo "#define ois_reset_register(x) (0)"
-            echo "#define sec_kn_register_notifier(x) (0)"
-            echo "#define manager_notifier_register(x) (0)"
-            echo "#define manager_notifier_unregister(x) (0)"
-            echo "#define manager_hw_param_update(x) (0)"
-            echo "#define set_usb_enable_state(x) (0)"
-            echo "#define set_usb_enumeration_state(x) (0)"
-            echo "#define get_usb_enumeration_state() (0)"
-            echo "#define sec_debug_store_bug_string(x) do {} while (0)"
-            echo "#define audio_register_wdsp_state_cb(x,y) (0)"
-            echo "#define audio_register_mad_mic_state_cb(x,y) (0)"
-            echo "#define get_wsa_sysfs_ptr() (NULL)"
-            echo "#define setSensorCallback(x,y) do {} while (0)"
-            echo "#define sec_get_pps_voltage() (0)"
-            echo "#define is_boot_recovery() (0)"
-            echo "#define accel_factory_init_work(x) do {} while (0)"
-            echo "#define prox_factory_init_work(x) do {} while (0)"
-            echo "#define scsi_trace_parse_cdb(x,y,z) \"\""
-            echo "#define sec_debug_is_enabled() (0)"
+            echo "#define sec_debug_set_reboot_reason(...) do {} while (0)"
+            echo "#define sec_debug_get_reboot_reason(...) (0)"
+            echo "#define sec_debug_get_p_reason(...) (0)"
+            echo "#define sec_debug_get_upload_cause(...) (0)"
+            echo "#define enable_emergency_dload_mode(...) do {} while (0)"
+            echo "#define ois_reset_register(...) (0)"
+            echo "#define sec_kn_register_notifier(...) (0)"
+            echo "#define manager_notifier_register(...) (0)"
+            echo "#define manager_notifier_unregister(...) (0)"
+            echo "#define manager_hw_param_update(...) (0)"
+            echo "#define set_usb_enable_state(...) (0)"
+            echo "#define set_usb_enumeration_state(...) (0)"
+            echo "#define get_usb_enumeration_state(...) (0)"
+            echo "#define sec_debug_store_bug_string(...) do {} while (0)"
+            echo "#define audio_register_wdsp_state_cb(...) (0)"
+            echo "#define audio_register_mad_mic_state_cb(...) (0)"
+            echo "#define get_wsa_sysfs_ptr(...) (NULL)"
+            echo "#define setSensorCallback(...) do {} while (0)"
+            echo "#define sec_get_pps_voltage(...) (0)"
+            echo "#define is_boot_recovery(...) (0)"
+            echo "#define accel_factory_init_work(...) do {} while (0)"
+            echo "#define prox_factory_init_work(...) do {} while (0)"
+            echo "#define scsi_trace_parse_cdb(...) \"\""
+            echo "#define sec_debug_is_enabled(...) (0)"
           } >> include/linux/sec_debug.h
 
-          # Dummy secgetspf
+          # 5. Dummy secgetspf
           echo -e "#!/bin/bash\necho 0" > scripts/secgetspf
           chmod +x scripts/secgetspf
 
           # --- ARGUMENTE BUILD ---
-          MAKE_ARGS="ARCH=arm64 \
-            LLVM=1 \
-            LLVM_IAS=1 \
-            CC=clang \
-            LD=ld.lld \
-            AR=llvm-ar \
-            NM=llvm-nm \
-            OBJCOPY=llvm-objcopy \
-            OBJDUMP=llvm-objdump \
-            STRIP=llvm-strip \
-            CROSS_COMPILE=aarch64-linux-gnu- \
-            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-            O=out"
+          MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
 
           # --- CONFIGURARE ---
           make $MAKE_ARGS r5q_defconfig
           ./scripts/config --file out/.config \
-            -d CONFIG_LTO \
-            -d CONFIG_LTO_CLANG \
-            -e CONFIG_LTO_NONE \
-            -d CONFIG_CC_STACKPROTECTOR_STRONG \
-            -e CONFIG_CC_STACKPROTECTOR_NONE \
-            -d CONFIG_SECURITY_SMACK \
-            -d CONFIG_SEC_DEBUG \
-            -e CONFIG_SECTION_MISMATCH_WARN_ONLY
+            -d CONFIG_LTO -d CONFIG_LTO_CLANG -e CONFIG_LTO_NONE \
+            -d CONFIG_CC_STACKPROTECTOR_STRONG -e CONFIG_CC_STACKPROTECTOR_NONE \
+            -d CONFIG_SECURITY_SMACK -d CONFIG_SEC_DEBUG -e CONFIG_SECTION_MISMATCH_WARN_ONLY
           make $MAKE_ARGS olddefconfig
 
           # --- COMPILARE FINALĂ ---
-          # Folosim -fcommon pentru a ignora definitiile multiple (cum e ncm_wq)
           KCFLAGS_CLEAN="-fcommon -w -Wno-error -Dinitcall_sec_debug=initcall_debug -DPON_RESTART_REASON_CROSS_FAIL=0 -DPD_NOTI_ATTACH_TYPEDEF=CC_NOTI_ATTACH_TYPEDEF -DPDIC_NOTIFY_ID_ATTACH=CCIC_NOTIFY_ID_ATTACH -DSEC_DEBUG_MODEM_SEPARATE_EN=0"
-
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="$KCFLAGS_CLEAN" Image.gz
 
       - name: Package with AnyKernel3
