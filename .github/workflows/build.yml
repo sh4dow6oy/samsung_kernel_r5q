@@ -1,4 +1,4 @@
-name: Build Roynas R5Q - Neutron Clang Final
+name: Build Roynas R5Q - External Module Mode
 on:
   workflow_dispatch:
 
@@ -34,73 +34,49 @@ jobs:
           wget -q https://github.com/Ylarod/setup-ndk-clang/releases/download/prebuilt/clang-linux-x86-ndk-r29-r563880c.tar.zst
           tar -I zstd -xf clang-linux-x86-ndk-r29-r563880c.tar.zst -C clang
 
-      - name: Build Kernel
+      - name: Build Kernel & External Modules
         run: |
           cd kernel
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           export KBUILD_BUILD_USER="Roynas"
           export KBUILD_BUILD_HOST="GithubActions"
 
-          # --- 1. IMPORT DRIVERE DIN r3q ---
-          rm -rf drivers/battery_v2 drivers/samsung
+          # 1. PREP DRIVERS (r3q)
+          rm -rf drivers/battery_v2
           cp -r ../r3q_source/drivers/battery_v2 drivers/
-          cp -r ../r3q_source/drivers/samsung drivers/
-          
-          # --- 2. FIX GLOBAL PENTRU MEMBRII LIPSĂ (Baterie) ---
-          # Această comandă caută în tot folderul battery_v2 orice referință la membrii APDO lipsă și îi pune pe 0
-          echo "Aplic fix-uri globale pentru membrii structurii bateriei..."
-          find drivers/battery_v2 -type f \( -name "*.c" -o -name "*.h" \) -exec sed -i 's/battery->pd_list.now_isApdo/0/g' {} +
-          find drivers/battery_v2 -type f \( -name "*.c" -o -name "*.h" \) -exec sed -i 's/battery->pd_list.num_apdo/0/g' {} +
-          find drivers/battery_v2 -type f \( -name "*.c" -o -name "*.h" \) -exec sed -i 's/battery->pdic_info.sink_status.has_apdo/0/g' {} +
-          
-          # Fix specific pentru apelul macro-ului care crapă în sec_battery.c
-          sed -i '8608,8609s/^/\/\//' drivers/battery_v2/sec_battery.c
 
-          # --- 3. SINCRONIZARE HEADERE ---
-          mkdir -p include/linux/usb/manager/
-          mkdir -p include/linux/ccic/
-          cp -rn ../r3q_source/include/linux/* include/linux/
-          find ../r3q_source -name "usb_typec_manager_notifier.h" -exec cp {} include/linux/usb/manager/ \;
-          find ../r3q_source -name "ccic_notifier.h" -exec cp {} include/linux/ccic/ \;
-
-          # --- 4. FIX-URI GENERALE ---
-          find techpack/audio -name "wcd-mbhc-adc.c" -exec sed -i 's/mbhc->slow_insertion/0/g' {} +
-          sed -i '0,/struct perf_event \*event;/! s/struct perf_event \*event;/\/\/ duplicat sters/g' kernel/trace/trace_event_perf.c
-          sed -i '30i bool msm_gpio_is_valid(int gpionum);' drivers/pinctrl/qcom/pinctrl-msm.c
-
-          echo -e "#!/bin/bash\necho 0" > scripts/secgetspf
-          chmod +x scripts/secgetspf
-
-          # --- 5. ARGUMENTE BUILD ---
+          # 2. ARGUMENTE BUILD
           MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
 
-          # --- 6. CONFIGURARE ---
+          # 3. CONFIGURARE (Dezactivăm bateria din nucleu)
           make $MAKE_ARGS r5q_defconfig
           ./scripts/config --file out/.config \
-            -d CONFIG_LTO -d CONFIG_LTO_CLANG -e CONFIG_LTO_NONE \
-            -d CONFIG_CC_STACKPROTECTOR_STRONG -e CONFIG_CC_STACKPROTECTOR_NONE \
-            -d CONFIG_SECURITY_SMACK -d CONFIG_SEC_DEBUG -e CONFIG_SECTION_MISMATCH_WARN_ONLY
+            -d CONFIG_BATTERY_SAMSUNG \
+            -d CONFIG_BATTERY_SAMSUNG_V2 \
+            -d CONFIG_LTO -d CONFIG_LTO_CLANG -e CONFIG_LTO_NONE
           make $MAKE_ARGS olddefconfig
 
-          # --- 7. COMPILARE FINALĂ ---
-          KCFLAGS_CLEAN="-fcommon -w -Wno-error -Idrivers/battery_v2/include -Dinitcall_sec_debug=initcall_debug -DPON_RESTART_REASON_CROSS_FAIL=0 -DPD_NOTI_ATTACH_TYPEDEF=CC_NOTI_ATTACH_TYPEDEF -DPDIC_NOTIFY_ID_ATTACH=CCIC_NOTIFY_ID_ATTACH -DSEC_DEBUG_MODEM_SEPARATE_EN=0"
-          
-          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="$KCFLAGS_CLEAN" Image.gz
+          # 4. COMPILARE KERNEL (Fără baterie)
+          KCFLAGS_BASE="-fcommon -w -Wno-error"
+          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="$KCFLAGS_BASE" Image.gz
+
+          # 5. COMPILARE MODUL EXTERN (Baterie)
+          # Ne mutăm în folderul driverului și îl compilăm folosind kernelul proaspăt construit ca referință
+          echo "Compilez driverul de baterie ca modul extern..."
+          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="$KCFLAGS_BASE -Idrivers/battery_v2/include" M=drivers/battery_v2 modules
 
       - name: Package with AnyKernel3
         run: |
-          if [ -f kernel/out/arch/arm64/boot/Image.gz ]; then
-            git clone https://github.com/osm0sis/AnyKernel3.git
-            cp kernel/out/arch/arm64/boot/Image.gz AnyKernel3/
-            sed -i 's/device.name1=maguro/device.name1=r5q/g' AnyKernel3/anykernel.sh
-            cd AnyKernel3 && zip -r9 ../Kernel-S10Lite-R5Q-Final.zip *
-          else
-            echo "EROARE: Image.gz nu a fost generat!"
-            exit 1
-          fi
+          git clone https://github.com/osm0sis/AnyKernel3.git
+          cp kernel/out/arch/arm64/boot/Image.gz AnyKernel3/
+          # Copiem modulele .ko generate (dacă există)
+          find kernel/drivers/battery_v2 -name "*.ko" -exec cp {} AnyKernel3/ \;
+          
+          sed -i 's/device.name1=maguro/device.name1=r5q/g' AnyKernel3/anykernel.sh
+          cd AnyKernel3 && zip -r9 ../Kernel-R5Q-ExternalModules.zip *
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-S10Lite-Final
-          path: Kernel-S10Lite-R5Q-Final.zip
+          name: Kernel-R5Q-External
+          path: Kernel-R5Q-ExternalModules.zip
