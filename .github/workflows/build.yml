@@ -35,10 +35,12 @@ jobs:
           export KBUILD_BUILD_HOST="Lineage20-R5Q"
           export MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
 
-          # 1. INJECTARE DRIVER DISPLAY (LineageOS 20 - SM8150)
+          # 1. INJECTARE DRIVERE DISPLAY (LineageOS 20 - SM8150)
+          # Inlocuim ambele fisiere critice pentru a asigura compatibilitatea
           wget -O drivers/gpu/drm/msm/sde/sde_crtc.c https://raw.githubusercontent.com/LineageOS/android_kernel_qcom_sm8150/lineage-20/drivers/gpu/drm/msm/sde/sde_crtc.c
+          wget -O drivers/gpu/drm/msm/sde/sde_plane.c https://raw.githubusercontent.com/LineageOS/android_kernel_qcom_sm8150/lineage-20/drivers/gpu/drm/msm/sde/sde_plane.c
 
-          # 2. STUBBING (Reparații Linker pentru funcții Samsung lipsă)
+          # 2. STUBBING (Reparații Linker)
           mkdir -p out
           cat <<EOF > drivers/soc/qcom/stubs.c
           #include <linux/kernel.h>
@@ -59,7 +61,7 @@ jobs:
           EOF
           echo "obj-y += stubs.o" >> drivers/soc/qcom/Makefile
 
-          # 3. CONFIGURARE (Baza AOSP de la A70)
+          # 3. CONFIGURARE (Baza A70 AOSP)
           make $MAKE_ARGS O=out vendor/sm8150-perf_defconfig
           wget -O arch/arm64/configs/a70q_aosp.config https://raw.githubusercontent.com/pascua28/android_kernel_samsung_sm7150/sixteen/arch/arm64/configs/a70q.config
           cat arch/arm64/configs/a70q_aosp.config >> out/.config
@@ -89,10 +91,10 @@ jobs:
           sed -i 's/device.name2=panda/device.name2=SM-G770F/g' anykernel.sh
           sed -i 's/device.name3=tuna/device.name3=s10lite/g' anykernel.sh
           sed -i 's|block=.*|block=/dev/block/by-name/boot|g' anykernel.sh
-          zip -r9 ../Kernel-R5Q-Lineage20.zip *
+          zip -r9 ../Kernel-R5Q-Lineage-Final.zip *
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
           name: Kernel-S10Lite-R5Q
-          path: Kernel-R5Q-Lineage20.zip
+          path: Kernel-R5Q-Lineage-Final.zip
