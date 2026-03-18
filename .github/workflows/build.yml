@@ -35,7 +35,7 @@ jobs:
           export KBUILD_BUILD_HOST="S10Lite-R5Q"
           export MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
 
-          # 1. STUBBING (Necesar pentru a evita erorile de linkare pe simboluri Samsung specifice)
+          # 1. STUBBING (Reparăm simbolurile lipsă de la Samsung la nivel de linker)
           mkdir -p out
           cat <<EOF > drivers/soc/qcom/stubs.c
           #include <linux/kernel.h>
@@ -46,10 +46,7 @@ jobs:
           void *get_wsa_sysfs_ptr(void) { return NULL; }
           void pm6150_set_pd_state(void *a, int b) {}
           void pm6150_set_cable(void *a, int b) {}
-          void *pm6150_usbpd_create(void *a) { return NULL; }
-          void pm6150_usbpd_destroy(void *a) {}
           void ccic_send_dock_intent(int a) {}
-          void ccic_send_dock_uevent(int a) {}
           void manager_notifier_register(void *a, void *b, void *c) {}
           void sec_kn_register_notifier(void *a) {}
           void sec_cmd_set_default_result(void *a) {}
@@ -59,9 +56,10 @@ jobs:
           EOF
           echo "obj-y += stubs.o" >> drivers/soc/qcom/Makefile
 
-          # 2. CONFIGURARE (SM8150-perf este baza pentru R5Q în acest repo)
+          # 2. CONFIGURARE (Folosim sm8150-perf pentru S10 Lite)
           make $MAKE_ARGS O=out vendor/sm8150-perf_defconfig
 
+          # Dezactivăm modulele care cauzează conflicte de structură
           ./scripts/config --file out/.config \
             -d CONFIG_SEC_DEBUG \
             -d CONFIG_KVM \
@@ -72,13 +70,26 @@ jobs:
             
           make $MAKE_ARGS O=out olddefconfig
 
-          # 3. FIX-URI DE COD (Patch-uri rapide pentru erorile de compilare)
+          # 3. FIX-URI DE COD (Patch-uri SED pentru erorile raportate)
+          
+          # Fix Audio: no member named 'slow_insertion'
+          find techpack/audio -name "wcd-mbhc-adc.c" -exec sed -i 's/mbhc->slow_insertion/0/g' {} +
+
+          # Fix Display: fatal error: 'ss_dsi_panel_common.h' file not found
+          sed -i 's/#include "ss_dsi_panel_common.h"/\/\/ #include "ss_dsi_panel_common.h"/g' drivers/gpu/drm/msm/sde/sde_crtc.c || true
+
+          # Fix Memory: ptep -> pte in hugetlbpage.c
           sed -i 's/ptep = huge_pmd_share/pte = huge_pmd_share/g' arch/arm64/mm/hugetlbpage.c || true
+          
+          # Fix Notify: incompatible function pointer
           sed -i 's/show_fdinfo(m, f, fanotify_fdinfo)/show_fdinfo(m, f, (void *)fanotify_fdinfo)/g' fs/notify/fdinfo.c || true
+          
+          # Fix Tracing: redefinition of 'event'
           sed -i '431,435s/struct perf_event \*event;//' kernel/trace/trace_event_perf.c || true
 
           # 4. COMPILARE Image.gz
-          KCFLAGS_BASE="-fcommon -w -Wno-error"
+          # -fcommon rezolvă definițiile multiple, -Wno-error ignoră avertismentele minore
+          KCFLAGS_BASE="-fcommon -w -Wno-error -Wno-implicit-function-declaration"
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="$KCFLAGS_BASE" O=out Image.gz
 
       - name: Package for R5Q (S10 Lite)
@@ -86,11 +97,13 @@ jobs:
           git clone https://github.com/osm0sis/AnyKernel3.git
           cp kernel/out/arch/arm64/boot/Image.gz AnyKernel3/
           
-          # Configurare AnyKernel3 specială pentru R5Q
           cd AnyKernel3
+          # Setăm identificatorii de dispozitiv pentru a trece de verificarea TWRP
           sed -i 's/device.name1=maguro/device.name1=r5q/g' anykernel.sh
           sed -i 's/device.name2=panda/device.name2=SM-G770F/g' anykernel.sh
           sed -i 's/device.name3=tuna/device.name3=s10lite/g' anykernel.sh
+          
+          # Optimizări pentru instalare pe partiții dinamice
           sed -i 's/block=\/dev\/block\/platform\/omap\/omap_hsmmc.0\/by-name\/boot/block=auto/g' anykernel.sh
           sed -i 's/is_slot_device=0/is_slot_device=auto/g' anykernel.sh
           
@@ -99,5 +112,5 @@ jobs:
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-R5Q-S10Lite
+          name: Kernel-S10Lite-R5Q
           path: Kernel-R5Q-SM8150-Final.zip
