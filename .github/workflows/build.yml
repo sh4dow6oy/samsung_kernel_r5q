@@ -40,6 +40,12 @@ jobs:
 
           # 2. FIX-URI SURSĂ (Patch-uri automate prin sed)
 
+          # --- FIX LINKER (Duplicate Symbols) ---
+          # Redenumim get_afc_mode în driverul MUIC pentru a evita conflictul cu PM6150-AFC
+          find drivers/muic -name "muic_core.c" -exec sed -i 's/get_afc_mode/muic_get_afc_mode/g' {} +
+          # Redenumim is_input_present în qg-util pentru a evita conflictul cu fg-util
+          find drivers/power/supply/qcom_r1 -name "qg-util.c" -exec sed -i 's/is_input_present/qg_is_input_present/g' {} +
+
           # --- FIX AUDIO (No member named 'slow_insertion') ---
           find techpack/audio -name "wcd-mbhc-adc.c" -exec sed -i 's/mbhc->slow_insertion/0/g' {} +
 
