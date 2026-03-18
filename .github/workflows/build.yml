@@ -1,4 +1,4 @@
-name: Build Roynas R5Q - SM8150 Final Master
+name: Build Roynas R5Q - SM8150 Master Final
 on:
   workflow_dispatch:
 
@@ -35,7 +35,7 @@ jobs:
           export KBUILD_BUILD_HOST="S10Lite-R5Q"
           export MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
 
-          # 1. STUBBING (Bypass pentru simbolurile Samsung lipsă la nivel de Linker)
+          # 1. STUBBING (Bypass pentru functiile lipsa la nivel de linker)
           mkdir -p out
           cat <<EOF > drivers/soc/qcom/stubs.c
           #include <linux/kernel.h>
@@ -55,31 +55,34 @@ jobs:
           EOF
           echo "obj-y += stubs.o" >> drivers/soc/qcom/Makefile
 
-          # 2. CONFIGURARE (SM8150 Perf ca bază)
+          # 2. CONFIGURARE
           make $MAKE_ARGS O=out vendor/sm8150-perf_defconfig
           ./scripts/config --file out/.config \
             -d CONFIG_SEC_DEBUG -d CONFIG_KVM -d CONFIG_NFS_FS \
             -d CONFIG_SECURITY_SMACK -e CONFIG_SECTION_MISMATCH_WARN_ONLY
           make $MAKE_ARGS O=out olddefconfig
 
-          # 3. PATCHING AGRESIV (Reparăm erorile de cod sursă)
+          # 3. PATCHING (Fix Display, Audio, Memory & Trace)
           
-          # Fix Display: Injectăm 'is_aosp' și dezactivăm codul de Fingerprint defect
+          # Fix Display: Injectam 'is_aosp' si dezactivam blocul fingerprint problematic
           sed -i '47i static bool is_aosp = true;' drivers/gpu/drm/msm/sde/sde_crtc.c
-          sed -i 's/#include "ss_dsi_panel_common.h"/\/\/ #include "ss_dsi_panel_common.h"/g' drivers/gpu/drm/msm/sde/sde_crtc.c || true
-          sed -i '/vdd->finger_mask/s/^/\/\//' drivers/gpu/drm/msm/sde/sde_crtc.c
-          sed -i '/vdd->br.finger_mask_bl_level/s/^/\/\//' drivers/gpu/drm/msm/sde/sde_crtc.c
-          sed -i '/vdd->finger_mask_updated/s/^/\/\//' drivers/gpu/drm/msm/sde/sde_crtc.c
+          sed -i 's/#include "ss_dsi_panel_common.h"/\/\/ /g' drivers/gpu/drm/msm/sde/sde_crtc.c || true
+          
+          # Metoda sigura: Dezactivam bucata de cod care foloseste 'vdd' (fingerprint logic)
+          # Cautam linia cu structura vdd si punem #if 0 inainte
+          sed -i '/struct samsung_display_driver_data \*vdd/i #if 0' drivers/gpu/drm/msm/sde/sde_crtc.c
+          # Inchidem blocul inainte de functia de instalare proprietati (care e ok)
+          sed -i '/sde_crtc_install_properties/i #endif' drivers/gpu/drm/msm/sde/sde_crtc.c
 
-          # Fix Audio: Structura MBHC nu are 'slow_insertion'
+          # Fix Audio: slow_insertion error
           find techpack/audio -name "wcd-mbhc-adc.c" -exec sed -i 's/mbhc->slow_insertion/0/g' {} +
 
-          # Fix Memory & Tracing (din build-urile anterioare)
+          # Fix Memory & Tracing
           sed -i 's/ptep = huge_pmd_share/pte = huge_pmd_share/g' arch/arm64/mm/hugetlbpage.c || true
           sed -i 's/show_fdinfo(m, f, fanotify_fdinfo)/show_fdinfo(m, f, (void *)fanotify_fdinfo)/g' fs/notify/fdinfo.c || true
           sed -i '431,435s/struct perf_event \*event;//' kernel/trace/trace_event_perf.c || true
 
-          # 4. COMPILARE Image.gz
+          # 4. COMPILARE
           KCFLAGS_BASE="-fcommon -w -Wno-error -Wno-implicit-function-declaration"
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="$KCFLAGS_BASE" O=out Image.gz
 
@@ -88,15 +91,15 @@ jobs:
           git clone https://github.com/osm0sis/AnyKernel3.git
           cp kernel/out/arch/arm64/boot/Image.gz AnyKernel3/
           cd AnyKernel3
-          # Identificatori S10 Lite (r5q)
+          # Setam ID-urile pentru r5q
           sed -i 's/device.name1=maguro/device.name1=r5q/g' anykernel.sh
           sed -i 's/device.name2=panda/device.name2=SM-G770F/g' anykernel.sh
           sed -i 's/device.name3=tuna/device.name3=s10lite/g' anykernel.sh
-          # Setăm blocul de boot corect pentru R5Q
-          sed -i 's|block=/dev/block/platform/omap/omap_hsmmc.0/by-name/boot|block=/dev/block/by-name/boot|g' anykernel.sh
+          # Setam calea corecta pentru partitia de boot a S10 Lite
+          sed -i 's|block=.*|block=/dev/block/by-name/boot|g' anykernel.sh
           zip -r9 ../Kernel-R5Q-Final-Master.zip *
 
-      - name: Upload
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: Kernel-S10Lite-R5Q
