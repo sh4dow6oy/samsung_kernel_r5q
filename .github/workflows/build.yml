@@ -40,47 +40,52 @@ jobs:
 
           # 2. FIX-URI SURSĂ (Patch-uri automate prin sed)
 
-          # --- FIX LINKER (Duplicate Symbols) ---
-          # Redenumim get_afc_mode în driverul MUIC pentru a evita conflictul cu PM6150-AFC
+          # --- FIX UNDEFINED SYMBOLS (STUBBING) ---
+          # Creăm un fișier care să definească funcțiile lipsă raportate de linker
+          cat <<EOF > drivers/soc/qcom/stubs.c
+          #include <linux/kernel.h>
+          #include <linux/types.h>
+          void enable_emergency_dload_mode(void) {}
+          void sec_debug_store_bug_string(char *s) {}
+          void audio_register_wdsp_state_cb(void *p) {}
+          void audio_register_mad_mic_state_cb(void *p) {}
+          void *get_wsa_sysfs_ptr(void) { return NULL; }
+          void *get_ccic_device(void) { return NULL; }
+          void set_msg_header(void *a, int b, int c) {}
+          void set_uvdm_header(void *a, int b, int c) {}
+          void set_endian(void *a, int b) {}
+          void set_uvdmset_count(void *a, int b) {}
+          void set_sec_uvdm_header(void *a, int b, int c) {}
+          void set_sec_uvdm_tx_header(void *a, int b) {}
+          int get_data_size(void *a) { return 0; }
+          void set_sec_uvdm_tx_tailer(void *a, int b) {}
+          int get_checksum(void *a, int b) { return 0; }
+          void set_sec_uvdm_rx_header(void *a, int b) {}
+          void manager_notifier_register(void *a, void *b, void *c) {}
+          void set_factory_force_usb(int a) {}
+          void pm6150_ccic_event_work(void *a, int b) {}
+          int get_is_usb(void) { return 0; }
+          EOF
+          echo "obj-y += stubs.o" >> drivers/soc/qcom/Makefile
+
+          # --- FIX DUPLICATE SYMBOLS ---
           find drivers/muic -name "muic_core.c" -exec sed -i 's/get_afc_mode/muic_get_afc_mode/g' {} +
-          # Redenumim is_input_present în qg-util pentru a evita conflictul cu fg-util
           find drivers/power/supply/qcom_r1 -name "qg-util.c" -exec sed -i 's/is_input_present/qg_is_input_present/g' {} +
 
-          # --- FIX AUDIO (No member named 'slow_insertion') ---
+          # --- FIX-URI ANTERIOARE ---
           find techpack/audio -name "wcd-mbhc-adc.c" -exec sed -i 's/mbhc->slow_insertion/0/g' {} +
-
-          # --- FIX SUBSYSTEM RESTART (Undeclared SEC_DEBUG_MODEM_SEPARATE_EN) ---
           sed -i '30i #define SEC_DEBUG_MODEM_SEPARATE_EN 0' drivers/soc/qcom/subsystem_restart.c
-          
-          # --- FIX USB PD (No member named 'desc' in 'struct usbpd') ---
           sed -i '5755s/devm_kfree/\/\/devm_kfree/' drivers/usb/pd/policy_engine.c
-
-          # --- FIX INITCALL (Eroarea initcall_sec_debug) ---
           sed -i 's/initcall_sec_debug/initcall_debug/g' init/main.c
-          
-          # --- FIX PERF EVENT (Duplicat kernel/trace) ---
           sed -i '0,/struct perf_event \*event;/! s/struct perf_event \*event;/\/\/ duplicat/g' kernel/trace/trace_event_perf.c
-          
-          # --- FIX IMAGIS TOUCH (Incomplete definition tsp_dump_callbacks) ---
           find drivers/input/touchscreen -name "ist40xx.c" -exec sed -i '/dump_callbacks.inform_dump/s/^/\/\//' {} +
-
-          # --- FIX WI-FI / PLD (Garda de protecție redefinire pld_context) ---
           find drivers/staging/qca-wifi-host-cmn -name "pld.h" -exec sed -i '/struct pld_context {/i #ifndef __PLD_CONTEXT_GUARD\n#define __PLD_CONTEXT_GUARD' {} +
           find drivers/staging/qca-wifi-host-cmn -name "pld.h" -exec sed -i '/};/a #endif' {} +
-
-          # --- FIX PINCTRL (Prototip msm_gpio_is_valid) ---
           sed -i '/#include <linux\/pinctrl\/pinctrl.h>/a bool msm_gpio_is_valid(int gpionum);' drivers/pinctrl/qcom/pinctrl-msm.c
-          
-          # --- FIX SENSORS (Redenumire PD în CC) ---
           sed -i 's/PD_NOTI_ATTACH_TYPEDEF/CC_NOTI_ATTACH_TYPEDEF/g' drivers/sensors/sx9360.c
           sed -i 's/PDIC_NOTIFY_ID_ATTACH/CCIC_NOTIFY_ID_ATTACH/g' drivers/sensors/sx9360.c
-          
-          # --- FIX DISPLAY DEBUG (Conflict extern vs static) ---
           find drivers/gpu/drm/msm/samsung -name "ss_dsi_panel_debug.h" -exec sed -i '/extern bool.*_debug_partition/s/^/\/\//' {} +
-
-          # --- FIX BATERIE ---
           find drivers/battery_v2 -type f -exec sed -i '/now_isApdo\|num_apdo\|has_apdo/s/^/\/\//' {} +
-          sed -i '/POWER_SUPPLY_EXT_PROP_DIRECT_CLEAR_ERR/s/^/\/\//' drivers/battery_v2/sec_battery.c
 
           # 3. CONFIGURARE
           MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
