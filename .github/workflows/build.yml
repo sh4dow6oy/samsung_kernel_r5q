@@ -33,15 +33,10 @@ jobs:
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           export KBUILD_BUILD_USER="Roynas"
           export KBUILD_BUILD_HOST="S10Lite-Hybrid"
+          export MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
 
-          # 1. PREGĂTIRE DIRECTOR ȘI HEADERE
+          # 1. PREGĂTIRE ȘI STUBBING (Pentru simboluri nedeclarate)
           mkdir -p out
-          make ARCH=arm64 O=out headers_install
-
-          # 2. FIX-URI SURSĂ (Patch-uri automate prin sed)
-
-          # --- FIX UNDEFINED SYMBOLS (STUBBING) ---
-          # Creăm un fișier care să definească funcțiile lipsă raportate de linker
           cat <<EOF > drivers/soc/qcom/stubs.c
           #include <linux/kernel.h>
           #include <linux/types.h>
@@ -50,6 +45,14 @@ jobs:
           void audio_register_wdsp_state_cb(void *p) {}
           void audio_register_mad_mic_state_cb(void *p) {}
           void *get_wsa_sysfs_ptr(void) { return NULL; }
+          void pm6150_set_pd_state(void *a, int b) {}
+          void pm6150_set_cable(void *a, int b) {}
+          void *pm6150_usbpd_create(void *a) { return NULL; }
+          void pm6150_usbpd_destroy(void *a) {}
+          void ccic_send_dock_intent(int a) {}
+          void ccic_send_dock_uevent(int a) {}
+          void set_usb_enable_state(int a) {}
+          void set_usb_enumeration_state(int a) {}
           void *get_ccic_device(void) { return NULL; }
           void set_msg_header(void *a, int b, int c) {}
           void set_uvdm_header(void *a, int b, int c) {}
@@ -62,61 +65,66 @@ jobs:
           int get_checksum(void *a, int b) { return 0; }
           void set_sec_uvdm_rx_header(void *a, int b) {}
           void manager_notifier_register(void *a, void *b, void *c) {}
+          void manager_notifier_unregister(void *a, void *b, void *c) {}
+          void manager_hw_param_update(void *a, int b) {}
           void set_factory_force_usb(int a) {}
           void pm6150_ccic_event_work(void *a, int b) {}
           int get_is_usb(void) { return 0; }
+          void sec_kn_register_notifier(void *a) {}
+          void sec_cmd_set_default_result(void *a) {}
+          void sec_cmd_set_cmd_result(void *a, char *b, int c) {}
+          void sec_cmd_set_cmd_result_all(void *a, char *b, int c, char *d) {}
+          void sec_cmd_exit(void *a) {}
+          void sec_cmd_send_event_to_user(void *a, char *b) {}
+          void sec_cmd_set_cmd_exit(void *a) {}
+          void sec_cmd_init(void *a, void *b, void *c, char *d) {}
+          void ois_reset_register(void *a) {}
+          const char *scsi_trace_parse_cdb(void *a, void *b, int c) { return ""; }
           EOF
           echo "obj-y += stubs.o" >> drivers/soc/qcom/Makefile
 
-          # --- FIX DUPLICATE SYMBOLS ---
-          find drivers/muic -name "muic_core.c" -exec sed -i 's/get_afc_mode/muic_get_afc_mode/g' {} +
-          find drivers/power/supply/qcom_r1 -name "qg-util.c" -exec sed -i 's/is_input_present/qg_is_input_present/g' {} +
-
-          # --- FIX-URI ANTERIOARE ---
-          find techpack/audio -name "wcd-mbhc-adc.c" -exec sed -i 's/mbhc->slow_insertion/0/g' {} +
-          sed -i '30i #define SEC_DEBUG_MODEM_SEPARATE_EN 0' drivers/soc/qcom/subsystem_restart.c
-          sed -i '5755s/devm_kfree/\/\/devm_kfree/' drivers/usb/pd/policy_engine.c
-          sed -i 's/initcall_sec_debug/initcall_debug/g' init/main.c
-          sed -i '0,/struct perf_event \*event;/! s/struct perf_event \*event;/\/\/ duplicat/g' kernel/trace/trace_event_perf.c
-          find drivers/input/touchscreen -name "ist40xx.c" -exec sed -i '/dump_callbacks.inform_dump/s/^/\/\//' {} +
-          find drivers/staging/qca-wifi-host-cmn -name "pld.h" -exec sed -i '/struct pld_context {/i #ifndef __PLD_CONTEXT_GUARD\n#define __PLD_CONTEXT_GUARD' {} +
-          find drivers/staging/qca-wifi-host-cmn -name "pld.h" -exec sed -i '/};/a #endif' {} +
-          sed -i '/#include <linux\/pinctrl\/pinctrl.h>/a bool msm_gpio_is_valid(int gpionum);' drivers/pinctrl/qcom/pinctrl-msm.c
-          sed -i 's/PD_NOTI_ATTACH_TYPEDEF/CC_NOTI_ATTACH_TYPEDEF/g' drivers/sensors/sx9360.c
-          sed -i 's/PDIC_NOTIFY_ID_ATTACH/CCIC_NOTIFY_ID_ATTACH/g' drivers/sensors/sx9360.c
-          find drivers/gpu/drm/msm/samsung -name "ss_dsi_panel_debug.h" -exec sed -i '/extern bool.*_debug_partition/s/^/\/\//' {} +
-          find drivers/battery_v2 -type f -exec sed -i '/now_isApdo\|num_apdo\|has_apdo/s/^/\/\//' {} +
-
-          # 3. CONFIGURARE
-          MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
-          
+          # 2. CONFIGURARE (Merge + Force Enable Drivere Samsung)
           ARCH=arm64 ./scripts/kconfig/merge_config.sh -m -O out \
             arch/arm64/configs/r5q_defconfig \
             arch/arm64/configs/vendor/sm8150_defconfig \
             arch/arm64/configs/a70q.config
-          
+
           ./scripts/config --file out/.config \
-            -d CONFIG_QCOM_KGSL_CORESIGHT -d CONFIG_CORESIGHT \
-            -d CONFIG_BLK_DEV_IO_TRACE -d CONFIG_SEC_DEBUG \
-            -d CONFIG_SECURITY_SMACK -d CONFIG_KSU \
-            -d CONFIG_LTO -d CONFIG_LTO_CLANG -e CONFIG_LTO_NONE \
-            -e CONFIG_SECTION_MISMATCH_WARN_ONLY
+            -e CONFIG_SEC_DEBUG -e CONFIG_SAMSUNG_USBPD \
+            -e CONFIG_USB_NOTIFY -e CONFIG_USB_TYPEC_MANAGER \
+            -e CONFIG_TOUCHSCREEN_SAMSUNG -e CONFIG_MSM_CAMERA_SENSOR_OIS \
+            -e CONFIG_SCSI_MQ_DEFAULT -d CONFIG_LTO_CLANG -e CONFIG_LTO_NONE \
+            -d CONFIG_SECTION_MISMATCH_WARN_ONLY
             
           make $MAKE_ARGS olddefconfig
 
-          # 4. COMPILARE FINALĂ
-          KCFLAGS_BASE="-fcommon -w -Wno-error -Wno-format -DPON_RESTART_REASON_CROSS_FAIL=0 -I$(pwd)/out/usr/include"
+          # 3. FIX-URI PATCH (SED)
+          # Fix Initcall & Perf
+          sed -i 's/initcall_sec_debug/initcall_debug/g' init/main.c
+          sed -i '0,/struct perf_event \*event;/! s/struct perf_event \*event;/\/\/ duplicat/g' kernel/trace/trace_event_perf.c
+          # Fix Linker Conflicts
+          find drivers/muic -name "muic_core.c" -exec sed -i 's/get_afc_mode/muic_get_afc_mode/g' {} +
+          find drivers/power/supply/qcom_r1 -name "qg-util.c" -exec sed -i 's/is_input_present/qg_is_input_present/g' {} +
+          # Fix Audio & USB PD
+          find techpack/audio -name "wcd-mbhc-adc.c" -exec sed -i 's/mbhc->slow_insertion/0/g' {} +
+          sed -i '5755s/devm_kfree/\/\/devm_kfree/' drivers/usb/pd/policy_engine.c
+          sed -i '30i #define SEC_DEBUG_MODEM_SEPARATE_EN 0' drivers/soc/qcom/subsystem_restart.c
+          # Fix Display Conflict
+          find drivers/gpu/drm/msm/samsung -name "ss_dsi_panel_debug.h" -exec sed -i '/extern bool.*_debug_partition/s/^/\/\//' {} +
+
+          # 4. COMPILARE
+          KCFLAGS_BASE="-fcommon -w -Wno-error -DPON_RESTART_REASON_CROSS_FAIL=0 -I$(pwd)/out/usr/include"
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="$KCFLAGS_BASE" Image.gz
 
-      - name: Package with AnyKernel3
+      - name: Package Kernel
         run: |
           git clone https://github.com/osm0sis/AnyKernel3.git
           cp kernel/out/arch/arm64/boot/Image.gz AnyKernel3/
           sed -i 's/device.name1=maguro/device.name1=r5q/g' AnyKernel3/anykernel.sh
           cd AnyKernel3 && zip -r9 ../Kernel-R5Q-SM8150-Final.zip *
 
-      - name: Upload Artifact
+      - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-R5Q-Final
+          name: Kernel-R5Q-Hybrid
           path: Kernel-R5Q-SM8150-Final.zip
