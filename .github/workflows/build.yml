@@ -1,4 +1,4 @@
-name: Build Roynas R5Q - Lineage20-Hybrid
+name: Build Roynas R5Q - Lineage-Hybrid-Final
 on:
   workflow_dispatch:
 
@@ -32,15 +32,18 @@ jobs:
           cd kernel
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           export KBUILD_BUILD_USER="Roynas"
-          export KBUILD_BUILD_HOST="Lineage20-R5Q"
+          export KBUILD_BUILD_HOST="Lineage-R5Q"
           export MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
 
-          # 1. INJECTARE DRIVERE DISPLAY (LineageOS 20 - SM8150)
-          # Inlocuim ambele fisiere critice pentru a asigura compatibilitatea
+          # 1. CLEANUP SAMSUNG DISPLAY JUNK (Nuclear Option)
+          # Scoatem folderul de customizari Samsung care cauzeaza eroarea ss_dsi_panel
+          sed -i 's/obj-y += samsung\///g' drivers/gpu/drm/msm/Makefile
+          
+          # 2. INJECTARE DRIVERE DISPLAY (LineageOS 20 - SM8150)
           wget -O drivers/gpu/drm/msm/sde/sde_crtc.c https://raw.githubusercontent.com/LineageOS/android_kernel_qcom_sm8150/lineage-20/drivers/gpu/drm/msm/sde/sde_crtc.c
           wget -O drivers/gpu/drm/msm/sde/sde_plane.c https://raw.githubusercontent.com/LineageOS/android_kernel_qcom_sm8150/lineage-20/drivers/gpu/drm/msm/sde/sde_plane.c
 
-          # 2. STUBBING (Reparații Linker)
+          # 3. STUBBING (Reparații Linker pentru functii lipsa)
           mkdir -p out
           cat <<EOF > drivers/soc/qcom/stubs.c
           #include <linux/kernel.h>
@@ -61,7 +64,7 @@ jobs:
           EOF
           echo "obj-y += stubs.o" >> drivers/soc/qcom/Makefile
 
-          # 3. CONFIGURARE (Baza A70 AOSP)
+          # 4. CONFIGURARE (AOSP Base)
           make $MAKE_ARGS O=out vendor/sm8150-perf_defconfig
           wget -O arch/arm64/configs/a70q_aosp.config https://raw.githubusercontent.com/pascua28/android_kernel_samsung_sm7150/sixteen/arch/arm64/configs/a70q.config
           cat arch/arm64/configs/a70q_aosp.config >> out/.config
@@ -72,13 +75,13 @@ jobs:
           
           make $MAKE_ARGS O=out olddefconfig
 
-          # 4. FIX-URI FINALE
+          # 5. FIX-URI FINALE
           find techpack/audio -name "wcd-mbhc-adc.c" -exec sed -i 's/mbhc->slow_insertion/0/g' {} +
           sed -i 's/ptep = huge_pmd_share/pte = huge_pmd_share/g' arch/arm64/mm/hugetlbpage.c || true
           sed -i 's/show_fdinfo(m, f, fanotify_fdinfo)/show_fdinfo(m, f, (void *)fanotify_fdinfo)/g' fs/notify/fdinfo.c || true
           sed -i '431,435s/struct perf_event \*event;//' kernel/trace/trace_event_perf.c || true
 
-          # 5. COMPILARE
+          # 6. COMPILARE
           KCFLAGS_BASE="-fcommon -w -Wno-error -Wno-implicit-function-declaration"
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="$KCFLAGS_BASE" O=out Image.gz
 
@@ -89,12 +92,11 @@ jobs:
           cd AnyKernel3
           sed -i 's/device.name1=maguro/device.name1=r5q/g' anykernel.sh
           sed -i 's/device.name2=panda/device.name2=SM-G770F/g' anykernel.sh
-          sed -i 's/device.name3=tuna/device.name3=s10lite/g' anykernel.sh
           sed -i 's|block=.*|block=/dev/block/by-name/boot|g' anykernel.sh
-          zip -r9 ../Kernel-R5Q-Lineage-Final.zip *
+          zip -r9 ../Kernel-R5Q-AOSP.zip *
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
           name: Kernel-S10Lite-R5Q
-          path: Kernel-R5Q-Lineage-Final.zip
+          path: Kernel-R5Q-AOSP.zip
