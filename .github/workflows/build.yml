@@ -1,4 +1,4 @@
-name: Build Roynas R5Q - SM8150 Master
+name: Build Roynas R5Q - SM8150 Final Master
 on:
   workflow_dispatch:
 
@@ -35,10 +35,11 @@ jobs:
           export KBUILD_BUILD_HOST="S10Lite-Hybrid"
           export MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
 
-          # 1. STUBBING (Pentru a trece de linker fără erori de simboluri Samsung)
+          # 1. GENERARE STUB-URI (Bypass pentru funcțiile Samsung lipsă din Techpack/Drivers)
           mkdir -p out
           cat <<EOF > drivers/soc/qcom/stubs.c
           #include <linux/kernel.h>
+          #include <linux/types.h>
           void sec_debug_store_bug_string(char *s) {}
           void enable_emergency_dload_mode(void) {}
           void audio_register_wdsp_state_cb(void *p) {}
@@ -64,21 +65,18 @@ jobs:
           EOF
           echo "obj-y += stubs.o" >> drivers/soc/qcom/Makefile
 
-          # 2. CONFIGURARE (Ierarhia corectă de merge)
-          # Folosim defconfig ca bază absolută
-          CONFIG_BASE="arch/arm64/configs/defconfig"
-          
-          # Adăugăm restul fragmentelor doar dacă există
-          CONFIG_FRAGS=""
-          [ -f arch/arm64/configs/r5q_defconfig ] && CONFIG_FRAGS="$CONFIG_FRAGS arch/arm64/configs/r5q_defconfig"
-          [ -f arch/arm64/configs/vendor/sm8150-perf_defconfig ] && CONFIG_FRAGS="$CONFIG_FRAGS arch/arm64/configs/vendor/sm8150-perf_defconfig"
-          [ -f arch/arm64/configs/a70q.config ] && CONFIG_FRAGS="$CONFIG_FRAGS arch/arm64/configs/a70q.config"
+          # 2. CONFIGURARE (Merge stratificat: Base -> R5Q -> Perf -> A70)
+          CONFIG_LIST="arch/arm64/configs/defconfig"
+          [ -f arch/arm64/configs/r5q_defconfig ] && CONFIG_LIST="$CONFIG_LIST arch/arm64/configs/r5q_defconfig"
+          [ -f arch/arm64/configs/vendor/sm8150-perf_defconfig ] && CONFIG_LIST="$CONFIG_LIST arch/arm64/configs/vendor/sm8150-perf_defconfig"
+          [ -f arch/arm64/configs/a70q.config ] && CONFIG_LIST="$CONFIG_LIST arch/arm64/configs/a70q.config"
 
-          ARCH=arm64 ./scripts/kconfig/merge_config.sh -m -O out $CONFIG_BASE $CONFIG_FRAGS
+          ARCH=arm64 ./scripts/kconfig/merge_config.sh -m -O out $CONFIG_LIST
 
-          # Dezactivăm manual ce a cauzat erori anterior
+          # Dezactivări forțate pentru stabilitate
           ./scripts/config --file out/.config \
             -d CONFIG_SEC_DEBUG \
+            -d CONFIG_KVM \
             -d CONFIG_BLK_DEV_IO_TRACE \
             -d CONFIG_SECURITY_SMACK \
             -d CONFIG_LTO_CLANG -e CONFIG_LTO_NONE \
@@ -86,27 +84,41 @@ jobs:
             
           make $MAKE_ARGS olddefconfig
 
-          # 3. FIX-URI PRIN SED (Reparații rapide în cod)
-          sed -i 's/blk_trace_bio_get_cgid(q, bio)/(u64)0/g' kernel/trace/blktrace.c || true
-          sed -i 's/initcall_sec_debug/initcall_debug/g' init/main.c
+          # 3. FIX-URI PATCH (Reparăm erorile raportate în hugetlbpage, kvm și battery)
+          # Fix HugeTLB: ptep -> pte (Eroarea de nedeclarare)
+          sed -i 's/ptep = huge_pmd_share/pte = huge_pmd_share/g' arch/arm64/mm/hugetlbpage.c || true
+          
+          # Fix KVM Task Struct (Eroarea de PID)
+          sed -i 's/current->pids\[PIDTYPE_PID\].pid/current->pid/g' virt/kvm/kvm_main.c || true
+          
+          # Fix Initcall Samsung Debug
+          sed -i 's/initcall_sec_debug/initcall_debug/g' init/main.c || true
+          
+          # Redenumire simboluri conflictuale (MUIC & QG)
           find drivers/muic -name "muic_core.c" -exec sed -i 's/get_afc_mode/muic_get_afc_mode/g' {} +
           find drivers/power/supply/qcom_r1 -name "qg-util.c" -exec sed -i 's/is_input_present/qg_is_input_present/g' {} +
-          find techpack/audio -name "wcd-mbhc-adc.c" -exec sed -i 's/mbhc->slow_insertion/0/g' {} +
-          sed -i '30i #define SEC_DEBUG_MODEM_SEPARATE_EN 0' drivers/soc/qcom/subsystem_restart.c
           
+          # Fix Audio Techpack insertion
+          find techpack/audio -name "wcd-mbhc-adc.c" -exec sed -i 's/mbhc->slow_insertion/0/g' {} +
+          
+          # Bypass Subsystem Restart Debug
+          sed -i '30i #define SEC_DEBUG_MODEM_SEPARATE_EN 0' drivers/soc/qcom/subsystem_restart.c || true
+
           # 4. COMPILARE
           KCFLAGS_BASE="-fcommon -w -Wno-error -I$(pwd)/out/usr/include"
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="$KCFLAGS_BASE" Image.gz
 
-      - name: Package
+      - name: Package with AnyKernel3
         run: |
           git clone https://github.com/osm0sis/AnyKernel3.git
           cp kernel/out/arch/arm64/boot/Image.gz AnyKernel3/
+          # Setăm numele corect al device-ului pentru S10 Lite
           sed -i 's/device.name1=maguro/device.name1=r5q/g' AnyKernel3/anykernel.sh
-          cd AnyKernel3 && zip -r9 ../Kernel-R5Q-Final.zip *
+          sed -i 's/device.name2=panda/device.name2=SM-G770F/g' AnyKernel3/anykernel.sh
+          cd AnyKernel3 && zip -r9 ../Kernel-R5Q-SM8150-Master.zip *
 
-      - name: Upload
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-R5Q-Master
-          path: Kernel-R5Q-Final.zip
+          name: Kernel-R5Q-Final-Build
+          path: Kernel-R5Q-SM8150-Master.zip
