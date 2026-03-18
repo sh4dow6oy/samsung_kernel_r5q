@@ -89,7 +89,6 @@ jobs:
             arch/arm64/configs/r5q_defconfig \
             arch/arm64/configs/vendor/sm8150-perf_defconfig \
             arch/arm64/configs/a70q.config \
-            arch/arm64/configs/defconfig+
 
           ./scripts/config --file out/.config \
             -d CONFIG_SEC_DEBUG -d CONFIG_SEC_ABC \
