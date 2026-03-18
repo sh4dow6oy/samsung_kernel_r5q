@@ -35,11 +35,13 @@ jobs:
           export KBUILD_BUILD_HOST="S10Lite-R5Q"
           export MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
 
-          # 1. IMPORT CLEAN DISPLAY DRIVER (Din sursa indicata de tine)
-          # Inlocuim fisierul problematic cu cel curat de pe GitHub
+          # 1. IMPORT CLEAN DISPLAY DRIVER
           wget -O drivers/gpu/drm/msm/sde/sde_crtc.c https://raw.githubusercontent.com/Roynas-Android-Playground/kernel_samsung_r3q/master/drivers/gpu/drm/msm/sde/sde_crtc.c
+          
+          # FIX CRITICAL: Eliminam header-ul care lipseste din fisierul proaspat descarcat
+          sed -i 's/#include "ss_dsi_panel_common.h"/\/\/ /g' drivers/gpu/drm/msm/sde/sde_crtc.c
 
-          # 2. STUBBING (Bypass linker errors)
+          # 2. STUBBING
           mkdir -p out
           cat <<EOF > drivers/soc/qcom/stubs.c
           #include <linux/kernel.h>
@@ -66,7 +68,7 @@ jobs:
             -d CONFIG_SECURITY_SMACK -e CONFIG_SECTION_MISMATCH_WARN_ONLY
           make $MAKE_ARGS O=out olddefconfig
 
-          # 4. FIX-URI RAMASE (Audio, Memory, Trace)
+          # 4. ALTE FIX-URI (Audio, Memory, Trace)
           find techpack/audio -name "wcd-mbhc-adc.c" -exec sed -i 's/mbhc->slow_insertion/0/g' {} +
           sed -i 's/ptep = huge_pmd_share/pte = huge_pmd_share/g' arch/arm64/mm/hugetlbpage.c || true
           sed -i 's/show_fdinfo(m, f, fanotify_fdinfo)/show_fdinfo(m, f, (void *)fanotify_fdinfo)/g' fs/notify/fdinfo.c || true
@@ -85,10 +87,10 @@ jobs:
           sed -i 's/device.name2=panda/device.name2=SM-G770F/g' anykernel.sh
           sed -i 's/device.name3=tuna/device.name3=s10lite/g' anykernel.sh
           sed -i 's|block=.*|block=/dev/block/by-name/boot|g' anykernel.sh
-          zip -r9 ../Kernel-R5Q-Final.zip *
+          zip -r9 ../Kernel-R5Q-Final-Master.zip *
 
-      - name: Upload Artifact
+      - name: Upload
         uses: actions/upload-artifact@v4
         with:
           name: Kernel-S10Lite-R5Q
-          path: Kernel-R5Q-Final.zip
+          path: Kernel-R5Q-Final-Master.zip
