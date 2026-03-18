@@ -35,7 +35,7 @@ jobs:
           export KBUILD_BUILD_HOST="S10Lite-R5Q"
           export MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
 
-          # 1. STUBBING (Reparăm linkerul pentru funcții Samsung lipsă)
+          # 1. STUBBING
           mkdir -p out
           cat <<EOF > drivers/soc/qcom/stubs.c
           #include <linux/kernel.h>
@@ -63,19 +63,18 @@ jobs:
             -d CONFIG_SECURITY_SMACK -e CONFIG_SECTION_MISMATCH_WARN_ONLY
           make $MAKE_ARGS O=out olddefconfig
 
-          # 3. PATCHING (Fix Display AOSP & Audio)
+          # 3. PATCHING (Metoda Simplificata)
           
-          # Fix Display: Forțăm modul AOSP și dezactivăm headerele Samsung
+          # Fix Display: Injectam definitiile lipsa
           sed -i '47i static bool is_aosp = true;' drivers/gpu/drm/msm/sde/sde_crtc.c
           sed -i 's/#include "ss_dsi_panel_common.h"/\/\/ /g' drivers/gpu/drm/msm/sde/sde_crtc.c || true
 
-          # REPARAȚIE RADICALĂ SDE_CRTC: 
-          # Transformăm funcția de FOD (Fingerprint on Display) într-un stub gol care returnează imediat.
-          # Asta previne orice eroare de tip "vdd" sau "plane_idx".
-          sed -i '/void sde_crtc_fod_atomic_check/,/{/ { /{/ a return; \n } \n \/* ' drivers/gpu/drm/msm/sde/sde_crtc.c
-          sed -i '/sde_crtc_install_properties/i *\/ ' drivers/gpu/drm/msm/sde/sde_crtc.c
+          # Inlocuim TOT corpul functiei sde_crtc_fod_atomic_check cu un simplu return
+          # Folosim un interval de linii (intre 5396 si 5440 unde este de obicei aceasta functie)
+          sed -i '5396,5440s/vdd->/ \/\/ /g' drivers/gpu/drm/msm/sde/sde_crtc.c
+          sed -i 's/struct samsung_display_driver_data \*vdd =.*/return;/g' drivers/gpu/drm/msm/sde/sde_crtc.c
 
-          # Fix Audio: Bypass slow_insertion
+          # Fix Audio: slow_insertion bypass
           find techpack/audio -name "wcd-mbhc-adc.c" -exec sed -i 's/mbhc->slow_insertion/0/g' {} +
 
           # Fix Memory & Tracing
@@ -83,11 +82,11 @@ jobs:
           sed -i 's/show_fdinfo(m, f, fanotify_fdinfo)/show_fdinfo(m, f, (void *)fanotify_fdinfo)/g' fs/notify/fdinfo.c || true
           sed -i '431,435s/struct perf_event \*event;//' kernel/trace/trace_event_perf.c || true
 
-          # 4. COMPILARE Image.gz
+          # 4. COMPILARE
           KCFLAGS_BASE="-fcommon -w -Wno-error -Wno-implicit-function-declaration"
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="$KCFLAGS_BASE" O=out Image.gz
 
-      - name: Package for R5Q
+      - name: Package for R5Q (S10 Lite)
         run: |
           git clone https://github.com/osm0sis/AnyKernel3.git
           cp kernel/out/arch/arm64/boot/Image.gz AnyKernel3/
@@ -98,7 +97,7 @@ jobs:
           sed -i 's|block=.*|block=/dev/block/by-name/boot|g' anykernel.sh
           zip -r9 ../Kernel-R5Q-Final-Master.zip *
 
-      - name: Upload Artifact
+      - name: Upload
         uses: actions/upload-artifact@v4
         with:
           name: Kernel-S10Lite-R5Q
