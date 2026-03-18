@@ -35,7 +35,11 @@ jobs:
           export KBUILD_BUILD_HOST="S10Lite-R5Q"
           export MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
 
-          # 1. STUBBING
+          # 1. IMPORT CLEAN DISPLAY DRIVER (Din sursa indicata de tine)
+          # Inlocuim fisierul problematic cu cel curat de pe GitHub
+          wget -O drivers/gpu/drm/msm/sde/sde_crtc.c https://raw.githubusercontent.com/Roynas-Android-Playground/kernel_samsung_r3q/master/drivers/gpu/drm/msm/sde/sde_crtc.c
+
+          # 2. STUBBING (Bypass linker errors)
           mkdir -p out
           cat <<EOF > drivers/soc/qcom/stubs.c
           #include <linux/kernel.h>
@@ -50,43 +54,29 @@ jobs:
           void manager_notifier_register(void *a, void *b, void *c) {}
           void sec_kn_register_notifier(void *a) {}
           void sec_cmd_set_default_result(void *a) {}
-          void sec_cmd_set_cmd_result(void *a, char *b, int c) {}
           void sec_cmd_init(void *a, void *b, void *c, char *d) {}
           const char *scsi_trace_parse_cdb(void *a, void *b, int c) { return ""; }
           EOF
           echo "obj-y += stubs.o" >> drivers/soc/qcom/Makefile
 
-          # 2. CONFIGURARE
+          # 3. CONFIGURARE
           make $MAKE_ARGS O=out vendor/sm8150-perf_defconfig
           ./scripts/config --file out/.config \
             -d CONFIG_SEC_DEBUG -d CONFIG_KVM -d CONFIG_NFS_FS \
             -d CONFIG_SECURITY_SMACK -e CONFIG_SECTION_MISMATCH_WARN_ONLY
           make $MAKE_ARGS O=out olddefconfig
 
-          # 3. PATCHING (Metoda Simplificata)
-          
-          # Fix Display: Injectam definitiile lipsa
-          sed -i '47i static bool is_aosp = true;' drivers/gpu/drm/msm/sde/sde_crtc.c
-          sed -i 's/#include "ss_dsi_panel_common.h"/\/\/ /g' drivers/gpu/drm/msm/sde/sde_crtc.c || true
-
-          # Inlocuim TOT corpul functiei sde_crtc_fod_atomic_check cu un simplu return
-          # Folosim un interval de linii (intre 5396 si 5440 unde este de obicei aceasta functie)
-          sed -i '5396,5440s/vdd->/ \/\/ /g' drivers/gpu/drm/msm/sde/sde_crtc.c
-          sed -i 's/struct samsung_display_driver_data \*vdd =.*/return;/g' drivers/gpu/drm/msm/sde/sde_crtc.c
-
-          # Fix Audio: slow_insertion bypass
+          # 4. FIX-URI RAMASE (Audio, Memory, Trace)
           find techpack/audio -name "wcd-mbhc-adc.c" -exec sed -i 's/mbhc->slow_insertion/0/g' {} +
-
-          # Fix Memory & Tracing
           sed -i 's/ptep = huge_pmd_share/pte = huge_pmd_share/g' arch/arm64/mm/hugetlbpage.c || true
           sed -i 's/show_fdinfo(m, f, fanotify_fdinfo)/show_fdinfo(m, f, (void *)fanotify_fdinfo)/g' fs/notify/fdinfo.c || true
           sed -i '431,435s/struct perf_event \*event;//' kernel/trace/trace_event_perf.c || true
 
-          # 4. COMPILARE
+          # 5. COMPILARE Image.gz
           KCFLAGS_BASE="-fcommon -w -Wno-error -Wno-implicit-function-declaration"
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="$KCFLAGS_BASE" O=out Image.gz
 
-      - name: Package for R5Q (S10 Lite)
+      - name: Package for R5Q
         run: |
           git clone https://github.com/osm0sis/AnyKernel3.git
           cp kernel/out/arch/arm64/boot/Image.gz AnyKernel3/
@@ -95,10 +85,10 @@ jobs:
           sed -i 's/device.name2=panda/device.name2=SM-G770F/g' anykernel.sh
           sed -i 's/device.name3=tuna/device.name3=s10lite/g' anykernel.sh
           sed -i 's|block=.*|block=/dev/block/by-name/boot|g' anykernel.sh
-          zip -r9 ../Kernel-R5Q-Final-Master.zip *
+          zip -r9 ../Kernel-R5Q-Final.zip *
 
-      - name: Upload
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: Kernel-S10Lite-R5Q
-          path: Kernel-R5Q-Final-Master.zip
+          path: Kernel-R5Q-Final.zip
