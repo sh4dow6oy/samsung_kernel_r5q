@@ -35,12 +35,11 @@ jobs:
           export KBUILD_BUILD_HOST="S10Lite-Hybrid"
           export MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
 
-          # 1. ELIMINARE TOTALĂ SAMSUNG DEBUG & STUBBING
+          # 1. PREGĂTIRE ȘI STUBBING
           mkdir -p out
           cat <<EOF > drivers/soc/qcom/stubs.c
           #include <linux/kernel.h>
           #include <linux/types.h>
-          // Stubs pentru funcții care rămân agățate prin cod chiar și cu debug OFF
           void sec_debug_store_bug_string(char *s) {}
           void enable_emergency_dload_mode(void) {}
           void audio_register_wdsp_state_cb(void *p) {}
@@ -84,7 +83,7 @@ jobs:
           EOF
           echo "obj-y += stubs.o" >> drivers/soc/qcom/Makefile
 
-          # 2. CONFIGURARE (DEZACTIVARE SAMSUNG DEBUG)
+          # 2. CONFIGURARE
           ARCH=arm64 ./scripts/kconfig/merge_config.sh -m -O out \
             arch/arm64/configs/r5q_defconfig \
             arch/arm64/configs/vendor/sm8150_defconfig \
@@ -92,33 +91,32 @@ jobs:
 
           ./scripts/config --file out/.config \
             -d CONFIG_SEC_DEBUG \
-            -d CONFIG_SEC_DEBUG_SCHED_LOG \
-            -d CONFIG_SEC_DEBUG_IRQ_EXIT_LOG \
-            -d CONFIG_SEC_DEBUG_SOFTIRQ_EXIT_LOG \
-            -d CONFIG_SEC_DEBUG_REBOOT_REASON \
             -d CONFIG_SEC_ABC \
-            -d CONFIG_SEC_DEBUG_AUTO_SUMMARY \
+            -d CONFIG_BLK_DEV_IO_TRACE \
+            -d CONFIG_FTRACE \
             -d CONFIG_LTO_CLANG -e CONFIG_LTO_NONE \
             -e CONFIG_SECTION_MISMATCH_WARN_ONLY
             
           make $MAKE_ARGS olddefconfig
 
-          # 3. FIX-URI MANUALE PRIN SED
-          # Dezactivăm manual apelurile către debug în headerele critice
+          # 3. FIX-URI PATCH (SED)
+          # Fix blktrace type mismatch (dacă cumva rămâne activ)
+          sed -i 's/blk_trace_bio_get_cgid(q, bio)/(u64)0/g' kernel/trace/blktrace.c || true
+          
+          # Fix Initcall
           sed -i 's/initcall_sec_debug/initcall_debug/g' init/main.c
-          # Redenumim conflictele de simboluri
+          # Redenumim conflictele
           find drivers/muic -name "muic_core.c" -exec sed -i 's/get_afc_mode/muic_get_afc_mode/g' {} +
           find drivers/power/supply/qcom_r1 -name "qg-util.c" -exec sed -i 's/is_input_present/qg_is_input_present/g' {} +
-          # Bypass pentru Subsystem Restart & Audio
-          sed -i '30i #define SEC_DEBUG_MODEM_SEPARATE_EN 0' drivers/soc/qcom/subsystem_restart.c
+          # Audio & Subsystem
           find techpack/audio -name "wcd-mbhc-adc.c" -exec sed -i 's/mbhc->slow_insertion/0/g' {} +
+          sed -i '30i #define SEC_DEBUG_MODEM_SEPARATE_EN 0' drivers/soc/qcom/subsystem_restart.c
           
-          # 4. COMPILARE Image.gz
-          # Eliminăm complet flag-ul PON_RESTART_REASON_CROSS_FAIL care a cauzat eroarea
+          # 4. COMPILARE
           KCFLAGS_BASE="-fcommon -w -Wno-error -I$(pwd)/out/usr/include"
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="$KCFLAGS_BASE" Image.gz
 
-      - name: Package with AnyKernel3
+      - name: Package Kernel
         run: |
           git clone https://github.com/osm0sis/AnyKernel3.git
           cp kernel/out/arch/arm64/boot/Image.gz AnyKernel3/
@@ -128,5 +126,5 @@ jobs:
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-R5Q-Clean
+          name: Kernel-R5Q-Final
           path: Kernel-R5Q-SM8150-Final.zip
