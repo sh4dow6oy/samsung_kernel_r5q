@@ -1,4 +1,4 @@
-name: Build Roynas R5Q - R3Q Hybrid
+name: Build Roynas R5Q - R3Q HeaderFix
 on:
   workflow_dispatch:
 
@@ -35,17 +35,23 @@ jobs:
           export KBUILD_BUILD_HOST="R5Q-AOSP"
           export MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
 
-          # 1. R3Q DISPLAY DRIVER INJECTION (The "Roynas" Way)
-          # Stergem driverele de display care dau erori
+          # 1. R3Q DISPLAY DRIVER INJECTION & HEADER FIX
           rm -rf drivers/gpu/drm/msm/sde
           rm -rf drivers/gpu/drm/msm/samsung
           
-          # Clonam sursa R3Q si copiem driverele de display curate
           git clone https://github.com/Roynas-Android-Playground/kernel_samsung_r3q -b master ../r3q_source
           cp -r ../r3q_source/drivers/gpu/drm/msm/sde drivers/gpu/drm/msm/
           cp -r ../r3q_source/drivers/gpu/drm/msm/samsung drivers/gpu/drm/msm/
 
-          # 2. STUBBING (Linker Fixes pentru functii Samsung lipsa)
+          # CRITICAL: Mutam header-ul acolo unde il cauta sde_crtc.c (in acelasi folder)
+          cp drivers/gpu/drm/msm/samsung/ss_dsi_panel_common.h drivers/gpu/drm/msm/sde/
+          
+          # 2. DEFINITII AOSP (Evitam erorile is_aosp undeclared)
+          # Injectam variabila direct in fisierele care o folosesc
+          sed -i '47i static bool is_aosp = true;' drivers/gpu/drm/msm/sde/sde_crtc.c
+          sed -i '47i static bool is_aosp = true;' drivers/gpu/drm/msm/sde/sde_plane.c
+
+          # 3. STUBBING (Linker Fixes)
           mkdir -p out
           cat <<EOF > drivers/soc/qcom/stubs.c
           #include <linux/kernel.h>
@@ -66,40 +72,25 @@ jobs:
           EOF
           echo "obj-y += stubs.o" >> drivers/soc/qcom/Makefile
 
-          # 3. CONFIGURARE (AOSP Base de la A70)
+          # 4. CONFIGURARE (AOSP Base)
           make $MAKE_ARGS O=out vendor/sm8150-perf_defconfig
           wget -O arch/arm64/configs/a70q_aosp.config https://raw.githubusercontent.com/pascua28/android_kernel_samsung_sm7150/sixteen/arch/arm64/configs/a70q.config
           cat arch/arm64/configs/a70q_aosp.config >> out/.config
-          
-          # Dezactivam modulele care stim ca fac probleme pe SM8150
-          ./scripts/config --file out/.config \
-            -d CONFIG_SEC_DEBUG -d CONFIG_SECURITY_SMACK \
-            -d CONFIG_KVM -e CONFIG_SECTION_MISMATCH_WARN_ONLY
-          
+          ./scripts/config --file out/.config -d CONFIG_SEC_DEBUG -d CONFIG_SECURITY_SMACK -d CONFIG_KVM -e CONFIG_SECTION_MISMATCH_WARN_ONLY
           make $MAKE_ARGS O=out olddefconfig
 
-          # 4. FIX-URI FINALE (Audio & Memory)
+          # 5. FIX-URI AUDIO & MEMORY
           find techpack/audio -name "wcd-mbhc-adc.c" -exec sed -i 's/mbhc->slow_insertion/0/g' {} +
           sed -i 's/ptep = huge_pmd_share/pte = huge_pmd_share/g' arch/arm64/mm/hugetlbpage.c || true
           sed -i 's/show_fdinfo(m, f, fanotify_fdinfo)/show_fdinfo(m, f, (void *)fanotify_fdinfo)/g' fs/notify/fdinfo.c || true
           sed -i '431,435s/struct perf_event \*event;//' kernel/trace/trace_event_perf.c || true
 
-          # 5. COMPILARE
-          # Folosim -w pentru a ignora warning-urile si a accelera build-ul
+          # 6. COMPILARE
           KCFLAGS_BASE="-fcommon -w -Wno-error -Wno-implicit-function-declaration"
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="$KCFLAGS_BASE" O=out Image.gz
-
-      - name: Package for R5Q
-        run: |
-          git clone https://github.com/osm0sis/AnyKernel3.git
-          cp kernel/out/arch/arm64/boot/Image.gz AnyKernel3/
-          cd AnyKernel3
-          sed -i 's/device.name1=maguro/device.name1=r5q/g' anykernel.sh
-          sed -i 's/device.name2=panda/device.name2=SM-G770F/g' anykernel.sh
-          zip -r9 ../Kernel-R5Q-Roynas-Hybrid.zip *
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-S10Lite-R5Q
-          path: Kernel-R5Q-Roynas-Hybrid.zip
+          name: Kernel-R5Q-Roynas
+          path: kernel/out/arch/arm64/boot/Image.gz
