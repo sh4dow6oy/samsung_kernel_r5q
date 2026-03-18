@@ -35,7 +35,7 @@ jobs:
           export KBUILD_BUILD_HOST="S10Lite-R5Q"
           export MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
 
-          # 1. STUBBING
+          # 1. STUBBING (Reparăm linkerul pentru funcții Samsung lipsă)
           mkdir -p out
           cat <<EOF > drivers/soc/qcom/stubs.c
           #include <linux/kernel.h>
@@ -50,6 +50,7 @@ jobs:
           void manager_notifier_register(void *a, void *b, void *c) {}
           void sec_kn_register_notifier(void *a) {}
           void sec_cmd_set_default_result(void *a) {}
+          void sec_cmd_set_cmd_result(void *a, char *b, int c) {}
           void sec_cmd_init(void *a, void *b, void *c, char *d) {}
           const char *scsi_trace_parse_cdb(void *a, void *b, int c) { return ""; }
           EOF
@@ -62,18 +63,19 @@ jobs:
             -d CONFIG_SECURITY_SMACK -e CONFIG_SECTION_MISMATCH_WARN_ONLY
           make $MAKE_ARGS O=out olddefconfig
 
-          # 3. PATCHING (Metoda Chirurgicala)
+          # 3. PATCHING (Fix Display AOSP & Audio)
           
-          # Fix Display Header & Variable
+          # Fix Display: Forțăm modul AOSP și dezactivăm headerele Samsung
           sed -i '47i static bool is_aosp = true;' drivers/gpu/drm/msm/sde/sde_crtc.c
           sed -i 's/#include "ss_dsi_panel_common.h"/\/\/ /g' drivers/gpu/drm/msm/sde/sde_crtc.c || true
 
-          # Inlocuim toate liniile care contin vdd-> cu un comentariu sigur
-          # Aceasta previne erorile de structura fara a afecta acoladele funcțiilor
-          sed -i 's/.*vdd->.*/\/\/ Removed Samsung Fingerprint Logic/g' drivers/gpu/drm/msm/sde/sde_crtc.c
-          sed -i 's/struct samsung_display_driver_data \*vdd/\/\/ /g' drivers/gpu/drm/msm/sde/sde_crtc.c
+          # REPARAȚIE RADICALĂ SDE_CRTC: 
+          # Transformăm funcția de FOD (Fingerprint on Display) într-un stub gol care returnează imediat.
+          # Asta previne orice eroare de tip "vdd" sau "plane_idx".
+          sed -i '/void sde_crtc_fod_atomic_check/,/{/ { /{/ a return; \n } \n \/* ' drivers/gpu/drm/msm/sde/sde_crtc.c
+          sed -i '/sde_crtc_install_properties/i *\/ ' drivers/gpu/drm/msm/sde/sde_crtc.c
 
-          # Fix Audio: slow_insertion error
+          # Fix Audio: Bypass slow_insertion
           find techpack/audio -name "wcd-mbhc-adc.c" -exec sed -i 's/mbhc->slow_insertion/0/g' {} +
 
           # Fix Memory & Tracing
@@ -81,11 +83,11 @@ jobs:
           sed -i 's/show_fdinfo(m, f, fanotify_fdinfo)/show_fdinfo(m, f, (void *)fanotify_fdinfo)/g' fs/notify/fdinfo.c || true
           sed -i '431,435s/struct perf_event \*event;//' kernel/trace/trace_event_perf.c || true
 
-          # 4. COMPILARE
+          # 4. COMPILARE Image.gz
           KCFLAGS_BASE="-fcommon -w -Wno-error -Wno-implicit-function-declaration"
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="$KCFLAGS_BASE" O=out Image.gz
 
-      - name: Package for R5Q (S10 Lite)
+      - name: Package for R5Q
         run: |
           git clone https://github.com/osm0sis/AnyKernel3.git
           cp kernel/out/arch/arm64/boot/Image.gz AnyKernel3/
