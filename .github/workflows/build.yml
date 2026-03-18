@@ -35,13 +35,14 @@ jobs:
           export KBUILD_BUILD_HOST="S10Lite-Hybrid"
           export MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
 
-          # 1. PREGĂTIRE ȘI STUBBING (Pentru simboluri nedeclarate)
+          # 1. ELIMINARE TOTALĂ SAMSUNG DEBUG & STUBBING
           mkdir -p out
           cat <<EOF > drivers/soc/qcom/stubs.c
           #include <linux/kernel.h>
           #include <linux/types.h>
-          void enable_emergency_dload_mode(void) {}
+          // Stubs pentru funcții care rămân agățate prin cod chiar și cu debug OFF
           void sec_debug_store_bug_string(char *s) {}
+          void enable_emergency_dload_mode(void) {}
           void audio_register_wdsp_state_cb(void *p) {}
           void audio_register_mad_mic_state_cb(void *p) {}
           void *get_wsa_sysfs_ptr(void) { return NULL; }
@@ -83,40 +84,41 @@ jobs:
           EOF
           echo "obj-y += stubs.o" >> drivers/soc/qcom/Makefile
 
-          # 2. CONFIGURARE (Merge + Force Enable Drivere Samsung)
+          # 2. CONFIGURARE (DEZACTIVARE SAMSUNG DEBUG)
           ARCH=arm64 ./scripts/kconfig/merge_config.sh -m -O out \
             arch/arm64/configs/r5q_defconfig \
             arch/arm64/configs/vendor/sm8150_defconfig \
             arch/arm64/configs/a70q.config
 
           ./scripts/config --file out/.config \
-            -e CONFIG_SEC_DEBUG -e CONFIG_SAMSUNG_USBPD \
-            -e CONFIG_USB_NOTIFY -e CONFIG_USB_TYPEC_MANAGER \
-            -e CONFIG_TOUCHSCREEN_SAMSUNG -e CONFIG_MSM_CAMERA_SENSOR_OIS \
-            -e CONFIG_SCSI_MQ_DEFAULT -d CONFIG_LTO_CLANG -e CONFIG_LTO_NONE \
-            -d CONFIG_SECTION_MISMATCH_WARN_ONLY
+            -d CONFIG_SEC_DEBUG \
+            -d CONFIG_SEC_DEBUG_SCHED_LOG \
+            -d CONFIG_SEC_DEBUG_IRQ_EXIT_LOG \
+            -d CONFIG_SEC_DEBUG_SOFTIRQ_EXIT_LOG \
+            -d CONFIG_SEC_DEBUG_REBOOT_REASON \
+            -d CONFIG_SEC_ABC \
+            -d CONFIG_SEC_DEBUG_AUTO_SUMMARY \
+            -d CONFIG_LTO_CLANG -e CONFIG_LTO_NONE \
+            -e CONFIG_SECTION_MISMATCH_WARN_ONLY
             
           make $MAKE_ARGS olddefconfig
 
-          # 3. FIX-URI PATCH (SED)
-          # Fix Initcall & Perf
+          # 3. FIX-URI MANUALE PRIN SED
+          # Dezactivăm manual apelurile către debug în headerele critice
           sed -i 's/initcall_sec_debug/initcall_debug/g' init/main.c
-          sed -i '0,/struct perf_event \*event;/! s/struct perf_event \*event;/\/\/ duplicat/g' kernel/trace/trace_event_perf.c
-          # Fix Linker Conflicts
+          # Redenumim conflictele de simboluri
           find drivers/muic -name "muic_core.c" -exec sed -i 's/get_afc_mode/muic_get_afc_mode/g' {} +
           find drivers/power/supply/qcom_r1 -name "qg-util.c" -exec sed -i 's/is_input_present/qg_is_input_present/g' {} +
-          # Fix Audio & USB PD
-          find techpack/audio -name "wcd-mbhc-adc.c" -exec sed -i 's/mbhc->slow_insertion/0/g' {} +
-          sed -i '5755s/devm_kfree/\/\/devm_kfree/' drivers/usb/pd/policy_engine.c
+          # Bypass pentru Subsystem Restart & Audio
           sed -i '30i #define SEC_DEBUG_MODEM_SEPARATE_EN 0' drivers/soc/qcom/subsystem_restart.c
-          # Fix Display Conflict
-          find drivers/gpu/drm/msm/samsung -name "ss_dsi_panel_debug.h" -exec sed -i '/extern bool.*_debug_partition/s/^/\/\//' {} +
-
-          # 4. COMPILARE
-          KCFLAGS_BASE="-fcommon -w -Wno-error -DPON_RESTART_REASON_CROSS_FAIL=0 -I$(pwd)/out/usr/include"
+          find techpack/audio -name "wcd-mbhc-adc.c" -exec sed -i 's/mbhc->slow_insertion/0/g' {} +
+          
+          # 4. COMPILARE Image.gz
+          # Eliminăm complet flag-ul PON_RESTART_REASON_CROSS_FAIL care a cauzat eroarea
+          KCFLAGS_BASE="-fcommon -w -Wno-error -I$(pwd)/out/usr/include"
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="$KCFLAGS_BASE" Image.gz
 
-      - name: Package Kernel
+      - name: Package with AnyKernel3
         run: |
           git clone https://github.com/osm0sis/AnyKernel3.git
           cp kernel/out/arch/arm64/boot/Image.gz AnyKernel3/
@@ -126,5 +128,5 @@ jobs:
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-R5Q-Hybrid
+          name: Kernel-R5Q-Clean
           path: Kernel-R5Q-SM8150-Final.zip
