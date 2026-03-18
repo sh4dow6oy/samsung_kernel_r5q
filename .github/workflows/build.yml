@@ -39,6 +39,9 @@ jobs:
           make ARCH=arm64 O=out headers_install
 
           # 2. FIX-URI SURSĂ (Patch-uri automate prin sed)
+
+          # Fix Subsystem Restart (Undeclared SEC_DEBUG_MODEM_SEPARATE_EN)
+          sed -i '30i #define SEC_DEBUG_MODEM_SEPARATE_EN 0' drivers/soc/qcom/subsystem_restart.c
           
           # Fix USB PD (No member named 'desc' in 'struct usbpd')
           sed -i '5755s/devm_kfree/\/\/devm_kfree/' drivers/usb/pd/policy_engine.c
@@ -96,7 +99,7 @@ jobs:
           git clone https://github.com/osm0sis/AnyKernel3.git
           cp kernel/out/arch/arm64/boot/Image.gz AnyKernel3/
           sed -i 's/device.name1=maguro/device.name1=r5q/g' AnyKernel3/anykernel.sh
-          cd AnyKernel3 && zip -r9 ../Kernel-R5Q-SM8150-Final.zip *
+          cd AnyKernel3 && zip -r9 ../Kernel-R5Q-SM8150-Hybrid.zip *
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
