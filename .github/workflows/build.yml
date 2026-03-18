@@ -35,13 +35,30 @@ jobs:
           export KBUILD_BUILD_HOST="S10Lite-R5Q"
           export MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
 
-          # 1. IMPORT CLEAN DISPLAY DRIVER
+          # 1. IMPORT & FIX DISPLAY DRIVER (Clean r3q source)
           wget -O drivers/gpu/drm/msm/sde/sde_crtc.c https://raw.githubusercontent.com/Roynas-Android-Playground/kernel_samsung_r3q/master/drivers/gpu/drm/msm/sde/sde_crtc.c
-          
-          # FIX CRITICAL: Eliminam header-ul care lipseste din fisierul proaspat descarcat
           sed -i 's/#include "ss_dsi_panel_common.h"/\/\/ /g' drivers/gpu/drm/msm/sde/sde_crtc.c
+          sed -i '47i static bool is_aosp = true;' drivers/gpu/drm/msm/sde/sde_crtc.c
+          
+          # Stub funcția de amprentă (FOD) pentru a evita erorile vdd->
+          sed -i '/static void sde_crtc_fod_atomic_check/,/}/c\static void sde_crtc_fod_atomic_check(struct sde_crtc_state *cstate, struct plane_state *pstates, int cnt) { return; }' drivers/gpu/drm/msm/sde/sde_crtc.c
 
-          # 2. STUBBING
+          # 2. CONFIGURARE (Folosind baza a70q.config indicată de tine)
+          # Combinăm defconfig-ul de SM8150 cu setările specifice de A70 AOSP
+          make $MAKE_ARGS O=out vendor/sm8150-perf_defconfig
+          wget -O arch/arm64/configs/a70q_aosp.config https://raw.githubusercontent.com/pascua28/android_kernel_samsung_sm7150/sixteen/arch/arm64/configs/a70q.config
+          
+          # Aplicăm setările din a70q.config peste config-ul curent
+          cat arch/arm64/configs/a70q_aosp.config >> out/.config
+          
+          # Dezactivăm forțat SEC_DEBUG și SMACK care crapă pe SM8150
+          ./scripts/config --file out/.config \
+            -d CONFIG_SEC_DEBUG -d CONFIG_SECURITY_SMACK \
+            -d CONFIG_KVM -e CONFIG_SECTION_MISMATCH_WARN_ONLY
+          
+          make $MAKE_ARGS O=out olddefconfig
+
+          # 3. STUBBING EXTERN (Linker Fixes)
           mkdir -p out
           cat <<EOF > drivers/soc/qcom/stubs.c
           #include <linux/kernel.h>
@@ -61,20 +78,13 @@ jobs:
           EOF
           echo "obj-y += stubs.o" >> drivers/soc/qcom/Makefile
 
-          # 3. CONFIGURARE
-          make $MAKE_ARGS O=out vendor/sm8150-perf_defconfig
-          ./scripts/config --file out/.config \
-            -d CONFIG_SEC_DEBUG -d CONFIG_KVM -d CONFIG_NFS_FS \
-            -d CONFIG_SECURITY_SMACK -e CONFIG_SECTION_MISMATCH_WARN_ONLY
-          make $MAKE_ARGS O=out olddefconfig
-
-          # 4. ALTE FIX-URI (Audio, Memory, Trace)
+          # 4. FIX AUDIO & MEMORY
           find techpack/audio -name "wcd-mbhc-adc.c" -exec sed -i 's/mbhc->slow_insertion/0/g' {} +
           sed -i 's/ptep = huge_pmd_share/pte = huge_pmd_share/g' arch/arm64/mm/hugetlbpage.c || true
           sed -i 's/show_fdinfo(m, f, fanotify_fdinfo)/show_fdinfo(m, f, (void *)fanotify_fdinfo)/g' fs/notify/fdinfo.c || true
           sed -i '431,435s/struct perf_event \*event;//' kernel/trace/trace_event_perf.c || true
 
-          # 5. COMPILARE Image.gz
+          # 5. COMPILARE
           KCFLAGS_BASE="-fcommon -w -Wno-error -Wno-implicit-function-declaration"
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="$KCFLAGS_BASE" O=out Image.gz
 
@@ -87,10 +97,10 @@ jobs:
           sed -i 's/device.name2=panda/device.name2=SM-G770F/g' anykernel.sh
           sed -i 's/device.name3=tuna/device.name3=s10lite/g' anykernel.sh
           sed -i 's|block=.*|block=/dev/block/by-name/boot|g' anykernel.sh
-          zip -r9 ../Kernel-R5Q-Final-Master.zip *
+          zip -r9 ../Kernel-R5Q-AOSP-Final.zip *
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
           name: Kernel-S10Lite-R5Q
-          path: Kernel-R5Q-Final-Master.zip
+          path: Kernel-R5Q-AOSP-Final.zip
