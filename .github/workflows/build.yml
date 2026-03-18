@@ -40,36 +40,39 @@ jobs:
 
           # 2. FIX-URI SURSĂ (Patch-uri automate prin sed)
 
-          # Fix Subsystem Restart (Undeclared SEC_DEBUG_MODEM_SEPARATE_EN)
+          # --- FIX AUDIO (No member named 'slow_insertion') ---
+          find techpack/audio -name "wcd-mbhc-adc.c" -exec sed -i 's/mbhc->slow_insertion/0/g' {} +
+
+          # --- FIX SUBSYSTEM RESTART (Undeclared SEC_DEBUG_MODEM_SEPARATE_EN) ---
           sed -i '30i #define SEC_DEBUG_MODEM_SEPARATE_EN 0' drivers/soc/qcom/subsystem_restart.c
           
-          # Fix USB PD (No member named 'desc' in 'struct usbpd')
+          # --- FIX USB PD (No member named 'desc' in 'struct usbpd') ---
           sed -i '5755s/devm_kfree/\/\/devm_kfree/' drivers/usb/pd/policy_engine.c
 
-          # Fix Initcall (Eroarea initcall_sec_debug)
+          # --- FIX INITCALL (Eroarea initcall_sec_debug) ---
           sed -i 's/initcall_sec_debug/initcall_debug/g' init/main.c
           
-          # Fix Perf Event (Duplicat kernel/trace)
+          # --- FIX PERF EVENT (Duplicat kernel/trace) ---
           sed -i '0,/struct perf_event \*event;/! s/struct perf_event \*event;/\/\/ duplicat/g' kernel/trace/trace_event_perf.c
           
-          # Fix Imagis Touch (Incomplete definition tsp_dump_callbacks)
+          # --- FIX IMAGIS TOUCH (Incomplete definition tsp_dump_callbacks) ---
           find drivers/input/touchscreen -name "ist40xx.c" -exec sed -i '/dump_callbacks.inform_dump/s/^/\/\//' {} +
 
-          # Fix Wi-Fi / PLD (Garda de protecție redefinire pld_context)
+          # --- FIX WI-FI / PLD (Garda de protecție redefinire pld_context) ---
           find drivers/staging/qca-wifi-host-cmn -name "pld.h" -exec sed -i '/struct pld_context {/i #ifndef __PLD_CONTEXT_GUARD\n#define __PLD_CONTEXT_GUARD' {} +
           find drivers/staging/qca-wifi-host-cmn -name "pld.h" -exec sed -i '/};/a #endif' {} +
 
-          # Fix Pinctrl (Prototip msm_gpio_is_valid)
+          # --- FIX PINCTRL (Prototip msm_gpio_is_valid) ---
           sed -i '/#include <linux\/pinctrl\/pinctrl.h>/a bool msm_gpio_is_valid(int gpionum);' drivers/pinctrl/qcom/pinctrl-msm.c
           
-          # Fix Sensors (Redenumire PD în CC)
+          # --- FIX SENSORS (Redenumire PD în CC) ---
           sed -i 's/PD_NOTI_ATTACH_TYPEDEF/CC_NOTI_ATTACH_TYPEDEF/g' drivers/sensors/sx9360.c
           sed -i 's/PDIC_NOTIFY_ID_ATTACH/CCIC_NOTIFY_ID_ATTACH/g' drivers/sensors/sx9360.c
           
-          # Fix Display Debug (Conflict extern vs static)
+          # --- FIX DISPLAY DEBUG (Conflict extern vs static) ---
           find drivers/gpu/drm/msm/samsung -name "ss_dsi_panel_debug.h" -exec sed -i '/extern bool.*_debug_partition/s/^/\/\//' {} +
 
-          # Fix Baterie
+          # --- FIX BATERIE ---
           find drivers/battery_v2 -type f -exec sed -i '/now_isApdo\|num_apdo\|has_apdo/s/^/\/\//' {} +
           sed -i '/POWER_SUPPLY_EXT_PROP_DIRECT_CLEAR_ERR/s/^/\/\//' drivers/battery_v2/sec_battery.c
 
@@ -99,10 +102,10 @@ jobs:
           git clone https://github.com/osm0sis/AnyKernel3.git
           cp kernel/out/arch/arm64/boot/Image.gz AnyKernel3/
           sed -i 's/device.name1=maguro/device.name1=r5q/g' AnyKernel3/anykernel.sh
-          cd AnyKernel3 && zip -r9 ../Kernel-R5Q-SM8150-Hybrid.zip *
+          cd AnyKernel3 && zip -r9 ../Kernel-R5Q-SM8150-Final.zip *
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: Kernel-R5Q-Final
-          path: Kernel-R5Q-SM8150-Hybrid.zip
+          path: Kernel-R5Q-SM8150-Final.zip
