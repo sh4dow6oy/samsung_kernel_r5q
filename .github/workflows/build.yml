@@ -1,4 +1,4 @@
-name: Build Roynas R5Q - SM8150 Final Master
+name: Build Roynas R5Q - Lineage-Hybrid
 on:
   workflow_dispatch:
 
@@ -32,33 +32,14 @@ jobs:
           cd kernel
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           export KBUILD_BUILD_USER="Roynas"
-          export KBUILD_BUILD_HOST="S10Lite-R5Q"
+          export KBUILD_BUILD_HOST="Lineage-R5Q"
           export MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
 
-          # 1. IMPORT & FIX DISPLAY DRIVER (Clean r3q source)
-          wget -O drivers/gpu/drm/msm/sde/sde_crtc.c https://raw.githubusercontent.com/Roynas-Android-Playground/kernel_samsung_r3q/master/drivers/gpu/drm/msm/sde/sde_crtc.c
-          sed -i 's/#include "ss_dsi_panel_common.h"/\/\/ /g' drivers/gpu/drm/msm/sde/sde_crtc.c
-          sed -i '47i static bool is_aosp = true;' drivers/gpu/drm/msm/sde/sde_crtc.c
+          # 1. INJECTARE DRIVER DISPLAY DIN LINEAGEOS
+          # Inlocuim fisierul problematic cu versiunea oficiala LineageOS pentru SM8150
+          wget -O drivers/gpu/drm/msm/sde/sde_crtc.c https://raw.githubusercontent.com/LineageOS/android_kernel_qcom_sm8150/lineage-18.1/drivers/gpu/drm/msm/sde/sde_crtc.c
           
-          # Stub funcția de amprentă (FOD) pentru a evita erorile vdd->
-          sed -i '/static void sde_crtc_fod_atomic_check/,/}/c\static void sde_crtc_fod_atomic_check(struct sde_crtc_state *cstate, struct plane_state *pstates, int cnt) { return; }' drivers/gpu/drm/msm/sde/sde_crtc.c
-
-          # 2. CONFIGURARE (Folosind baza a70q.config indicată de tine)
-          # Combinăm defconfig-ul de SM8150 cu setările specifice de A70 AOSP
-          make $MAKE_ARGS O=out vendor/sm8150-perf_defconfig
-          wget -O arch/arm64/configs/a70q_aosp.config https://raw.githubusercontent.com/pascua28/android_kernel_samsung_sm7150/sixteen/arch/arm64/configs/a70q.config
-          
-          # Aplicăm setările din a70q.config peste config-ul curent
-          cat arch/arm64/configs/a70q_aosp.config >> out/.config
-          
-          # Dezactivăm forțat SEC_DEBUG și SMACK care crapă pe SM8150
-          ./scripts/config --file out/.config \
-            -d CONFIG_SEC_DEBUG -d CONFIG_SECURITY_SMACK \
-            -d CONFIG_KVM -e CONFIG_SECTION_MISMATCH_WARN_ONLY
-          
-          make $MAKE_ARGS O=out olddefconfig
-
-          # 3. STUBBING EXTERN (Linker Fixes)
+          # 2. STUBBING (Reparăm funcțiile Samsung care lipsesc în codul Lineage)
           mkdir -p out
           cat <<EOF > drivers/soc/qcom/stubs.c
           #include <linux/kernel.h>
@@ -78,7 +59,18 @@ jobs:
           EOF
           echo "obj-y += stubs.o" >> drivers/soc/qcom/Makefile
 
-          # 4. FIX AUDIO & MEMORY
+          # 3. CONFIGURARE (Baza A70 AOSP optimizata)
+          make $MAKE_ARGS O=out vendor/sm8150-perf_defconfig
+          wget -O arch/arm64/configs/a70q_aosp.config https://raw.githubusercontent.com/pascua28/android_kernel_samsung_sm7150/sixteen/arch/arm64/configs/a70q.config
+          cat arch/arm64/configs/a70q_aosp.config >> out/.config
+          
+          ./scripts/config --file out/.config \
+            -d CONFIG_SEC_DEBUG -d CONFIG_SECURITY_SMACK \
+            -d CONFIG_KVM -e CONFIG_SECTION_MISMATCH_WARN_ONLY
+          
+          make $MAKE_ARGS O=out olddefconfig
+
+          # 4. FIX-URI FINALE (Audio & Memory)
           find techpack/audio -name "wcd-mbhc-adc.c" -exec sed -i 's/mbhc->slow_insertion/0/g' {} +
           sed -i 's/ptep = huge_pmd_share/pte = huge_pmd_share/g' arch/arm64/mm/hugetlbpage.c || true
           sed -i 's/show_fdinfo(m, f, fanotify_fdinfo)/show_fdinfo(m, f, (void *)fanotify_fdinfo)/g' fs/notify/fdinfo.c || true
@@ -88,19 +80,18 @@ jobs:
           KCFLAGS_BASE="-fcommon -w -Wno-error -Wno-implicit-function-declaration"
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="$KCFLAGS_BASE" O=out Image.gz
 
-      - name: Package for R5Q
+      - name: Package for R5Q (S10 Lite)
         run: |
           git clone https://github.com/osm0sis/AnyKernel3.git
           cp kernel/out/arch/arm64/boot/Image.gz AnyKernel3/
           cd AnyKernel3
           sed -i 's/device.name1=maguro/device.name1=r5q/g' anykernel.sh
           sed -i 's/device.name2=panda/device.name2=SM-G770F/g' anykernel.sh
-          sed -i 's/device.name3=tuna/device.name3=s10lite/g' anykernel.sh
           sed -i 's|block=.*|block=/dev/block/by-name/boot|g' anykernel.sh
-          zip -r9 ../Kernel-R5Q-AOSP-Final.zip *
+          zip -r9 ../Kernel-R5Q-Lineage-Hybrid.zip *
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
           name: Kernel-S10Lite-R5Q
-          path: Kernel-R5Q-AOSP-Final.zip
+          path: Kernel-R5Q-Lineage-Hybrid.zip
