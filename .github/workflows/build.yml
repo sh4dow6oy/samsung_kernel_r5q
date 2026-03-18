@@ -1,4 +1,4 @@
-name: Build Roynas R5Q - SM8150 Ultimate Hybrid
+name: Build Roynas R5Q - SM8150 Master Hybrid
 on:
   workflow_dispatch:
 
@@ -35,7 +35,7 @@ jobs:
           export KBUILD_BUILD_HOST="S10Lite-Hybrid"
           export MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
 
-          # 1. PREGĂTIRE ȘI STUBBING
+          # 1. STUBBING (Păstrăm stub-urile pentru a preveni erorile de linker pe simboluri Samsung)
           mkdir -p out
           cat <<EOF > drivers/soc/qcom/stubs.c
           #include <linux/kernel.h>
@@ -83,36 +83,32 @@ jobs:
           EOF
           echo "obj-y += stubs.o" >> drivers/soc/qcom/Makefile
 
-          # 2. CONFIGURARE
+          # 2. CONFIGURARE (Merge stratificat pentru SM8150 pe R5Q)
           ARCH=arm64 ./scripts/kconfig/merge_config.sh -m -O out \
+            arch/arm64/configs/defconfig \
             arch/arm64/configs/r5q_defconfig \
-            arch/arm64/configs/vendor/sm8150_defconfig \
-            arch/arm64/configs/a70q.config
+            arch/arm64/configs/vendor/sm8150-perf_defconfig \
+            arch/arm64/configs/a70q.config \
+            arch/arm64/configs/defconfig+
 
           ./scripts/config --file out/.config \
-            -d CONFIG_SEC_DEBUG \
-            -d CONFIG_SEC_ABC \
-            -d CONFIG_BLK_DEV_IO_TRACE \
-            -d CONFIG_FTRACE \
+            -d CONFIG_SEC_DEBUG -d CONFIG_SEC_ABC \
+            -d CONFIG_BLK_DEV_IO_TRACE -d CONFIG_SECURITY_SMACK \
             -d CONFIG_LTO_CLANG -e CONFIG_LTO_NONE \
             -e CONFIG_SECTION_MISMATCH_WARN_ONLY
             
           make $MAKE_ARGS olddefconfig
 
-          # 3. FIX-URI PATCH (SED)
-          # Fix blktrace type mismatch (dacă cumva rămâne activ)
+          # 3. FIX-URI PATCH (Sedi-uri pentru a repara conflictele de cod)
           sed -i 's/blk_trace_bio_get_cgid(q, bio)/(u64)0/g' kernel/trace/blktrace.c || true
-          
-          # Fix Initcall
           sed -i 's/initcall_sec_debug/initcall_debug/g' init/main.c
-          # Redenumim conflictele
           find drivers/muic -name "muic_core.c" -exec sed -i 's/get_afc_mode/muic_get_afc_mode/g' {} +
           find drivers/power/supply/qcom_r1 -name "qg-util.c" -exec sed -i 's/is_input_present/qg_is_input_present/g' {} +
-          # Audio & Subsystem
           find techpack/audio -name "wcd-mbhc-adc.c" -exec sed -i 's/mbhc->slow_insertion/0/g' {} +
           sed -i '30i #define SEC_DEBUG_MODEM_SEPARATE_EN 0' drivers/soc/qcom/subsystem_restart.c
+          find drivers/battery_v2 -type f -exec sed -i '/now_isApdo\|num_apdo\|has_apdo/s/^/\/\//' {} +
           
-          # 4. COMPILARE
+          # 4. COMPILARE Image.gz
           KCFLAGS_BASE="-fcommon -w -Wno-error -I$(pwd)/out/usr/include"
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="$KCFLAGS_BASE" Image.gz
 
@@ -126,5 +122,5 @@ jobs:
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-R5Q-Final
+          name: Kernel-R5Q-Master
           path: Kernel-R5Q-SM8150-Final.zip
