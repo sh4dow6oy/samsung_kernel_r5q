@@ -1,4 +1,4 @@
-name: Build Lumi R5Q 5.4 - OneUI Ultimate
+name: Build Lumi R5Q - Native Config BPF
 on:
   workflow_dispatch:
 
@@ -9,8 +9,8 @@ jobs:
       - name: Checkout Source
         uses: actions/checkout@v4
         with:
-          repository: LumiPlayground/android_kernel_samsung_sm8150-5.4
-          ref: main
+          repository: LumiPlayground/android_kernel_samsung_sm8150
+          ref: rawr-bpf
           path: kernel
           fetch-depth: 1
 
@@ -31,25 +31,26 @@ jobs:
       - name: Prepare Source & Fixes
         run: |
           cd kernel
-          # 1. Permisiuni pentru tools (critic conform link-ului tau)
-          chmod +x tools/dtc
+          # 1. Permisiuni pentru utilitarele de build Lumi
+          chmod -R +x tools/
           
-          # 2. Fix Multiple Definition Error
+          # 2. Fix simboluri multiple (pentru a trece de linkarea vmlinux)
           grep -r "bool main_ext_ss_not_working" . | cut -d: -f1 | xargs sed -i 's/bool main_ext_ss_not_working/static bool main_ext_ss_not_working/g' || true
-
-          # 3. Defconfig R5Q (OneUI Target)
-          cp arch/arm64/configs/vendor/b2q_eur_openx_defconfig arch/arm64/configs/vendor/r5q_oneui_defconfig
-          ./scripts/config --file arch/arm64/configs/vendor/r5q_oneui_defconfig \
-            -d CONFIG_PROJECT_B2Q -e CONFIG_PROJECT_R5Q \
-            -e CONFIG_SECTION_MISMATCH_WARN_ONLY -e CONFIG_SAMSUNG_PRODUCT_SHIP \
-            -e CONFIG_BUILD_ARM64_DT_OVERLAY
+          
+          # 3. Folosim defconfig-ul NATIV R5Q gasit de tine
+          # Nu mai facem cp de la b2q, folosim direct sursa oficiala pentru r5q
+          ./scripts/config --file arch/arm64/configs/r5q_eur_open_defconfig \
+            -e CONFIG_BPF_SYSCALL \
+            -e CONFIG_BUILD_ARM64_DT_OVERLAY \
+            -e CONFIG_SAMSUNG_PRODUCT_SHIP \
+            -e CONFIG_LTO_CLANG_NONE -d CONFIG_LTO_CLANG_THIN
 
       - name: Build Kernel
         run: |
           cd kernel
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           
-          # Integrare KERNEL_MAKE_ENV din sursa Lumi
+          # Parametrii de build exacti pentru ramura rawr-bpf
           export MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang \
             DTC_EXT=$(pwd)/tools/dtc \
             CONFIG_BUILD_ARM64_DT_OVERLAY=y \
@@ -58,33 +59,38 @@ jobs:
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             O=out"
 
-          make $MAKE_ARGS vendor/r5q_oneui_defconfig
+          # Observatie: r5q_eur_open_defconfig este in radacina configs/, nu in vendor/
+          make $MAKE_ARGS r5q_eur_open_defconfig
           make $MAKE_ARGS olddefconfig
+          
+          # Compilare efectiva
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -w" O=out Image.gz dtbs
 
       - name: Package with AnyKernel3
         run: |
           git clone https://github.com/osm0sis/AnyKernel3.git
-          
-          # 1. Copiem Kernel-ul
           cp kernel/out/arch/arm64/boot/Image.gz AnyKernel3/
           
-          # 2. Colectăm TOATE DTB-urile (Metoda Brută)
-          # Căutăm în tot folderul 'out' pentru a fi siguri că prindem SM8150 și R5Q
-          echo "Colectăm DTB-urile..."
+          # Colectare DTB (Baza Hardware)
+          # Folosim o cautare recursiva pentru a fi siguri ca prindem tot ce e compilat
           find kernel/out/arch/arm64/boot/dts/ -name "*.dtb" -type f -exec cat {} + > AnyKernel3/dtb
           
-          # 3. Colectăm TOATE DTBO-urile (Metoda Brută)
-          echo "Colectăm DTBO-urile..."
-          # Căutăm fișierele .dtbo oriunde au fost generate (inclusiv Techpack)
+          # Colectare DTBO (Overlay Display/Touch)
+          # Aceasta ramura muta adesea obiectele in techpack/display
           find kernel/out/ -name "*.dtbo" -type f -exec cat {} + > AnyKernel3/dtbo.img
 
-          # VERIFICARE FINALE
-          echo "Dimensiune DTB final: $(du -sh AnyKernel3/dtb)"
-          echo "Dimensiune DTBO final: $(du -sh AnyKernel3/dtbo.img)"
+          # Debug: Afisam dimensiunile in log-ul GitHub
+          echo "VERIFICARE FINALA DIMENSIUNI:"
+          du -sh AnyKernel3/dtb
+          du -sh AnyKernel3/dtbo.img
 
-          # 4. Configurare AnyKernel3
           cd AnyKernel3
           sed -i 's/device.name1=maguro/device.name1=r5q/g' anykernel.sh
           sed -i 's/device.name2=panda/device.name2=SM-G770F/g' anykernel.sh
-          zip -r9 ../Lumi-R5Q-Final-Build.zip *
+          zip -r9 ../Lumi-R5Q-Native-BPF.zip *
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: Lumi-R5Q-Native-BPF
+          path: Lumi-R5Q-Native-BPF.zip
