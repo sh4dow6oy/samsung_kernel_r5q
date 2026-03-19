@@ -7,7 +7,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Source
-        uses: actions/checkout@v4
+        uses: actions/checkout@@v4
         with:
           repository: LumiPlayground/android_kernel_samsung_sm8150-5.4
           ref: main
@@ -31,20 +31,22 @@ jobs:
       - name: Prepare Config & Techpack
         run: |
           cd kernel
-          # 1. Cream defconfig-ul R5Q bazat pe B2Q (Template-ul de baza pentru OneUI)
+          # 1. Creăm defconfig-ul R5Q bazat pe B2Q (Template-ul stabil pentru SM8150)
           cp arch/arm64/configs/vendor/b2q_eur_openx_defconfig arch/arm64/configs/vendor/r5q_oneui_defconfig
 
-          # 2. Adaptam identitatea proiectului (Switch B2Q -> R5Q)
-          # Pastram setarile de securitate (SMACK, DEFEX, KNOX) conform cerintei tale
+          # 2. Adaptăm identitatea proiectului (Switch B2Q -> R5Q)
+          # Păstrăm securitatea Samsung (KNOX, DEFEX, SMACK) activă pentru OneUI
           ./scripts/config --file arch/arm64/configs/vendor/r5q_oneui_defconfig \
             -d CONFIG_PROJECT_B2Q \
             -e CONFIG_PROJECT_R5Q \
             -e CONFIG_SECTION_MISMATCH_WARN_ONLY \
             -e CONFIG_LTO_CLANG_NONE \
             -d CONFIG_LTO_CLANG_THIN \
-            -e CONFIG_SAMSUNG_PRODUCT_SHIP
+            -e CONFIG_SAMSUNG_PRODUCT_SHIP \
+            -e CONFIG_SEC_ABC \
+            -e CONFIG_DRM_SAMSUNG
 
-          # 3. Fix Audio Techpack (Bypass eroare slow_insertion specifica SM8150)
+          # 3. Fix Audio Techpack (Bypass eroare slow_insertion)
           find techpack/audio -name "wcd-mbhc-adc.c" -exec sed -i 's/mbhc->slow_insertion/0/g' {} +
 
       - name: Build Kernel (Lumi Logic)
@@ -52,7 +54,6 @@ jobs:
           cd kernel
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           
-          # Argumente de build identice cu build_kernel.sh
           export MAKE_ARGS="ARCH=arm64 \
             LLVM=1 LLVM_IAS=1 \
             CC=clang \
@@ -71,37 +72,40 @@ jobs:
           make $MAKE_ARGS vendor/r5q_oneui_defconfig
           make $MAKE_ARGS olddefconfig
 
-          # Compilare: Image + DTB + DTBO (folosind scripts/Makefile.dtbo)
-          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -w" O=out Image.gz dtbs dtbo
+          # Compilare: Image și DTBs (DTBO-urile se generează ca dependințe)
+          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -w" O=out Image.gz dtbs
 
       - name: Package with AnyKernel3
         run: |
           git clone https://github.com/osm0sis/AnyKernel3.git
           
-          # 1. Copiem Kernel Image
+          # 1. Copiem Kernel-ul compilat
           cp kernel/out/arch/arm64/boot/Image.gz AnyKernel3/
           
-          # 2. Colectam DTB (Harta Hardware)
-          # Folosim find recursiv pentru a prinde DTB-urile din qcom/samsung vendor
+          # 2. Colectăm DTB-urile (Baza hardware)
+          echo "Colectăm DTB..."
           find kernel/out/arch/arm64/boot/dts/ -name "*.dtb" -exec cat {} + > AnyKernel3/dtb
           
-          # 3. Colectam DTBO.img (Overlay-uri Panel/Touch)
-          # Makefile.dtbo il genereaza de obicei in radacina boot
+          # 3. Colectăm DTBO (Overlay-urile pentru Display/Touch)
+          # Folosim metoda de concatenare manuală a fișierelor .dtbo generate
+          echo "Colectăm DTBO..."
           if [ -f kernel/out/arch/arm64/boot/dtbo.img ]; then
-            cp kernel/out/arch/arm64/boot/dtbo.img AnyKernel3/
+            cp kernel/out/arch/arm64/boot/dtbo.img AnyKernel3/dtbo.img
           else
-            # Cautare disperata in caz de structura diferita
-            find kernel/out/ -name "dtbo.img" -exec cp {} AnyKernel3/dtbo.img \;
+            find kernel/out/arch/arm64/boot/dts/ -name "*.dtbo" -exec cat {} + > AnyKernel3/dtbo.img || echo "Nu s-au găsit DTBO-uri."
           fi
 
-          # 4. Finalizare AnyKernel3 pentru R5Q
+          # 4. Configurare AnyKernel3 pentru R5Q
           cd AnyKernel3
           sed -i 's/device.name1=maguro/device.name1=r5q/g' anykernel.sh
           sed -i 's/device.name2=panda/device.name2=SM-G770F/g' anykernel.sh
+          # Dezactivăm verificările de semnătură în ramdisk pentru OneUI (opțional, dar recomandat)
+          sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
+          
           zip -r9 ../Lumi-Kernel-R5Q-OneUI-Complete.zip *
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Lumi-R5Q-OneUI-Final
+          name: Lumi-R5Q-OneUI-Kernel
           path: Lumi-Kernel-R5Q-OneUI-Complete.zip
