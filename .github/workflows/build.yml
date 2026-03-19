@@ -1,4 +1,4 @@
-name: Build Lumi R5Q - Ultimate BPF Master
+name: Build Lumi R5Q 5.4 - OneUI Ultimate
 on:
   workflow_dispatch:
 
@@ -9,8 +9,8 @@ jobs:
       - name: Checkout Source
         uses: actions/checkout@v4
         with:
-          repository: LumiPlayground/android_kernel_samsung_sm8150
-          ref: rawr-bpf
+          repository: LumiPlayground/android_kernel_samsung_sm8150-5.4
+          ref: main
           path: kernel
           fetch-depth: 1
 
@@ -20,53 +20,43 @@ jobs:
           sudo apt-get install -y bc build-essential flex bison lz4 libssl-dev libelf-dev \
           ccache python3 python-is-python3 libarchive-tools wget zstd zip \
           gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi libncurses-dev libtinfo6 \
-          device-tree-compiler clang
-
+          device-tree-compiler
       - name: Setup Toolchain (Neutron Clang)
         run: |
           mkdir clang
           wget -q https://github.com/Ylarod/setup-ndk-clang/releases/download/prebuilt/clang-linux-x86-ndk-r29-r563880c.tar.zst
           tar -I zstd -xf clang-linux-x86-ndk-r29-r563880c.tar.zst -C clang
-
-      - name: Build Kernel (Image.gz-dtb)
+      - name: Prepare Source & Fixes
         run: |
           cd kernel
-          chmod -R +x tools/
+          # 1. Permisiuni pentru tools (critic conform link-ului tau)
+          chmod +x tools/dtc
+          
+          # 2. Fix Multiple Definition Error
+          grep -r "bool main_ext_ss_not_working" . | cut -d: -f1 | xargs sed -i 's/bool main_ext_ss_not_working/static bool main_ext_ss_not_working/g' || true
+          # 3. Defconfig R5Q (OneUI Target)
+          cp arch/arm64/configs/vendor/b2q_eur_openx_defconfig arch/arm64/configs/vendor/r5q_oneui_defconfig
+          ./scripts/config --file arch/arm64/configs/vendor/r5q_oneui_defconfig \
+            -d CONFIG_PROJECT_B2Q -e CONFIG_PROJECT_R5Q \
+            -e CONFIG_SECTION_MISMATCH_WARN_ONLY -e CONFIG_SAMSUNG_PRODUCT_SHIP \
+            -e CONFIG_BUILD_ARM64_DT_OVERLAY
+      - name: Build Kernel
+        run: |
+          cd kernel
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           
-          # Fix Multiple Definition (Punct critic pentru linkarea kernelului)
-          grep -r "bool main_ext_ss_not_working" . | cut -d: -f1 | xargs sed -i 's/bool main_ext_ss_not_working/static bool main_ext_ss_not_working/g' || true
-          
+          # Integrare KERNEL_MAKE_ENV din sursa Lumi
           export MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang \
             DTC_EXT=$(pwd)/tools/dtc \
             CONFIG_BUILD_ARM64_DT_OVERLAY=y \
-            CONFIG_PROJECT_R5Q=y \
-            CONFIG_SEC_R5Q_PROJECT=y \
             CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-            LD=ld.lld \
             O=out"
-
-          # Configurare si Activare BPF
-          make $MAKE_ARGS r5q_eur_open_defconfig
-          ./scripts/config --file out/.config \
-            -e CONFIG_BPF_SYSCALL \
-            -e CONFIG_BPF_JIT \
-            -e CONFIG_CGROUP_BPF \
-            -e CONFIG_NETFILTER_XT_MATCH_BPF \
-            -d CONFIG_RTIC \
-            -e CONFIG_BUILD_ARM64_DT_OVERLAY \
-            -e CONFIG_SEC_R5Q_PROJECT \
-            -e CONFIG_PROJECT_R5Q \
-            -e CONFIG_SAMSUNG_PRODUCT_SHIP \
-            -e CONFIG_LTO_CLANG_NONE
-            
+          make $MAKE_ARGS vendor/r5q_oneui_defconfig
           make $MAKE_ARGS olddefconfig
-          
-          # Compilare Kernel principal (20MB)
-          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -w" O=out Image.gz-dtb dtbs
-
+          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -w" O=out Image.gz dtbs
+      
       - name: Manual DTBO Compilation (R5Q Revisions)
         run: |
           git clone https://github.com/osm0sis/AnyKernel3.git
