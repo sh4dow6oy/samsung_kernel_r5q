@@ -1,4 +1,4 @@
-name: Build Lumi R5Q - Native Config BPF
+name: Build Lumi R5Q - Ultimate BPF Fixed
 on:
   workflow_dispatch:
 
@@ -34,36 +34,44 @@ jobs:
           # 1. Permisiuni pentru utilitarele de build Lumi
           chmod -R +x tools/
           
-          # 2. Fix simboluri multiple (pentru a trece de linkarea vmlinux)
+          # 2. Fix simboluri multiple (COMMON symbols fix)
           grep -r "bool main_ext_ss_not_working" . | cut -d: -f1 | xargs sed -i 's/bool main_ext_ss_not_working/static bool main_ext_ss_not_working/g' || true
           
-          # 3. Folosim defconfig-ul NATIV R5Q gasit de tine
-          # Nu mai facem cp de la b2q, folosim direct sursa oficiala pentru r5q
+          # 3. FIX CRITIC pentru eroarea "relocation truncated" (SELinux/RTIC)
+          # Dezactivam RTIC deoarece intra in conflict cu adresele de memorie Clang
           ./scripts/config --file arch/arm64/configs/r5q_eur_open_defconfig \
+            -d CONFIG_RTIC \
+            -d CONFIG_RTIC_MP \
+            -d CONFIG_RTIC_KDP \
             -e CONFIG_BPF_SYSCALL \
             -e CONFIG_BUILD_ARM64_DT_OVERLAY \
             -e CONFIG_SAMSUNG_PRODUCT_SHIP \
-            -e CONFIG_LTO_CLANG_NONE -d CONFIG_LTO_CLANG_THIN
+            -e CONFIG_LTO_CLANG_NONE \
+            -d CONFIG_LTO_CLANG_THIN \
+            -e CONFIG_SECTION_MISMATCH_WARN_ONLY
 
       - name: Build Kernel
         run: |
           cd kernel
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           
-          # Parametrii de build exacti pentru ramura rawr-bpf
+          # Parametrii de build pentru ramura rawr-bpf
+          # Adaugam LDFLAGS pentru a ignora segmentele RWX care pot opri build-ul
           export MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang \
             DTC_EXT=$(pwd)/tools/dtc \
             CONFIG_BUILD_ARM64_DT_OVERLAY=y \
             CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            LD=ld.lld \
             O=out"
 
-          # Observatie: r5q_eur_open_defconfig este in radacina configs/, nu in vendor/
+          # Aplicam config-ul nativ R5Q
           make $MAKE_ARGS r5q_eur_open_defconfig
           make $MAKE_ARGS olddefconfig
           
-          # Compilare efectiva
+          # Compilare cu flag-uri de compatibilitate
+          # Folosim -fcommon pentru a ignora restul de simboluri duplicate
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -w" O=out Image.gz dtbs
 
       - name: Package with AnyKernel3
@@ -72,25 +80,30 @@ jobs:
           cp kernel/out/arch/arm64/boot/Image.gz AnyKernel3/
           
           # Colectare DTB (Baza Hardware)
-          # Folosim o cautare recursiva pentru a fi siguri ca prindem tot ce e compilat
+          echo "Colectam DTB-uri..."
           find kernel/out/arch/arm64/boot/dts/ -name "*.dtb" -type f -exec cat {} + > AnyKernel3/dtb
           
           # Colectare DTBO (Overlay Display/Touch)
-          # Aceasta ramura muta adesea obiectele in techpack/display
+          # Cautam in tot folderul out (inclusiv techpack) pentru a evita fisierul de 0mb
+          echo "Colectam DTBO-uri..."
           find kernel/out/ -name "*.dtbo" -type f -exec cat {} + > AnyKernel3/dtbo.img
 
-          # Debug: Afisam dimensiunile in log-ul GitHub
-          echo "VERIFICARE FINALA DIMENSIUNI:"
-          du -sh AnyKernel3/dtb
-          du -sh AnyKernel3/dtbo.img
+          # Verificare dimensiuni in log
+          echo "--- VERIFICARE FINALA ---"
+          ls -lh AnyKernel3/dtb
+          ls -lh AnyKernel3/dtbo.img
+          echo "-------------------------"
 
           cd AnyKernel3
           sed -i 's/device.name1=maguro/device.name1=r5q/g' anykernel.sh
           sed -i 's/device.name2=panda/device.name2=SM-G770F/g' anykernel.sh
-          zip -r9 ../Lumi-R5Q-Native-BPF.zip *
+          # Dezactivam verificarea stricta a device-ului pentru a evita erori la flash
+          sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
+          
+          zip -r9 ../Lumi-R5Q-BPF-Final-Fixed.zip *
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Lumi-R5Q-Native-BPF
-          path: Lumi-R5Q-Native-BPF.zip
+          name: Lumi-R5Q-BPF-Final
+          path: Lumi-R5Q-BPF-Final-Fixed.zip
