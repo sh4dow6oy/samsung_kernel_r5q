@@ -1,4 +1,4 @@
-name: Build Lumi R5Q - Appended DTB Edition
+name: Build Lumi R5Q - Native BPF Ultimate
 on:
   workflow_dispatch:
 
@@ -33,11 +33,11 @@ jobs:
           cd kernel
           chmod -R +x tools/
           
-          # Fix COMMON symbols
+          # Fix Multiple Definition
           grep -r "bool main_ext_ss_not_working" . | cut -d: -f1 | xargs sed -i 's/bool main_ext_ss_not_working/static bool main_ext_ss_not_working/g' || true
           
-          # 1. Fortam activarea DT Overlays chiar daca in defconfig e oprit
-          # 2. Dezactivam RTIC pentru a evita eroarea de linkare (Relocation Truncated)
+          # Configurare DEFCONFIG (Native R5Q)
+          # Fortam flag-urile care deblocheaza folderul 'renovation' (DTBO)
           ./scripts/config --file arch/arm64/configs/r5q_eur_open_defconfig \
             -d CONFIG_RTIC \
             -d CONFIG_RTIC_MP \
@@ -49,13 +49,16 @@ jobs:
             -e CONFIG_SAMSUNG_PRODUCT_SHIP \
             -e CONFIG_LTO_CLANG_NONE \
             -e CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE \
-            -e CONFIG_IMG_GZ_DTB
+            -e CONFIG_IMG_GZ_DTB \
+            -e CONFIG_SECTION_MISMATCH_WARN_ONLY
 
       - name: Build Kernel
         run: |
           cd kernel
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           
+          # Adaugam 'DTC_EXT' pentru a folosi utilitarul de la Lumi
+          # Adaugam flag-urile de proiect direct in comanda de build
           export MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang \
             DTC_EXT=$(pwd)/tools/dtc \
             CONFIG_BUILD_ARM64_DT_OVERLAY=y \
@@ -70,41 +73,39 @@ jobs:
           make $MAKE_ARGS r5q_eur_open_defconfig
           make $MAKE_ARGS olddefconfig
           
-          # Compilam Image.gz-dtb (imaginea combinata) si dtbs (pentru a extrage DTBO)
-          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -w" O=out Image.gz-dtb dtbs
+          # Build: Cerem explicit Image.gz-dtb (care a mers) SI dtbo (pentru display)
+          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -w" O=out Image.gz-dtb dtbo
 
       - name: Package with AnyKernel3
         run: |
           git clone https://github.com/osm0sis/AnyKernel3.git
           
-          # 1. Copiem imaginea combinata (Kernel + DTB)
-          # AnyKernel3 o va vedea ca pe o imagine Image.gz standard
+          # 1. Image.gz (Redenumim Image.gz-dtb pentru AnyKernel)
           if [ -f kernel/out/arch/arm64/boot/Image.gz-dtb ]; then
             cp kernel/out/arch/arm64/boot/Image.gz-dtb AnyKernel3/Image.gz
           else
             cp kernel/out/arch/arm64/boot/Image.gz AnyKernel3/Image.gz
           fi
           
-          # 2. Colectam DTBO-urile (Obligatoriu pentru OneUI Display/Touch)
-          # Chiar daca e Append DTB, fisierele .dtbo raman separate si sunt vitale
-          echo "Colectam DTBO-uri din subfolderele Samsung..."
+          # 2. Colectare DTBO (Deep Search)
+          # Cautam in tot folderul out, mai ales in subfolderele samsung/renovation
+          echo "Colectam DTBO-uri..."
           find kernel/out/ -name "*.dtbo" -type f -exec cat {} + > AnyKernel3/dtbo.img
-
-          # Debug dimensions
-          echo "--- RAPORT DIMENSIUNI ---"
+          
+          # Debug DIMENSIUNI
+          echo "--- RAPORT FINAL ---"
           ls -lh AnyKernel3/Image.gz
           ls -lh AnyKernel3/dtbo.img
-          echo "------------------------"
+          echo "--------------------"
 
           cd AnyKernel3
           sed -i 's/device.name1=maguro/device.name1=r5q/g' anykernel.sh
           sed -i 's/device.name2=panda/device.name2=SM-G770F/g' anykernel.sh
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-          
-          zip -r9 ../Lumi-R5Q-Appended-DTB.zip *
+          zip -r9 ../Lumi-R5Q-Native-Final.zip *
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Lumi-R5Q-Appended-DTB
-          path: Lumi-R5Q-Appended-DTB.zip
+          name: Lumi-R5Q-Native-Final
+          path: Lumi-R5Q-Native-Final.zip
