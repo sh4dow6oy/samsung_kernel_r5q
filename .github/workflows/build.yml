@@ -1,4 +1,4 @@
-name: Build Lumi R5Q - Native BPF Project-Fixed
+name: Build Lumi R5Q - Appended DTB Edition
 on:
   workflow_dispatch:
 
@@ -31,14 +31,13 @@ jobs:
       - name: Prepare Source & Fixes
         run: |
           cd kernel
-          # 1. Permisiuni pentru utilitarele Lumi
           chmod -R +x tools/
           
-          # 2. Fix COMMON symbols
+          # Fix COMMON symbols
           grep -r "bool main_ext_ss_not_working" . | cut -d: -f1 | xargs sed -i 's/bool main_ext_ss_not_working/static bool main_ext_ss_not_working/g' || true
           
-          # 3. Configurare Defconfig cu flag-urile de proiect Samsung
-          # Am adaugat CONFIG_SEC_R5Q_PROJECT=y care deblocheaza folderul renovation
+          # 1. Fortam activarea DT Overlays chiar daca in defconfig e oprit
+          # 2. Dezactivam RTIC pentru a evita eroarea de linkare (Relocation Truncated)
           ./scripts/config --file arch/arm64/configs/r5q_eur_open_defconfig \
             -d CONFIG_RTIC \
             -d CONFIG_RTIC_MP \
@@ -49,15 +48,14 @@ jobs:
             -e CONFIG_SEC_R5Q_PROJECT \
             -e CONFIG_SAMSUNG_PRODUCT_SHIP \
             -e CONFIG_LTO_CLANG_NONE \
-            -d CONFIG_LTO_CLANG_THIN \
-            -e CONFIG_SECTION_MISMATCH_WARN_ONLY
+            -e CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE \
+            -e CONFIG_IMG_GZ_DTB
 
       - name: Build Kernel
         run: |
           cd kernel
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           
-          # Exportam variabilele de proiect si in mediu pentru a forta Makefile-urile
           export MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang \
             DTC_EXT=$(pwd)/tools/dtc \
             CONFIG_BUILD_ARM64_DT_OVERLAY=y \
@@ -69,41 +67,44 @@ jobs:
             LD=ld.lld \
             O=out"
 
-          # Init config
           make $MAKE_ARGS r5q_eur_open_defconfig
           make $MAKE_ARGS olddefconfig
           
-          # Build propriu-zis
-          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -w" O=out Image.gz dtbs
+          # Compilam Image.gz-dtb (imaginea combinata) si dtbs (pentru a extrage DTBO)
+          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -w" O=out Image.gz-dtb dtbs
 
       - name: Package with AnyKernel3
         run: |
           git clone https://github.com/osm0sis/AnyKernel3.git
-          cp kernel/out/arch/arm64/boot/Image.gz AnyKernel3/
           
-          # Colectare DTB
-          echo "Colectam DTB-uri..."
-          find kernel/out/arch/arm64/boot/dts/ -name "*.dtb" -type f -exec cat {} + > AnyKernel3/dtb
+          # 1. Copiem imaginea combinata (Kernel + DTB)
+          # AnyKernel3 o va vedea ca pe o imagine Image.gz standard
+          if [ -f kernel/out/arch/arm64/boot/Image.gz-dtb ]; then
+            cp kernel/out/arch/arm64/boot/Image.gz-dtb AnyKernel3/Image.gz
+          else
+            cp kernel/out/arch/arm64/boot/Image.gz AnyKernel3/Image.gz
+          fi
           
-          # Colectare DTBO (Deep Search in folderul out)
-          echo "Colectam DTBO-uri (inclusiv din renovation)..."
+          # 2. Colectam DTBO-urile (Obligatoriu pentru OneUI Display/Touch)
+          # Chiar daca e Append DTB, fisierele .dtbo raman separate si sunt vitale
+          echo "Colectam DTBO-uri din subfolderele Samsung..."
           find kernel/out/ -name "*.dtbo" -type f -exec cat {} + > AnyKernel3/dtbo.img
 
-          # Debug: Afisam dimensiunile
-          echo "--- RAPORT FINALE DIMENSIUNI ---"
-          du -sh AnyKernel3/dtb
-          du -sh AnyKernel3/dtbo.img
-          echo "-------------------------------"
+          # Debug dimensions
+          echo "--- RAPORT DIMENSIUNI ---"
+          ls -lh AnyKernel3/Image.gz
+          ls -lh AnyKernel3/dtbo.img
+          echo "------------------------"
 
           cd AnyKernel3
           sed -i 's/device.name1=maguro/device.name1=r5q/g' anykernel.sh
           sed -i 's/device.name2=panda/device.name2=SM-G770F/g' anykernel.sh
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
           
-          zip -r9 ../Lumi-R5Q-BPF-Final-Project-Fixed.zip *
+          zip -r9 ../Lumi-R5Q-Appended-DTB.zip *
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Lumi-R5Q-BPF-Project-Fixed
-          path: Lumi-R5Q-BPF-Final-Project-Fixed.zip
+          name: Lumi-R5Q-Appended-DTB
+          path: Lumi-R5Q-Appended-DTB.zip
