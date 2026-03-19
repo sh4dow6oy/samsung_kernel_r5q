@@ -54,12 +54,13 @@ jobs:
           cd kernel
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           
-          # Variabilele de proiect transmise direct catre Makefile.dtbo
+          # Adaugam EXT_DTS_PLATFORM si forta proiectelor SEC
           export MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang \
             DTC_EXT=$(pwd)/tools/dtc \
             CONFIG_BUILD_ARM64_DT_OVERLAY=y \
             CONFIG_PROJECT_R5Q=y \
             CONFIG_SEC_R5Q_PROJECT=y \
+            EXT_DTS_PLATFORM=samsung \
             CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
@@ -69,41 +70,40 @@ jobs:
           make $MAKE_ARGS r5q_eur_open_defconfig
           make $MAKE_ARGS olddefconfig
           
-          # IMPORTANT: Rulam DOAR 'dtbs'. Scripts/Makefile.dtbo va fi invocat automat.
+          # Build principal
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -w" O=out Image.gz-dtb dtbs
 
       - name: Package with AnyKernel3
         run: |
           git clone https://github.com/osm0sis/AnyKernel3.git
-          
-          # 1. Image.gz (Kernel + DTB principal)
           cp kernel/out/arch/arm64/boot/Image.gz-dtb AnyKernel3/Image.gz
           
-          # 2. Colectare DTBO (Metoda Deep Search)
-          # Makefile.dtbo le genereaza de obicei in folderul dts/samsung/ sau dts/qcom/
-          echo "Colectam DTBO-urile generate de scripts/Makefile.dtbo..."
-          find kernel/out/arch/arm64/boot/dts/ -name "*.dtbo" -type f -exec cat {} + > AnyKernel3/dtbo.img
+          # --- COLECTARE DTBO MODIFICATA ---
+          echo "Cautam DTBO in locatiile specifice Samsung..."
           
-          # Fallback daca prima cautare esueaza
+          # Incercam sa gasim fisierele .dtbo (uneori sunt in out/arch/arm64/boot/dts/samsung/renovation/)
+          find kernel/out/ -name "*.dtbo" -type f -exec cat {} + > AnyKernel3/dtbo.img
+          
+          # DACA E TOT GOL (0 bytes), incercam metoda de urgenta:
+          # Compilam manual daca gasim sursele .dts de overlay
           if [ ! -s AnyKernel3/dtbo.img ]; then
-            echo "Cautare secundara pentru DTBO..."
-            find kernel/out/ -name "*.dtbo" -type f -exec cat {} + > AnyKernel3/dtbo.img
+            echo "DTBO gol. Incercam compilarea manuala a overlay-urilor din sursa..."
+            mkdir -p dtbo_temp
+            # Cautam fisierele de tip overlay (.dts) in folderul renovation
+            find kernel/arch/arm64/boot/dts/samsung/renovation/ -name "*.dts*" -type f | while read -r dts_file; do
+              ./kernel/tools/dtc -@ -I dts -O dtb -o "dtbo_temp/$(basename "$dts_file").dtbo" "$dts_file" || true
+            done
+            cat dtbo_temp/*.dtbo > AnyKernel3/dtbo.img || true
           fi
 
-          # Debug: Dimensiuni finale
-          echo "--- REZULTAT BUILD ---"
+          # Debug Info
+          echo "--- REZULTAT FINAL ---"
           ls -lh AnyKernel3/Image.gz
-          du -sh AnyKernel3/dtbo.img || echo "EROARE: dtbo.img este gol!"
+          [ -s AnyKernel3/dtbo.img ] && du -sh AnyKernel3/dtbo.img || echo "EROARE: DTBO are tot 0MB!"
           echo "----------------------"
 
           cd AnyKernel3
           sed -i 's/device.name1=maguro/device.name1=r5q/g' anykernel.sh
           sed -i 's/device.name2=panda/device.name2=SM-G770F/g' anykernel.sh
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-          zip -r9 ../Lumi-R5Q-Native-BPF-Final.zip *
-
-      - name: Upload
-        uses: actions/upload-artifact@v4
-        with:
-          name: Lumi-R5Q-Native-BPF-Final
-          path: Lumi-R5Q-Native-BPF-Final.zip
+          zip -r9 ../Lumi-R5Q-BPF-V3.zip *
