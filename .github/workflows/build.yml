@@ -31,10 +31,11 @@ jobs:
       - name: Prepare Config & Techpack
         run: |
           cd kernel
-          # Cream defconfig-ul R5Q bazat pe B2Q (S20+)
+          # 1. Cream defconfig-ul R5Q bazat pe B2Q (Template-ul de baza pentru OneUI)
           cp arch/arm64/configs/vendor/b2q_eur_openx_defconfig arch/arm64/configs/vendor/r5q_oneui_defconfig
 
-          # Aplicăm schimbările de proiect (Păstrăm securitatea pentru OneUI)
+          # 2. Adaptam identitatea proiectului (Switch B2Q -> R5Q)
+          # Pastram setarile de securitate (SMACK, DEFEX, KNOX) conform cerintei tale
           ./scripts/config --file arch/arm64/configs/vendor/r5q_oneui_defconfig \
             -d CONFIG_PROJECT_B2Q \
             -e CONFIG_PROJECT_R5Q \
@@ -43,7 +44,7 @@ jobs:
             -d CONFIG_LTO_CLANG_THIN \
             -e CONFIG_SAMSUNG_PRODUCT_SHIP
 
-          # Fix Audio Techpack (prevenire eroare slow_insertion)
+          # 3. Fix Audio Techpack (Bypass eroare slow_insertion specifica SM8150)
           find techpack/audio -name "wcd-mbhc-adc.c" -exec sed -i 's/mbhc->slow_insertion/0/g' {} +
 
       - name: Build Kernel (Lumi Logic)
@@ -51,6 +52,7 @@ jobs:
           cd kernel
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           
+          # Argumente de build identice cu build_kernel.sh
           export MAKE_ARGS="ARCH=arm64 \
             LLVM=1 LLVM_IAS=1 \
             CC=clang \
@@ -65,34 +67,41 @@ jobs:
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             O=out"
 
-          # 1. Init Config
+          # Init Config
           make $MAKE_ARGS vendor/r5q_oneui_defconfig
           make $MAKE_ARGS olddefconfig
 
-          # 2. Build Image & DTBs
-          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -w" O=out Image.gz dtbs
+          # Compilare: Image + DTB + DTBO (folosind scripts/Makefile.dtbo)
+          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -w" O=out Image.gz dtbs dtbo
 
       - name: Package with AnyKernel3
         run: |
           git clone https://github.com/osm0sis/AnyKernel3.git
+          
+          # 1. Copiem Kernel Image
           cp kernel/out/arch/arm64/boot/Image.gz AnyKernel3/
           
-          # Colectăm DTB-urile pentru S10 Lite
-          DTB_PATH="kernel/out/arch/arm64/boot/dts/vendor"
-          find "$DTB_PATH" -name "*r5q*.dtb" -exec cat {} + > AnyKernel3/dtb
+          # 2. Colectam DTB (Harta Hardware)
+          # Folosim find recursiv pentru a prinde DTB-urile din qcom/samsung vendor
+          find kernel/out/arch/arm64/boot/dts/ -name "*.dtb" -exec cat {} + > AnyKernel3/dtb
           
-          # Fallback dacă nu găsește r5q în nume
-          if [ ! -s AnyKernel3/dtb ]; then
-            cat "$DTB_PATH"/qcom/msm8150*.dtb > AnyKernel3/dtb
+          # 3. Colectam DTBO.img (Overlay-uri Panel/Touch)
+          # Makefile.dtbo il genereaza de obicei in radacina boot
+          if [ -f kernel/out/arch/arm64/boot/dtbo.img ]; then
+            cp kernel/out/arch/arm64/boot/dtbo.img AnyKernel3/
+          else
+            # Cautare disperata in caz de structura diferita
+            find kernel/out/ -name "dtbo.img" -exec cp {} AnyKernel3/dtbo.img \;
           fi
 
+          # 4. Finalizare AnyKernel3 pentru R5Q
           cd AnyKernel3
           sed -i 's/device.name1=maguro/device.name1=r5q/g' anykernel.sh
           sed -i 's/device.name2=panda/device.name2=SM-G770F/g' anykernel.sh
-          zip -r9 ../Lumi-R5Q-OneUI-Kernel.zip *
+          zip -r9 ../Lumi-Kernel-R5Q-OneUI-Complete.zip *
 
-      - name: Upload Kernel
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Lumi-R5Q-OneUI
-          path: Lumi-R5Q-OneUI-Kernel.zip
+          name: Lumi-R5Q-OneUI-Final
+          path: Lumi-Kernel-R5Q-OneUI-Complete.zip
