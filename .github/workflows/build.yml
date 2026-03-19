@@ -1,4 +1,4 @@
-name: Build R5Q Hybrid AOSP
+name: Build R5Q Hybrid AOSP - Final
 on:
   workflow_dispatch:
 
@@ -40,11 +40,12 @@ jobs:
           # 2. Fix Audio "slow_insertion" error
           find techpack/audio -name "wcd-mbhc-adc.c" -exec sed -i 's/mbhc->slow_insertion/0/g' {} +
 
-          # 3. Create Global Samsung Fix Header
+          # 3. Create Global Samsung Fix Header (Safe for Scripts/HostCC)
           mkdir -p include/samsung
           cat <<EOF > include/samsung/samsung_fix.h
           #ifndef __SAMSUNG_FIX_H__
           #define __SAMSUNG_FIX_H__
+
           #define SS_DSI_CMD_SET_MAX 60
           #define SS_DSI_CMD_SET_START 0
           #define SUPPORT_PANEL_REVISION 20
@@ -57,28 +58,31 @@ jobs:
           #define TX_PAC_AID_SUBDIVISION 1
           #define TX_IRC_SUBDIVISION 2
           #define TX_PAC_IRC_SUBDIVISION 3
-          static const bool is_aosp = true;
+
+          #ifdef __KERNEL__
+            #include <linux/types.h>
+            static const bool is_aosp = true;
+          #else
+            #define is_aosp 1
+          #endif
+
           #endif
           EOF
 
-          # 4. Create Hybrid Defconfig (AOSP Focused)
+          # 4. Create Hybrid Defconfig
           cp arch/arm64/configs/vendor/sm8150-perf_defconfig arch/arm64/configs/r5q_hybrid_defconfig
-          cat <<EOF >> arch/arm64/configs/r5q_hybrid_defconfig
-          # Security Bypass (Ata-kaner style)
-          CONFIG_SEC_DEBUG=n
-          CONFIG_SECURITY_SMACK=n
-          CONFIG_SECURITY_DEFEX=n
-          CONFIG_KNOX_KAP=n
-          CONFIG_FIVE=n
-          # Display & Audio Techpack
-          CONFIG_DRM_SDE_R3Q=y
-          # Fix Stack Protector Compiler Error
-          CONFIG_CC_STACKPROTECTOR=n
-          CONFIG_CC_STACKPROTECTOR_NONE=y
-          CONFIG_CC_STACKPROTECTOR_STRONG=n
-          # Warnings
-          CONFIG_SECTION_MISMATCH_WARN_ONLY=y
-          EOF
+          
+          # Force disable Stack Protector and Samsung Security via scripts/config
+          ./scripts/config --file arch/arm64/configs/r5q_hybrid_defconfig \
+            -d CONFIG_CC_STACKPROTECTOR_STRONG \
+            -d CONFIG_CC_STACKPROTECTOR \
+            -e CONFIG_CC_STACKPROTECTOR_NONE \
+            -d CONFIG_SEC_DEBUG \
+            -d CONFIG_SECURITY_SMACK \
+            -d CONFIG_SECURITY_DEFEX \
+            -d CONFIG_KNOX_KAP \
+            -e CONFIG_DRM_SDE_R3Q \
+            -e CONFIG_SECTION_MISMATCH_WARN_ONLY
 
           # 5. Fix Samsung Scripts (secgetspf dummy)
           mkdir -p out
@@ -94,7 +98,7 @@ jobs:
           # Initialize Config
           make $MAKE_ARGS r5q_hybrid_defconfig
           
-          # Force Include our Fix Header & Path
+          # Fix: Use full path for include to ensure HostCC/TargetCC find it
           export KCFLAGS="-fcommon -w -Wno-error -I$(pwd)/include -include samsung/samsung_fix.h"
           
           # Start Compilation
@@ -105,13 +109,12 @@ jobs:
           git clone https://github.com/osm0sis/AnyKernel3.git
           cp kernel/out/arch/arm64/boot/Image.gz AnyKernel3/
           cd AnyKernel3
-          # Change device names to R5Q (S10 Lite)
           sed -i 's/device.name1=maguro/device.name1=r5q/g' anykernel.sh
           sed -i 's/device.name2=panda/device.name2=SM-G770F/g' anykernel.sh
-          zip -r9 ../Kernel-R5Q-AOSP-Hybrid.zip *
+          zip -r9 ../Kernel-R5Q-AOSP-Final.zip *
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: Kernel-S10Lite-R5Q
-          path: Kernel-R5Q-AOSP-Hybrid.zip
+          path: Kernel-R5Q-AOSP-Final.zip
