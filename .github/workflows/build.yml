@@ -1,4 +1,4 @@
-name: Build R5Q - Hybrid AOSP Configuration
+name: Build R5Q - Hybrid Final Fix
 on:
   workflow_dispatch:
 
@@ -14,76 +14,75 @@ jobs:
           path: kernel
           fetch-depth: 1
 
-      - name: Setup Toolchain (Neutron Clang)
+      - name: Setup Toolchain
         run: |
           sudo apt-get update && sudo apt-get install -y bc build-essential flex bison lz4 libssl-dev libelf-dev zstd zip gcc-aarch64-linux-gnu
           mkdir clang
           wget -q https://github.com/Ylarod/setup-ndk-clang/releases/download/prebuilt/clang-linux-x86-ndk-r29-r563880c.tar.zst
           tar -I zstd -xf clang-linux-x86-ndk-r29-r563880c.tar.zst -C clang
 
-      - name: Generate Hybrid Config
+      - name: Prepare Sources & Hybrid Config
         run: |
           cd kernel
-          # Folosim config-ul de baza R5Q de la Roynas
-          cp arch/arm64/configs/vendor/sm8150-perf_defconfig out_config
-          
-          # Aplicam "Tratamentul Ata-kaner" (Curatare Samsung)
-          cat <<EOF >> out_config
-          # --- AOSP / LINEAGE OPTIMIZATIONS ---
-          CONFIG_SEC_DEBUG=n
-          CONFIG_SEC_LOG=n
-          CONFIG_SECURITY_DEFEX=n
-          CONFIG_SECURITY_SMACK=n
-          CONFIG_KNOX_KAP=n
-          CONFIG_FIVE=n
-          CONFIG_SEC_RESTRICT_SETUID=n
-          CONFIG_DEBUG_RODATA_TEST=n
-          # --- DISPLAY & GPU ---
-          CONFIG_DRM_SDE_R3Q=y
-          CONFIG_DRM_MSM_REGISTER_LOGGING=n
-          # --- ANDROID 14/15 CORE ---
-          CONFIG_SCHED_WALT=y
-          CONFIG_COMMON_CLK_QCOM=y
-          CONFIG_QCOM_COMMAND_DB=y
-          CONFIG_RPMSG_QCOM_GLINK_SMEM=y
-          EOF
-          
-          mv out_config arch/arm64/configs/r5q_aosp_hybrid_defconfig
-
-      - name: Build with Hybrid Config
-        run: |
-          cd kernel
-          export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
-          export MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld AR=llvm-ar CROSS_COMPILE=aarch64-linux-gnu- O=out"
-          
-          # 1. IMPORT R3Q DISPLAY (Ca in pasii anteriori)
+          # 1. Import R3Q Display
           rm -rf drivers/gpu/drm/msm/sde drivers/gpu/drm/msm/samsung
           git clone https://github.com/Roynas-Android-Playground/kernel_samsung_r3q -b master ../r3q_source
           cp -r ../r3q_source/drivers/gpu/drm/msm/sde drivers/gpu/drm/msm/
           cp -r ../r3q_source/drivers/gpu/drm/msm/samsung drivers/gpu/drm/msm/
 
-          # 2. FIX HEADERS & STUBS (Esential pentru succes)
-          cat <<EOF > drivers/gpu/drm/msm/samsung_fix.h
+          # 2. Fix Audio (slow_insertion error)
+          # Inlocuim mbhc->slow_insertion cu 0 (false) pentru a trece de eroare
+          sed -i 's/mbhc->slow_insertion/0/g' techpack/audio/asoc/codecs/wcd-mbhc-adc.c
+
+          # 3. Create Global Fix Header (in standard include path)
+          mkdir -p include/samsung
+          cat <<EOF > include/samsung/samsung_fix.h
           #ifndef __SAMSUNG_FIX_H__
           #define __SAMSUNG_FIX_H__
           #define SS_DSI_CMD_SET_MAX 60
+          #define SS_DSI_CMD_SET_START 0
           #define SUPPORT_PANEL_REVISION 20
           #define CD_MAP_TABLE_MAX 15
           #define RX_CMD_START 0
           #define RX_CMD_END 150
           #define RX_SELF_DISP_DEBUG 1
           #define RX_SELF_MASK_CHECK 2
+          #define TX_AID_SUBDIVISION 0
+          #define TX_PAC_AID_SUBDIVISION 1
+          #define TX_IRC_SUBDIVISION 2
+          #define TX_PAC_IRC_SUBDIVISION 3
           static const bool is_aosp = true;
           #endif
           EOF
-          echo "ccflags-y += -include drivers/gpu/drm/msm/samsung_fix.h -Idrivers/gpu/drm/msm/samsung" >> drivers/gpu/drm/msm/Makefile
 
-          # 3. COMPILE
-          make $MAKE_ARGS r5q_aosp_hybrid_defconfig
-          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -w" O=out Image.gz
+          # 4. Hybrid Defconfig (Roynas + Ata-kaner)
+          cp arch/arm64/configs/vendor/sm8150-perf_defconfig arch/arm64/configs/r5q_hybrid_defconfig
+          cat <<EOF >> arch/arm64/configs/r5q_hybrid_defconfig
+          CONFIG_SEC_DEBUG=n
+          CONFIG_SECURITY_SMACK=n
+          CONFIG_SECURITY_DEFEX=n
+          CONFIG_KNOX_KAP=n
+          CONFIG_DRM_SDE_R3Q=y
+          CONFIG_SECTION_MISMATCH_WARN_ONLY=y
+          EOF
 
-      - name: Upload Kernel
+      - name: Compile Kernel
+        run: |
+          cd kernel
+          export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
+          export MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld AR=llvm-ar CROSS_COMPILE=aarch64-linux-gnu- O=out"
+          
+          # Configurare
+          make $MAKE_ARGS r5q_hybrid_defconfig
+          
+          # Injectam include-ul folosind calea relativa la radacina kernelului
+          # Folosim -Iinclude pentru a vedea folderul samsung creat anterior
+          export KCFLAGS="-fcommon -w -I$(pwd)/include -include samsung/samsung_fix.h"
+          
+          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="$KCFLAGS" O=out Image.gz
+
+      - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-R5Q-AOSP-Hybrid
+          name: Kernel-R5Q-AOSP
           path: kernel/out/arch/arm64/boot/Image.gz
