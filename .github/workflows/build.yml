@@ -1,4 +1,4 @@
-name: Build Lumi R5Q - Ultimate BPF Fixed
+name: Build Lumi R5Q - Native BPF Project-Fixed
 on:
   workflow_dispatch:
 
@@ -31,20 +31,22 @@ jobs:
       - name: Prepare Source & Fixes
         run: |
           cd kernel
-          # 1. Permisiuni pentru utilitarele de build Lumi
+          # 1. Permisiuni pentru utilitarele Lumi
           chmod -R +x tools/
           
-          # 2. Fix simboluri multiple (COMMON symbols fix)
+          # 2. Fix COMMON symbols
           grep -r "bool main_ext_ss_not_working" . | cut -d: -f1 | xargs sed -i 's/bool main_ext_ss_not_working/static bool main_ext_ss_not_working/g' || true
           
-          # 3. FIX CRITIC pentru eroarea "relocation truncated" (SELinux/RTIC)
-          # Dezactivam RTIC deoarece intra in conflict cu adresele de memorie Clang
+          # 3. Configurare Defconfig cu flag-urile de proiect Samsung
+          # Am adaugat CONFIG_SEC_R5Q_PROJECT=y care deblocheaza folderul renovation
           ./scripts/config --file arch/arm64/configs/r5q_eur_open_defconfig \
             -d CONFIG_RTIC \
             -d CONFIG_RTIC_MP \
             -d CONFIG_RTIC_KDP \
             -e CONFIG_BPF_SYSCALL \
             -e CONFIG_BUILD_ARM64_DT_OVERLAY \
+            -e CONFIG_PROJECT_R5Q \
+            -e CONFIG_SEC_R5Q_PROJECT \
             -e CONFIG_SAMSUNG_PRODUCT_SHIP \
             -e CONFIG_LTO_CLANG_NONE \
             -d CONFIG_LTO_CLANG_THIN \
@@ -55,23 +57,23 @@ jobs:
           cd kernel
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           
-          # Parametrii de build pentru ramura rawr-bpf
-          # Adaugam LDFLAGS pentru a ignora segmentele RWX care pot opri build-ul
+          # Exportam variabilele de proiect si in mediu pentru a forta Makefile-urile
           export MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang \
             DTC_EXT=$(pwd)/tools/dtc \
             CONFIG_BUILD_ARM64_DT_OVERLAY=y \
+            CONFIG_PROJECT_R5Q=y \
+            CONFIG_SEC_R5Q_PROJECT=y \
             CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             LD=ld.lld \
             O=out"
 
-          # Aplicam config-ul nativ R5Q
+          # Init config
           make $MAKE_ARGS r5q_eur_open_defconfig
           make $MAKE_ARGS olddefconfig
           
-          # Compilare cu flag-uri de compatibilitate
-          # Folosim -fcommon pentru a ignora restul de simboluri duplicate
+          # Build propriu-zis
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -w" O=out Image.gz dtbs
 
       - name: Package with AnyKernel3
@@ -79,31 +81,29 @@ jobs:
           git clone https://github.com/osm0sis/AnyKernel3.git
           cp kernel/out/arch/arm64/boot/Image.gz AnyKernel3/
           
-          # Colectare DTB (Baza Hardware)
+          # Colectare DTB
           echo "Colectam DTB-uri..."
           find kernel/out/arch/arm64/boot/dts/ -name "*.dtb" -type f -exec cat {} + > AnyKernel3/dtb
           
-          # Colectare DTBO (Overlay Display/Touch)
-          # Cautam in tot folderul out (inclusiv techpack) pentru a evita fisierul de 0mb
-          echo "Colectam DTBO-uri..."
+          # Colectare DTBO (Deep Search in folderul out)
+          echo "Colectam DTBO-uri (inclusiv din renovation)..."
           find kernel/out/ -name "*.dtbo" -type f -exec cat {} + > AnyKernel3/dtbo.img
 
-          # Verificare dimensiuni in log
-          echo "--- VERIFICARE FINALA ---"
-          ls -lh AnyKernel3/dtb
-          ls -lh AnyKernel3/dtbo.img
-          echo "-------------------------"
+          # Debug: Afisam dimensiunile
+          echo "--- RAPORT FINALE DIMENSIUNI ---"
+          du -sh AnyKernel3/dtb
+          du -sh AnyKernel3/dtbo.img
+          echo "-------------------------------"
 
           cd AnyKernel3
           sed -i 's/device.name1=maguro/device.name1=r5q/g' anykernel.sh
           sed -i 's/device.name2=panda/device.name2=SM-G770F/g' anykernel.sh
-          # Dezactivam verificarea stricta a device-ului pentru a evita erori la flash
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
           
-          zip -r9 ../Lumi-R5Q-BPF-Final-Fixed.zip *
+          zip -r9 ../Lumi-R5Q-BPF-Final-Project-Fixed.zip *
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Lumi-R5Q-BPF-Final
-          path: Lumi-R5Q-BPF-Final-Fixed.zip
+          name: Lumi-R5Q-BPF-Project-Fixed
+          path: Lumi-R5Q-BPF-Final-Project-Fixed.zip
