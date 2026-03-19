@@ -1,4 +1,4 @@
-name: Build Roynas R5Q - Definitive Fix
+name: Build R5Q - Hybrid AOSP Configuration
 on:
   workflow_dispatch:
 
@@ -14,79 +14,76 @@ jobs:
           path: kernel
           fetch-depth: 1
 
-      - name: Install Dependencies
+      - name: Setup Toolchain (Neutron Clang)
         run: |
-          sudo apt-get update
-          sudo apt-get install -y bc build-essential flex bison lz4 libssl-dev libelf-dev \
-          ccache python3 python-is-python3 libarchive-tools wget zstd zip \
-          gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi libncurses-dev libtinfo6
-
-      - name: Setup Neutron Clang
-        run: |
+          sudo apt-get update && sudo apt-get install -y bc build-essential flex bison lz4 libssl-dev libelf-dev zstd zip gcc-aarch64-linux-gnu
           mkdir clang
           wget -q https://github.com/Ylarod/setup-ndk-clang/releases/download/prebuilt/clang-linux-x86-ndk-r29-r563880c.tar.zst
           tar -I zstd -xf clang-linux-x86-ndk-r29-r563880c.tar.zst -C clang
 
-      - name: Build Kernel
+      - name: Generate Hybrid Config
+        run: |
+          cd kernel
+          # Folosim config-ul de baza R5Q de la Roynas
+          cp arch/arm64/configs/vendor/sm8150-perf_defconfig out_config
+          
+          # Aplicam "Tratamentul Ata-kaner" (Curatare Samsung)
+          cat <<EOF >> out_config
+          # --- AOSP / LINEAGE OPTIMIZATIONS ---
+          CONFIG_SEC_DEBUG=n
+          CONFIG_SEC_LOG=n
+          CONFIG_SECURITY_DEFEX=n
+          CONFIG_SECURITY_SMACK=n
+          CONFIG_KNOX_KAP=n
+          CONFIG_FIVE=n
+          CONFIG_SEC_RESTRICT_SETUID=n
+          CONFIG_DEBUG_RODATA_TEST=n
+          # --- DISPLAY & GPU ---
+          CONFIG_DRM_SDE_R3Q=y
+          CONFIG_DRM_MSM_REGISTER_LOGGING=n
+          # --- ANDROID 14/15 CORE ---
+          CONFIG_SCHED_WALT=y
+          CONFIG_COMMON_CLK_QCOM=y
+          CONFIG_QCOM_COMMAND_DB=y
+          CONFIG_RPMSG_QCOM_GLINK_SMEM=y
+          EOF
+          
+          mv out_config arch/arm64/configs/r5q_aosp_hybrid_defconfig
+
+      - name: Build with Hybrid Config
         run: |
           cd kernel
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
-          export KBUILD_BUILD_USER="Roynas"
-          export KBUILD_BUILD_HOST="R5Q-AOSP"
-          export MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
-
-          # 1. IMPORT COMPLET R3Q
-          rm -rf drivers/gpu/drm/msm/sde drivers/gpu/drm/msm/samsung drivers/gpu/drm/msm/dsi-staging
+          export MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld AR=llvm-ar CROSS_COMPILE=aarch64-linux-gnu- O=out"
+          
+          # 1. IMPORT R3Q DISPLAY (Ca in pasii anteriori)
+          rm -rf drivers/gpu/drm/msm/sde drivers/gpu/drm/msm/samsung
           git clone https://github.com/Roynas-Android-Playground/kernel_samsung_r3q -b master ../r3q_source
           cp -r ../r3q_source/drivers/gpu/drm/msm/sde drivers/gpu/drm/msm/
           cp -r ../r3q_source/drivers/gpu/drm/msm/samsung drivers/gpu/drm/msm/
-          cp -r ../r3q_source/drivers/gpu/drm/msm/dsi-staging drivers/gpu/drm/msm/
 
-          # 2. INJECTARE DEFINITII LIPSĂ (Rezolvă cele 20 de erori)
-          # Adăugăm macro-urile direct la începutul header-ului problematic
-          sed -i '15i #define SS_DSI_CMD_SET_MAX 50\n#define SUPPORT_PANEL_REVISION 20\n#define CD_MAP_TABLE_MAX 10\n#define RX_CMD_START 0\n#define RX_CMD_END 100\n#define RX_SELF_DISP_DEBUG 1\n#define RX_SELF_MASK_CHECK 2\n#define SS_DSI_CMD_SET_START 0\n#define TX_AID_SUBDIVISION 0\n#define TX_PAC_AID_SUBDIVISION 1\n#define TX_IRC_SUBDIVISION 2\n#define TX_PAC_IRC_SUBDIVISION 3' drivers/gpu/drm/msm/samsung/ss_dsi_panel_common.h
-
-          # 3. GLOBAL INCLUDE PATHS
-          echo "ccflags-y += -Idrivers/gpu/drm/msm -Idrivers/gpu/drm/msm/samsung -Idrivers/gpu/drm/msm/sde -Idrivers/gpu/drm/msm/dsi-staging" >> drivers/gpu/drm/msm/Makefile
-          
-          # Fix is_aosp
-          sed -i '48i static bool is_aosp = true;' drivers/gpu/drm/msm/sde/sde_crtc.c
-          sed -i '48i static bool is_aosp = true;' drivers/gpu/drm/msm/sde/sde_plane.c
-
-          # 4. STUBBING (Linker Fixes)
-          mkdir -p out
-          cat <<EOF > drivers/soc/qcom/stubs.c
-          #include <linux/kernel.h>
-          void sec_debug_store_bug_string(char *s) {}
-          void enable_emergency_dload_mode(void) {}
-          void audio_register_wdsp_state_cb(void *p) {}
-          void audio_register_mad_mic_state_cb(void *p) {}
-          void *get_wsa_sysfs_ptr(void) { return NULL; }
-          void pm6150_set_pd_state(void *a, int b) {}
-          void pm6150_set_cable(void *a, int b) {}
-          void ccic_send_dock_intent(int a) {}
-          void manager_notifier_register(void *a, void *b, void *c) {}
-          void sec_kn_register_notifier(void *a) {}
-          void sec_cmd_set_default_result(void *a) {}
-          void sec_cmd_set_cmd_result(void *a, char *b, int c) {}
-          void sec_cmd_init(void *a, void *b, void *c, char *d) {}
-          const char *scsi_trace_parse_cdb(void *a, void *b, int c) { return ""; }
+          # 2. FIX HEADERS & STUBS (Esential pentru succes)
+          cat <<EOF > drivers/gpu/drm/msm/samsung_fix.h
+          #ifndef __SAMSUNG_FIX_H__
+          #define __SAMSUNG_FIX_H__
+          #define SS_DSI_CMD_SET_MAX 60
+          #define SUPPORT_PANEL_REVISION 20
+          #define CD_MAP_TABLE_MAX 15
+          #define RX_CMD_START 0
+          #define RX_CMD_END 150
+          #define RX_SELF_DISP_DEBUG 1
+          #define RX_SELF_MASK_CHECK 2
+          static const bool is_aosp = true;
+          #endif
           EOF
-          echo "obj-y += stubs.o" >> drivers/soc/qcom/Makefile
+          echo "ccflags-y += -include drivers/gpu/drm/msm/samsung_fix.h -Idrivers/gpu/drm/msm/samsung" >> drivers/gpu/drm/msm/Makefile
 
-          # 5. CONFIG & BUILD
-          make $MAKE_ARGS O=out vendor/sm8150-perf_defconfig
-          wget -O arch/arm64/configs/a70q_aosp.config https://raw.githubusercontent.com/pascua28/android_kernel_samsung_sm7150/sixteen/arch/arm64/configs/a70q.config
-          cat arch/arm64/configs/a70q_aosp.config >> out/.config
-          ./scripts/config --file out/.config -d CONFIG_SEC_DEBUG -d CONFIG_SECURITY_SMACK -d CONFIG_KVM -e CONFIG_SECTION_MISMATCH_WARN_ONLY
-          make $MAKE_ARGS O=out olddefconfig
+          # 3. COMPILE
+          make $MAKE_ARGS r5q_aosp_hybrid_defconfig
+          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -w" O=out Image.gz
 
-          # 6. COMPILARE
-          KCFLAGS_BASE="-fcommon -w -Wno-error -Wno-implicit-function-declaration"
-          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="$KCFLAGS_BASE" O=out Image.gz
-
-      - name: Upload
+      - name: Upload Kernel
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-R5Q-Definitive
+          name: Kernel-R5Q-AOSP-Hybrid
           path: kernel/out/arch/arm64/boot/Image.gz
