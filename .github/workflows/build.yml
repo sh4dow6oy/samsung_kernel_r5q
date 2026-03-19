@@ -62,22 +62,29 @@ jobs:
           make $MAKE_ARGS olddefconfig
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -w" O=out Image.gz dtbs
 
-      - name: Package for S10 Lite
+      - name: Package with AnyKernel3
         run: |
           git clone https://github.com/osm0sis/AnyKernel3.git
+          
+          # 1. Copiem Kernel-ul
           cp kernel/out/arch/arm64/boot/Image.gz AnyKernel3/
           
-          # Colectam DTB si DTBO (Sunt vitale pentru OneUI)
-          find kernel/out/arch/arm64/boot/dts/ -name "*.dtb" -exec cat {} + > AnyKernel3/dtb
-          find kernel/out/arch/arm64/boot/dts/ -name "*.dtbo" -exec cat {} + > AnyKernel3/dtbo.img || echo "DTBO not found"
+          # 2. Colectăm TOATE DTB-urile (Metoda Brută)
+          # Căutăm în tot folderul 'out' pentru a fi siguri că prindem SM8150 și R5Q
+          echo "Colectăm DTB-urile..."
+          find kernel/out/arch/arm64/boot/dts/ -name "*.dtb" -type f -exec cat {} + > AnyKernel3/dtb
+          
+          # 3. Colectăm TOATE DTBO-urile (Metoda Brută)
+          echo "Colectăm DTBO-urile..."
+          # Căutăm fișierele .dtbo oriunde au fost generate (inclusiv Techpack)
+          find kernel/out/ -name "*.dtbo" -type f -exec cat {} + > AnyKernel3/dtbo.img
 
+          # VERIFICARE FINALE
+          echo "Dimensiune DTB final: $(du -sh AnyKernel3/dtb)"
+          echo "Dimensiune DTBO final: $(du -sh AnyKernel3/dtbo.img)"
+
+          # 4. Configurare AnyKernel3
           cd AnyKernel3
           sed -i 's/device.name1=maguro/device.name1=r5q/g' anykernel.sh
           sed -i 's/device.name2=panda/device.name2=SM-G770F/g' anykernel.sh
-          zip -r9 ../Lumi-R5Q-OneUI-Ultimate.zip *
-
-      - name: Upload
-        uses: actions/upload-artifact@v4
-        with:
-          name: Lumi-R5Q-OneUI-Ultimate
-          path: Lumi-R5Q-OneUI-Ultimate.zip
+          zip -r9 ../Lumi-R5Q-Final-Build.zip *
