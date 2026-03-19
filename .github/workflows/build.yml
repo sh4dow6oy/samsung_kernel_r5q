@@ -1,4 +1,4 @@
-name: Build R5Q - Hybrid Final Fix
+name: Build R5Q Hybrid AOSP
 on:
   workflow_dispatch:
 
@@ -14,27 +14,33 @@ jobs:
           path: kernel
           fetch-depth: 1
 
-      - name: Setup Toolchain
+      - name: Install Dependencies
         run: |
-          sudo apt-get update && sudo apt-get install -y bc build-essential flex bison lz4 libssl-dev libelf-dev zstd zip gcc-aarch64-linux-gnu
+          sudo apt-get update
+          sudo apt-get install -y bc build-essential flex bison lz4 libssl-dev libelf-dev \
+          ccache python3 python-is-python3 libarchive-tools wget zstd zip \
+          gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi libncurses-dev libtinfo6
+
+      - name: Setup Toolchain (Neutron Clang)
+        run: |
           mkdir clang
           wget -q https://github.com/Ylarod/setup-ndk-clang/releases/download/prebuilt/clang-linux-x86-ndk-r29-r563880c.tar.zst
           tar -I zstd -xf clang-linux-x86-ndk-r29-r563880c.tar.zst -C clang
 
-      - name: Prepare Sources & Hybrid Config
+      - name: Prepare Sources & Fixes
         run: |
           cd kernel
-          # 1. Import R3Q Display
-          rm -rf drivers/gpu/drm/msm/sde drivers/gpu/drm/msm/samsung
+          # 1. Import R3Q Display Drivers (Roynas)
+          rm -rf drivers/gpu/drm/msm/sde drivers/gpu/drm/msm/samsung drivers/gpu/drm/msm/dsi-staging
           git clone https://github.com/Roynas-Android-Playground/kernel_samsung_r3q -b master ../r3q_source
           cp -r ../r3q_source/drivers/gpu/drm/msm/sde drivers/gpu/drm/msm/
           cp -r ../r3q_source/drivers/gpu/drm/msm/samsung drivers/gpu/drm/msm/
+          cp -r ../r3q_source/drivers/gpu/drm/msm/dsi-staging drivers/gpu/drm/msm/
 
-          # 2. Fix Audio (slow_insertion error)
-          # Inlocuim mbhc->slow_insertion cu 0 (false) pentru a trece de eroare
-          sed -i 's/mbhc->slow_insertion/0/g' techpack/audio/asoc/codecs/wcd-mbhc-adc.c
+          # 2. Fix Audio "slow_insertion" error
+          find techpack/audio -name "wcd-mbhc-adc.c" -exec sed -i 's/mbhc->slow_insertion/0/g' {} +
 
-          # 3. Create Global Fix Header (in standard include path)
+          # 3. Create Global Samsung Fix Header
           mkdir -p include/samsung
           cat <<EOF > include/samsung/samsung_fix.h
           #ifndef __SAMSUNG_FIX_H__
@@ -55,34 +61,57 @@ jobs:
           #endif
           EOF
 
-          # 4. Hybrid Defconfig (Roynas + Ata-kaner)
+          # 4. Create Hybrid Defconfig (AOSP Focused)
           cp arch/arm64/configs/vendor/sm8150-perf_defconfig arch/arm64/configs/r5q_hybrid_defconfig
           cat <<EOF >> arch/arm64/configs/r5q_hybrid_defconfig
+          # Security Bypass (Ata-kaner style)
           CONFIG_SEC_DEBUG=n
           CONFIG_SECURITY_SMACK=n
           CONFIG_SECURITY_DEFEX=n
           CONFIG_KNOX_KAP=n
+          CONFIG_FIVE=n
+          # Display & Audio Techpack
           CONFIG_DRM_SDE_R3Q=y
+          # Fix Stack Protector Compiler Error
+          CONFIG_CC_STACKPROTECTOR=n
+          CONFIG_CC_STACKPROTECTOR_NONE=y
+          CONFIG_CC_STACKPROTECTOR_STRONG=n
+          # Warnings
           CONFIG_SECTION_MISMATCH_WARN_ONLY=y
           EOF
 
-      - name: Compile Kernel
+          # 5. Fix Samsung Scripts (secgetspf dummy)
+          mkdir -p out
+          touch out/secgetspf
+          chmod +x out/secgetspf
+
+      - name: Build Kernel
         run: |
           cd kernel
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
-          export MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld AR=llvm-ar CROSS_COMPILE=aarch64-linux-gnu- O=out"
+          export MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
           
-          # Configurare
+          # Initialize Config
           make $MAKE_ARGS r5q_hybrid_defconfig
           
-          # Injectam include-ul folosind calea relativa la radacina kernelului
-          # Folosim -Iinclude pentru a vedea folderul samsung creat anterior
-          export KCFLAGS="-fcommon -w -I$(pwd)/include -include samsung/samsung_fix.h"
+          # Force Include our Fix Header & Path
+          export KCFLAGS="-fcommon -w -Wno-error -I$(pwd)/include -include samsung/samsung_fix.h"
           
+          # Start Compilation
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="$KCFLAGS" O=out Image.gz
 
-      - name: Upload
+      - name: Package with AnyKernel3
+        run: |
+          git clone https://github.com/osm0sis/AnyKernel3.git
+          cp kernel/out/arch/arm64/boot/Image.gz AnyKernel3/
+          cd AnyKernel3
+          # Change device names to R5Q (S10 Lite)
+          sed -i 's/device.name1=maguro/device.name1=r5q/g' anykernel.sh
+          sed -i 's/device.name2=panda/device.name2=SM-G770F/g' anykernel.sh
+          zip -r9 ../Kernel-R5Q-AOSP-Hybrid.zip *
+
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-R5Q-AOSP
-          path: kernel/out/arch/arm64/boot/Image.gz
+          name: Kernel-S10Lite-R5Q
+          path: Kernel-R5Q-AOSP-Hybrid.zip
