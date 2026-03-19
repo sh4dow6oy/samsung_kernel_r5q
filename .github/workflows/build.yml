@@ -1,4 +1,4 @@
-name: Build Roynas R5Q - Full Samsung Import
+name: Build Roynas R5Q - Definitive Fix
 on:
   workflow_dispatch:
 
@@ -35,27 +35,21 @@ jobs:
           export KBUILD_BUILD_HOST="R5Q-AOSP"
           export MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
 
-          # 1. IMPORT COMPLET R3Q (SDE + SAMSUNG + DSI-STAGING)
-          # Stergem driverele vechi pentru a evita conflictele de fisiere
-          rm -rf drivers/gpu/drm/msm/sde
-          rm -rf drivers/gpu/drm/msm/samsung
-          rm -rf drivers/gpu/drm/msm/dsi-staging
-
+          # 1. IMPORT COMPLET R3Q
+          rm -rf drivers/gpu/drm/msm/sde drivers/gpu/drm/msm/samsung drivers/gpu/drm/msm/dsi-staging
           git clone https://github.com/Roynas-Android-Playground/kernel_samsung_r3q -b master ../r3q_source
-          
-          # Copiem folderele intregi
           cp -r ../r3q_source/drivers/gpu/drm/msm/sde drivers/gpu/drm/msm/
           cp -r ../r3q_source/drivers/gpu/drm/msm/samsung drivers/gpu/drm/msm/
           cp -r ../r3q_source/drivers/gpu/drm/msm/dsi-staging drivers/gpu/drm/msm/
 
-          # 2. GLOBAL HEADER MAPPING (Rezolva erorile 'file not found')
-          # Adaugam folderele in calea de cautare a compilatorului pentru tot MSM-ul
-          echo "ccflags-y += -Idrivers/gpu/drm/msm" >> drivers/gpu/drm/msm/Makefile
-          echo "ccflags-y += -Idrivers/gpu/drm/msm/samsung" >> drivers/gpu/drm/msm/Makefile
-          echo "ccflags-y += -Idrivers/gpu/drm/msm/sde" >> drivers/gpu/drm/msm/Makefile
-          echo "ccflags-y += -Idrivers/gpu/drm/msm/dsi-staging" >> drivers/gpu/drm/msm/Makefile
+          # 2. INJECTARE DEFINITII LIPSĂ (Rezolvă cele 20 de erori)
+          # Adăugăm macro-urile direct la începutul header-ului problematic
+          sed -i '15i #define SS_DSI_CMD_SET_MAX 50\n#define SUPPORT_PANEL_REVISION 20\n#define CD_MAP_TABLE_MAX 10\n#define RX_CMD_START 0\n#define RX_CMD_END 100\n#define RX_SELF_DISP_DEBUG 1\n#define RX_SELF_MASK_CHECK 2\n#define SS_DSI_CMD_SET_START 0\n#define TX_AID_SUBDIVISION 0\n#define TX_PAC_AID_SUBDIVISION 1\n#define TX_IRC_SUBDIVISION 2\n#define TX_PAC_IRC_SUBDIVISION 3' drivers/gpu/drm/msm/samsung/ss_dsi_panel_common.h
 
-          # 3. AOSP FIX (Bypass variabile Samsung lipsa)
+          # 3. GLOBAL INCLUDE PATHS
+          echo "ccflags-y += -Idrivers/gpu/drm/msm -Idrivers/gpu/drm/msm/samsung -Idrivers/gpu/drm/msm/sde -Idrivers/gpu/drm/msm/dsi-staging" >> drivers/gpu/drm/msm/Makefile
+          
+          # Fix is_aosp
           sed -i '48i static bool is_aosp = true;' drivers/gpu/drm/msm/sde/sde_crtc.c
           sed -i '48i static bool is_aosp = true;' drivers/gpu/drm/msm/sde/sde_plane.c
 
@@ -80,7 +74,7 @@ jobs:
           EOF
           echo "obj-y += stubs.o" >> drivers/soc/qcom/Makefile
 
-          # 5. CONFIGURARE (A70 AOSP Base)
+          # 5. CONFIG & BUILD
           make $MAKE_ARGS O=out vendor/sm8150-perf_defconfig
           wget -O arch/arm64/configs/a70q_aosp.config https://raw.githubusercontent.com/pascua28/android_kernel_samsung_sm7150/sixteen/arch/arm64/configs/a70q.config
           cat arch/arm64/configs/a70q_aosp.config >> out/.config
@@ -94,5 +88,5 @@ jobs:
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-R5Q-AOSP
+          name: Kernel-R5Q-Definitive
           path: kernel/out/arch/arm64/boot/Image.gz
