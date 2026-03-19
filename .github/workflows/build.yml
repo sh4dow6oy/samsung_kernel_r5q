@@ -1,4 +1,4 @@
-name: Build Lumi R5Q - Ultimate BPF Fixed
+name: Build Lumi R5Q - Ultimate BPF Master
 on:
   workflow_dispatch:
 
@@ -7,7 +7,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Source
-        uses: actions/checkout@v4
+        uses: actions/checkout@@v4
         with:
           repository: LumiPlayground/android_kernel_samsung_sm8150
           ref: rawr-bpf
@@ -20,7 +20,7 @@ jobs:
           sudo apt-get install -y bc build-essential flex bison lz4 libssl-dev libelf-dev \
           ccache python3 python-is-python3 libarchive-tools wget zstd zip \
           gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi libncurses-dev libtinfo6 \
-          device-tree-compiler
+          device-tree-compiler clang
 
       - name: Setup Toolchain (Neutron Clang)
         run: |
@@ -28,82 +28,105 @@ jobs:
           wget -q https://github.com/Ylarod/setup-ndk-clang/releases/download/prebuilt/clang-linux-x86-ndk-r29-r563880c.tar.zst
           tar -I zstd -xf clang-linux-x86-ndk-r29-r563880c.tar.zst -C clang
 
-      - name: Prepare Source & Fixes
+      - name: Build Kernel (Image.gz-dtb)
         run: |
           cd kernel
           chmod -R +x tools/
-          
-          # Fix COMMON symbols pentru a evita erorile de linkare vmlinux
-          grep -r "bool main_ext_ss_not_working" . | cut -d: -f1 | xargs sed -i 's/bool main_ext_ss_not_working/static bool main_ext_ss_not_working/g' || true
-          
-          # Configurare DEFCONFIG R5Q
-          # Activam suportul eBPF si Overlay-urile Samsung
-          ./scripts/config --file arch/arm64/configs/r5q_eur_open_defconfig \
-            -d CONFIG_RTIC \
-            -e CONFIG_BPF_SYSCALL \
-            -e CONFIG_BUILD_ARM64_DT_OVERLAY \
-            -e CONFIG_PROJECT_R5Q \
-            -e CONFIG_SEC_R5Q_PROJECT \
-            -e CONFIG_SAMSUNG_PRODUCT_SHIP \
-            -e CONFIG_LTO_CLANG_NONE \
-            -e CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE \
-            -e CONFIG_IMG_GZ_DTB
-
-      - name: Build Kernel
-        run: |
-          cd kernel
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           
-          # Adaugam EXT_DTS_PLATFORM si forta proiectelor SEC
+          # Fix Multiple Definition (Punct critic pentru linkarea kernelului)
+          grep -r "bool main_ext_ss_not_working" . | cut -d: -f1 | xargs sed -i 's/bool main_ext_ss_not_working/static bool main_ext_ss_not_working/g' || true
+          
           export MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang \
             DTC_EXT=$(pwd)/tools/dtc \
             CONFIG_BUILD_ARM64_DT_OVERLAY=y \
             CONFIG_PROJECT_R5Q=y \
             CONFIG_SEC_R5Q_PROJECT=y \
-            EXT_DTS_PLATFORM=samsung \
             CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             LD=ld.lld \
             O=out"
 
+          # Configurare si Activare BPF
           make $MAKE_ARGS r5q_eur_open_defconfig
+          ./scripts/config --file out/.config \
+            -e CONFIG_BPF_SYSCALL \
+            -e CONFIG_BPF_JIT \
+            -e CONFIG_CGROUP_BPF \
+            -e CONFIG_NETFILTER_XT_MATCH_BPF \
+            -d CONFIG_RTIC \
+            -e CONFIG_BUILD_ARM64_DT_OVERLAY \
+            -e CONFIG_SEC_R5Q_PROJECT \
+            -e CONFIG_PROJECT_R5Q \
+            -e CONFIG_SAMSUNG_PRODUCT_SHIP \
+            -e CONFIG_LTO_CLANG_NONE
+            
           make $MAKE_ARGS olddefconfig
           
-          # Build principal
+          # Compilare Kernel principal (20MB)
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -w" O=out Image.gz-dtb dtbs
 
-      - name: Package with AnyKernel3
+      - name: Manual DTBO Compilation (R5Q Revisions)
         run: |
           git clone https://github.com/osm0sis/AnyKernel3.git
           cp kernel/out/arch/arm64/boot/Image.gz-dtb AnyKernel3/Image.gz
           
-          # --- COLECTARE DTBO MODIFICATA ---
-          echo "Cautam DTBO in locatiile specifice Samsung..."
-          
-          # Incercam sa gasim fisierele .dtbo (uneori sunt in out/arch/arm64/boot/dts/samsung/renovation/)
-          find kernel/out/ -name "*.dtbo" -type f -exec cat {} + > AnyKernel3/dtbo.img
-          
-          # DACA E TOT GOL (0 bytes), incercam metoda de urgenta:
-          # Compilam manual daca gasim sursele .dts de overlay
-          if [ ! -s AnyKernel3/dtbo.img ]; then
-            echo "DTBO gol. Incercam compilarea manuala a overlay-urilor din sursa..."
-            mkdir -p dtbo_temp
-            # Cautam fisierele de tip overlay (.dts) in folderul renovation
-            find kernel/arch/arm64/boot/dts/samsung/renovation/ -name "*.dts*" -type f | while read -r dts_file; do
-              ./kernel/tools/dtc -@ -I dts -O dtb -o "dtbo_temp/$(basename "$dts_file").dtbo" "$dts_file" || true
-            done
-            cat dtbo_temp/*.dtbo > AnyKernel3/dtbo.img || true
+          echo "### Incepe Compilarea Manuala a DTBO (r00-r09) ###"
+          mkdir -p dtbo_manual
+          DTS_ROOT="kernel/arch/arm64/boot/dts"
+          SAMSUNG_DIR="$DTS_ROOT/samsung"
+          RENOVATION_DIR="$SAMSUNG_DIR/renovation"
+
+          # 1. Procesam toate entry-point-urile (.dts) pentru R5Q
+          # Includem toate folderele de DTS pentru a gasi .dtsi-urile de audio/pinctrl
+          find "$RENOVATION_DIR" -name "sm8150-sec-r5q-overlay*.dts" | while read -r dts_file; do
+            dtbo_name=$(basename "$dts_file" .dts).dtbo
+            echo "Preprocesare Clang + DTC: $dtbo_name"
+
+            # Preprocesare (Uneste codul din .dts cu .dtsi)
+            clang -E -nostdinc -undef -D__DTS__ -x assembler-with-cpp \
+              -I kernel/include \
+              -I "$DTS_ROOT" \
+              -I "$DTS_ROOT/qcom" \
+              -I "$SAMSUNG_DIR" \
+              -I "$RENOVATION_DIR" \
+              "$dts_file" -o "dtbo_manual/temp.dts"
+
+            # Compilare in binar .dtbo
+            kernel/tools/dtc -@ -I dts -O dtb -o "dtbo_manual/$dtbo_name" "dtbo_manual/temp.dts"
+          done
+
+          # 2. Adaugam si System Update Overlay (important pentru stabilitate Samsung)
+          if [ -f "$RENOVATION_DIR/sm8150-sec-system-update-overlay.dts" ]; then
+             clang -E -nostdinc -undef -D__DTS__ -x assembler-with-cpp \
+               -I kernel/include -I "$DTS_ROOT" -I "$DTS_ROOT/qcom" -I "$SAMSUNG_DIR" -I "$RENOVATION_DIR" \
+               "$RENOVATION_DIR/sm8150-sec-system-update-overlay.dts" -o "dtbo_manual/update.dts"
+             kernel/tools/dtc -@ -I dts -O dtb -o "dtbo_manual/system-update.dtbo" "dtbo_manual/update.dts"
           fi
 
-          # Debug Info
-          echo "--- REZULTAT FINAL ---"
+          # 3. Concatenare finala
+          cat dtbo_manual/*.dtbo > AnyKernel3/dtbo.img
+          
+          echo "--- VERIFICARE REZULTATE ---"
           ls -lh AnyKernel3/Image.gz
-          [ -s AnyKernel3/dtbo.img ] && du -sh AnyKernel3/dtbo.img || echo "EROARE: DTBO are tot 0MB!"
-          echo "----------------------"
+          if [ -s AnyKernel3/dtbo.img ]; then
+            du -sh AnyKernel3/dtbo.img
+            echo "SUCCES: DTBO a fost generat manual cu suport R5Q (r00-r09)."
+          else
+            echo "EROARE: dtbo.img este GOL!"
+            exit 1
+          fi
+          echo "----------------------------"
 
           cd AnyKernel3
           sed -i 's/device.name1=maguro/device.name1=r5q/g' anykernel.sh
           sed -i 's/device.name2=panda/device.name2=SM-G770F/g' anykernel.sh
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-          zip -r9 ../Lumi-R5Q-BPF-V3.zip *
+          zip -r9 ../Lumi-R5Q-Complete-BPF-Final.zip *
+
+      - name: Upload Kernel
+        uses: actions/upload-artifact@v4
+        with:
+          name: Lumi-R5Q-Final-Kernel
+          path: Lumi-R5Q-Complete-BPF-Final.zip
