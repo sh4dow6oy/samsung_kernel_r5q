@@ -1,4 +1,4 @@
-name: Build Lumi R5Q 5.4 - OneUI Target
+name: Build Lumi R5Q 5.4 - OneUI Final
 on:
   workflow_dispatch:
 
@@ -27,60 +27,75 @@ jobs:
           wget -q https://github.com/Ylarod/setup-ndk-clang/releases/download/prebuilt/clang-linux-x86-ndk-r29-r563880c.tar.zst
           tar -I zstd -xf clang-linux-x86-ndk-r29-r563880c.tar.zst -C clang
 
-      - name: Create OneUI R5Q Defconfig
+      - name: Prepare Config & Techpack
         run: |
           cd kernel
-          # Folosim b2q (S20+) ca baza pentru OneUI 5.4
+          # Cream defconfig-ul R5Q bazat pe B2Q (conform cerintei tale pentru OneUI)
           cp arch/arm64/configs/vendor/b2q_eur_openx_defconfig arch/arm64/configs/vendor/r5q_oneui_defconfig
 
-          # Modificam DOAR identitatea proiectului
+          # Aplicam schimbarile de proiect fara a atinge securitatea (KNOX/DEFEX)
+          # Mirroring logic from build_kernel.sh (Techpack integration)
           ./scripts/config --file arch/arm64/configs/vendor/r5q_oneui_defconfig \
             -d CONFIG_PROJECT_B2Q \
             -e CONFIG_PROJECT_R5Q \
             -e CONFIG_SECTION_MISMATCH_WARN_ONLY \
             -e CONFIG_LTO_CLANG_NONE \
-            -d CONFIG_LTO_CLANG_THIN
+            -d CONFIG_LTO_CLANG_THIN \
+            -e CONFIG_SAMSUNG_PRODUCT_SHIP
 
-          # NOTA: NU atingem CONFIG_SECURITY_SMACK sau CONFIG_FIVE pentru OneUI.
-          
-          # Fix pentru erori de link-are in Techpack (Audio/Display)
+          # Fix Audio Techpack error (specifica pentru SM8150 5.4)
           find techpack/audio -name "wcd-mbhc-adc.c" -exec sed -i 's/mbhc->slow_insertion/0/g' {} +
 
-      - name: Build Kernel
+      - name: Build Kernel (Lumi Logic)
         run: |
           cd kernel
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
-          export MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
+          
+          # Definim argumentele exact ca in build_kernel.sh
+          export MAKE_ARGS="ARCH=arm64 \
+            LLVM=1 LLVM_IAS=1 \
+            CC=clang \
+            LD=ld.lld \
+            AR=llvm-ar \
+            NM=llvm-nm \
+            OBJCOPY=llvm-objcopy \
+            OBJDUMP=llvm-objdump \
+            STRIP=llvm-strip \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            O=out"
 
-          # Pregatire Config
+          # 1. Init Config
           make $MAKE_ARGS vendor/r5q_oneui_defconfig
-          
-          # Daca primesti eroarea cu Stack Protector, dezactiveaza-l manual aici:
-          # ./scripts/config --file out/.config -d CONFIG_CC_STACKPROTECTOR_STRONG -e CONFIG_CC_STACKPROTECTOR_NONE
-          
           make $MAKE_ARGS olddefconfig
 
-          # Compilare (Image.gz + DTB)
+          # 2. Build Image & DTBs
+          # Folosim -j$(nproc) si KCFLAGS pentru a asigura succesul pe OneUI
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -w" O=out Image.gz dtbs
 
-      - name: Package for OneUI (AnyKernel3)
+      - name: Package with AnyKernel3 (Smart Collect)
         run: |
           git clone https://github.com/osm0sis/AnyKernel3.git
           cp kernel/out/arch/arm64/boot/Image.gz AnyKernel3/
           
-          # Colectam DTB-urile specifice R5Q
+          # Colectam DTB-urile pentru SM8150/R5Q
+          # build_kernel.sh le genereaza in out/arch/arm64/boot/dts/vendor/
           DTB_PATH="kernel/out/arch/arm64/boot/dts/vendor"
           find "$DTB_PATH" -name "*r5q*.dtb" -exec cat {} + > AnyKernel3/dtb
+          
+          # Daca r5q nu e gasit nominal, folosim baza SM8150 generata
+          if [ ! -s AnyKernel3/dtb ]; then
+            cat "$DTB_PATH"/qcom/msm8150*.dtb > AnyKernel3/dtb
+          fi
 
           cd AnyKernel3
-          # Setari specifice pentru instalarea pe OneUI
           sed -i 's/device.name1=maguro/device.name1=r5q/g' anykernel.sh
           sed -i 's/device.name2=panda/device.name2=SM-G770F/g' anykernel.sh
-          # OneUI are nevoie de un script de patch pentru fstab de obicei (AnyKernel se ocupa)
-          zip -r9 ../Kernel-Lumi-R5Q-OneUI.zip *
+          zip -r9 ../Lumi-R5Q-OneUI-Kernel.zip *
 
-      - name: Upload
+      - name: Upload Kernel
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-OneUI-R5Q
-          path: Kernel-Lumi-R5Q-OneUI.zip
+          name: Lumi-R5Q-OneUI
+          path: Lumi-R5Q-OneUI-Kernel.zip
