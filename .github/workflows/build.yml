@@ -19,7 +19,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y bc build-essential flex bison lz4 libssl-dev libelf-dev \
           ccache python3 python-is-python3 libarchive-tools wget zstd zip \
-          gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi libncurses-dev libtinfo6 dtc
+          gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi libncurses-dev libtinfo6 \
+          device-tree-compiler
 
       - name: Setup Toolchain (Neutron Clang)
         run: |
@@ -30,11 +31,10 @@ jobs:
       - name: Prepare Config & Techpack
         run: |
           cd kernel
-          # Cream defconfig-ul R5Q bazat pe B2Q (conform cerintei tale pentru OneUI)
+          # Cream defconfig-ul R5Q bazat pe B2Q (S20+)
           cp arch/arm64/configs/vendor/b2q_eur_openx_defconfig arch/arm64/configs/vendor/r5q_oneui_defconfig
 
-          # Aplicam schimbarile de proiect fara a atinge securitatea (KNOX/DEFEX)
-          # Mirroring logic from build_kernel.sh (Techpack integration)
+          # Aplicăm schimbările de proiect (Păstrăm securitatea pentru OneUI)
           ./scripts/config --file arch/arm64/configs/vendor/r5q_oneui_defconfig \
             -d CONFIG_PROJECT_B2Q \
             -e CONFIG_PROJECT_R5Q \
@@ -43,7 +43,7 @@ jobs:
             -d CONFIG_LTO_CLANG_THIN \
             -e CONFIG_SAMSUNG_PRODUCT_SHIP
 
-          # Fix Audio Techpack error (specifica pentru SM8150 5.4)
+          # Fix Audio Techpack (prevenire eroare slow_insertion)
           find techpack/audio -name "wcd-mbhc-adc.c" -exec sed -i 's/mbhc->slow_insertion/0/g' {} +
 
       - name: Build Kernel (Lumi Logic)
@@ -51,7 +51,6 @@ jobs:
           cd kernel
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           
-          # Definim argumentele exact ca in build_kernel.sh
           export MAKE_ARGS="ARCH=arm64 \
             LLVM=1 LLVM_IAS=1 \
             CC=clang \
@@ -71,20 +70,18 @@ jobs:
           make $MAKE_ARGS olddefconfig
 
           # 2. Build Image & DTBs
-          # Folosim -j$(nproc) si KCFLAGS pentru a asigura succesul pe OneUI
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -w" O=out Image.gz dtbs
 
-      - name: Package with AnyKernel3 (Smart Collect)
+      - name: Package with AnyKernel3
         run: |
           git clone https://github.com/osm0sis/AnyKernel3.git
           cp kernel/out/arch/arm64/boot/Image.gz AnyKernel3/
           
-          # Colectam DTB-urile pentru SM8150/R5Q
-          # build_kernel.sh le genereaza in out/arch/arm64/boot/dts/vendor/
+          # Colectăm DTB-urile pentru S10 Lite
           DTB_PATH="kernel/out/arch/arm64/boot/dts/vendor"
           find "$DTB_PATH" -name "*r5q*.dtb" -exec cat {} + > AnyKernel3/dtb
           
-          # Daca r5q nu e gasit nominal, folosim baza SM8150 generata
+          # Fallback dacă nu găsește r5q în nume
           if [ ! -s AnyKernel3/dtb ]; then
             cat "$DTB_PATH"/qcom/msm8150*.dtb > AnyKernel3/dtb
           fi
