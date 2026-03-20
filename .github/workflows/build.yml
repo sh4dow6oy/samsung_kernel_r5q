@@ -57,9 +57,9 @@ jobs:
           make $MAKE_ARGS olddefconfig
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -w" O=out Image.gz-dtb dtbs
 
-      - name: Professional DTBO Packaging (Based on Makefile)
+      - name: Professional DTBO Packaging (Fixed Paths)
         run: |
-          # 1. Download mkdtboimg.py
+          # 1. Download mkdtboimg.py (Link stabil)
           wget -q https://raw.githubusercontent.com/LineageOS/android_system_libufdt/lineage-18.1/utils/src/mkdtboimg.py -O mkdtboimg.py
           chmod +x mkdtboimg.py
 
@@ -67,12 +67,16 @@ jobs:
           git clone https://github.com/osm0sis/AnyKernel3.git
           cp kernel/out/arch/arm64/boot/Image.gz-dtb AnyKernel3/Image.gz
           
-          # 3. Compilare DTBO conform listei din Makefile
-          mkdir -p dtbo_manual
-          DTS_ROOT="$GITHUB_WORKSPACE/kernel/arch/arm64/boot/dts"
-          SAMSUNG_RENO="$DTS_ROOT/samsung/renovation"
+          # 3. Detectare automata a folderului Renovation
+          # Uneori structura este arch/arm64/boot/dts/samsung/renovation
+          # Alteori este direct arch/arm64/boot/dts/renovation
+          RENO_PATH=$(find kernel/arch/arm64/boot/dts -name "renovation" -type d | head -n 1)
+          DTS_ROOT="kernel/arch/arm64/boot/dts"
           
-          # Lista de fisiere R5Q extrasa din Makefile-ul tau
+          echo "Folderul Renovation gasit la: $RENO_PATH"
+          mkdir -p dtbo_manual
+
+          # Lista de fisiere conform Makefile-ului tau
           FILES_TO_BUILD=(
             "sm8150-sec-r5q-overlay-r00.dts"
             "sm8150-sec-r5q-overlay-r01.dts"
@@ -83,29 +87,42 @@ jobs:
           )
 
           for dts_name in "${FILES_TO_BUILD[@]}"; do
-            if [ -f "$SAMSUNG_RENO/$dts_name" ]; then
-              echo "Compiling $dts_name..."
+            target_file=$(find "$RENO_PATH" -name "$dts_name")
+            if [ -f "$target_file" ]; then
+              echo "Compiling $(basename "$target_file")..."
               dtbo_out=$(basename "$dts_name" .dts).dtbo
               
+              # Preprocesare Clang (Include toate dependintele .dtsi)
               clang -E -nostdinc -undef -D__DTS__ -x assembler-with-cpp \
-                -I kernel/include -I "$DTS_ROOT" -I "$DTS_ROOT/qcom" \
-                -I "$DTS_ROOT/samsung" -I "$SAMSUNG_RENO" \
-                "$SAMSUNG_RENO/$dts_name" -o "dtbo_manual/tmp.dts"
+                -I kernel/include \
+                -I "$DTS_ROOT" \
+                -I "$DTS_ROOT/qcom" \
+                -I "$DTS_ROOT/samsung" \
+                -I "$RENO_PATH" \
+                "$target_file" -o "dtbo_manual/tmp.dts"
               
+              # Compilare DTC binar
               kernel/tools/dtc -@ -I dts -O dtb -o "dtbo_manual/$dtbo_out" "dtbo_manual/tmp.dts"
             else
-              echo "Warning: $dts_name not found in $SAMSUNG_RENO"
+              echo "Warning: $dts_name NU a fost gasit in $RENO_PATH!"
             fi
           done
 
-          # 4. Creare imagine DTBO.img finala
-          python3 mkdtboimg.py create AnyKernel3/dtbo.img dtbo_manual/*.dtbo
+          # 4. Creare DTBO.img cu mkdtboimg (Tabela de indexare)
+          if [ "$(ls -A dtbo_manual/*.dtbo 2>/dev/null)" ]; then
+            python3 mkdtboimg.py create AnyKernel3/dtbo.img dtbo_manual/*.dtbo
+            echo "DTBO.img a fost creat cu succes."
+          else
+            echo "EROARE: Nu s-a putut compila niciun .dtbo!"
+            exit 1
+          fi
 
-          # 5. Configurare AnyKernel3
+          # 5. Configurare AnyKernel3 (Cai block S10 Lite si VBMeta Patch)
           cd AnyKernel3
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
           sed -i 's|block=auto;|block=/dev/block/by-name/boot;|g' anykernel.sh
+          # Injectam linia dtbo_block dupa boot block
           sed -i '/block=\/dev\/block\/by-name\/boot;/a dtbo_block=/dev/block/by-name/dtbo;' anykernel.sh
           sed -i 's/patch_vbmeta_flag=auto/patch_vbmeta_flag=1/g' anykernel.sh
           
-          zip -r9 ../Lumi-R5Q-BPF-Final.zip *
+          zip -r9 ../Lumi-R5Q-Complete-BPF.zip *
