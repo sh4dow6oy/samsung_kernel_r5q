@@ -1,4 +1,4 @@
-name: Build Lumi R5Q - Final Fix
+name: Build Lumi R5Q - Final eBPF Fix
 on:
   workflow_dispatch:
 
@@ -18,8 +18,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y bc build-essential flex bison lz4 libssl-dev libelf-dev \
-          ccache python3 python-is-python3 libarchive-tools wget zstd zip \
-          gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi device-tree-compiler clang
+          python3 python-is-python3 device-tree-compiler clang zip wget
 
       - name: Setup Toolchain (Neutron Clang)
         run: |
@@ -30,103 +29,73 @@ jobs:
       - name: Build Kernel
         run: |
           cd kernel
-          chmod -R +x tools/
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
-          
-          # Fix Multiple Definition
+          # Fix multiple definition
           grep -r "bool main_ext_ss_not_working" . | cut -d: -f1 | xargs sed -i 's/bool main_ext_ss_not_working/static bool main_ext_ss_not_working/g' || true
           
           export MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang \
-            DTC_EXT=$(pwd)/tools/dtc \
-            CONFIG_BUILD_ARM64_DT_OVERLAY=y \
-            CLANG_TRIPLE=aarch64-linux-gnu- \
-            CROSS_COMPILE=aarch64-linux-gnu- \
-            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-            LD=ld.lld \
-            O=out"
+            CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
 
           make $MAKE_ARGS r5q_eur_open_defconfig
-          
-          # BPF & Security Fixes
-          ./scripts/config --file out/.config \
-            -e CONFIG_BPF_SYSCALL -e CONFIG_BPF_JIT -e CONFIG_CGROUP_BPF \
-            -e CONFIG_NETFILTER_XT_MATCH_BPF -d CONFIG_RTIC \
-            -e CONFIG_BUILD_ARM64_DT_OVERLAY -e CONFIG_SEC_R5Q_PROJECT \
-            -e CONFIG_PROJECT_R5Q -e CONFIG_SAMSUNG_PRODUCT_SHIP
-            
+          ./scripts/config --file out/.config -e CONFIG_BPF_SYSCALL -e CONFIG_BPF_JIT -e CONFIG_CGROUP_BPF -d CONFIG_RTIC
           make $MAKE_ARGS olddefconfig
-          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -w" O=out Image.gz-dtb dtbs
+          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -w" O=out Image.gz-dtb
 
-      - name: Professional DTBO Packaging (Final Fix)
+      - name: Advanced Packaging (Fix for S10 Lite)
         run: |
-          # 1. Download mkdtboimg.py
+          # 1. Download Tools
           wget -q https://raw.githubusercontent.com/LineageOS/android_system_libufdt/lineage-18.1/utils/src/mkdtboimg.py -O mkdtboimg.py
-          chmod +x mkdtboimg.py
-
-          # 2. Setup AnyKernel3
           git clone https://github.com/osm0sis/AnyKernel3.git
-          cp kernel/out/arch/arm64/boot/Image.gz-dtb AnyKernel3/Image.gz
           
-          # 3. Detectare folder Renovation (Evităm folderul 'out')
-          RENO_PATH=$(find kernel/arch/arm64/boot/dts -name "renovation" -type d | grep -v "out" | head -n 1)
-          DTS_ROOT="kernel/arch/arm64/boot/dts"
+          # 2. Build DTBO.img (Revizia ta 09 + altele)
           mkdir -p dtbo_manual
-
-          echo "Folder Renovation: $RENO_PATH"
-
-          # Lista oficiala din Makefile-ul tau
-          FILES_TO_BUILD=(
-            "sm8150-sec-r5q-overlay-r00.dts"
-            "sm8150-sec-r5q-overlay-r01.dts"
-            "sm8150-sec-r5q-overlay-r07.dts"
-            "sm8150-sec-r5q-overlay-r08.dts"
-            "sm8150-sec-r5q-overlay-r09.dts"
-            "sm8150-sec-system-update-overlay.dts"
-          )
-
-          for dts_name in "${FILES_TO_BUILD[@]}"; do
-            target_file="$RENO_PATH/$dts_name"
-            if [ -f "$target_file" ]; then
-              echo "--- Preprocesare & Compilare: $dts_name ---"
-              dtbo_out=$(basename "$dts_name" .dts).dtbo
-              
-              # ADĂUGĂM TOATE INCLUDE-URILE CRITICE (Fix pentru arm-gic.h)
-              clang -E -nostdinc -undef -D__DTS__ -x assembler-with-cpp \
-                -I kernel/include \
-                -I kernel/scripts/dtc/include-prefixes \
-                -I "$DTS_ROOT" \
-                -I "$DTS_ROOT/qcom" \
-                -I "$DTS_ROOT/samsung" \
-                -I "$RENO_PATH" \
-                "$target_file" -o "dtbo_manual/tmp.dts"
-              
-              # Compilare DTC (Folosim DTC-ul din kernel)
-              kernel/tools/dtc -@ -I dts -O dtb -o "dtbo_manual/$dtbo_out" "dtbo_manual/tmp.dts"
-            else
-              echo "Skip: $dts_name nu exista in aceasta ramura."
-            fi
-          done
-
-          # 4. Creare DTBO.img
-          if [ "$(ls -A dtbo_manual/*.dtbo 2>/dev/null)" ]; then
-            python3 mkdtboimg.py create AnyKernel3/dtbo.img dtbo_manual/*.dtbo
-            echo "SUCCES: DTBO.img creat cu $(ls dtbo_manual/*.dtbo | wc -l) overlay-uri."
-          else
-            echo "EROARE CRITICA: Niciun fisier DTBO nu a fost compilat!"
-            exit 1
-          fi
-
-          # 5. Configurare AnyKernel3 (Căi block S10 Lite și VBMeta Patch)
-          cd AnyKernel3
-          sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-          sed -i 's|block=auto;|block=/dev/block/by-name/boot;|g' anykernel.sh
-          sed -i '/block=\/dev\/block\/by-name\/boot;/a dtbo_block=/dev/block/by-name/dtbo;' anykernel.sh
-          sed -i 's/patch_vbmeta_flag=auto/patch_vbmeta_flag=1/g' anykernel.sh
+          RENO_PATH=$(find kernel/arch/arm64/boot/dts -name "renovation" -type d | grep -v "out" | head -n 1)
+          DTS_INC="kernel/arch/arm64/boot/dts"
           
-          zip -r9 ../Lumi-R5Q-Complete-BPF.zip *
-            
-      - name: Upload Kernel
+          FILES=("sm8150-sec-r5q-overlay-r00.dts" "sm8150-sec-r5q-overlay-r01.dts" "sm8150-sec-r5q-overlay-r07.dts" "sm8150-sec-r5q-overlay-r08.dts" "sm8150-sec-r5q-overlay-r09.dts" "sm8150-sec-system-update-overlay.dts")
+          
+          for f in "${FILES[@]}"; do
+            clang -E -nostdinc -undef -D__DTS__ -x assembler-with-cpp -I kernel/include -I kernel/scripts/dtc/include-prefixes -I "$DTS_INC" -I "$DTS_INC/qcom" -I "$DTS_INC/samsung" -I "$RENO_PATH" "$RENO_PATH/$f" -o tmp.dts
+            kernel/tools/dtc -@ -I dts -O dtb -o "dtbo_manual/${f%.dts}.dtbo" tmp.dts
+          done
+          python3 mkdtboimg.py create AnyKernel3/dtbo.img dtbo_manual/*.dtbo
+
+          # 3. Configure AnyKernel3 (FIX CRITIC PENTRU RESTART)
+          cd AnyKernel3
+          cp ../kernel/out/arch/arm64/boot/Image.gz-dtb Image.gz
+          
+          # Modificam anykernel.sh sa fie "Aggressive"
+          cat <<EOF > anykernel.sh
+          properties() { '
+          kernel.string=Lumi Kernel eBPF for S10 Lite
+          do.devicecheck=1
+          do.modules=0
+          do.systemless=1
+          do.cleanup=1
+          device.name=r5q
+          '; }
+          BLOCK=/dev/block/by-name/boot;
+          IS_SLOT_DEVICE=0;
+          PATCH_VBMETA_FLAG=1;
+          . tools/ak3-core.sh;
+          
+          # Folosim split_boot si flash_boot pentru a nu corupe ramdisk-ul Samsung
+          split_boot;
+          flash_boot;
+          
+          # Flash DTBO (Esential pentru Rev 09)
+          if [ -f "dtbo.img" ]; then
+            dtbo_block=/dev/block/by-name/dtbo;
+            ui_print "- Flashing DTBO...";
+            flash_generic dtbo;
+          fi
+          EOF
+          
+          zip -r9 ../Lumi-R5Q-Final.zip *
+
+      - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Lumi-R5Q-Final-Kernel
-          path: Lumi-R5Q-Complete-BPF.zip
+          name: Lumi-R5Q-Kernel
+          path: Lumi-R5Q-Final.zip
