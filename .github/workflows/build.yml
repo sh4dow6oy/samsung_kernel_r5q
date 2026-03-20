@@ -25,21 +25,21 @@ jobs:
           mkdir -p clang
           wget -q https://github.com/Ylarod/setup-ndk-clang/releases/download/prebuilt/clang-linux-x86-ndk-r29-r563880c.tar.zst
           tar -I zstd -xf clang-linux-x86-ndk-r29-r563880c.tar.zst -C clang
-
       - name: Build Kernel
         run: |
           cd kernel
-          # Cream folderul de output
           mkdir -p out
           
-          # Setam calea catre toolchain-ul descarcat
+          # Setăm path-ul absolut către toolchain
           export CLANG_PATH=$GITHUB_WORKSPACE/clang/bin
           export PATH="$CLANG_PATH:$PATH"
           
-          # Fix pentru eroarea de definitie multipla (static bool)
-          grep -r "bool main_ext_ss_not_working" . | cut -d: -f1 | xargs sed -i 's/bool main_ext_ss_not_working/static bool main_ext_ss_not_working/g' || true
+          # Fix pentru eroarea de definiție multiplă (sed reparat)
+          # Folosim 'find' pentru a fi siguri că găsim fișierele indiferent de ramură
+          find . -maxdepth 5 -name "*.c" -o -name "*.h" | xargs grep -l "bool main_ext_ss_not_working" | xargs sed -i 's/bool main_ext_ss_not_working/static bool main_ext_ss_not_working/g' || true
           
-          # Definim argumentele de build forțând LLVM=1 și căile către binare
+          # Definim argumentele forțând suita LLVM completă din folderul descarcat
+          # Asta previne folosirea LD-ului vechi din Ubuntu
           export MAKE_ARGS="ARCH=arm64 \
             O=out \
             CC=clang \
@@ -56,26 +56,25 @@ jobs:
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             DTC_EXT=$(pwd)/tools/dtc"
 
-          # 1. Generare Config
+          # 1. Configurare inițială
           make $MAKE_ARGS r5q_eur_open_defconfig
           
-          # 2. Activare BPF si eliminare Samsung Security (RTIC/RKP)
+          # 2. Injectare Setări BPF & Dezactivare RTIC (Security)
           ./scripts/config --file out/.config \
             -e CONFIG_BPF_SYSCALL \
             -e CONFIG_BPF_JIT \
             -e CONFIG_CGROUP_BPF \
-            -e CONFIG_NETFILTER_XT_MATCH_BPF \
             -d CONFIG_RTIC \
             -d CONFIG_SECURITY_DEFEX \
             -e CONFIG_BUILD_ARM64_DT_OVERLAY \
             -e CONFIG_SEC_R5Q_PROJECT \
-            -e CONFIG_SAMSUNG_PRODUCT_SHIP
+            -e CONFIG_PROJECT_R5Q
             
-          # 3. Aplicare config si Compilare
+          # 3. Aplicăm modificările și compilăm
+          # KCFLAGS="-w" ignoră avertismentele care opresc build-ul (warning as error)
           make $MAKE_ARGS olddefconfig
-          # Adaugam KCFLAGS="-fcommon -w" pentru a trece de erorile de sintaxa veche
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -w" Image.gz-dtb
-
+          
       - name: Advanced Packaging (Fix for S10 Lite)
         run: |
           # 1. Download Tools
