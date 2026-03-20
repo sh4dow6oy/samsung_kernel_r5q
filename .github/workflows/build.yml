@@ -1,4 +1,4 @@
-name: Build Lumi R5Q - Final BPF & Boot Fix
+name: Build Lumi R5Q - Final Fix
 on:
   workflow_dispatch:
 
@@ -47,7 +47,7 @@ jobs:
 
           make $MAKE_ARGS r5q_eur_open_defconfig
           
-          # Configurare BPF (Syscall, JIT, Cgroups)
+          # BPF & Security Fixes
           ./scripts/config --file out/.config \
             -e CONFIG_BPF_SYSCALL -e CONFIG_BPF_JIT -e CONFIG_CGROUP_BPF \
             -e CONFIG_NETFILTER_XT_MATCH_BPF -d CONFIG_RTIC \
@@ -57,18 +57,22 @@ jobs:
           make $MAKE_ARGS olddefconfig
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -w" O=out Image.gz-dtb dtbs
 
-      - name: Professional Packaging (mkbootimg & mkdtboimg)
+      - name: Proper Packaging (Final Fix)
         run: |
-          # 1. Setup AnyKernel3
+          # 1. Download mkdtboimg.py (Link corectat de la AOSP/Lineage)
+          # In caz ca unul pica, am pus 2 variante.
+          wget -q "https://android.googlesource.com/platform/system/libufdt/+/refs/heads/master/utils/src/mkdtboimg.py?format=TEXT" -O mkdtboimg.base64
+          base64 -d mkdtboimg.base64 > mkdtboimg.py || wget -q https://raw.githubusercontent.com/LineageOS/android_system_libufdt/lineage-20.0/utils/src/mkdtboimg.py -O mkdtboimg.py
+          chmod +x mkdtboimg.py
+
+          # 2. Setup AnyKernel3
           git clone https://github.com/osm0sis/AnyKernel3.git
           cp kernel/out/arch/arm64/boot/Image.gz-dtb AnyKernel3/Image.gz
           
-          # 2. Descarca uneltele oficiale LineageOS
-          wget https://raw.githubusercontent.com/LineageOS/android_system_tools_mkbootimg/lineage-21.0/mkbootimg.py
-          
-          # 3. Compilare Manuala DTBO (Toate reviziile R5Q r00-r09)
+          # 3. Compilare Manuala DTBO R5Q (r00-r09)
           mkdir -p dtbo_manual
-          DTS_ROOT="kernel/arch/arm64/boot/dts"
+          DTS_ROOT="$GITHUB_WORKSPACE/kernel/arch/arm64/boot/dts"
+          
           find "$DTS_ROOT/samsung/renovation" -name "sm8150-sec-r5q-overlay*.dts" | while read -r dts_file; do
             dtbo_name=$(basename "$dts_file" .dts).dtbo
             clang -E -nostdinc -undef -D__DTS__ -x assembler-with-cpp \
@@ -78,23 +82,20 @@ jobs:
             kernel/tools/dtc -@ -I dts -O dtb -o "dtbo_manual/$dtbo_name" "dtbo_manual/tmp.dts"
           done
 
-          # 4. Creare DTBO.img cu Tabela de Index (Esențial pentru boot)
+          # 4. Creare DTBO.img cu tabel de index
           python3 mkdtboimg.py create AnyKernel3/dtbo.img dtbo_manual/*.dtbo
 
-          # 5. Configurare AnyKernel3 (Căi de bloc și patch VBMeta)
+          # 5. Configurare AnyKernel3 (Cai block S10 Lite si VBMeta Patch)
           cd AnyKernel3
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
           sed -i 's|block=auto;|block=/dev/block/by-name/boot;|g' anykernel.sh
           sed -i '/block=\/dev\/block\/by-name\/boot;/a dtbo_block=/dev/block/by-name/dtbo;' anykernel.sh
           sed -i 's/patch_vbmeta_flag=auto/patch_vbmeta_flag=1/g' anykernel.sh
           
-          # Adăugăm mkbootimg.py în zip pentru a fi folosit de script (opțional, dar bun de backup)
-          cp ../mkbootimg.py .
-          
-          zip -r9 ../Lumi-R5Q-Final-BPF.zip *
+          zip -r9 ../Lumi-R5Q-Complete-BPF.zip *
 
-      - name: Upload Release
+      - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Lumi-R5Q-Release
-          path: Lumi-R5Q-Final-BPF.zip
+          name: Lumi-Kernel-R5Q
+          path: Lumi-R5Q-Complete-BPF.zip
