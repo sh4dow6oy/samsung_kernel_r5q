@@ -57,54 +57,55 @@ jobs:
           make $MAKE_ARGS olddefconfig
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -w" O=out Image.gz-dtb dtbs
 
-      - name: Proper Packaging (Final Professional Fix)
+      - name: Professional DTBO Packaging (Based on Makefile)
         run: |
-          # 1. Download mkdtboimg.py (Link stabil verificat)
-          # Folosim varianta de LineageOS 18.1 care este identica si stabila
+          # 1. Download mkdtboimg.py
           wget -q https://raw.githubusercontent.com/LineageOS/android_system_libufdt/lineage-18.1/utils/src/mkdtboimg.py -O mkdtboimg.py
           chmod +x mkdtboimg.py
 
           # 2. Setup AnyKernel3
           git clone https://github.com/osm0sis/AnyKernel3.git
-          # Verificam daca Image.gz-dtb a fost compilat
-          if [ -f kernel/out/arch/arm64/boot/Image.gz-dtb ]; then
-            cp kernel/out/arch/arm64/boot/Image.gz-dtb AnyKernel3/Image.gz
-          else
-            echo "EROARE: Image.gz-dtb nu a fost gasit!"
-            exit 1
-          fi
+          cp kernel/out/arch/arm64/boot/Image.gz-dtb AnyKernel3/Image.gz
           
-          # 3. Compilare Manuala DTBO R5Q (r00-r09)
+          # 3. Compilare DTBO conform listei din Makefile
           mkdir -p dtbo_manual
           DTS_ROOT="$GITHUB_WORKSPACE/kernel/arch/arm64/boot/dts"
+          SAMSUNG_RENO="$DTS_ROOT/samsung/renovation"
           
-          echo "Compilare overlay-uri dts..."
-          find "$DTS_ROOT/samsung/renovation" -name "sm8150-sec-r5q-overlay*.dts" | while read -r dts_file; do
-            dtbo_name=$(basename "$dts_file" .dts).dtbo
-            echo "-> $dtbo_name"
-            clang -E -nostdinc -undef -D__DTS__ -x assembler-with-cpp \
-              -I kernel/include -I "$DTS_ROOT" -I "$DTS_ROOT/qcom" \
-              -I "$DTS_ROOT/samsung" -I "$DTS_ROOT/samsung/renovation" \
-              "$dts_file" -o "dtbo_manual/tmp.dts"
-            kernel/tools/dtc -@ -I dts -O dtb -o "dtbo_manual/$dtbo_name" "dtbo_manual/tmp.dts"
+          # Lista de fisiere R5Q extrasa din Makefile-ul tau
+          FILES_TO_BUILD=(
+            "sm8150-sec-r5q-overlay-r00.dts"
+            "sm8150-sec-r5q-overlay-r01.dts"
+            "sm8150-sec-r5q-overlay-r07.dts"
+            "sm8150-sec-r5q-overlay-r08.dts"
+            "sm8150-sec-r5q-overlay-r09.dts"
+            "sm8150-sec-system-update-overlay.dts"
+          )
+
+          for dts_name in "${FILES_TO_BUILD[@]}"; do
+            if [ -f "$SAMSUNG_RENO/$dts_name" ]; then
+              echo "Compiling $dts_name..."
+              dtbo_out=$(basename "$dts_name" .dts).dtbo
+              
+              clang -E -nostdinc -undef -D__DTS__ -x assembler-with-cpp \
+                -I kernel/include -I "$DTS_ROOT" -I "$DTS_ROOT/qcom" \
+                -I "$DTS_ROOT/samsung" -I "$SAMSUNG_RENO" \
+                "$SAMSUNG_RENO/$dts_name" -o "dtbo_manual/tmp.dts"
+              
+              kernel/tools/dtc -@ -I dts -O dtb -o "dtbo_manual/$dtbo_out" "dtbo_manual/tmp.dts"
+            else
+              echo "Warning: $dts_name not found in $SAMSUNG_RENO"
+            fi
           done
 
-          # 4. Creare DTBO.img cu tabel de index (Esențial pentru a evita blocarea la logo)
-          echo "Impachetare DTBO.img..."
+          # 4. Creare imagine DTBO.img finala
           python3 mkdtboimg.py create AnyKernel3/dtbo.img dtbo_manual/*.dtbo
 
-          # 5. Configurare AnyKernel3 (Căi block S10 Lite și VBMeta Patch)
+          # 5. Configurare AnyKernel3
           cd AnyKernel3
-          # Dezactivam verificarea device-ului pentru a evita erori inutile
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-          # Setam partitiile specifice Samsung SM-G770F (r5q)
           sed -i 's|block=auto;|block=/dev/block/by-name/boot;|g' anykernel.sh
           sed -i '/block=\/dev\/block\/by-name\/boot;/a dtbo_block=/dev/block/by-name/dtbo;' anykernel.sh
-          # PATCH VBMETA: Fara asta, Samsung nu va boota dupa modificarea DTBO
           sed -i 's/patch_vbmeta_flag=auto/patch_vbmeta_flag=1/g' anykernel.sh
           
-          # Verificare finala dimensiune
-          echo "Dimensiune DTBO.img:"
-          du -sh dtbo.img
-          
-          zip -r9 ../Lumi-R5Q-Complete-BPF.zip *
+          zip -r9 ../Lumi-R5Q-BPF-Final.zip *
