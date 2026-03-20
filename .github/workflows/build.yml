@@ -1,4 +1,5 @@
-name: Build Lumi R5Q - Final eBPF Fix
+name: Lumi Kernel R5Q - Clean Build
+
 on:
   workflow_dispatch:
 
@@ -9,126 +10,86 @@ jobs:
       - name: Checkout Source
         uses: actions/checkout@v4
         with:
-          repository: LumiPlayground/android_kernel_samsung_sm8150
-          ref: rawr-bpf
-          path: kernel
+          ref: rawr-rebase
           fetch-depth: 1
 
       - name: Install Dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y bc build-essential flex bison lz4 libssl-dev libelf-dev \
-          python3 python-is-python3 device-tree-compiler clang zip wget
+          python3 python-is-python3 device-tree-compiler clang zip wget zstd
 
       - name: Setup Toolchain (Neutron Clang)
         run: |
           mkdir -p clang
           wget -q https://github.com/Ylarod/setup-ndk-clang/releases/download/prebuilt/clang-linux-x86-ndk-r29-r563880c.tar.zst
           tar -I zstd -xf clang-linux-x86-ndk-r29-r563880c.tar.zst -C clang
+
       - name: Build Kernel
         run: |
-          cd kernel
+          export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           mkdir -p out
           
-          # Setăm path-ul absolut către toolchain
-          export CLANG_PATH=$GITHUB_WORKSPACE/clang/bin
-          export PATH="$CLANG_PATH:$PATH"
+          # Fix eroare definitie multipla
+          find . -type f -name "*.c" -o -name "*.h" | xargs grep -l "bool main_ext_ss_not_working" | xargs sed -i 's/bool main_ext_ss_not_working/static bool main_ext_ss_not_working/g' || true
           
-          # Fix pentru eroarea de definiție multiplă (sed reparat)
-          # Folosim 'find' pentru a fi siguri că găsim fișierele indiferent de ramură
-          find . -maxdepth 5 -name "*.c" -o -name "*.h" | xargs grep -l "bool main_ext_ss_not_working" | xargs sed -i 's/bool main_ext_ss_not_working/static bool main_ext_ss_not_working/g' || true
-          
-          # Definim argumentele forțând suita LLVM completă din folderul descarcat
-          # Asta previne folosirea LD-ului vechi din Ubuntu
-          export MAKE_ARGS="ARCH=arm64 \
-            O=out \
-            CC=clang \
-            LD=ld.lld \
-            AR=llvm-ar \
-            NM=llvm-nm \
-            OBJCOPY=llvm-objcopy \
-            OBJDUMP=llvm-objdump \
-            STRIP=llvm-strip \
-            LLVM=1 \
-            LLVM_IAS=1 \
-            CLANG_TRIPLE=aarch64-linux-gnu- \
-            CROSS_COMPILE=aarch64-linux-gnu- \
-            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-            DTC_EXT=$(pwd)/tools/dtc"
+          export MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld \
+            CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
 
-          # 1. Configurare inițială
-          make $MAKE_ARGS r5q_eur_open_defconfig
-          
-          # 2. Injectare Setări BPF & Dezactivare RTIC (Security)
-          ./scripts/config --file out/.config \
-            -e CONFIG_BPF_SYSCALL \
-            -e CONFIG_BPF_JIT \
-            -e CONFIG_CGROUP_BPF \
-            -d CONFIG_RTIC \
-            -d CONFIG_SECURITY_DEFEX \
-            -e CONFIG_BUILD_ARM64_DT_OVERLAY \
-            -e CONFIG_SEC_R5Q_PROJECT \
-            -e CONFIG_PROJECT_R5Q
-            
-          # 3. Aplicăm modificările și compilăm
-          # KCFLAGS="-w" ignoră avertismentele care opresc build-ul (warning as error)
-          make $MAKE_ARGS olddefconfig
-          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -w" Image.gz-dtb
-          
-      - name: Advanced Packaging (Fix for S10 Lite)
-        run: |
-          # 1. Download Tools
-          wget -q https://raw.githubusercontent.com/LineageOS/android_system_libufdt/lineage-18.1/utils/src/mkdtboimg.py -O mkdtboimg.py
-          git clone https://github.com/osm0sis/AnyKernel3.git
-          
-          # 2. Build DTBO.img (Revizia ta 09 + altele)
-          mkdir -p dtbo_manual
-          RENO_PATH=$(find kernel/arch/arm64/boot/dts -name "renovation" -type d | grep -v "out" | head -n 1)
-          DTS_INC="kernel/arch/arm64/boot/dts"
-          
-          FILES=("sm8150-sec-r5q-overlay-r00.dts" "sm8150-sec-r5q-overlay-r01.dts" "sm8150-sec-r5q-overlay-r07.dts" "sm8150-sec-r5q-overlay-r08.dts" "sm8150-sec-r5q-overlay-r09.dts" "sm8150-sec-system-update-overlay.dts")
-          
-          for f in "${FILES[@]}"; do
-            clang -E -nostdinc -undef -D__DTS__ -x assembler-with-cpp -I kernel/include -I kernel/scripts/dtc/include-prefixes -I "$DTS_INC" -I "$DTS_INC/qcom" -I "$DTS_INC/samsung" -I "$RENO_PATH" "$RENO_PATH/$f" -o tmp.dts
-            kernel/tools/dtc -@ -I dts -O dtb -o "dtbo_manual/${f%.dts}.dtbo" tmp.dts
-          done
-          python3 mkdtboimg.py create AnyKernel3/dtbo.img dtbo_manual/*.dtbo
-
-          # 3. Configure AnyKernel3 (FIX CRITIC PENTRU RESTART)
-          cd AnyKernel3
-          cp ../kernel/out/arch/arm64/boot/Image.gz-dtb Image.gz
-          
-          # Modificam anykernel.sh sa fie "Aggressive"
-          cat <<EOF > anykernel.sh
-          properties() { '
-          kernel.string=Lumi Kernel eBPF for S10 Lite
-          do.devicecheck=1
-          do.modules=0
-          do.systemless=1
-          do.cleanup=1
-          device.name=r5q
-          '; }
-          BLOCK=/dev/block/by-name/boot;
-          IS_SLOT_DEVICE=0;
-          PATCH_VBMETA_FLAG=1;
-          . tools/ak3-core.sh;
-          
-          # Folosim split_boot si flash_boot pentru a nu corupe ramdisk-ul Samsung
-          split_boot;
-          flash_boot;
-          
-          # Flash DTBO (Esential pentru Rev 09)
-          if [ -f "dtbo.img" ]; then
-            dtbo_block=/dev/block/by-name/dtbo;
-            ui_print "- Flashing DTBO...";
-            flash_generic dtbo;
+          # 1. Configurare (Baza + R5Q)
+          make $MAKE_ARGS sm8150_sec_defconfig
+          if [ -f "arch/arm64/configs/r5q.config" ]; then
+            ARCH=arm64 scripts/kconfig/merge_config.sh -O out out/.config arch/arm64/configs/r5q.config
           fi
-          EOF
           
-          zip -r9 ../Lumi-R5Q-Final.zip *
+          # 2. DEZACTIVARE KERNELSU SI SECURITATE SAMSUNG
+          # Dezactivam CONFIG_KSU daca exista si fortam setarile de preventie
+          ./scripts/config --file out/.config \
+            -d CONFIG_KSU \
+            -e CONFIG_BPF_SYSCALL -e CONFIG_BPF_JIT -e CONFIG_CGROUP_BPF \
+            -d CONFIG_RTIC -d CONFIG_SECURITY_DEFEX -d CONFIG_SECURITY_SAMSUNG_KNOX \
+            -e CONFIG_BUILD_ARM64_DT_OVERLAY -e CONFIG_SEC_R5Q_PROJECT \
+            -e CONFIG_SAMSUNG_PRODUCT_SHIP -d CONFIG_RKP_KDP -d CONFIG_KDP_NS
+            
+          # 3. Compilare
+          make $MAKE_ARGS olddefconfig
+          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -w" Image.gz-dtb dtbs
+
+      - name: Package AnyKernel3
+        run: |
+          # Build DTBO.img
+          DTBO_DIR="out/arch/arm64/boot/dts/samsung/renovation"
+          DTBO_FILES=$(find "$DTBO_DIR" -name "sm8150-sec-r5q-overlay*.dtbo" | sort)
+          ./tools/mkdtimg create out/dtbo.img --page_size=4096 ${DTBO_FILES}
+
+          # Setup AnyKernel
+          git clone https://github.com/osm0sis/AnyKernel3.git
+          cd AnyKernel3
+          mv ../out/dtbo.img dtbo.img
+          mv ../out/arch/arm64/boot/Image.gz-dtb Image.gz
+          
+          # Configurare anykernel.sh (Fix Bootloop Samsung)
+          sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
+          sed -i 's|block=auto;|block=/dev/block/by-name/boot;|g' anykernel.sh
+          sed -i 's/patch_vbmeta_flag=auto/patch_vbmeta_flag=1/g' anykernel.sh
+          
+          # Metoda flash direct (Sari peste ramdisk)
+          sed -i 's/dump_boot;/split_boot;/g' anykernel.sh
+          sed -i 's/write_boot;/flash_boot;/g' anykernel.sh
+          
+          # Injectare Flash DTBO
+          sed -i '/flash_boot;/a \
+          if [ -f "dtbo.img" ]; then \
+            dtbo_block=/dev/block/by-name/dtbo; \
+            ui_print "- Flashing DTBO.img..."; \
+            flash_generic dtbo; \
+          fi' anykernel.sh
+          
+          zip -r9 ../Lumi-Kernel-R5Q-NoKSU.zip *
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Lumi-R5Q-Kernel
-          path: Lumi-R5Q-Final.zip
+          name: Lumi-Kernel-NoKSU
+          path: Lumi-Kernel-R5Q-NoKSU.zip
