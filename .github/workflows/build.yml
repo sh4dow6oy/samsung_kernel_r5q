@@ -57,9 +57,9 @@ jobs:
           make $MAKE_ARGS olddefconfig
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -w" O=out Image.gz-dtb dtbs
 
-      - name: Professional DTBO Packaging (Fixed Paths)
+      - name: Professional DTBO Packaging (Final Fix)
         run: |
-          # 1. Download mkdtboimg.py (Link stabil)
+          # 1. Download mkdtboimg.py
           wget -q https://raw.githubusercontent.com/LineageOS/android_system_libufdt/lineage-18.1/utils/src/mkdtboimg.py -O mkdtboimg.py
           chmod +x mkdtboimg.py
 
@@ -67,16 +67,14 @@ jobs:
           git clone https://github.com/osm0sis/AnyKernel3.git
           cp kernel/out/arch/arm64/boot/Image.gz-dtb AnyKernel3/Image.gz
           
-          # 3. Detectare automata a folderului Renovation
-          # Uneori structura este arch/arm64/boot/dts/samsung/renovation
-          # Alteori este direct arch/arm64/boot/dts/renovation
-          RENO_PATH=$(find kernel/arch/arm64/boot/dts -name "renovation" -type d | head -n 1)
+          # 3. Detectare folder Renovation (Evităm folderul 'out')
+          RENO_PATH=$(find kernel/arch/arm64/boot/dts -name "renovation" -type d | grep -v "out" | head -n 1)
           DTS_ROOT="kernel/arch/arm64/boot/dts"
-          
-          echo "Folderul Renovation gasit la: $RENO_PATH"
           mkdir -p dtbo_manual
 
-          # Lista de fisiere conform Makefile-ului tau
+          echo "Folder Renovation: $RENO_PATH"
+
+          # Lista oficiala din Makefile-ul tau
           FILES_TO_BUILD=(
             "sm8150-sec-r5q-overlay-r00.dts"
             "sm8150-sec-r5q-overlay-r01.dts"
@@ -87,41 +85,41 @@ jobs:
           )
 
           for dts_name in "${FILES_TO_BUILD[@]}"; do
-            target_file=$(find "$RENO_PATH" -name "$dts_name")
+            target_file="$RENO_PATH/$dts_name"
             if [ -f "$target_file" ]; then
-              echo "Compiling $(basename "$target_file")..."
+              echo "--- Preprocesare & Compilare: $dts_name ---"
               dtbo_out=$(basename "$dts_name" .dts).dtbo
               
-              # Preprocesare Clang (Include toate dependintele .dtsi)
+              # ADĂUGĂM TOATE INCLUDE-URILE CRITICE (Fix pentru arm-gic.h)
               clang -E -nostdinc -undef -D__DTS__ -x assembler-with-cpp \
                 -I kernel/include \
+                -I kernel/scripts/dtc/include-prefixes \
                 -I "$DTS_ROOT" \
                 -I "$DTS_ROOT/qcom" \
                 -I "$DTS_ROOT/samsung" \
                 -I "$RENO_PATH" \
                 "$target_file" -o "dtbo_manual/tmp.dts"
               
-              # Compilare DTC binar
+              # Compilare DTC (Folosim DTC-ul din kernel)
               kernel/tools/dtc -@ -I dts -O dtb -o "dtbo_manual/$dtbo_out" "dtbo_manual/tmp.dts"
             else
-              echo "Warning: $dts_name NU a fost gasit in $RENO_PATH!"
+              echo "Skip: $dts_name nu exista in aceasta ramura."
             fi
           done
 
-          # 4. Creare DTBO.img cu mkdtboimg (Tabela de indexare)
+          # 4. Creare DTBO.img
           if [ "$(ls -A dtbo_manual/*.dtbo 2>/dev/null)" ]; then
             python3 mkdtboimg.py create AnyKernel3/dtbo.img dtbo_manual/*.dtbo
-            echo "DTBO.img a fost creat cu succes."
+            echo "SUCCES: DTBO.img creat cu $(ls dtbo_manual/*.dtbo | wc -l) overlay-uri."
           else
-            echo "EROARE: Nu s-a putut compila niciun .dtbo!"
+            echo "EROARE CRITICA: Niciun fisier DTBO nu a fost compilat!"
             exit 1
           fi
 
-          # 5. Configurare AnyKernel3 (Cai block S10 Lite si VBMeta Patch)
+          # 5. Configurare AnyKernel3 (Căi block S10 Lite și VBMeta Patch)
           cd AnyKernel3
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
           sed -i 's|block=auto;|block=/dev/block/by-name/boot;|g' anykernel.sh
-          # Injectam linia dtbo_block dupa boot block
           sed -i '/block=\/dev\/block\/by-name\/boot;/a dtbo_block=/dev/block/by-name/dtbo;' anykernel.sh
           sed -i 's/patch_vbmeta_flag=auto/patch_vbmeta_flag=1/g' anykernel.sh
           
