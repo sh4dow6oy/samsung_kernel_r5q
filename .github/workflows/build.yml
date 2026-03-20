@@ -124,3 +124,9 @@ jobs:
           sed -i 's/patch_vbmeta_flag=auto/patch_vbmeta_flag=1/g' anykernel.sh
           
           zip -r9 ../Lumi-R5Q-Complete-BPF.zip *
+            
+      - name: Upload Kernel
+        uses: actions/upload-artifact@v4
+        with:
+          name: Lumi-R5Q-Final-Kernel
+          path: Lumi-R5Q-Complete-BPF.zip
