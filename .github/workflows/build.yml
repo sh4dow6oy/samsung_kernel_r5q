@@ -6,25 +6,24 @@ jobs:
   build:
     runs-on: ubuntu-24.04
     steps:
-      - name: 1. Checkout Base
+      - name: 1. Checkout Base (Roynas R3Q)
         uses: actions/checkout@v4
         with:
           repository: Roynas-Android-Playground/kernel_samsung_r3q
           ref: master
           fetch-depth: 0
 
-      - name: 2. Upstream Merge kernel/bpf (Pascua28)
+      - name: 2. Upstream Merge kernel/bpf (Pascua28 - Android 15)
         run: |
           git config --global user.email "gh-actions@github.com"
           git config --global user.name "GitHub Actions"
           
-          # Adăugăm sursa de upstream
+          # Adăugăm sursa lui Pascua28 pentru ramura de Android 15
           git remote add pascua https://github.com/pascua28/android_kernel_samsung_sm7150.git
           git fetch pascua fifteen
           
-          echo "--- Merging Upstream BPF Logic ---"
-          # Facem merge DOAR la folderul kernel/bpf și headerele vitale
-          # Folosim 'checkout' cu merge manual pentru a nu șterge nimic local
+          echo "--- Injecting BPF 5.4 Logic ---"
+          # Luăm folderul kernel/bpf și headerele necesare fără a șterge fișierele Samsung locale
           git checkout pascua/fifteen -- kernel/bpf/
           git checkout pascua/fifteen -- include/linux/bpf.h
           git checkout pascua/fifteen -- include/uapi/linux/bpf.h
@@ -32,41 +31,53 @@ jobs:
           git checkout pascua/fifteen -- include/linux/filter.h
           
           git add .
-          git commit -m "Upstream: Merged eBPF 5.4 logic for Android 15 from Pascua28" || echo "No changes to commit"
+          git commit -m "BPF Phase 1: Upstream kernel/bpf and headers from Pascua28 (A15)" || echo "No changes"
 
-      - name: 3. Setup Neutron Clang & Path Fix
+      - name: 3. Setup Neutron Clang & Path Fix (Assembler EL Fix)
         run: |
           sudo apt-get update && sudo apt-get install -y bc build-essential flex bison lz4 libssl-dev libelf-dev wget zstd zip
           mkdir clang && wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
           
-          # Fix pentru asamblor (eroarea -EL)
+          # NUCLEAR FIX: Symlink pentru 'as' ca să forțăm Clang Integrated Assembler
           mkdir -p bin-force
           ln -sf $(pwd)/clang/bin/clang bin-force/as
+          ln -sf $(pwd)/clang/bin/ld.lld bin-force/ld
           echo "$(pwd)/bin-force" >> $GITHUB_PATH
 
       - name: 4. Build & Verify BPF
         run: |
+          # Adăugăm folderul bin-force la începutul PATH-ului
           export PATH="$GITHUB_WORKSPACE/clang/bin:$GITHUB_WORKSPACE/bin-force:$PATH"
           
-          # Curățăm Makefile-urile de flag-uri Polly care crapă pe Neutron
+          # FIX: Eliminăm flag-urile Polly/LTO care pot cauza crash pe Neutron
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
+          find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm//g' {} +
           
-          MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang AS=clang LD=ld.lld CROSS_COMPILE=aarch64-linux-gnu- O=out"
+          # Argumente Build (Forțăm LLVM_IAS=1 și AS=clang)
+          MAKE_ARGS="ARCH=arm64 \
+            LLVM=1 \
+            LLVM_IAS=1 \
+            CC=clang \
+            AS=clang \
+            LD=ld.lld \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            O=out"
 
-          # Inițializare config
+          # Configurare r5q
           make $MAKE_ARGS r5q_defconfig
           
-          # Activăm flag-urile de BPF necesare pentru Android 15
+          # Setări .config pentru Android 15 BPF
           ./scripts/config --file out/.config \
             -e CONFIG_BPF_SYSCALL \
             -e CONFIG_BPF_JIT \
             -e CONFIG_BPF_EVENTS \
             -d CONFIG_CC_STACKPROTECTOR_STRONG \
-            -e CONFIG_CC_STACKPROTECTOR_NONE
+            -e CONFIG_CC_STACKPROTECTOR_NONE \
+            -d CONFIG_LOCALVERSION_AUTO
             
           make $MAKE_ARGS olddefconfig
 
-          # COMPILARE TEST: Verificăm dacă noul cod din kernel/bpf trece de compilator
-          echo "--- Compiling kernel/bpf to verify merge ---"
+          # VERIFICARE: Compilăm doar subsistemul BPF
+          echo "--- Starting Selective Compilation of kernel/bpf/ ---"
           make -j$(nproc --all) $MAKE_ARGS kernel/bpf/
