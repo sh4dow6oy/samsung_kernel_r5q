@@ -1,95 +1,85 @@
-name: Lumi Kernel R5Q - Clean Build
-
-on:
-  workflow_dispatch:
+name: Build Samsung S10 Lite Kernel (r5q)
+on: 
+  workflow_dispatch: # Îți permite să apeși butonul "Run workflow" din tab-ul Actions
 
 jobs:
-  build:
+  kernel-build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Source
-        uses: actions/checkout@v4
-        with:
-          ref: rawr-rebase
-          fetch-depth: 1
-
-      - name: Install Dependencies
+      - name: Curățare și Instalare Dependințe
         run: |
-          sudo apt-get update
-          sudo apt-get install -y bc build-essential flex bison lz4 libssl-dev libelf-dev \
-          python3 python-is-python3 device-tree-compiler clang zip wget zstd
+          sudo apt update
+          sudo apt install -y bc bison build-essential flex git-core libssl-dev libelf-dev clang lld llvm
 
-      - name: Setup Toolchain (Neutron Clang)
+      - name: Descărcare Sursă Kernel (Samsung r5q)
         run: |
-          mkdir -p clang
-          wget -q https://github.com/Ylarod/setup-ndk-clang/releases/download/prebuilt/clang-linux-x86-ndk-r29-r563880c.tar.zst
-          tar -I zstd -xf clang-linux-x86-ndk-r29-r563880c.tar.zst -C clang
+          # Folosim repo-ul optimizat pentru r5q pe care l-ai găsit
+          git clone --depth=1 https://github.com/mainey/android_kernel_samsung_r5q.git -b lineage-19.0 kernel
+          cd kernel
+          git config user.email "bot@github.com"
+          git config user.name "KernelBot"
 
-      - name: Build Kernel
+      - name: Upstream de la Google (Opțional/Hibrid)
         run: |
-          export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
+          cd kernel
+          # Adăugăm sursa "Common" de la Google pentru a aduce securitatea la zi
+          git remote add google https://android.googlesource.com/kernel/common
+          git fetch google android-4.14-p
+          # Încercăm un merge. Dacă apar conflicte mari, ignorăm și mergem pe varianta stabilă
+          git merge google/android-4.14-p --no-edit || echo "Conflicte detectate, build-ul continuă cu baza Samsung."
+
+      - name: Instalare Google Clang (Toolchain)
+        run: |
+          mkdir clang
+          cd clang
+          # Descarcă Clang-ul oficial folosit pentru Android 12/Lineage 19.0
+          wget https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r416183b.tar.gz
+          tar -xf clang-r416183b.tar.gz
+
+      - name: Compilare Kernel
+        run: |
+          cd kernel
+          # Setăm variabilele de mediu
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export PATH=$GITHUB_WORKSPACE/clang/bin:$PATH
+          
+          # Creăm folderul pentru output
           mkdir -p out
           
-          # Fix eroare definitie multipla
-          find . -type f -name "*.c" -o -name "*.h" | xargs grep -l "bool main_ext_ss_not_working" | xargs sed -i 's/bool main_ext_ss_not_working/static bool main_ext_ss_not_working/g' || true
+          # 1. Aplicăm configurația ta specifică
+          make O=out r5q_eur_open_defconfig
           
-          export MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld \
-            CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu- \
-            CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
+          # 2. Pornim motoarele (Compilarea propriu-zisă)
+          make -j$(nproc --all) O=out \
+               CC=clang \
+               CLANG_TRIPLE=aarch64-linux-gnu- \
+               CROSS_COMPILE=aarch64-linux-gnu- \
+               CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+               LLVM=1 LLVM_IAS=1
 
-          # 1. Configurare (Baza + R5Q)
-          make $MAKE_ARGS sm8150_sec_defconfig
-          if [ -f "arch/arm64/configs/r5q.config" ]; then
-            ARCH=arm64 scripts/kconfig/merge_config.sh -O out out/.config arch/arm64/configs/r5q.config
-          fi
-          
-          # 2. DEZACTIVARE KERNELSU SI SECURITATE SAMSUNG
-          # Dezactivam CONFIG_KSU daca exista si fortam setarile de preventie
-          ./scripts/config --file out/.config \
-            -d CONFIG_KSU \
-            -e CONFIG_BPF_SYSCALL -e CONFIG_BPF_JIT -e CONFIG_CGROUP_BPF \
-            -d CONFIG_RTIC -d CONFIG_SECURITY_DEFEX -d CONFIG_SECURITY_SAMSUNG_KNOX \
-            -e CONFIG_BUILD_ARM64_DT_OVERLAY -e CONFIG_SEC_R5Q_PROJECT \
-            -e CONFIG_SAMSUNG_PRODUCT_SHIP -d CONFIG_RKP_KDP -d CONFIG_KDP_NS
-            
-          # 3. Compilare
-          make $MAKE_ARGS olddefconfig
-          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -w" Image.gz-dtb dtbs
-
-      - name: Package AnyKernel3
+      - name: Verificare Fișier Rezultat
         run: |
-          # Build DTBO.img
-          DTBO_DIR="out/arch/arm64/boot/dts/samsung/renovation"
-          DTBO_FILES=$(find "$DTBO_DIR" -name "sm8150-sec-r5q-overlay*.dtbo" | sort)
-          ./tools/mkdtimg create out/dtbo.img --page_size=4096 ${DTBO_FILES}
+          if [ -f kernel/out/arch/arm64/boot/Image.gz-dtb ]; then
+            echo "SUCCES: Kernel-ul a fost generat!"
+          else
+            echo "EROARE: Kernel-ul nu a fost găsit. Verifică log-urile de compilare."
+            exit 1
+          fi
 
-          # Setup AnyKernel
+      - name: Împachetare AnyKernel3 (Pregătire pentru Flash)
+        run: |
+          # Descarcă un template AnyKernel3 pentru a face kernel-ul instalabil (.zip)
           git clone https://github.com/osm0sis/AnyKernel3.git
+          cp kernel/out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
           cd AnyKernel3
-          mv ../out/dtbo.img dtbo.img
-          mv ../out/arch/arm64/boot/Image.gz-dtb Image.gz
-          
-          # Configurare anykernel.sh (Fix Bootloop Samsung)
-          sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-          sed -i 's|block=auto;|block=/dev/block/by-name/boot;|g' anykernel.sh
-          sed -i 's/patch_vbmeta_flag=auto/patch_vbmeta_flag=1/g' anykernel.sh
-          
-          # Metoda flash direct (Sari peste ramdisk)
-          sed -i 's/dump_boot;/split_boot;/g' anykernel.sh
-          sed -i 's/write_boot;/flash_boot;/g' anykernel.sh
-          
-          # Injectare Flash DTBO
-          sed -i '/flash_boot;/a \
-          if [ -f "dtbo.img" ]; then \
-            dtbo_block=/dev/block/by-name/dtbo; \
-            ui_print "- Flashing DTBO.img..."; \
-            flash_generic dtbo; \
-          fi' anykernel.sh
-          
-          zip -r9 ../Lumi-Kernel-R5Q-NoKSU.zip *
+          # Ajustăm scriptul pentru S10 Lite
+          sed -i 's/device.name1=maguro/device.name1=r5q/' anykernel.sh
+          sed -i 's/device.name2=toro/device.name2=SM-G770F/' anykernel.sh
+          zip -r ../r5q-kernel-flashable.zip *
 
-      - name: Upload
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Lumi-Kernel-NoKSU
-          path: Lumi-Kernel-R5Q-NoKSU.zip
+          name: S10Lite-Kernel-Build
+          path: r5q-kernel-flashable.zip
