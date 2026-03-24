@@ -1,4 +1,4 @@
-name: Build Roynas R5Q - Lineage 23.2 eBPF
+name: Build Roynas R5Q - Lineage 23.2 eBPF Final
 
 on:
   workflow_dispatch:
@@ -12,7 +12,7 @@ jobs:
         with:
           repository: Roynas-Android-Playground/kernel_samsung_r3q
           ref: master
-          fetch-depth: 0
+          fetch-depth: 1
 
       - name: Install Dependencies
         run: |
@@ -27,49 +27,50 @@ jobs:
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
 
-      - name: Manual Structural Backport (Lineage 23.2)
+      - name: Synchronize eBPF Subsystem (Lineage 23.2)
         run: |
-          # 1. Adăugăm LineageOS ca sursă de referință
+          # 1. Adăugăm sursa LineageOS 23.2
           git remote add lineage https://github.com/LineageOS/android_kernel_google_msm-4.14
           git fetch lineage lineage-23.2 --depth=1
 
-          # 2. REPARAȚIE STRUCTURALĂ (Prevenim erorile 'no member named blinded')
-          # Injectăm manual câmpurile necesare în structurile Samsung înainte de a aduce codul nou
-          sed -i '/struct bpf_prog {/a \	u8 blinded:1,' include/linux/filter.h
-          sed -i '/u8			jited:1,/a \	u8			has_callchain_buf:1,' include/linux/filter.h
+          echo "Injectăm subsistemul eBPF complet din Lineage 23.2..."
           
-          # 3. UPSTREAM SELECTIV
-          # Injectăm fișierele din ramura 23.2 cerută
-          echo "Injectăm componentele eBPF din Lineage 23.2..."
-          BPF_FILES=(
+          # 2. Înlocuim fișierele critice pentru a asigura alinierea structurilor de memorie
+          # Luăm filter.h întreg pentru a evita erorile de 'pages' sau 'blinded'
+          BPF_COMPONENTS=(
             "kernel/bpf"
             "include/linux/bpf.h"
             "include/linux/bpf_types.h"
+            "include/linux/filter.h"
             "include/uapi/linux/bpf.h"
             "include/uapi/linux/filter.h"
             "net/core/filter.c"
           )
 
-          for file in "${BPF_FILES[@]}"; do
-            git checkout lineage/lineage-23.2 -- "$file" || echo "Skip: $file"
+          for component in "${BPF_COMPONENTS[@]}"; do
+            git checkout lineage/lineage-23.2 -- "$component" || echo "Avertisment: $component nu a fost găsit."
           done
+
+          # 3. FIX: Eliminăm adnotările de jump table care nu sunt suportate de toolchain-ul vechi
+          sed -i 's/__annotate_jump_table//g' kernel/bpf/core.c || true
 
       - name: Build Kernel
         run: |
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           
-          # FIX KCONFIG (KernelSU Error)
+          # 1. REPARAȚIE KCONFIG (Fix KernelSU & Knox)
           sed -i '/kernelsu/d' drivers/android/Kconfig || true
           sed -i '/kernelsu/d' drivers/android/Makefile || true
           
-          # NUCLEAR CLEANUP & VDSO FIX
+          # 2. NUCLEAR CLEANUP & VDSO FIX
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm//g' {} +
+          
           if [ -f arch/arm64/kernel/vdso/Makefile ]; then
             sed -i 's/-static//g' arch/arm64/kernel/vdso/Makefile
           fi
 
-          # Argumente Build
+          # 3. Argumente Build
           MAKE_ARGS="ARCH=arm64 \
             LLVM=1 \
             LLVM_IAS=1 \
@@ -78,11 +79,11 @@ jobs:
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             O=out"
 
-          # Configurare
+          # 4. Configurare r5q_defconfig
           make $MAKE_ARGS r5q_defconfig
           
-          # FORCE ENABLE EBPF (Android 16 Requirements)
-          # NOTĂ: Dezactivăm CONFIG_BTF pentru a evita erorile de tip 'btf_type_by_id'
+          # 5. ACTIVARE FORCE EBPF (Android 16 Ready)
+          # Dezactivăm BTF pentru a evita erorile de tip 'btf_type_by_id'
           ./scripts/config --file out/.config \
             -e CONFIG_BPF \
             -e CONFIG_BPF_SYSCALL \
@@ -94,12 +95,15 @@ jobs:
             -e CONFIG_BPF_EVENTS \
             -e CONFIG_BPF_STREAM_PARSER \
             -d CONFIG_BTF \
+            -d CONFIG_BTF_BPF \
             -d CONFIG_LTO_CLANG -e CONFIG_LTO_NONE \
+            -d CONFIG_CC_STACKPROTECTOR_STRONG -e CONFIG_CC_STACKPROTECTOR_NONE \
             -d CONFIG_KNOX_KAP -d CONFIG_SECURITY_SAMSUNG_KNOX
             
           make $MAKE_ARGS olddefconfig
 
-          # Compilare
+          # 6. Compilare
+          # -mno-outline-atomics rezolvă conflictele de linkuire Neutron pe 4.14
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -Wno-error -Wno-unknown-warning-option -Wno-unused-command-line-argument -mno-outline-atomics"
 
       - name: Package with AnyKernel3
@@ -107,15 +111,20 @@ jobs:
           IMAGE="$GITHUB_WORKSPACE/out/arch/arm64/boot/Image.gz-dtb"
           if [ ! -f "$IMAGE" ]; then IMAGE="$GITHUB_WORKSPACE/out/arch/arm64/boot/Image.gz"; fi
           DTBO="$GITHUB_WORKSPACE/out/arch/arm64/boot/dtbo.img"
+
           git clone https://github.com/osm0sis/AnyKernel3.git
           rm -rf AnyKernel3/.git
           cp $IMAGE AnyKernel3/Image.gz
           [ -f "$DTBO" ] && cp $DTBO AnyKernel3/dtbo.img
-          sed -i 's/device.name1=maguro/device.name1=r5q/g' AnyKernel3/anykernel.sh
-          cd AnyKernel3 && zip -r9 ../Kernel-S10Lite-L23.2-eBPF.zip *
 
-      - name: Upload
+          # Configurare pentru S10 Lite
+          sed -i 's/device.name1=maguro/device.name1=r5q/g' AnyKernel3/anykernel.sh
+          sed -i 's/device.name2=toroplus/device.name2=SM-G770F/g' AnyKernel3/anykernel.sh
+          
+          cd AnyKernel3 && zip -r9 ../Kernel-R5Q-eBPF-L23.2.zip *
+
+      - name: Upload Flashable Kernel
         uses: actions/upload-artifact@v4
         with:
           name: Kernel-S10Lite-eBPF-Lineage23.2
-          path: Kernel-S10Lite-L23.2-eBPF.zip
+          path: Kernel-R5Q-eBPF-L23.2.zip
