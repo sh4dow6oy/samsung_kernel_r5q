@@ -1,4 +1,4 @@
-name: Build Roynas R5Q - Android 16 eBPF Ready
+name: Build Roynas R5Q - Lineage 23.2 eBPF
 
 on:
   workflow_dispatch:
@@ -12,7 +12,7 @@ jobs:
         with:
           repository: Roynas-Android-Playground/kernel_samsung_r3q
           ref: master
-          fetch-depth: 1
+          fetch-depth: 0
 
       - name: Install Dependencies
         run: |
@@ -27,16 +27,21 @@ jobs:
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
 
-      - name: Upstream eBPF from Lineage 23.2
+      - name: Manual Structural Backport (Lineage 23.2)
         run: |
-          # 1. Conectare la sursa LineageOS (Android 15/16 Base)
+          # 1. Adăugăm LineageOS ca sursă de referință
           git remote add lineage https://github.com/LineageOS/android_kernel_google_msm-4.14
           git fetch lineage lineage-23.2 --depth=1
 
-          echo "Injectăm subsistemul eBPF modern..."
+          # 2. REPARAȚIE STRUCTURALĂ (Prevenim erorile 'no member named blinded')
+          # Injectăm manual câmpurile necesare în structurile Samsung înainte de a aduce codul nou
+          sed -i '/struct bpf_prog {/a \	u8 blinded:1,' include/linux/filter.h
+          sed -i '/u8			jited:1,/a \	u8			has_callchain_buf:1,' include/linux/filter.h
           
-          # Listă completă de fișiere necesare pentru compatibilitate rețea/eBPF
-          BPF_COMPONENTS=(
+          # 3. UPSTREAM SELECTIV
+          # Injectăm fișierele din ramura 23.2 cerută
+          echo "Injectăm componentele eBPF din Lineage 23.2..."
+          BPF_FILES=(
             "kernel/bpf"
             "include/linux/bpf.h"
             "include/linux/bpf_types.h"
@@ -45,47 +50,39 @@ jobs:
             "net/core/filter.c"
           )
 
-          for component in "${BPF_COMPONENTS[@]}"; do
-            git checkout lineage/lineage-23.2 -- "$component" || echo "Avertisment: $component nu a fost găsit în sursa Lineage."
+          for file in "${BPF_FILES[@]}"; do
+            git checkout lineage/lineage-23.2 -- "$file" || echo "Skip: $file"
           done
 
       - name: Build Kernel
         run: |
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           
-          # 1. REPARAȚIE KCONFIG (Fix Error 1 la defconfig)
-          # Eliminăm liniile care caută KernelSU deoarece folderul a fost șters
+          # FIX KCONFIG (KernelSU Error)
           sed -i '/kernelsu/d' drivers/android/Kconfig || true
           sed -i '/kernelsu/d' drivers/android/Makefile || true
           
-          # 2. NUCLEAR CLEANUP (Prevenim erorile LLVM Polly specifice Neutron)
+          # NUCLEAR CLEANUP & VDSO FIX
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm//g' {} +
-          
-          # 3. VDSO FIX (Rezolvă eroarea de linkuire statică pe Ubuntu 24.04)
           if [ -f arch/arm64/kernel/vdso/Makefile ]; then
             sed -i 's/-static//g' arch/arm64/kernel/vdso/Makefile
           fi
 
-          # 4. Argumente Build
+          # Argumente Build
           MAKE_ARGS="ARCH=arm64 \
             LLVM=1 \
             LLVM_IAS=1 \
             CC=clang \
-            LD=ld.lld \
-            AR=llvm-ar \
-            NM=llvm-nm \
-            OBJCOPY=llvm-objcopy \
-            OBJDUMP=llvm-objdump \
-            STRIP=llvm-strip \
             CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             O=out"
 
-          # 5. Configurare Defconfig
+          # Configurare
           make $MAKE_ARGS r5q_defconfig
           
-          # 6. ACTIVARE FORCE EBPF (Cerințe obligatorii Android 16)
+          # FORCE ENABLE EBPF (Android 16 Requirements)
+          # NOTĂ: Dezactivăm CONFIG_BTF pentru a evita erorile de tip 'btf_type_by_id'
           ./scripts/config --file out/.config \
             -e CONFIG_BPF \
             -e CONFIG_BPF_SYSCALL \
@@ -96,15 +93,13 @@ jobs:
             -e CONFIG_CGROUP_BPF \
             -e CONFIG_BPF_EVENTS \
             -e CONFIG_BPF_STREAM_PARSER \
+            -d CONFIG_BTF \
             -d CONFIG_LTO_CLANG -e CONFIG_LTO_NONE \
-            -d CONFIG_CC_STACKPROTECTOR_STRONG -e CONFIG_CC_STACKPROTECTOR_NONE \
-            -d CONFIG_KNOX_KAP -d CONFIG_SECURITY_SAMSUNG_KNOX \
-            -d CONFIG_INTEGRITY_PLATFORM_KEYRING
+            -d CONFIG_KNOX_KAP -d CONFIG_SECURITY_SAMSUNG_KNOX
             
           make $MAKE_ARGS olddefconfig
 
-          # 7. Compilare
-          # -mno-outline-atomics este vital pentru stabilitatea Neutron pe kernel 4.14
+          # Compilare
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -Wno-error -Wno-unknown-warning-option -Wno-unused-command-line-argument -mno-outline-atomics"
 
       - name: Package with AnyKernel3
@@ -112,20 +107,15 @@ jobs:
           IMAGE="$GITHUB_WORKSPACE/out/arch/arm64/boot/Image.gz-dtb"
           if [ ! -f "$IMAGE" ]; then IMAGE="$GITHUB_WORKSPACE/out/arch/arm64/boot/Image.gz"; fi
           DTBO="$GITHUB_WORKSPACE/out/arch/arm64/boot/dtbo.img"
-
           git clone https://github.com/osm0sis/AnyKernel3.git
           rm -rf AnyKernel3/.git
           cp $IMAGE AnyKernel3/Image.gz
           [ -f "$DTBO" ] && cp $DTBO AnyKernel3/dtbo.img
-
-          # Configurare Identitate Dispozitiv
           sed -i 's/device.name1=maguro/device.name1=r5q/g' AnyKernel3/anykernel.sh
-          sed -i 's/device.name2=toroplus/device.name2=SM-G770F/g' AnyKernel3/anykernel.sh
-          
-          cd AnyKernel3 && zip -r9 ../Kernel-S10Lite-R5Q-eBPF-Final.zip *
+          cd AnyKernel3 && zip -r9 ../Kernel-S10Lite-L23.2-eBPF.zip *
 
-      - name: Upload Flashable Kernel
+      - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-S10Lite-eBPF-Lineage23
-          path: Kernel-S10Lite-R5Q-eBPF-Final.zip
+          name: Kernel-S10Lite-eBPF-Lineage23.2
+          path: Kernel-S10Lite-L23.2-eBPF.zip
