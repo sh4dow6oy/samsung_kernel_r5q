@@ -13,7 +13,7 @@ jobs:
           ref: master
           fetch-depth: 0
 
-      - name: 2. Upstream Merge BPF & Critical Dependencies
+      - name: 2. Upstream Merge BPF & Core MM/Sched
         run: |
           git config --global user.email "gh-actions@github.com"
           git config --global user.name "GitHub Actions"
@@ -21,32 +21,32 @@ jobs:
           git remote add pascua https://github.com/pascua28/android_kernel_samsung_sm7150.git
           git fetch pascua fifteen
           
-          echo "--- Injecting BPF 5.4 Logic & Vital Headers ---"
-          # BPF Core Logic
+          echo "--- Injecting BPF 5.4 Logic & Deep Core Dependencies ---"
+          # BPF Core
           git checkout pascua/fifteen -- kernel/bpf/
           
-          # Headers pentru BPF (Rezolvă 'incomplete definition')
+          # Headers BPF
           git checkout pascua/fifteen -- include/linux/bpf.h
           git checkout pascua/fifteen -- include/uapi/linux/bpf.h
           git checkout pascua/fifteen -- include/linux/bpf_types.h
-          git checkout pascua/fifteen -- include/linux/bpf_verifier.h
-          git checkout pascua/fifteen -- include/linux/bpf_trace.h
-          git checkout pascua/fifteen -- include/uapi/linux/bpf_common.h
-          
-          # Fix pentru 'linux/bpf_lirc.h' file not found
-          git checkout pascua/fifteen -- include/linux/bpf_lirc.h || touch include/linux/bpf_lirc.h
-          
-          # Network & Memory Bridge (Rezolvă 'skb_metadata_len' și 'vm_flush')
           git checkout pascua/fifteen -- include/linux/filter.h
-          git checkout pascua/fifteen -- include/linux/skbuff.h
-          git checkout pascua/fifteen -- include/linux/mm.h
-          git checkout pascua/fifteen -- include/linux/sched.h
+          git checkout pascua/fifteen -- include/linux/bpf_verifier.h
           
-          # BTF Infrastructure (Esențial pentru Android 15)
-          git checkout pascua/fifteen -- include/linux/btf.h
+          # DEEP CORE FIX: Memory Management (Rezolvă vm_fault_t și pgtables_bytes)
+          git checkout pascua/fifteen -- include/linux/mm.h
+          git checkout pascua/fifteen -- include/linux/mm_types.h
+          git checkout pascua/fifteen -- include/linux/mmzone.h
+          git checkout pascua/fifteen -- include/uapi/linux/mmtimer.h || true
+          
+          # Sched & Types (Rezolvă cant_sleep și alte macro-uri)
+          git checkout pascua/fifteen -- include/linux/sched.h
+          git checkout pascua/fifteen -- include/linux/types.h
+          
+          # Network Bridge
+          git checkout pascua/fifteen -- include/linux/skbuff.h
           
           git add .
-          git commit -m "BPF Phase 1.5: Core, Net headers, and Memory bridge" || echo "No changes"
+          git commit -m "BPF Phase 1.6: Sync mm_types and core headers" || echo "No changes"
 
       - name: 3. Setup Neutron Clang & Path Fix (Assembler)
         run: |
