@@ -1,90 +1,120 @@
-name: Build r5q Kernel - Neutron Final
+name: Build Roynas R5Q - Lineage 23.2 eBPF Backport
+
 on:
   workflow_dispatch:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - name: 1. Instalare Dependințe
-        run: |
-          sudo apt update
-          sudo apt install -y bc bison build-essential flex git-core libssl-dev libelf-dev clang lld llvm wget zstd zip lz4
+      - name: Checkout Samsung Source
+        uses: actions/checkout@v4
+        with:
+          repository: Roynas-Android-Playground/kernel_samsung_r3q
+          ref: master
+          fetch-depth: 1
 
-      - name: 2. Clone Kernel r5q
+      - name: Install Dependencies
         run: |
-          git clone --depth=1 https://github.com/mainey/android_kernel_samsung_r5q.git -b lineage-19.0 kernel
-          cd kernel
-          git config user.email "bot@github.com"
-          git config user.name "KernelBot"
+          sudo apt-get update
+          sudo apt-get install -y bc build-essential flex bison lz4 libssl-dev libelf-dev \
+          ccache python3 python-is-python3 libarchive-tools wget zstd libtinfo6 zip \
+          gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi
 
-      - name: 3. Setup Neutron Clang
+      - name: Setup Neutron Clang
         run: |
           mkdir clang
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
 
-      - name: 4. Patch Makefile (Fix 'not found' errors)
+      - name: Upstream eBPF from Lineage 23.2
         run: |
-          cd kernel
-          # Eliminăm verificările de compilator care blochează build-ul pe GitHub
-          sed -i 's/ifneq ($(call cc-option,-fstack-protector-strong),)/ifdef CONFIG_CC_STACKPROTECTOR_STRONG/g' Makefile
-          # Forțăm Makefile-ul să nu mai caute toolchain-ul Samsung în foldere externe
-          sed -i 's/CROSS_COMPILE_ARM32 := .*/CROSS_COMPILE_ARM32 := arm-linux-gnueabi-/g' Makefile
-          sed -i 's/CROSS_COMPILE := .*/CROSS_COMPILE := aarch64-linux-gnu-/g' Makefile
+          # 1. Adăugăm remote-ul LineageOS
+          git remote add lineage https://github.com/LineageOS/android_kernel_google_msm-4.14
+          git fetch lineage lineage-23.2 --depth=1
 
-      - name: 5. Compilare Kernel
-        run: |
-          cd kernel
-          export ARCH=arm64
-          export SUBARCH=arm64
-          export PATH=$GITHUB_WORKSPACE/clang/bin:$PATH
+          # 2. Injectăm direct componentele eBPF moderne
+          # Aceasta este metoda cea mai sigură pentru a asigura compatibilitatea Android 16
+          echo "Injectăm subsistemul eBPF din Lineage 23.2..."
           
-          # Definim variabilele pentru a forța Neutron
-          export KBUILD_COMPILER_STRING="$(clang --version | head -n 1)"
-          export CLANG_TRIPLE=aarch64-linux-gnu-
-          
-          mkdir -p out
-          
-          # Generăm .config (Adăugăm CC=clang și aici)
-          make O=out r5q_eur_open_defconfig CC=clang
-          
-          # Build-ul final cu toate uneltele LLVM activate
-          make -j$(nproc --all) O=out \
-               CC=clang \
-               LD=ld.lld \
-               AR=llvm-ar \
-               NM=llvm-nm \
-               OBJCOPY=llvm-objcopy \
-               OBJDUMP=llvm-objdump \
-               STRIP=llvm-strip \
-               OBJSIZE=llvm-size \
-               READELF=llvm-readelf \
-               HOSTCC=clang \
-               HOSTCXX=clang++ \
-               HOSTAR=llvm-ar \
-               CROSS_COMPILE=aarch64-linux-gnu- \
-               CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-               LLVM=1 \
-               LLVM_IAS=1 \
-               CONFIG_CC_STACKPROTECTOR_STRONG=y
+          # Listă de directoare critice care vor fi înlocuite cu versiunile noi
+          BPF_COMPONENTS=(
+            "kernel/bpf"
+            "include/linux/bpf.h"
+            "include/linux/bpf_types.h"
+            "include/uapi/linux/bpf.h"
+            "net/core/filter.c"
+            "include/net/filter.h"
+          )
 
-      - name: 6. Împachetare AnyKernel3
+          for component in "${BPF_COMPONENTS[@]}"; do
+            git checkout lineage/lineage-23.2 -- "$component" || echo "Skip: $component nu a fost găsit."
+          done
+
+      - name: Build Kernel
         run: |
-          if [ -f kernel/out/arch/arm64/boot/Image.gz-dtb ]; then
-            git clone https://github.com/osm0sis/AnyKernel3.git
-            cp kernel/out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
-            cd AnyKernel3
-            sed -i 's/device.name1=maguro/device.name1=r5q/' anykernel.sh
-            sed -i 's/device.name2=toro/device.name2=SM-G770F/' anykernel.sh
-            zip -r ../r5q-Neutron-Kernel.zip *
-          else
-            echo "EROARE: Compilarea a eșuat. Verifică log-ul de mai sus."
-            exit 1
+          export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
+          
+          # NUCLEAR CLEANUP (LLVM Polly Fix)
+          find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
+          find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm//g' {} +
+          
+          # VDSO FIX (Anti-static error)
+          if [ -f arch/arm64/kernel/vdso/Makefile ]; then
+            sed -i 's/-static//g' arch/arm64/kernel/vdso/Makefile
           fi
 
-      - name: 7. Upload
+          # Argumente Build
+          MAKE_ARGS="ARCH=arm64 \
+            LLVM=1 \
+            LLVM_IAS=1 \
+            CC=clang \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            O=out"
+
+          # Configurare Defconfig
+          make $MAKE_ARGS r5q_defconfig
+          
+          # ACTIVARE FORCE EBPF PENTRU ANDROID 16
+          ./scripts/config --file out/.config \
+            -e CONFIG_BPF \
+            -e CONFIG_BPF_SYSCALL \
+            -e CONFIG_BPF_JIT \
+            -e CONFIG_HAVE_EBPF_JIT \
+            -e CONFIG_NET_CLS_BPF \
+            -e CONFIG_NET_ACT_BPF \
+            -e CONFIG_CGROUP_BPF \
+            -e CONFIG_BPF_EVENTS \
+            -e CONFIG_BPF_STREAM_PARSER \
+            -d CONFIG_LTO_CLANG -e CONFIG_LTO_NONE \
+            -d CONFIG_KNOX_KAP -d CONFIG_SECURITY_SAMSUNG_KNOX
+            
+          make $MAKE_ARGS olddefconfig
+
+          # Compilare
+          # Adăugăm -fno-stack-protector dacă build-ul eșuează la faza de linkuire eBPF
+          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -Wno-error -Wno-unknown-warning-option -mno-outline-atomics"
+
+      - name: Package with AnyKernel3
+        run: |
+          IMAGE="$GITHUB_WORKSPACE/out/arch/arm64/boot/Image.gz-dtb"
+          if [ ! -f "$IMAGE" ]; then IMAGE="$GITHUB_WORKSPACE/out/arch/arm64/boot/Image.gz"; fi
+          DTBO="$GITHUB_WORKSPACE/out/arch/arm64/boot/dtbo.img"
+
+          git clone https://github.com/osm0sis/AnyKernel3.git
+          rm -rf AnyKernel3/.git
+          cp $IMAGE AnyKernel3/Image.gz
+          [ -f "$DTBO" ] && cp $DTBO AnyKernel3/dtbo.img
+
+          # Configurare pentru S10 Lite
+          sed -i 's/device.name1=maguro/device.name1=r5q/g' AnyKernel3/anykernel.sh
+          sed -i 's/device.name2=toroplus/device.name2=SM-G770F/g' AnyKernel3/anykernel.sh
+          
+          cd AnyKernel3 && zip -r9 ../Kernel-S10Lite-R5Q-eBPF-L23.zip *
+
+      - name: Upload Kernel
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-Neutron-Build
-          path: r5q-Neutron-Kernel.zip
+          name: Kernel-S10Lite-L23-eBPF
+          path: Kernel-S10Lite-R5Q-eBPF-L23.zip
