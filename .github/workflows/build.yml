@@ -1,4 +1,4 @@
-name: Build Roynas R5Q - Lineage 23.2 eBPF Backport
+name: Build Roynas R5Q - Android 16 eBPF Ready
 
 on:
   workflow_dispatch:
@@ -29,54 +29,63 @@ jobs:
 
       - name: Upstream eBPF from Lineage 23.2
         run: |
-          # 1. Adăugăm remote-ul LineageOS
+          # 1. Conectare la sursa LineageOS (Android 15/16 Base)
           git remote add lineage https://github.com/LineageOS/android_kernel_google_msm-4.14
           git fetch lineage lineage-23.2 --depth=1
 
-          # 2. Injectăm direct componentele eBPF moderne
-          # Aceasta este metoda cea mai sigură pentru a asigura compatibilitatea Android 16
-          echo "Injectăm subsistemul eBPF din Lineage 23.2..."
+          echo "Injectăm subsistemul eBPF modern..."
           
-          # Listă de directoare critice care vor fi înlocuite cu versiunile noi
+          # Listă completă de fișiere necesare pentru compatibilitate rețea/eBPF
           BPF_COMPONENTS=(
             "kernel/bpf"
             "include/linux/bpf.h"
             "include/linux/bpf_types.h"
             "include/uapi/linux/bpf.h"
+            "include/uapi/linux/filter.h"
             "net/core/filter.c"
-            "include/net/filter.h"
           )
 
           for component in "${BPF_COMPONENTS[@]}"; do
-            git checkout lineage/lineage-23.2 -- "$component" || echo "Skip: $component nu a fost găsit."
+            git checkout lineage/lineage-23.2 -- "$component" || echo "Avertisment: $component nu a fost găsit în sursa Lineage."
           done
 
       - name: Build Kernel
         run: |
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           
-          # NUCLEAR CLEANUP (LLVM Polly Fix)
+          # 1. REPARAȚIE KCONFIG (Fix Error 1 la defconfig)
+          # Eliminăm liniile care caută KernelSU deoarece folderul a fost șters
+          sed -i '/kernelsu/d' drivers/android/Kconfig || true
+          sed -i '/kernelsu/d' drivers/android/Makefile || true
+          
+          # 2. NUCLEAR CLEANUP (Prevenim erorile LLVM Polly specifice Neutron)
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm//g' {} +
           
-          # VDSO FIX (Anti-static error)
+          # 3. VDSO FIX (Rezolvă eroarea de linkuire statică pe Ubuntu 24.04)
           if [ -f arch/arm64/kernel/vdso/Makefile ]; then
             sed -i 's/-static//g' arch/arm64/kernel/vdso/Makefile
           fi
 
-          # Argumente Build
+          # 4. Argumente Build
           MAKE_ARGS="ARCH=arm64 \
             LLVM=1 \
             LLVM_IAS=1 \
             CC=clang \
+            LD=ld.lld \
+            AR=llvm-ar \
+            NM=llvm-nm \
+            OBJCOPY=llvm-objcopy \
+            OBJDUMP=llvm-objdump \
+            STRIP=llvm-strip \
             CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             O=out"
 
-          # Configurare Defconfig
+          # 5. Configurare Defconfig
           make $MAKE_ARGS r5q_defconfig
           
-          # ACTIVARE FORCE EBPF PENTRU ANDROID 16
+          # 6. ACTIVARE FORCE EBPF (Cerințe obligatorii Android 16)
           ./scripts/config --file out/.config \
             -e CONFIG_BPF \
             -e CONFIG_BPF_SYSCALL \
@@ -88,13 +97,15 @@ jobs:
             -e CONFIG_BPF_EVENTS \
             -e CONFIG_BPF_STREAM_PARSER \
             -d CONFIG_LTO_CLANG -e CONFIG_LTO_NONE \
-            -d CONFIG_KNOX_KAP -d CONFIG_SECURITY_SAMSUNG_KNOX
+            -d CONFIG_CC_STACKPROTECTOR_STRONG -e CONFIG_CC_STACKPROTECTOR_NONE \
+            -d CONFIG_KNOX_KAP -d CONFIG_SECURITY_SAMSUNG_KNOX \
+            -d CONFIG_INTEGRITY_PLATFORM_KEYRING
             
           make $MAKE_ARGS olddefconfig
 
-          # Compilare
-          # Adăugăm -fno-stack-protector dacă build-ul eșuează la faza de linkuire eBPF
-          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -Wno-error -Wno-unknown-warning-option -mno-outline-atomics"
+          # 7. Compilare
+          # -mno-outline-atomics este vital pentru stabilitatea Neutron pe kernel 4.14
+          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -Wno-error -Wno-unknown-warning-option -Wno-unused-command-line-argument -mno-outline-atomics"
 
       - name: Package with AnyKernel3
         run: |
@@ -107,14 +118,14 @@ jobs:
           cp $IMAGE AnyKernel3/Image.gz
           [ -f "$DTBO" ] && cp $DTBO AnyKernel3/dtbo.img
 
-          # Configurare pentru S10 Lite
+          # Configurare Identitate Dispozitiv
           sed -i 's/device.name1=maguro/device.name1=r5q/g' AnyKernel3/anykernel.sh
           sed -i 's/device.name2=toroplus/device.name2=SM-G770F/g' AnyKernel3/anykernel.sh
           
-          cd AnyKernel3 && zip -r9 ../Kernel-S10Lite-R5Q-eBPF-L23.zip *
+          cd AnyKernel3 && zip -r9 ../Kernel-S10Lite-R5Q-eBPF-Final.zip *
 
-      - name: Upload Kernel
+      - name: Upload Flashable Kernel
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-S10Lite-L23-eBPF
-          path: Kernel-S10Lite-R5Q-eBPF-L23.zip
+          name: Kernel-S10Lite-eBPF-Lineage23
+          path: Kernel-S10Lite-R5Q-eBPF-Final.zip
