@@ -1,81 +1,80 @@
-name: Build r5q Kernel - Samsung + Google Upstream
+name: Build r5q Kernel - Neutron Clang + Upstream
 on:
-  workflow_dispatch: # Se pornește manual din tab-ul Actions
+  workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Instalare Dependințe Build
+      - name: 1. Instalare Dependințe
         run: |
           sudo apt update
-          sudo apt install -y bc bison build-essential flex git-core libssl-dev libelf-dev clang lld llvm
+          sudo apt install -y bc bison build-essential flex git-core libssl-dev libelf-dev clang lld llvm wget zstd zip lz4
 
-      - name: Clone Samsung Kernel (Base r5q)
+      - name: 2. Clone Samsung Kernel (Base r5q)
         run: |
-          # Clonăm repo-ul specific pentru S10 Lite (r5q)
-          git clone --depth=50 https://github.com/mainey/android_kernel_samsung_r5q.git -b lineage-19.0 kernel
+          git clone --depth=1 https://github.com/mainey/android_kernel_samsung_r5q.git -b lineage-19.0 kernel
           cd kernel
           git config user.email "bot@github.com"
           git config user.name "Kernel-Upstreamer"
 
-      - name: Fetch & Merge Google Upstream (4.14.y)
+      - name: 3. Fetch & Merge Google Upstream (4.14.y)
         run: |
           cd kernel
-          # Adăugăm sursa oficială Google pentru Linux Stable 4.14
           git remote add google-upstream https://android.googlesource.com/kernel/common
           git fetch google-upstream upstream-linux-4.14.y
-          
-          echo "Începem procesul de Upstream (4.14.y)..."
-          # Încercăm un merge automat. 
-          # Folosim strategia 'ours' pentru a păstra driverele Samsung în caz de conflict major.
-          git merge google-upstream/upstream-linux-4.14.y -m "Merge Google Upstream 4.14.y" || echo "Conflicte detectate, se va încerca compilarea cu ce s-a putut îmbina."
+          # Încercăm merge-ul. Dacă sunt conflicte, mergem mai departe cu ce s-a putut îmbina.
+          git merge google-upstream/upstream-linux-4.14.y -m "Merge Google Upstream 4.14.y" || echo "Conflicte detectate."
 
-      - name: Setup Google Clang (Android 12 Toolchain)
+      - name: 4. Setup Neutron Clang
         run: |
           mkdir clang
-          cd clang
-          # Luăm Clang-ul oficial Google (r416183b) pentru stabilitate pe 4.14
-          wget https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r416183b.tar.gz
-          tar -xf clang-r416183b.tar.gz
+          # Descarcă Neutron Clang (Verifică dacă link-ul e încă valid, altfel pune ultima versiune)
+          wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
+          tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
 
-      - name: Compilare Kernel (r5q_eur_open_defconfig)
+      - name: 5. Compilare Kernel (r5q_eur_open_defconfig)
         run: |
           cd kernel
           export ARCH=arm64
           export SUBARCH=arm64
+          # Adăugăm Neutron în PATH
           export PATH=$GITHUB_WORKSPACE/clang/bin:$PATH
           
           mkdir -p out
           
-          # 1. Aplicăm configurația ta de S10 Lite European
+          # Generăm configurația
           make O=out r5q_eur_open_defconfig
           
-          # 2. Pornim build-ul cu LLVM (Clang)
+          # Compilarea cu Neutron Clang (observă argumentele extra pentru compatibilitate)
           make -j$(nproc --all) O=out \
                CC=clang \
-               CLANG_TRIPLE=aarch64-linux-gnu- \
+               LD=ld.lld \
+               AR=llvm-ar \
+               NM=llvm-nm \
+               OBJCOPY=llvm-objcopy \
+               OBJDUMP=llvm-objdump \
+               STRIP=llvm-strip \
                CROSS_COMPILE=aarch64-linux-gnu- \
                CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
                LLVM=1 LLVM_IAS=1
 
-      - name: Pregătire AnyKernel3 (Flashable ZIP)
+      - name: 6. Împachetare AnyKernel3 (Flashable ZIP)
         run: |
           if [ -f kernel/out/arch/arm64/boot/Image.gz-dtb ]; then
             git clone https://github.com/osm0sis/AnyKernel3.git
             cp kernel/out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
             cd AnyKernel3
-            # Configurăm scriptul pentru S10 Lite
             sed -i 's/device.name1=maguro/device.name1=r5q/' anykernel.sh
             sed -i 's/device.name2=toro/device.name2=SM-G770F/' anykernel.sh
-            zip -r ../r5q-Upstream-Kernel.zip *
+            zip -r ../r5q-Neutron-Kernel.zip *
           else
             echo "Eroare: Kernel-ul nu s-a compilat!"
             exit 1
           fi
 
-      - name: Upload Rezultat Final
+      - name: 7. Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-Upstream-Kernel
-          path: r5q-Upstream-Kernel.zip
+          name: S10Lite-Neutron-Kernel
+          path: r5q-Neutron-Kernel.zip
