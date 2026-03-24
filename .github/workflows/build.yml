@@ -1,4 +1,4 @@
-name: Lumi Kernel R5Q - BPF Upstream (Phase 1)
+name: Lumi Kernel R5Q - BPF Phase 1.5 (Core & Deps)
 on:
   workflow_dispatch:
 
@@ -13,7 +13,7 @@ jobs:
           ref: master
           fetch-depth: 0
 
-      - name: 2. Upstream Merge kernel/bpf (Pascua28 - Android 15)
+      - name: 2. Upstream Merge BPF & Critical Dependencies
         run: |
           git config --global user.email "gh-actions@github.com"
           git config --global user.name "GitHub Actions"
@@ -21,36 +21,54 @@ jobs:
           git remote add pascua https://github.com/pascua28/android_kernel_samsung_sm7150.git
           git fetch pascua fifteen
           
-          echo "--- Injecting BPF 5.4 Logic ---"
+          echo "--- Injecting BPF 5.4 Logic & Vital Headers ---"
+          # BPF Core Logic
           git checkout pascua/fifteen -- kernel/bpf/
+          
+          # Headers pentru BPF (Rezolvă 'incomplete definition')
           git checkout pascua/fifteen -- include/linux/bpf.h
           git checkout pascua/fifteen -- include/uapi/linux/bpf.h
           git checkout pascua/fifteen -- include/linux/bpf_types.h
+          git checkout pascua/fifteen -- include/linux/bpf_verifier.h
+          git checkout pascua/fifteen -- include/linux/bpf_trace.h
+          git checkout pascua/fifteen -- include/uapi/linux/bpf_common.h
+          
+          # Fix pentru 'linux/bpf_lirc.h' file not found
+          git checkout pascua/fifteen -- include/linux/bpf_lirc.h || touch include/linux/bpf_lirc.h
+          
+          # Network & Memory Bridge (Rezolvă 'skb_metadata_len' și 'vm_flush')
           git checkout pascua/fifteen -- include/linux/filter.h
+          git checkout pascua/fifteen -- include/linux/skbuff.h
+          git checkout pascua/fifteen -- include/linux/mm.h
+          git checkout pascua/fifteen -- include/linux/sched.h
+          
+          # BTF Infrastructure (Esențial pentru Android 15)
+          git checkout pascua/fifteen -- include/linux/btf.h
           
           git add .
-          git commit -m "BPF Phase 1: Upstream kernel/bpf and headers" || echo "No changes"
+          git commit -m "BPF Phase 1.5: Core, Net headers, and Memory bridge" || echo "No changes"
 
-      - name: 3. Setup Neutron Clang & Path Fix
+      - name: 3. Setup Neutron Clang & Path Fix (Assembler)
         run: |
           sudo apt-get update && sudo apt-get install -y bc build-essential flex bison lz4 libssl-dev libelf-dev wget zstd zip
           mkdir clang && wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
           
+          # Forțăm folosirea Clang ca asamblor pentru a evita eroarea -EL
           mkdir -p bin-force
           ln -sf $(pwd)/clang/bin/clang bin-force/as
           ln -sf $(pwd)/clang/bin/ld.lld bin-force/ld
           echo "$(pwd)/bin-force" >> $GITHUB_PATH
 
-      - name: 4. Build & Verify BPF
+      - name: 4. Build & Verify BPF Subsystem
         run: |
           export PATH="$GITHUB_WORKSPACE/clang/bin:$GITHUB_WORKSPACE/bin-force:$PATH"
           
-          # --- FIX: ELIMINARE REFERINȚE KERNELSU CARE CRAPĂ BUILD-UL ---
+          # FIX: Eliminăm KernelSU din Kconfig pentru a permite generarea defconfig
           sed -i '/kernelsu/d' drivers/android/Kconfig || true
           sed -i '/kernelsu/d' drivers/android/Makefile || true
           
-          # Cleanup Polly/LTO
+          # FIX: Curățăm flag-urile Polly care nu sunt suportate de Neutron
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm//g' {} +
           
@@ -63,20 +81,21 @@ jobs:
             CROSS_COMPILE=aarch64-linux-gnu- \
             O=out"
 
-          # Configurare
+          # Generare config
           make $MAKE_ARGS r5q_defconfig
           
-          # Setări .config pentru Android 15 BPF
+          # Configurare eBPF pentru compatibilitate Android 15
           ./scripts/config --file out/.config \
             -e CONFIG_BPF_SYSCALL \
             -e CONFIG_BPF_JIT \
             -e CONFIG_BPF_EVENTS \
+            -e CONFIG_DEBUG_INFO_BTF \
             -d CONFIG_CC_STACKPROTECTOR_STRONG \
             -e CONFIG_CC_STACKPROTECTOR_NONE \
             -d CONFIG_LOCALVERSION_AUTO
             
           make $MAKE_ARGS olddefconfig
 
-          # VERIFICARE: Compilăm doar subsistemul BPF
+          # Compilăm DOAR folderul BPF pentru a valida integrarea headerelor
           echo "--- Starting Selective Compilation of kernel/bpf/ ---"
           make -j$(nproc --all) $MAKE_ARGS kernel/bpf/
