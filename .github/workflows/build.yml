@@ -18,12 +18,10 @@ jobs:
           git config --global user.email "gh-actions@github.com"
           git config --global user.name "GitHub Actions"
           
-          # Adăugăm sursa lui Pascua28 pentru ramura de Android 15
           git remote add pascua https://github.com/pascua28/android_kernel_samsung_sm7150.git
           git fetch pascua fifteen
           
           echo "--- Injecting BPF 5.4 Logic ---"
-          # Luăm folderul kernel/bpf și headerele necesare fără a șterge fișierele Samsung locale
           git checkout pascua/fifteen -- kernel/bpf/
           git checkout pascua/fifteen -- include/linux/bpf.h
           git checkout pascua/fifteen -- include/uapi/linux/bpf.h
@@ -31,15 +29,14 @@ jobs:
           git checkout pascua/fifteen -- include/linux/filter.h
           
           git add .
-          git commit -m "BPF Phase 1: Upstream kernel/bpf and headers from Pascua28 (A15)" || echo "No changes"
+          git commit -m "BPF Phase 1: Upstream kernel/bpf and headers" || echo "No changes"
 
-      - name: 3. Setup Neutron Clang & Path Fix (Assembler EL Fix)
+      - name: 3. Setup Neutron Clang & Path Fix
         run: |
           sudo apt-get update && sudo apt-get install -y bc build-essential flex bison lz4 libssl-dev libelf-dev wget zstd zip
           mkdir clang && wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
           
-          # NUCLEAR FIX: Symlink pentru 'as' ca să forțăm Clang Integrated Assembler
           mkdir -p bin-force
           ln -sf $(pwd)/clang/bin/clang bin-force/as
           ln -sf $(pwd)/clang/bin/ld.lld bin-force/ld
@@ -47,14 +44,16 @@ jobs:
 
       - name: 4. Build & Verify BPF
         run: |
-          # Adăugăm folderul bin-force la începutul PATH-ului
           export PATH="$GITHUB_WORKSPACE/clang/bin:$GITHUB_WORKSPACE/bin-force:$PATH"
           
-          # FIX: Eliminăm flag-urile Polly/LTO care pot cauza crash pe Neutron
+          # --- FIX: ELIMINARE REFERINȚE KERNELSU CARE CRAPĂ BUILD-UL ---
+          sed -i '/kernelsu/d' drivers/android/Kconfig || true
+          sed -i '/kernelsu/d' drivers/android/Makefile || true
+          
+          # Cleanup Polly/LTO
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm//g' {} +
           
-          # Argumente Build (Forțăm LLVM_IAS=1 și AS=clang)
           MAKE_ARGS="ARCH=arm64 \
             LLVM=1 \
             LLVM_IAS=1 \
@@ -64,7 +63,7 @@ jobs:
             CROSS_COMPILE=aarch64-linux-gnu- \
             O=out"
 
-          # Configurare r5q
+          # Configurare
           make $MAKE_ARGS r5q_defconfig
           
           # Setări .config pentru Android 15 BPF
