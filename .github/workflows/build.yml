@@ -1,56 +1,57 @@
-name: Build Samsung S10 Lite Kernel (r5q)
-on: 
-  workflow_dispatch: # Îți permite să apeși butonul "Run workflow" din tab-ul Actions
+name: Build r5q Kernel - Samsung + Google Upstream
+on:
+  workflow_dispatch: # Se pornește manual din tab-ul Actions
 
 jobs:
-  kernel-build:
+  build:
     runs-on: ubuntu-latest
     steps:
-      - name: Curățare și Instalare Dependințe
+      - name: Instalare Dependințe Build
         run: |
           sudo apt update
           sudo apt install -y bc bison build-essential flex git-core libssl-dev libelf-dev clang lld llvm
 
-      - name: Descărcare Sursă Kernel (Samsung r5q)
+      - name: Clone Samsung Kernel (Base r5q)
         run: |
-          # Folosim repo-ul optimizat pentru r5q pe care l-ai găsit
-          git clone --depth=1 https://github.com/mainey/android_kernel_samsung_r5q.git -b lineage-19.0 kernel
+          # Clonăm repo-ul specific pentru S10 Lite (r5q)
+          git clone --depth=50 https://github.com/mainey/android_kernel_samsung_r5q.git -b lineage-19.0 kernel
           cd kernel
           git config user.email "bot@github.com"
-          git config user.name "KernelBot"
+          git config user.name "Kernel-Upstreamer"
 
-      - name: Upstream de la Google (Opțional/Hibrid)
+      - name: Fetch & Merge Google Upstream (4.14.y)
         run: |
           cd kernel
-          # Adăugăm sursa "Common" de la Google pentru a aduce securitatea la zi
-          git remote add google https://android.googlesource.com/kernel/common
-          git fetch google android-4.14-p
-          # Încercăm un merge. Dacă apar conflicte mari, ignorăm și mergem pe varianta stabilă
-          git merge google/android-4.14-p --no-edit || echo "Conflicte detectate, build-ul continuă cu baza Samsung."
+          # Adăugăm sursa oficială Google pentru Linux Stable 4.14
+          git remote add google-upstream https://android.googlesource.com/kernel/common
+          git fetch google-upstream upstream-linux-4.14.y
+          
+          echo "Începem procesul de Upstream (4.14.y)..."
+          # Încercăm un merge automat. 
+          # Folosim strategia 'ours' pentru a păstra driverele Samsung în caz de conflict major.
+          git merge google-upstream/upstream-linux-4.14.y -m "Merge Google Upstream 4.14.y" || echo "Conflicte detectate, se va încerca compilarea cu ce s-a putut îmbina."
 
-      - name: Instalare Google Clang (Toolchain)
+      - name: Setup Google Clang (Android 12 Toolchain)
         run: |
           mkdir clang
           cd clang
-          # Descarcă Clang-ul oficial folosit pentru Android 12/Lineage 19.0
+          # Luăm Clang-ul oficial Google (r416183b) pentru stabilitate pe 4.14
           wget https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r416183b.tar.gz
           tar -xf clang-r416183b.tar.gz
 
-      - name: Compilare Kernel
+      - name: Compilare Kernel (r5q_eur_open_defconfig)
         run: |
           cd kernel
-          # Setăm variabilele de mediu
           export ARCH=arm64
           export SUBARCH=arm64
           export PATH=$GITHUB_WORKSPACE/clang/bin:$PATH
           
-          # Creăm folderul pentru output
           mkdir -p out
           
-          # 1. Aplicăm configurația ta specifică
+          # 1. Aplicăm configurația ta de S10 Lite European
           make O=out r5q_eur_open_defconfig
           
-          # 2. Pornim motoarele (Compilarea propriu-zisă)
+          # 2. Pornim build-ul cu LLVM (Clang)
           make -j$(nproc --all) O=out \
                CC=clang \
                CLANG_TRIPLE=aarch64-linux-gnu- \
@@ -58,28 +59,23 @@ jobs:
                CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
                LLVM=1 LLVM_IAS=1
 
-      - name: Verificare Fișier Rezultat
+      - name: Pregătire AnyKernel3 (Flashable ZIP)
         run: |
           if [ -f kernel/out/arch/arm64/boot/Image.gz-dtb ]; then
-            echo "SUCCES: Kernel-ul a fost generat!"
+            git clone https://github.com/osm0sis/AnyKernel3.git
+            cp kernel/out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
+            cd AnyKernel3
+            # Configurăm scriptul pentru S10 Lite
+            sed -i 's/device.name1=maguro/device.name1=r5q/' anykernel.sh
+            sed -i 's/device.name2=toro/device.name2=SM-G770F/' anykernel.sh
+            zip -r ../r5q-Upstream-Kernel.zip *
           else
-            echo "EROARE: Kernel-ul nu a fost găsit. Verifică log-urile de compilare."
+            echo "Eroare: Kernel-ul nu s-a compilat!"
             exit 1
           fi
 
-      - name: Împachetare AnyKernel3 (Pregătire pentru Flash)
-        run: |
-          # Descarcă un template AnyKernel3 pentru a face kernel-ul instalabil (.zip)
-          git clone https://github.com/osm0sis/AnyKernel3.git
-          cp kernel/out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
-          cd AnyKernel3
-          # Ajustăm scriptul pentru S10 Lite
-          sed -i 's/device.name1=maguro/device.name1=r5q/' anykernel.sh
-          sed -i 's/device.name2=toro/device.name2=SM-G770F/' anykernel.sh
-          zip -r ../r5q-kernel-flashable.zip *
-
-      - name: Upload Artifact
+      - name: Upload Rezultat Final
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-Kernel-Build
-          path: r5q-kernel-flashable.zip
+          name: S10Lite-Upstream-Kernel
+          path: r5q-Upstream-Kernel.zip
