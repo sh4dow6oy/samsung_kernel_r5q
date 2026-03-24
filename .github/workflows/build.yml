@@ -1,4 +1,4 @@
-name: Build r5q Kernel - Neutron Clang + Upstream
+name: Build r5q Kernel - Neutron Final
 on:
   workflow_dispatch:
 
@@ -11,42 +11,45 @@ jobs:
           sudo apt update
           sudo apt install -y bc bison build-essential flex git-core libssl-dev libelf-dev clang lld llvm wget zstd zip lz4
 
-      - name: 2. Clone Samsung Kernel (Base r5q)
+      - name: 2. Clone Kernel r5q
         run: |
           git clone --depth=1 https://github.com/mainey/android_kernel_samsung_r5q.git -b lineage-19.0 kernel
           cd kernel
           git config user.email "bot@github.com"
-          git config user.name "Kernel-Upstreamer"
+          git config user.name "KernelBot"
 
-      - name: 3. Fetch & Merge Google Upstream (4.14.y)
-        run: |
-          cd kernel
-          git remote add google-upstream https://android.googlesource.com/kernel/common
-          git fetch google-upstream upstream-linux-4.14.y
-          # Încercăm merge-ul. Dacă sunt conflicte, mergem mai departe cu ce s-a putut îmbina.
-          git merge google-upstream/upstream-linux-4.14.y -m "Merge Google Upstream 4.14.y" || echo "Conflicte detectate."
-
-      - name: 4. Setup Neutron Clang
+      - name: 3. Setup Neutron Clang
         run: |
           mkdir clang
-          # Descarcă Neutron Clang (Verifică dacă link-ul e încă valid, altfel pune ultima versiune)
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
 
-      - name: 5. Compilare Kernel (r5q_eur_open_defconfig)
+      - name: 4. Patch Makefile (Fix 'not found' errors)
+        run: |
+          cd kernel
+          # Eliminăm verificările de compilator care blochează build-ul pe GitHub
+          sed -i 's/ifneq ($(call cc-option,-fstack-protector-strong),)/ifdef CONFIG_CC_STACKPROTECTOR_STRONG/g' Makefile
+          # Forțăm Makefile-ul să nu mai caute toolchain-ul Samsung în foldere externe
+          sed -i 's/CROSS_COMPILE_ARM32 := .*/CROSS_COMPILE_ARM32 := arm-linux-gnueabi-/g' Makefile
+          sed -i 's/CROSS_COMPILE := .*/CROSS_COMPILE := aarch64-linux-gnu-/g' Makefile
+
+      - name: 5. Compilare Kernel
         run: |
           cd kernel
           export ARCH=arm64
           export SUBARCH=arm64
-          # Adăugăm Neutron în PATH
           export PATH=$GITHUB_WORKSPACE/clang/bin:$PATH
+          
+          # Definim variabilele pentru a forța Neutron
+          export KBUILD_COMPILER_STRING="$(clang --version | head -n 1)"
+          export CLANG_TRIPLE=aarch64-linux-gnu-
           
           mkdir -p out
           
-          # Generăm configurația
-          make O=out r5q_eur_open_defconfig
+          # Generăm .config (Adăugăm CC=clang și aici)
+          make O=out r5q_eur_open_defconfig CC=clang
           
-          # Compilarea cu Neutron Clang (observă argumentele extra pentru compatibilitate)
+          # Build-ul final cu toate uneltele LLVM activate
           make -j$(nproc --all) O=out \
                CC=clang \
                LD=ld.lld \
@@ -55,11 +58,18 @@ jobs:
                OBJCOPY=llvm-objcopy \
                OBJDUMP=llvm-objdump \
                STRIP=llvm-strip \
+               OBJSIZE=llvm-size \
+               READELF=llvm-readelf \
+               HOSTCC=clang \
+               HOSTCXX=clang++ \
+               HOSTAR=llvm-ar \
                CROSS_COMPILE=aarch64-linux-gnu- \
                CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-               LLVM=1 LLVM_IAS=1
+               LLVM=1 \
+               LLVM_IAS=1 \
+               CONFIG_CC_STACKPROTECTOR_STRONG=y
 
-      - name: 6. Împachetare AnyKernel3 (Flashable ZIP)
+      - name: 6. Împachetare AnyKernel3
         run: |
           if [ -f kernel/out/arch/arm64/boot/Image.gz-dtb ]; then
             git clone https://github.com/osm0sis/AnyKernel3.git
@@ -69,12 +79,12 @@ jobs:
             sed -i 's/device.name2=toro/device.name2=SM-G770F/' anykernel.sh
             zip -r ../r5q-Neutron-Kernel.zip *
           else
-            echo "Eroare: Kernel-ul nu s-a compilat!"
+            echo "EROARE: Compilarea a eșuat. Verifică log-ul de mai sus."
             exit 1
           fi
 
-      - name: 7. Upload Artifact
+      - name: 7. Upload
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-Neutron-Kernel
+          name: S10Lite-Neutron-Build
           path: r5q-Neutron-Kernel.zip
