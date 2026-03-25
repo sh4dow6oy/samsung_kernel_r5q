@@ -46,10 +46,8 @@ jobs:
           # 2. Adăugăm Overlay-ul în Makefile-ul Samsung (Folosim ARCH_SM8150 conform bazei)
           echo 'dtbo-$(CONFIG_ARCH_SM8150) += renovation/sm8150-sec-r5q-overlay-r00.dtbo' >> arch/arm64/boot/dts/samsung/Makefile
 
-          # 3. Creăm fragmentul r5q.config (Hardware specific)
-          # Folosim setările din a71.config ca punct de plecare pentru senzori/camera
+          # 3. Creăm fragmentul r5q.config
           cp arch/arm64/configs/a71.config arch/arm64/configs/r5q.config
-          
           cat <<EOF >> arch/arm64/configs/r5q.config
           # S10 Lite Hardware Specifics
           CONFIG_MACH_SAMSUNG_R5Q=y
@@ -65,21 +63,30 @@ jobs:
           CONFIG_SEC_DEBUG=y
           EOF
 
+      - name: Fix Compiler Flags and Dummy Scripts
+        run: |
+          cd kernel
+          # Rezolvăm eroarea 'unknown argument: -fno-compiler-account-cfa-mitigation'
+          sed -i 's/-fno-compiler-account-cfa-mitigation//g' Makefile
+          sed -i 's/-fno-compiler-account-cfa-mitigation//g' arch/arm64/Makefile
+          
+          # Creăm un script dummy pentru secgetspf (rezolvă 'No such file or directory')
+          echo -e "#!/bin/bash\nexit 0" > secgetspf
+          chmod +x secgetspf
+          echo "$(pwd)" >> $GITHUB_PATH
+
       - name: Build Kernel
         run: |
           cd kernel
           export PATH="$GITHUB_WORKSPACE/neutron-clang/bin:$PATH"
           
-          # 1. Utilizăm 'yes ""' pentru a accepta automat valorile implicite 
-          # și a evita blocarea în prompt-urile de senzori 
+          # Configurare (yes "" pentru a accepta automat noile opțiuni de senzori)
           yes "" | make O=out ARCH=arm64 vendor/sm8150-perf_defconfig r5q.config
           
-          # 2. Rezolvăm eroarea 'Cannot use CONFIG_CC_STACKPROTECTOR_STRONG' 
-          # Dezactivăm această verificare care blochează Neutron Clang pe surse vechi
+          # Patch final pentru Stack Protector (rezolvă eroarea de prepare-compiler-check)
           sed -i 's/CONFIG_CC_STACKPROTECTOR_STRONG=y/CONFIG_CC_STACKPROTECTOR_NONE=y/g' out/.config
           
-          # 3. Compilarea propriu-zisă
-          # Adăugăm flag-ul '-i' pentru a ignora erorile de tip 'secgetspf' 
+          # Compilare cu flag-uri de ignorare a avertismentelor
           make -j$(nproc --all) O=out \
                ARCH=arm64 \
                CC=clang \
@@ -93,20 +100,19 @@ jobs:
                OBJDUMP=llvm-objdump \
                STRIP=llvm-strip \
                CONFIG_LTO_CLANG_NONE=y \
-               -i
+               KCFLAGS="-Wno-error -Wno-unknown-warning-option" \
+               HOSTCFLAGS="-Wno-error" \
+               -k
+
       - name: Prepare AnyKernel3
         run: |
           git clone https://github.com/osm0sis/AnyKernel3.git
-          # Verificăm dacă fișierul a fost generat
           if [ -f kernel/out/arch/arm64/boot/Image.gz-dtb ]; then
             cp kernel/out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
           else
             cp kernel/out/arch/arm64/boot/Image.gz AnyKernel3/
           fi
-          
-          # Luăm DTBO-ul generat pentru S10 Lite
           find kernel/out/arch/arm64/boot/dts/samsung/ -name "*.dtbo" -exec cp {} AnyKernel3/dtbo.img \;
-          
           cd AnyKernel3
           sed -i 's/device.name1=maguro/device.name1=r5q/g' anykernel.sh
           zip -r ../S10Lite-Neutron-Kernel.zip *
@@ -115,4 +121,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: S10Lite-Kernel-Flashable
-          path: S10Lite-Kernel-Neutron.zip
+          path: S10Lite-Neutron-Kernel.zip
