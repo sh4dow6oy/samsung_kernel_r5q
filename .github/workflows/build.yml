@@ -1,4 +1,4 @@
-name: Lumi Kernel R5Q - BPF Phase 2.1 (Deep Core & Events)
+name: Lumi Kernel R5Q - BPF Phase 2.2.1 (UAPI Fix & SKB)
 on:
   workflow_dispatch:
 
@@ -13,7 +13,7 @@ jobs:
           ref: master
           fetch-depth: 0
 
-      - name: 2. Upstream Merge BPF, Events & Tracepoints
+      - name: 2. Upstream Merge BPF & Net (Fixed UAPI)
         run: |
           git config --global user.email "gh-actions@github.com"
           git config --global user.name "GitHub Actions"
@@ -21,50 +21,40 @@ jobs:
           git remote add pascua https://github.com/pascua28/android_kernel_samsung_sm7150.git
           git fetch pascua fifteen
           
-          echo "--- Splicing BPF 5.4, Perf Events & Networking ---"
-          # 1. BPF CORE & VERIFIER
+          echo "--- Splicing BPF 5.4 & Network Infrastructure ---"
+          # 1. BPF CORE
           git checkout pascua/fifteen -- kernel/bpf/
           git checkout pascua/fifteen -- include/linux/bpf.h
           git checkout pascua/fifteen -- include/uapi/linux/bpf.h
-          git checkout pascua/fifteen -- include/linux/bpf_verifier.h
           git checkout pascua/fifteen -- include/linux/filter.h
           
-          # 2. PERF EVENTS & TRACEPOINTS (Fix pentru syscall.c erori)
+          # 2. NETWORKING (Rezolvă skb_metadata_len - FĂRĂ UAPI SKBUFF)
+          git checkout pascua/fifteen -- include/linux/skbuff.h
+          git checkout pascua/fifteen -- include/linux/netdevice.h
+          git checkout pascua/fifteen -- include/uapi/linux/netdevice.h
+          
+          # 3. EVENTS & TRACEPOINTS (Rezolvă erorile din syscall.c)
           git checkout pascua/fifteen -- include/linux/perf_event.h
           git checkout pascua/fifteen -- include/uapi/linux/perf_event.h
           git checkout pascua/fifteen -- include/linux/tracepoint.h
           git checkout pascua/fifteen -- include/linux/bpf_trace.h
-          git checkout pascua/fifteen -- kernel/events/core.c
-          git checkout pascua/fifteen -- kernel/trace/bpf_trace.c
           
-          # 3. NETWORKING (Fix pentru skb_metadata_len)
-          git checkout pascua/fifteen -- include/linux/skbuff.h
-          git checkout pascua/fifteen -- include/uapi/linux/skbuff.h
-          git checkout pascua/fifteen -- net/core/filter.c
-          
-          # 4. CGROUP & TASK (Păstrăm sincronizarea pentru refcnt și task->frozen)
-          git checkout pascua/fifteen -- kernel/cgroup/
+          # 4. CORE DEPS (MM, Cgroup, Sched)
           git checkout pascua/fifteen -- include/linux/cgroup.h
-          git checkout pascua/fifteen -- include/linux/cgroup-defs.h
           git checkout pascua/fifteen -- include/linux/bpf-cgroup.h
-          git checkout pascua/fifteen -- include/linux/sched.h
-          git checkout pascua/fifteen -- include/linux/sched/task.h
-          
-          # 5. CORE INFRASTRUCTURE
           git checkout pascua/fifteen -- include/linux/mm.h
-          git checkout pascua/fifteen -- include/linux/mm_types.h
+          git checkout pascua/fifteen -- include/linux/percpu.h
           git checkout pascua/fifteen -- include/linux/percpu-refcount.h
-          git checkout pascua/fifteen -- include/linux/types.h
+          git checkout pascua/fifteen -- include/linux/sched.h
           
-          # 6. MISSING HEADERS STUBS
+          # 5. STUBS PENTRU COMPILARE
           git checkout pascua/fifteen -- include/linux/bpf_lirc.h || touch include/linux/bpf_lirc.h
-          git checkout pascua/fifteen -- include/linux/psi.h || touch include/linux/psi.h
           git checkout pascua/fifteen -- include/linux/psi_types.h || touch include/linux/psi_types.h
           
           git add .
-          git commit -m "BPF Phase 2.1: Sync Perf Events, Tracepoints and Skbuff" || echo "No changes"
+          git commit -m "BPF Phase 2.2.1: Fix skbuff sync and core deps" || echo "No changes"
 
-      - name: 3. Setup Neutron Clang & Path Fix
+      - name: 3. Setup Neutron Clang
         run: |
           sudo apt-get update && sudo apt-get install -y bc build-essential flex bison lz4 libssl-dev libelf-dev wget zstd zip
           mkdir clang && wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
@@ -79,18 +69,17 @@ jobs:
         run: |
           export PATH="$GITHUB_WORKSPACE/clang/bin:$GITHUB_WORKSPACE/bin-force:$PATH"
           
-          # Curățăm Kconfig-urile de KernelSU
+          # Fix KernelSU removal
           sed -i '/kernelsu/d' drivers/android/Kconfig || true
           sed -i '/kernelsu/d' drivers/android/Makefile || true
           
-          # Eliminăm flag-urile Polly incompatibile
+          # Fix flag-uri Polly
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
           
           MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang AS=clang LD=ld.lld CROSS_COMPILE=aarch64-linux-gnu- O=out"
 
           make $MAKE_ARGS r5q_defconfig
           
-          # Activăm manual eBPF și Cgroup BPF
           ./scripts/config --file out/.config \
             -e CONFIG_BPF_SYSCALL \
             -e CONFIG_BPF_JIT \
