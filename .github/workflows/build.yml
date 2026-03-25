@@ -1,4 +1,4 @@
-name: Build S10 Lite (r5q) Kernel - Generic Base
+name: Build S10 Lite (r5q) Kernel - Final Fix
 
 on:
   workflow_dispatch:
@@ -44,11 +44,8 @@ jobs:
           cp -r ../roynas_source/arch/arm64/boot/dts/samsung/renovation/* arch/arm64/boot/dts/samsung/renovation/
           echo 'dtbo-$(CONFIG_ARCH_SM8150) += renovation/sm8150-sec-r5q-overlay-r00.dtbo' >> arch/arm64/boot/dts/samsung/Makefile
 
-          # 2. FOLOSIRE DEFCONFIG GENERIC (Sugestia ta)
-          # Combinăm defconfig-ul generic din arhitectură cu fragmentele de A71 pentru drivere de bază
+          # 2. Configurare bazată pe sugestia defconfig generic
           cat arch/arm64/configs/defconfig arch/arm64/configs/a71.config > arch/arm64/configs/r5q_defconfig
-          
-          # 3. Adăugăm manual ce lipsește pentru stabilitate pe S10 Lite
           cat <<EOF >> arch/arm64/configs/r5q_defconfig
           CONFIG_MACH_SAMSUNG_R5Q=y
           CONFIG_ARCH_SM8150=y
@@ -58,43 +55,37 @@ jobs:
           CONFIG_FUELGAUGE_MAX17055=y
           CONFIG_CHARGER_MAX77705=y
           CONFIG_BATTERY_SAMSUNG_V2=y
-          # Dezactivări pentru a evita erorile de compilare Samsung
           CONFIG_SEC_DEBUG=n
           CONFIG_SEC_ABC=n
-          CONFIG_SEC_LOG_BUF=n
-          CONFIG_SEC_HW_PARAM=n
-          CONFIG_SEC_RESET_REASON=n
           CONFIG_CC_STACKPROTECTOR_NONE=y
           EOF
 
-      - name: Apply Compiler & Display Fixes
+      - name: Apply Critical Source Patches
         run: |
           cd kernel
-          # Fix Include Paths
+          # FIX 1: Shift count overflow în cpumask.h 
+          # Înlocuim operația problematică BIT(NR_CPUS) care cauzează overflow pe ARM64 [cite: 4, 7]
+          sed -i 's/\*cpumask_bits(dstp) = BIT(NR_CPUS) - 1;/\*cpumask_bits(dstp) = (NR_CPUS == BITS_PER_LONG) ? ~0UL : (BIT(NR_CPUS) - 1);/g' include/linux/cpumask.h
+
+          # FIX 2: Include Paths pentru Display (Eroarea drivers/gpu/drm [cite: 10, 11])
           sed -i '/ccflags-y += -Idrivers\/gpu\/drm\/msm/a ccflags-y += -Idrivers/gpu/drm/msm/samsung' drivers/gpu/drm/msm/Makefile
           
-          # Fix is_aosp (Centralizat)
-          grep -rl "is_aosp" drivers/gpu/drm/msm/ | xargs sed -i '/bool is_aosp = true;/d' || true
+          # FIX 3: is_aosp definition
           echo 'bool is_aosp = true;' >> drivers/gpu/drm/msm/msm_drv.c
           sed -i '1i #include <linux/types.h>' drivers/gpu/drm/msm/msm_drv.c
-          
-          # Fix Display Headers
           sed -i '1i #include <linux/types.h>' drivers/gpu/drm/msm/samsung/ss_dsi_panel_sysfs.c
+
+          # FIX 4: Samsung DSI Headers
           HEADER_DSI="drivers/gpu/drm/msm/samsung/ss_dsi_panel_common.h"
           if [ -f "$HEADER_DSI" ]; then
             sed -i '1i #include <linux/types.h>\n#include "../dsi-staging/dsi_defs.h"' $HEADER_DSI
             sed -i '/#define _SS_DSI_PANEL_H_/a #define SS_DSI_CMD_SET_MAX DSI_CMD_SET_MAX\n#define SUPPORT_PANEL_REVISION 8\n#define RX_CMD_START 0\n#define RX_CMD_END 100' $HEADER_DSI
           fi
 
-          # Fix vDSO & Hardware Headers
+          # FIX 5: Compiler incompatibilities
           sed -i 's/-fno-compiler-account-cfa-mitigation//g' Makefile arch/arm64/Makefile
           sed -i 's/$(CROSS_COMPILE)as/$(CC) -target aarch64-linux-gnu -c/g' arch/arm64/kernel/vdso/Makefile
           sed -i '1i #include <linux/types.h>' include/linux/msm_pcie.h
-          
-          # Dummy security script
-          echo -e "#!/bin/bash\nexit 0" > secgetspf
-          chmod +x secgetspf
-          echo "$(pwd)" >> $GITHUB_PATH
 
       - name: Build Kernel
         run: |
@@ -103,6 +94,7 @@ jobs:
           make O=out ARCH=arm64 r5q_defconfig
           make O=out ARCH=arm64 olddefconfig
           
+          # Compilare cu flag-uri de toleranță pentru driverele Samsung/Qualcomm
           make -j$(nproc --all) O=out \
                ARCH=arm64 LLVM=1 LLVM_IAS=1 \
                CC=clang CLANG_TRIPLE=aarch64-linux-gnu- \
@@ -110,21 +102,20 @@ jobs:
                CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
                LD=ld.lld AR=llvm-ar NM=llvm-nm \
                OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip \
-               CONFIG_LTO_CLANG_NONE=y \
-               KCFLAGS="-Wno-error -Wno-int-conversion -Wno-implicit-function-declaration -Wno-incompatible-pointer-types -Wno-return-type" \
+               KCFLAGS="-Wno-error -Wno-shift-count-overflow -Wno-int-conversion -Wno-incompatible-pointer-types -Wno-return-type" \
                -k || true
 
-      - name: Prepare AnyKernel3
+      - name: Prepare Flashable Zip
         run: |
           git clone https://github.com/osm0sis/AnyKernel3.git
           find kernel/out/arch/arm64/boot/ -name "Image*" -maxdepth 1 -exec cp {} AnyKernel3/ \;
           find kernel/out/arch/arm64/boot/dts/samsung/ -name "*.dtbo" -exec cp {} AnyKernel3/dtbo.img \;
           cd AnyKernel3
           sed -i 's/device.name1=maguro/device.name1=r5q/g' anykernel.sh
-          zip -r ../S10Lite-Kernel-GenericBase.zip *
+          zip -r ../S10Lite-Kernel-Final.zip *
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-S10Lite-GenericBase
-          path: S10Lite-Kernel-GenericBase.zip
+          name: Kernel-S10Lite-r5q
+          path: S10Lite-Kernel-Final.zip
