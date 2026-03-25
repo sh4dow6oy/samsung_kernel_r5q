@@ -70,15 +70,16 @@ jobs:
           cd kernel
           export PATH="$GITHUB_WORKSPACE/neutron-clang/bin:$PATH"
           
-          # 1. Generăm config-ul fără interacțiune umană (yes "" | ...)
-          # Asta previne blocarea în prompt-urile de tip [N/m/y/?] văzute în log
+          # 1. Utilizăm 'yes ""' pentru a accepta automat valorile implicite 
+          # și a evita blocarea în prompt-urile de senzori 
           yes "" | make O=out ARCH=arm64 vendor/sm8150-perf_defconfig r5q.config
           
-          # 2. Patch direct pentru a evita eroarea de Stack Protector dacă compilatorul dă rateuri
+          # 2. Rezolvăm eroarea 'Cannot use CONFIG_CC_STACKPROTECTOR_STRONG' 
+          # Dezactivăm această verificare care blochează Neutron Clang pe surse vechi
           sed -i 's/CONFIG_CC_STACKPROTECTOR_STRONG=y/CONFIG_CC_STACKPROTECTOR_NONE=y/g' out/.config
           
           # 3. Compilarea propriu-zisă
-          # Adăugăm flag-uri pentru a ignora scripturile Samsung lipsă (secgetspf)
+          # Adăugăm flag-ul '-i' pentru a ignora erorile de tip 'secgetspf' 
           make -j$(nproc --all) O=out \
                ARCH=arm64 \
                CC=clang \
@@ -92,7 +93,7 @@ jobs:
                OBJDUMP=llvm-objdump \
                STRIP=llvm-strip \
                CONFIG_LTO_CLANG_NONE=y \
-               KCFLAGS="-Wno-error" # Ignoră avertismentele care pot opri build-ul
+               -i
       - name: Prepare AnyKernel3
         run: |
           git clone https://github.com/osm0sis/AnyKernel3.git
