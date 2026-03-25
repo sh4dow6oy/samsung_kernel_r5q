@@ -1,4 +1,4 @@
-name: Lumi Kernel R5Q - BPF Phase 1.7 (Task Sync)
+name: Lumi Kernel R5Q - BPF Phase 1.8 (Cgroup Sync)
 on:
   workflow_dispatch:
 
@@ -13,7 +13,7 @@ jobs:
           ref: master
           fetch-depth: 0
 
-      - name: 2. Upstream Merge BPF & Task Structures
+      - name: 2. Upstream Merge BPF & Cgroup Structures
         run: |
           git config --global user.email "gh-actions@github.com"
           git config --global user.name "GitHub Actions"
@@ -21,36 +21,38 @@ jobs:
           git remote add pascua https://github.com/pascua28/android_kernel_samsung_sm7150.git
           git fetch pascua fifteen
           
-          echo "--- Splicing BPF 5.4 & Modern Task Structures ---"
-          # 1. BPF Core
+          echo "--- Splicing BPF 5.4 & Modern Cgroup Logic ---"
+          # 1. BPF Core & Verifier
           git checkout pascua/fifteen -- kernel/bpf/
           git checkout pascua/fifteen -- include/linux/bpf.h
           git checkout pascua/fifteen -- include/uapi/linux/bpf.h
           git checkout pascua/fifteen -- include/linux/filter.h
+          git checkout pascua/fifteen -- include/linux/bpf_verifier.h
           
-          # 2. TASK & SCHED FIX (Rezolvă task->frozen)
-          git checkout pascua/fifteen -- include/linux/sched.h
-          git checkout pascua/fifteen -- include/linux/sched/task.h
-          git checkout pascua/fifteen -- include/linux/sched/signal.h
-          git checkout pascua/fifteen -- include/linux/sched/jobctl.h
-          
-          # 3. CGROUP FIX (Sincronizăm definițiile de control)
+          # 2. CGROUP-BPF BRIDGE (Rezolvă eroarea 'refcnt' și conflictul static/non-static)
+          git checkout pascua/fifteen -- include/linux/bpf-cgroup.h
           git checkout pascua/fifteen -- include/linux/cgroup.h
           git checkout pascua/fifteen -- include/linux/cgroup-defs.h
           
-          # 4. MEMORY & TYPES (Păstrăm fix-urile de la faza anterioară)
+          # 3. TASK & SCHED CORE (Rezolvă task->frozen și struct task_struct)
+          git checkout pascua/fifteen -- include/linux/sched.h
+          git checkout pascua/fifteen -- include/linux/sched/task.h
+          git checkout pascua/fifteen -- include/linux/sched/signal.h
+          
+          # 4. MEMORY & CORE TYPES (Păstrăm sincronizarea vm_fault_t)
           git checkout pascua/fifteen -- include/linux/mm.h
           git checkout pascua/fifteen -- include/linux/mm_types.h
           git checkout pascua/fifteen -- include/linux/types.h
+          git checkout pascua/fifteen -- include/linux/percpu-refcount.h
           
           # 5. NET DEPS
           git checkout pascua/fifteen -- include/linux/skbuff.h
           
-          # Stub pentru fișierul LIRC lipsă
+          # Stub pentru fișierul LIRC
           git checkout pascua/fifteen -- include/linux/bpf_lirc.h || touch include/linux/bpf_lirc.h
           
           git add .
-          git commit -m "BPF Phase 1.7: Sync task_struct and cgroup headers" || echo "No changes"
+          git commit -m "BPF Phase 1.8: Sync bpf-cgroup and core task refs" || echo "No changes"
 
       - name: 3. Setup Neutron Clang & Path Fix (Assembler)
         run: |
@@ -67,34 +69,28 @@ jobs:
         run: |
           export PATH="$GITHUB_WORKSPACE/clang/bin:$GITHUB_WORKSPACE/bin-force:$PATH"
           
-          # Curățăm Kconfig de KernelSU
+          # Fix Kconfig (KernelSU remove)
           sed -i '/kernelsu/d' drivers/android/Kconfig || true
           sed -i '/kernelsu/d' drivers/android/Makefile || true
           
-          # Eliminăm flag-urile Polly/LTO incompatibile
+          # Fix Polly
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
           
-          MAKE_ARGS="ARCH=arm64 \
-            LLVM=1 \
-            LLVM_IAS=1 \
-            CC=clang \
-            AS=clang \
-            LD=ld.lld \
-            CROSS_COMPILE=aarch64-linux-gnu- \
-            O=out"
+          MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang AS=clang LD=ld.lld CROSS_COMPILE=aarch64-linux-gnu- O=out"
 
           make $MAKE_ARGS r5q_defconfig
           
-          # Activăm eBPF pentru Android 15
+          # Config eBPF A15
           ./scripts/config --file out/.config \
             -e CONFIG_BPF_SYSCALL \
             -e CONFIG_BPF_JIT \
             -e CONFIG_BPF_EVENTS \
+            -e CONFIG_CGROUP_BPF \
             -d CONFIG_CC_STACKPROTECTOR_STRONG \
             -e CONFIG_CC_STACKPROTECTOR_NONE \
             -d CONFIG_LOCALVERSION_AUTO
             
           make $MAKE_ARGS olddefconfig
 
-          echo "--- Starting Selective Compilation of kernel/bpf/ ---"
+          echo "--- Compiling kernel/bpf/ ---"
           make -j$(nproc --all) $MAKE_ARGS kernel/bpf/
