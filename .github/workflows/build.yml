@@ -46,10 +46,10 @@ jobs:
           # 2. Adăugăm Overlay în Makefile
           echo 'dtbo-$(CONFIG_ARCH_SM8150) += renovation/sm8150-sec-r5q-overlay-r00.dtbo' >> arch/arm64/boot/dts/samsung/Makefile
 
-          # 3. Creăm fișierul de configurare combinat (Directly merge files)
+          # 3. Creăm fișierul de configurare combinat
           cat arch/arm64/configs/vendor/sm8150-perf_defconfig arch/arm64/configs/a71.config > arch/arm64/configs/r5q_defconfig
           cat <<EOF >> arch/arm64/configs/r5q_defconfig
-          # S10 Lite Specifics
+          # S10 Lite Hardware Specifics
           CONFIG_MACH_SAMSUNG_R5Q=y
           CONFIG_PANEL_S6E3HA8=y
           CONFIG_TOUCHSCREEN_ST_STSA354=y
@@ -64,11 +64,17 @@ jobs:
           CONFIG_CC_STACKPROTECTOR_NONE=y
           EOF
 
-      - name: Fix Compiler Flags and Dummy Scripts
+      - name: Fix Compiler Flags and vDSO
         run: |
           cd kernel
+          # Eliminăm flag-ul incompatibil cu Clang
           sed -i 's/-fno-compiler-account-cfa-mitigation//g' Makefile
           sed -i 's/-fno-compiler-account-cfa-mitigation//g' arch/arm64/Makefile
+          
+          # Patch critic pentru vDSO (rezolvă eroarea /usr/bin/as)
+          sed -i 's/$(CROSS_COMPILE)as/$(CC) -target aarch64-linux-gnu -c/g' arch/arm64/kernel/vdso/Makefile
+          
+          # Creăm un script dummy pentru secgetspf
           echo -e "#!/bin/bash\nexit 0" > secgetspf
           chmod +x secgetspf
           echo "$(pwd)" >> $GITHUB_PATH
@@ -78,13 +84,15 @@ jobs:
           cd kernel
           export PATH="$GITHUB_WORKSPACE/neutron-clang/bin:$PATH"
           
-          # Folosim 'olddefconfig' pentru a seta automat toate opțiunile noi la valorile lor default
+          # Configurare
           make O=out ARCH=arm64 r5q_defconfig
           make O=out ARCH=arm64 olddefconfig
           
-          # Compilare
+          # Compilare cu LLVM_IAS=1 pentru a folosi asamblorul intern Clang
           make -j$(nproc --all) O=out \
                ARCH=arm64 \
+               LLVM=1 \
+               LLVM_IAS=1 \
                CC=clang \
                CLANG_TRIPLE=aarch64-linux-gnu- \
                CROSS_COMPILE=aarch64-linux-gnu- \
@@ -102,13 +110,11 @@ jobs:
       - name: Prepare AnyKernel3
         run: |
           git clone https://github.com/osm0sis/AnyKernel3.git
-          # Căutăm imaginea generată (Image.gz sau Image.gz-dtb)
           if [ -f kernel/out/arch/arm64/boot/Image.gz-dtb ]; then
             cp kernel/out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
           elif [ -f kernel/out/arch/arm64/boot/Image.gz ]; then
             cp kernel/out/arch/arm64/boot/Image.gz AnyKernel3/
           fi
-          # Căutăm și copiem DTBO
           find kernel/out/arch/arm64/boot/dts/samsung/ -name "*.dtbo" -exec cp {} AnyKernel3/dtbo.img \;
           cd AnyKernel3
           sed -i 's/device.name1=maguro/device.name1=r5q/g' anykernel.sh
