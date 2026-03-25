@@ -1,4 +1,4 @@
-name: Lumi Kernel R5Q - BPF Phase 1.8 (Cgroup Sync)
+name: Lumi Kernel R5Q - SM8150-PERF DTS
 on:
   workflow_dispatch:
 
@@ -6,91 +6,64 @@ jobs:
   build:
     runs-on: ubuntu-24.04
     steps:
-      - name: 1. Checkout Base (Roynas R3Q)
+      - name: 1. Checkout Base (Pascua Sixteen)
         uses: actions/checkout@v4
         with:
-          repository: Roynas-Android-Playground/kernel_samsung_r3q
-          ref: master
-          fetch-depth: 0
+          repository: pascua28/android_kernel_samsung_sm7150
+          ref: sixteen
+          fetch-depth: 1
 
-      - name: 2. Upstream Merge BPF & Cgroup Structures
+      - name: 2. Import R5Q DTS (Samsung Hardware Map)
         run: |
-          git config --global user.email "gh-actions@github.com"
-          git config --global user.name "GitHub Actions"
+          git remote add r5q_ref https://github.com/Roynas-Android-Playground/kernel_samsung_r3q.git
+          git fetch r5q_ref master
           
-          git remote add pascua https://github.com/pascua28/android_kernel_samsung_sm7150.git
-          git fetch pascua fifteen
+          echo "--- Înlocuim tabelele hardware cu cele de R5Q ---"
+          # Ștergem ce are Pascua și aducem hardware-ul tău de Samsung S20 FE
+          rm -rf arch/arm64/boot/dts/samsung
+          git checkout r5q_ref/master -- arch/arm64/boot/dts/samsung
           
-          echo "--- Splicing BPF 5.4 & Modern Cgroup Logic ---"
-          # 1. BPF Core & Verifier
-          git checkout pascua/fifteen -- kernel/bpf/
-          git checkout pascua/fifteen -- include/linux/bpf.h
-          git checkout pascua/fifteen -- include/uapi/linux/bpf.h
-          git checkout pascua/fifteen -- include/linux/filter.h
-          git checkout pascua/fifteen -- include/linux/bpf_verifier.h
-          
-          # 2. CGROUP-BPF BRIDGE (Rezolvă eroarea 'refcnt' și conflictul static/non-static)
-          git checkout pascua/fifteen -- include/linux/bpf-cgroup.h
-          git checkout pascua/fifteen -- include/linux/cgroup.h
-          git checkout pascua/fifteen -- include/linux/cgroup-defs.h
-          
-          # 3. TASK & SCHED CORE (Rezolvă task->frozen și struct task_struct)
-          git checkout pascua/fifteen -- include/linux/sched.h
-          git checkout pascua/fifteen -- include/linux/sched/task.h
-          git checkout pascua/fifteen -- include/linux/sched/signal.h
-          
-          # 4. MEMORY & CORE TYPES (Păstrăm sincronizarea vm_fault_t)
-          git checkout pascua/fifteen -- include/linux/mm.h
-          git checkout pascua/fifteen -- include/linux/mm_types.h
-          git checkout pascua/fifteen -- include/linux/types.h
-          git checkout pascua/fifteen -- include/linux/percpu-refcount.h
-          
-          # 5. NET DEPS
-          git checkout pascua/fifteen -- include/linux/skbuff.h
-          
-          # Stub pentru fișierul LIRC
-          git checkout pascua/fifteen -- include/linux/bpf_lirc.h || touch include/linux/bpf_lirc.h
-          
-          git add .
-          git commit -m "BPF Phase 1.8: Sync bpf-cgroup and core task refs" || echo "No changes"
+          rm -rf arch/arm64/boot/dts/vendor/qcom
+          git checkout r5q_ref/master -- arch/arm64/boot/dts/vendor/qcom
 
-      - name: 3. Setup Neutron Clang & Path Fix (Assembler)
+      - name: 3. Setup Toolchain (Neutron Clang)
         run: |
           sudo apt-get update && sudo apt-get install -y bc build-essential flex bison lz4 libssl-dev libelf-dev wget zstd zip
           mkdir clang && wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
-          
           mkdir -p bin-force
           ln -sf $(pwd)/clang/bin/clang bin-force/as
           ln -sf $(pwd)/clang/bin/ld.lld bin-force/ld
           echo "$(pwd)/bin-force" >> $GITHUB_PATH
 
-      - name: 4. Build & Verify BPF Subsystem
+      - name: 4. Build Image.gz-dtb
         run: |
           export PATH="$GITHUB_WORKSPACE/clang/bin:$GITHUB_WORKSPACE/bin-force:$PATH"
-          
-          # Fix Kconfig (KernelSU remove)
-          sed -i '/kernelsu/d' drivers/android/Kconfig || true
-          sed -i '/kernelsu/d' drivers/android/Makefile || true
-          
-          # Fix Polly
-          find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
-          
           MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang AS=clang LD=ld.lld CROSS_COMPILE=aarch64-linux-gnu- O=out"
 
-          make $MAKE_ARGS r5q_defconfig
-          
-          # Config eBPF A15
+          # Utilizăm config-ul de performanță nativ SM8150 din baza actuală
+          make $MAKE_ARGS vendor/sm8150-perf_defconfig
+
+          # Activăm eBPF pentru Android 15 și curățăm securitatea Samsung
           ./scripts/config --file out/.config \
             -e CONFIG_BPF_SYSCALL \
             -e CONFIG_BPF_JIT \
             -e CONFIG_BPF_EVENTS \
             -e CONFIG_CGROUP_BPF \
+            -d CONFIG_SAMSUNG_PRODUCT_SHIP \
+            -d CONFIG_SEC_RESTRICT_SETID \
+            -d CONFIG_KNOX_KAP \
             -d CONFIG_CC_STACKPROTECTOR_STRONG \
             -e CONFIG_CC_STACKPROTECTOR_NONE \
-            -d CONFIG_LOCALVERSION_AUTO
-            
+            --set-str CONFIG_LOCALVERSION "-Lumi-R5Q-Perf"
+
           make $MAKE_ARGS olddefconfig
 
-          echo "--- Compiling kernel/bpf/ ---"
-          make -j$(nproc --all) $MAKE_ARGS kernel/bpf/
+          echo "--- Compilăm imaginea finală ---"
+          make -j$(nproc --all) $MAKE_ARGS Image.gz-dtb
+
+      - name: 5. Upload Kernel
+        uses: actions/upload-artifact@v4
+        with:
+          name: Lumi-Kernel-R5Q-Final
+          path: out/arch/arm64/boot/Image.gz-dtb
