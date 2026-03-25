@@ -29,7 +29,7 @@ jobs:
           sudo apt-get install -y bc build-essential bison flex libssl-dev libelf-dev clang lld llvm zip
           mkdir -p bin
 
-      - name: Install Neutron Clang
+      - name: Install Neutron Toolchain
         run: |
           curl -LO "https://raw.githubusercontent.com/Neutron-Toolchains/antman/main/antman"
           chmod +x antman
@@ -39,14 +39,14 @@ jobs:
       - name: Patch Kernel and Inject DTS
         run: |
           cd kernel
-          # 1. Injectăm fișierele DTS
+          # 1. Injectare DTS S10 Lite
           mkdir -p arch/arm64/boot/dts/samsung/renovation
           cp -r ../roynas_source/arch/arm64/boot/dts/samsung/renovation/* arch/arm64/boot/dts/samsung/renovation/
           
-          # 2. Adăugăm Overlay în Makefile
+          # 2. Adăugare Overlay în Makefile
           echo 'dtbo-$(CONFIG_ARCH_SM8150) += renovation/sm8150-sec-r5q-overlay-r00.dtbo' >> arch/arm64/boot/dts/samsung/Makefile
 
-          # 3. Creăm fișierul de configurare combinat
+          # 3. Creare r5q_defconfig (Baza sm8150 + fragment r5q)
           cat arch/arm64/configs/vendor/sm8150-perf_defconfig arch/arm64/configs/a71.config > arch/arm64/configs/r5q_defconfig
           cat <<EOF >> arch/arm64/configs/r5q_defconfig
           # S10 Lite Hardware Specifics
@@ -64,17 +64,26 @@ jobs:
           CONFIG_CC_STACKPROTECTOR_NONE=y
           EOF
 
-      - name: Fix Compiler Flags and vDSO
+      - name: Fix Compiler Flags and Display Headers
         run: |
           cd kernel
-          # Eliminăm flag-ul incompatibil cu Clang
+          # Eliminare flag-uri incompatibile
           sed -i 's/-fno-compiler-account-cfa-mitigation//g' Makefile
           sed -i 's/-fno-compiler-account-cfa-mitigation//g' arch/arm64/Makefile
           
-          # Patch critic pentru vDSO (rezolvă eroarea /usr/bin/as)
+          # Patch vDSO (eroare /usr/bin/as)
           sed -i 's/$(CROSS_COMPILE)as/$(CC) -target aarch64-linux-gnu -c/g' arch/arm64/kernel/vdso/Makefile
           
-          # Creăm un script dummy pentru secgetspf
+          # Fix PCIe phys_addr_t
+          sed -i '1s/^/#include <linux\/types.h>\n/' include/linux/msm_pcie.h
+          
+          # FIX CRITIC: Samsung Display Drivers (Undeclared identifiers)
+          # Injectăm definițiile lipsă direct în header-ul comun Samsung
+          HEADER="drivers/gpu/drm/msm/samsung/ss_dsi_panel_common.h"
+          sed -i '1s/^/#include "..\/dsi-staging\/dsi_defs.h"\n/' $HEADER
+          sed -i '/#define _SS_DSI_PANEL_H_/a #define SS_DSI_CMD_SET_MAX DSI_CMD_SET_MAX\n#define SUPPORT_PANEL_REVISION 8\n#define RX_CMD_START 0\n#define RX_CMD_END 100\n#define RX_SELF_DISP_DEBUG 1\n#define RX_SELF_MASK_CHECK 2' $HEADER
+
+          # Dummy secgetspf
           echo -e "#!/bin/bash\nexit 0" > secgetspf
           chmod +x secgetspf
           echo "$(pwd)" >> $GITHUB_PATH
@@ -88,7 +97,7 @@ jobs:
           make O=out ARCH=arm64 r5q_defconfig
           make O=out ARCH=arm64 olddefconfig
           
-          # Compilare cu LLVM_IAS=1 pentru a folosi asamblorul intern Clang
+          # Compilare cu Neutron Clang
           make -j$(nproc --all) O=out \
                ARCH=arm64 \
                LLVM=1 \
@@ -104,18 +113,23 @@ jobs:
                OBJDUMP=llvm-objdump \
                STRIP=llvm-strip \
                CONFIG_LTO_CLANG_NONE=y \
-               KCFLAGS="-Wno-error -Wno-unknown-warning-option" \
+               KCFLAGS="-Wno-error -Wno-unknown-warning-option -Wno-implicit-function-declaration" \
                -k
 
       - name: Prepare AnyKernel3
         run: |
           git clone https://github.com/osm0sis/AnyKernel3.git
+          # Căutare imagine
           if [ -f kernel/out/arch/arm64/boot/Image.gz-dtb ]; then
             cp kernel/out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
           elif [ -f kernel/out/arch/arm64/boot/Image.gz ]; then
             cp kernel/out/arch/arm64/boot/Image.gz AnyKernel3/
+          elif [ -f kernel/out/arch/arm64/boot/Image ]; then
+             cp kernel/out/arch/arm64/boot/Image AnyKernel3/
           fi
+          # Căutare DTBO
           find kernel/out/arch/arm64/boot/dts/samsung/ -name "*.dtbo" -exec cp {} AnyKernel3/dtbo.img \;
+          
           cd AnyKernel3
           sed -i 's/device.name1=maguro/device.name1=r5q/g' anykernel.sh
           zip -r ../S10Lite-Neutron-Kernel.zip *
