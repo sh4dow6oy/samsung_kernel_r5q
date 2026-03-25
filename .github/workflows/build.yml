@@ -1,7 +1,7 @@
 name: Build S10 Lite (r5q) Kernel - Neutron Clang
 
 on:
-  workflow_dispatch: # Permite pornirea manuală din interfața GitHub
+  workflow_dispatch:
 
 jobs:
   build:
@@ -26,7 +26,7 @@ jobs:
       - name: Setup Build Environment
         run: |
           sudo apt-get update
-          sudo apt-get install -y bc build-essential bison flex libssl-dev libelf-dev clang lld llvm
+          sudo apt-get install -y bc build-essential bison flex libssl-dev libelf-dev clang lld llvm zip
           mkdir -p bin
 
       - name: Install Neutron Clang
@@ -36,13 +36,20 @@ jobs:
           ./antman -S
           echo "$GITHUB_WORKSPACE/neutron-clang/bin" >> $GITHUB_PATH
 
-      - name: Patch Kernel and Inject r5q Specifics
+      - name: Patch Kernel Config and Inject DTS
         run: |
           cd kernel
-          # 1. Creăm config-ul r5q din baza A71
+          # 1. Injectăm fișierele DTS/DTBO de S10 Lite (r5q)
+          mkdir -p arch/arm64/boot/dts/samsung/renovation
+          cp -r ../roynas_source/arch/arm64/boot/dts/samsung/renovation/* arch/arm64/boot/dts/samsung/renovation/
+          
+          # 2. Adăugăm Overlay-ul în Makefile-ul Samsung (Folosim ARCH_SM8150 conform bazei)
+          echo 'dtbo-$(CONFIG_ARCH_SM8150) += renovation/sm8150-sec-r5q-overlay-r00.dtbo' >> arch/arm64/boot/dts/samsung/Makefile
+
+          # 3. Creăm fragmentul r5q.config (Hardware specific)
+          # Folosim setările din a71.config ca punct de plecare pentru senzori/camera
           cp arch/arm64/configs/a71.config arch/arm64/configs/r5q.config
           
-          # 2. Injectăm configurația hardware S10 Lite (văzută în r5q_defconfig)
           cat <<EOF >> arch/arm64/configs/r5q.config
           # S10 Lite Hardware Specifics
           CONFIG_MACH_SAMSUNG_R5Q=y
@@ -57,26 +64,16 @@ jobs:
           CONFIG_SEC_ABC=n
           CONFIG_SEC_DEBUG=y
           EOF
-          
-          # Dezactivăm identitatea de A71
-          sed -i 's/CONFIG_MACH_SAMSUNG_A71=y/# CONFIG_MACH_SAMSUNG_A71 is not set/g' arch/arm64/configs/r5q.config
-
-          # 3. Injectăm fișierele DTS/DTBO de S10 Lite
-          mkdir -p arch/arm64/boot/dts/samsung/renovation
-          cp -r ../roynas_source/arch/arm64/boot/dts/samsung/renovation/* arch/arm64/boot/dts/samsung/renovation/
-          
-          # 4. Adăugăm Overlay-ul în Makefile-ul Samsung
-          echo 'dtbo-$(CONFIG_ARCH_SM7150) += renovation/sm8150-sec-r5q-overlay-r00.dtbo' >> arch/arm64/boot/dts/samsung/Makefile
 
       - name: Build Kernel
         run: |
           cd kernel
           export PATH="$GITHUB_WORKSPACE/neutron-clang/bin:$PATH"
           
-          # Inițializăm config-ul
-          make O=out ARCH=arm64 r5q.config
+          # PASUL CRITIC: Combinăm baza vendor cu fragmentul r5q
+          make O=out ARCH=arm64 vendor/sm8150-perf_defconfig r5q.config
           
-          # Compilăm (Dezactivăm LTO pentru prima rulare ca să evităm erori de linkuire)
+          # Compilarea propriu-zisă cu Neutron Clang
           make -j$(nproc --all) O=out \
                ARCH=arm64 \
                CC=clang \
@@ -91,19 +88,24 @@ jobs:
                STRIP=llvm-strip \
                CONFIG_LTO_CLANG_NONE=y
 
-      - name: Prepare AnyKernel3 (Create Zip)
+      - name: Prepare AnyKernel3
         run: |
           git clone https://github.com/osm0sis/AnyKernel3.git
-          cp kernel/out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
-          # Copiem și DTBO-ul generat pentru S10 Lite
-          cp kernel/out/arch/arm64/boot/dts/samsung/renovation/sm8150-sec-r5q-overlay-r00.dtbo AnyKernel3/dtbo.img
+          # Verificăm dacă fișierul a fost generat
+          if [ -f kernel/out/arch/arm64/boot/Image.gz-dtb ]; then
+            cp kernel/out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
+          else
+            cp kernel/out/arch/arm64/boot/Image.gz AnyKernel3/
+          fi
+          
+          # Luăm DTBO-ul generat pentru S10 Lite
+          find kernel/out/arch/arm64/boot/dts/samsung/ -name "*.dtbo" -exec cp {} AnyKernel3/dtbo.img \;
+          
           cd AnyKernel3
-          # Configurare rapidă AnyKernel3
           sed -i 's/device.name1=maguro/device.name1=r5q/g' anykernel.sh
-          sed -i 's/device.name2=toro/device.name2=r5q/g' anykernel.sh
-          zip -r ../S10Lite-Kernel-Neutron.zip *
+          zip -r ../S10Lite-Neutron-Kernel.zip *
 
-      - name: Upload Flashable Kernel Zip
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: S10Lite-Kernel-Flashable
