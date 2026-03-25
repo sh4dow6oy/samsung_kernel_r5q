@@ -1,4 +1,4 @@
-name: Lumi Kernel R5Q - BPF Phase 2.2.1 (UAPI Fix & SKB)
+name: Lumi Kernel R5Q - BPF Phase 1.6 (Memory Core Sync)
 on:
   workflow_dispatch:
 
@@ -13,7 +13,7 @@ jobs:
           ref: master
           fetch-depth: 0
 
-      - name: 2. Upstream Merge BPF & Net (Fixed UAPI)
+      - name: 2. Upstream Merge BPF & Core Memory Headers
         run: |
           git config --global user.email "gh-actions@github.com"
           git config --global user.name "GitHub Actions"
@@ -21,75 +21,81 @@ jobs:
           git remote add pascua https://github.com/pascua28/android_kernel_samsung_sm7150.git
           git fetch pascua fifteen
           
-          echo "--- Splicing BPF 5.4 & Network Infrastructure ---"
-          # 1. BPF CORE
+          echo "--- Splicing BPF 5.4 & Deep Memory Dependencies ---"
+          # BPF Core Logic
           git checkout pascua/fifteen -- kernel/bpf/
+          
+          # Headers BPF
           git checkout pascua/fifteen -- include/linux/bpf.h
           git checkout pascua/fifteen -- include/uapi/linux/bpf.h
+          git checkout pascua/fifteen -- include/linux/bpf_types.h
           git checkout pascua/fifteen -- include/linux/filter.h
           
-          # 2. NETWORKING (Rezolvă skb_metadata_len - FĂRĂ UAPI SKBUFF)
-          git checkout pascua/fifteen -- include/linux/skbuff.h
-          git checkout pascua/fifteen -- include/linux/netdevice.h
-          git checkout pascua/fifteen -- include/uapi/linux/netdevice.h
-          
-          # 3. EVENTS & TRACEPOINTS (Rezolvă erorile din syscall.c)
-          git checkout pascua/fifteen -- include/linux/perf_event.h
-          git checkout pascua/fifteen -- include/uapi/linux/perf_event.h
-          git checkout pascua/fifteen -- include/linux/tracepoint.h
-          git checkout pascua/fifteen -- include/linux/bpf_trace.h
-          
-          # 4. CORE DEPS (MM, Cgroup, Sched)
-          git checkout pascua/fifteen -- include/linux/cgroup.h
-          git checkout pascua/fifteen -- include/linux/bpf-cgroup.h
+          # FIX: Memory Management (Rezolvă vm_fault_t și pgtables_bytes)
+          # Aducem mm_types.h pentru a actualiza struct mm_struct
           git checkout pascua/fifteen -- include/linux/mm.h
-          git checkout pascua/fifteen -- include/linux/percpu.h
-          git checkout pascua/fifteen -- include/linux/percpu-refcount.h
-          git checkout pascua/fifteen -- include/linux/sched.h
+          git checkout pascua/fifteen -- include/linux/mm_types.h
+          git checkout pascua/fifteen -- include/linux/mmzone.h
           
-          # 5. STUBS PENTRU COMPILARE
+          # FIX: Core Types (Rezolvă definiția vm_fault_t)
+          git checkout pascua/fifteen -- include/linux/types.h
+          
+          # Sched & Network Bridge
+          git checkout pascua/fifteen -- include/linux/sched.h
+          git checkout pascua/fifteen -- include/linux/skbuff.h
+          
+          # Stub pentru fișierul LIRC
           git checkout pascua/fifteen -- include/linux/bpf_lirc.h || touch include/linux/bpf_lirc.h
-          git checkout pascua/fifteen -- include/linux/psi_types.h || touch include/linux/psi_types.h
           
           git add .
-          git commit -m "BPF Phase 2.2.1: Fix skbuff sync and core deps" || echo "No changes"
+          git commit -m "BPF Phase 1.6: Sync memory management structures" || echo "No changes"
 
-      - name: 3. Setup Neutron Clang
+      - name: 3. Setup Neutron Clang & Path Fix (Assembler)
         run: |
           sudo apt-get update && sudo apt-get install -y bc build-essential flex bison lz4 libssl-dev libelf-dev wget zstd zip
           mkdir clang && wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
           
+          # Fix pentru eroarea -EL (Forțăm Integrated Assembler)
           mkdir -p bin-force
           ln -sf $(pwd)/clang/bin/clang bin-force/as
           ln -sf $(pwd)/clang/bin/ld.lld bin-force/ld
           echo "$(pwd)/bin-force" >> $GITHUB_PATH
 
-      - name: 4. Build & Verify
+      - name: 4. Build & Verify BPF Subsystem
         run: |
           export PATH="$GITHUB_WORKSPACE/clang/bin:$GITHUB_WORKSPACE/bin-force:$PATH"
           
-          # Fix KernelSU removal
+          # Curățăm Kconfig de KernelSU (blochează generarea defconfig)
           sed -i '/kernelsu/d' drivers/android/Kconfig || true
           sed -i '/kernelsu/d' drivers/android/Makefile || true
           
-          # Fix flag-uri Polly
+          # Eliminăm flag-urile Polly/LTO incompatibile
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
           
-          MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang AS=clang LD=ld.lld CROSS_COMPILE=aarch64-linux-gnu- O=out"
+          MAKE_ARGS="ARCH=arm64 \
+            LLVM=1 \
+            LLVM_IAS=1 \
+            CC=clang \
+            AS=clang \
+            LD=ld.lld \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            O=out"
 
+          # Generare config r5q
           make $MAKE_ARGS r5q_defconfig
           
+          # Activăm suportul eBPF necesar pentru Android 15
           ./scripts/config --file out/.config \
             -e CONFIG_BPF_SYSCALL \
             -e CONFIG_BPF_JIT \
             -e CONFIG_BPF_EVENTS \
-            -e CONFIG_CGROUP_BPF \
             -d CONFIG_CC_STACKPROTECTOR_STRONG \
             -e CONFIG_CC_STACKPROTECTOR_NONE \
             -d CONFIG_LOCALVERSION_AUTO
             
           make $MAKE_ARGS olddefconfig
 
-          echo "--- Compiling kernel/bpf/ ---"
+          # Verificăm compilarea folderului BPF
+          echo "--- Starting Compilation of kernel/bpf/ ---"
           make -j$(nproc --all) $MAKE_ARGS kernel/bpf/
