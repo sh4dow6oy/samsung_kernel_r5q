@@ -36,20 +36,20 @@ jobs:
           ./antman -S
           echo "$GITHUB_WORKSPACE/neutron-clang/bin" >> $GITHUB_PATH
 
-      - name: Patch Kernel Config and Inject DTS
+      - name: Patch Kernel and Inject DTS
         run: |
           cd kernel
-          # 1. Injectăm fișierele DTS/DTBO de S10 Lite (r5q)
+          # 1. Injectăm fișierele DTS
           mkdir -p arch/arm64/boot/dts/samsung/renovation
           cp -r ../roynas_source/arch/arm64/boot/dts/samsung/renovation/* arch/arm64/boot/dts/samsung/renovation/
           
-          # 2. Adăugăm Overlay-ul în Makefile-ul Samsung (Folosim ARCH_SM8150 conform bazei)
+          # 2. Adăugăm Overlay în Makefile
           echo 'dtbo-$(CONFIG_ARCH_SM8150) += renovation/sm8150-sec-r5q-overlay-r00.dtbo' >> arch/arm64/boot/dts/samsung/Makefile
 
-          # 3. Creăm fragmentul r5q.config
-          cp arch/arm64/configs/a71.config arch/arm64/configs/r5q.config
-          cat <<EOF >> arch/arm64/configs/r5q.config
-          # S10 Lite Hardware Specifics
+          # 3. Creăm fișierul de configurare combinat (Directly merge files)
+          cat arch/arm64/configs/vendor/sm8150-perf_defconfig arch/arm64/configs/a71.config > arch/arm64/configs/r5q_defconfig
+          cat <<EOF >> arch/arm64/configs/r5q_defconfig
+          # S10 Lite Specifics
           CONFIG_MACH_SAMSUNG_R5Q=y
           CONFIG_PANEL_S6E3HA8=y
           CONFIG_TOUCHSCREEN_ST_STSA354=y
@@ -61,16 +61,14 @@ jobs:
           CONFIG_SND_SOC_SAMSUNG_AUDIO=y
           CONFIG_SEC_ABC=n
           CONFIG_SEC_DEBUG=y
+          CONFIG_CC_STACKPROTECTOR_NONE=y
           EOF
 
       - name: Fix Compiler Flags and Dummy Scripts
         run: |
           cd kernel
-          # Rezolvăm eroarea 'unknown argument: -fno-compiler-account-cfa-mitigation'
           sed -i 's/-fno-compiler-account-cfa-mitigation//g' Makefile
           sed -i 's/-fno-compiler-account-cfa-mitigation//g' arch/arm64/Makefile
-          
-          # Creăm un script dummy pentru secgetspf (rezolvă 'No such file or directory')
           echo -e "#!/bin/bash\nexit 0" > secgetspf
           chmod +x secgetspf
           echo "$(pwd)" >> $GITHUB_PATH
@@ -80,13 +78,11 @@ jobs:
           cd kernel
           export PATH="$GITHUB_WORKSPACE/neutron-clang/bin:$PATH"
           
-          # Configurare (yes "" pentru a accepta automat noile opțiuni de senzori)
-          yes "" | make O=out ARCH=arm64 vendor/sm8150-perf_defconfig r5q.config
+          # Folosim 'olddefconfig' pentru a seta automat toate opțiunile noi la valorile lor default
+          make O=out ARCH=arm64 r5q_defconfig
+          make O=out ARCH=arm64 olddefconfig
           
-          # Patch final pentru Stack Protector (rezolvă eroarea de prepare-compiler-check)
-          sed -i 's/CONFIG_CC_STACKPROTECTOR_STRONG=y/CONFIG_CC_STACKPROTECTOR_NONE=y/g' out/.config
-          
-          # Compilare cu flag-uri de ignorare a avertismentelor
+          # Compilare
           make -j$(nproc --all) O=out \
                ARCH=arm64 \
                CC=clang \
@@ -101,17 +97,18 @@ jobs:
                STRIP=llvm-strip \
                CONFIG_LTO_CLANG_NONE=y \
                KCFLAGS="-Wno-error -Wno-unknown-warning-option" \
-               HOSTCFLAGS="-Wno-error" \
                -k
 
       - name: Prepare AnyKernel3
         run: |
           git clone https://github.com/osm0sis/AnyKernel3.git
+          # Căutăm imaginea generată (Image.gz sau Image.gz-dtb)
           if [ -f kernel/out/arch/arm64/boot/Image.gz-dtb ]; then
             cp kernel/out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
-          else
+          elif [ -f kernel/out/arch/arm64/boot/Image.gz ]; then
             cp kernel/out/arch/arm64/boot/Image.gz AnyKernel3/
           fi
+          # Căutăm și copiem DTBO
           find kernel/out/arch/arm64/boot/dts/samsung/ -name "*.dtbo" -exec cp {} AnyKernel3/dtbo.img \;
           cd AnyKernel3
           sed -i 's/device.name1=maguro/device.name1=r5q/g' anykernel.sh
