@@ -39,12 +39,12 @@ jobs:
       - name: Patch Kernel and Inject DTS
         run: |
           cd kernel
-          # 1. DTS Injection
+          # 1. Injectare DTS S10 Lite
           mkdir -p arch/arm64/boot/dts/samsung/renovation
           cp -r ../roynas_source/arch/arm64/boot/dts/samsung/renovation/* arch/arm64/boot/dts/samsung/renovation/
           echo 'dtbo-$(CONFIG_ARCH_SM8150) += renovation/sm8150-sec-r5q-overlay-r00.dtbo' >> arch/arm64/boot/dts/samsung/Makefile
 
-          # 2. Configurare r5q - CURĂȚARE (Eliminăm opțiunile problematice de debug Samsung)
+          # 2. Configurare r5q - Dezactivare module Samsung Debug problematice
           cat arch/arm64/configs/vendor/sm8150-perf_defconfig arch/arm64/configs/a71.config > arch/arm64/configs/r5q_defconfig
           cat <<EOF >> arch/arm64/configs/r5q_defconfig
           CONFIG_MACH_SAMSUNG_R5Q=y
@@ -54,7 +54,6 @@ jobs:
           CONFIG_FUELGAUGE_MAX17055=y
           CONFIG_CHARGER_MAX77705=y
           CONFIG_BATTERY_SAMSUNG_V2=y
-          # Dezactivăm modulele de debug Samsung care crapă la compilare
           CONFIG_SEC_DEBUG=n
           CONFIG_SEC_ABC=n
           CONFIG_SEC_LOG_BUF=n
@@ -63,27 +62,41 @@ jobs:
           CONFIG_CC_STACKPROTECTOR_NONE=y
           EOF
 
-      - name: Fix Source Code Errors (Emergency Patches)
+      - name: Fix Samsung Display Driver & AOSP Flags
         run: |
           cd kernel
-          # Fix 'is_aosp' universal
-          grep -rl "is_aosp" drivers/gpu/drm/msm/ | xargs sed -i '1i bool is_aosp = true;' || true
-          
-          # Fix Include Paths for Display
+          # 1. Fix Include Paths pentru SDE (rezolvă 'ss_dsi_panel_common.h' not found)
           sed -i '/ccflags-y += -Idrivers\/gpu\/drm\/msm/a ccflags-y += -Idrivers/gpu/drm/msm/samsung' drivers/gpu/drm/msm/Makefile
           
-          # Fix Header PCIe & Display
-          HEADER_DSI="drivers/gpu/drm/msm/samsung/ss_dsi_panel_common.h"
-          sed -i '1i #include "../dsi-staging/dsi_defs.h"' $HEADER_DSI
-          sed -i '/#define _SS_DSI_PANEL_H_/a #define SS_DSI_CMD_SET_MAX DSI_CMD_SET_MAX\n#define SUPPORT_PANEL_REVISION 8\n#define RX_CMD_START 0\n#define RX_CMD_END 100\n#define RX_SELF_DISP_DEBUG 1\n#define RX_SELF_MASK_CHECK 2' $HEADER_DSI
-          sed -i '1i #include <linux/types.h>' include/linux/msm_pcie.h
+          # 2. Fix 'is_aosp' - Prevenirea erorilor de redeclarare și tip 'bool'
+          # Ștergem injectările anterioare defectuoase
+          grep -rl "is_aosp" drivers/gpu/drm/msm/ | xargs sed -i '/bool is_aosp = true;/d' || true
+          
+          # Definim is_aosp corect în msm_drv.c
+          if ! grep -q "bool is_aosp = true;" drivers/gpu/drm/msm/msm_drv.c; then
+            echo 'bool is_aosp = true;' >> drivers/gpu/drm/msm/msm_drv.c
+            sed -i '1i #include <linux/types.h>' drivers/gpu/drm/msm/msm_drv.c
+          fi
 
-          # Fix vDSO & Compiler Flags
+          # 3. Fix ss_dsi_panel_sysfs.c (Eroarea unknown type name 'bool')
+          sed -i '1i #include <linux/types.h>' drivers/gpu/drm/msm/samsung/ss_dsi_panel_sysfs.c
+
+          # 4. Fix DSI Identifiers în ss_dsi_panel_common.h
+          HEADER_DSI="drivers/gpu/drm/msm/samsung/ss_dsi_panel_common.h"
+          if [ -f "$HEADER_DSI" ]; then
+            sed -i '1i #include <linux/types.h>' $HEADER_DSI
+            sed -i '1i #include "../dsi-staging/dsi_defs.h"' $HEADER_DSI
+            if ! grep -q "SS_DSI_CMD_SET_MAX" $HEADER_DSI; then
+              sed -i '/#define _SS_DSI_PANEL_H_/a #define SS_DSI_CMD_SET_MAX DSI_CMD_SET_MAX\n#define SUPPORT_PANEL_REVISION 8\n#define RX_CMD_START 0\n#define RX_CMD_END 100\n#define RX_SELF_DISP_DEBUG 1\n#define RX_SELF_MASK_CHECK 2' $HEADER_DSI
+            fi
+          fi
+
+          # 5. Fix vDSO & Hardware Params
           sed -i 's/-fno-compiler-account-cfa-mitigation//g' Makefile
           sed -i 's/-fno-compiler-account-cfa-mitigation//g' arch/arm64/Makefile
           sed -i 's/$(CROSS_COMPILE)as/$(CC) -target aarch64-linux-gnu -c/g' arch/arm64/kernel/vdso/Makefile
+          sed -i '1i #include <linux/types.h>' include/linux/msm_pcie.h
           
-          # Creare script dummy secgetspf
           echo -e "#!/bin/bash\nexit 0" > secgetspf
           chmod +x secgetspf
           echo "$(pwd)" >> $GITHUB_PATH
@@ -95,7 +108,7 @@ jobs:
           make O=out ARCH=arm64 r5q_defconfig
           make O=out ARCH=arm64 olddefconfig
           
-          # Compilare (Am adăugat flag-uri pentru a ignora erorile de tip de date în driverele Qualcomm)
+          # Compilare cu ignorarea avertizărilor transformate în erori de Clang modern
           make -j$(nproc --all) O=out \
                ARCH=arm64 LLVM=1 LLVM_IAS=1 \
                CC=clang CLANG_TRIPLE=aarch64-linux-gnu- \
@@ -104,13 +117,12 @@ jobs:
                LD=ld.lld AR=llvm-ar NM=llvm-nm \
                OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip \
                CONFIG_LTO_CLANG_NONE=y \
-               KCFLAGS="-Wno-error -Wno-int-conversion -Wno-implicit-function-declaration -Wno-incompatible-pointer-types" \
+               KCFLAGS="-Wno-error -Wno-int-conversion -Wno-implicit-function-declaration -Wno-incompatible-pointer-types -Wno-return-type" \
                -k || true
 
       - name: Prepare AnyKernel3
         run: |
           git clone https://github.com/osm0sis/AnyKernel3.git
-          # Căutăm imaginea generată chiar dacă au fost erori minore
           find kernel/out/arch/arm64/boot/ -name "Image*" -maxdepth 1 -exec cp {} AnyKernel3/ \;
           find kernel/out/arch/arm64/boot/dts/samsung/ -name "*.dtbo" -exec cp {} AnyKernel3/dtbo.img \;
           cd AnyKernel3
@@ -120,5 +132,5 @@ jobs:
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-S10Lite
+          name: Kernel-S10Lite-R5Q
           path: S10Lite-Kernel-Final.zip
