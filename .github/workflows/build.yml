@@ -45,20 +45,24 @@ jobs:
           rm -rf drivers/android/kernelsu && mkdir -p drivers/android/kernelsu
           touch drivers/android/kernelsu/Kconfig drivers/android/kernelsu/Makefile
 
-          echo "--- 2. Smart Patching Source Code ---"
-          # În loc să comentăm, înlocuim apelurile cu valori neutre (0 / false) pentru a păstra sintaxa IF-urilor
-          # Fix kernel/fork.c & kernel/signal.c
-          sed -i 's/cgroup_enter_frozen()/((void)0)/g' kernel/fork.c kernel/signal.c
-          sed -i 's/cgroup_leave_frozen(false)/((void)0)/g' kernel/fork.c kernel/signal.c
-          sed -i 's/cgroup_leave_frozen(true)/((void)0)/g' kernel/fork.c kernel/signal.c
-          
-          # Înlocuim verificările de tip IF: cgroup_task_frozen(t) devine (0)
-          sed -i 's/cgroup_task_frozen([^)]*)/(0)/g' kernel/signal.c
+          echo "--- 2. Deep Patching Cgroup & Freezer ---"
+          # Aplicăm fix-ul pe toate fișierele din kernel/ și kernel/cgroup/
+          # Înlocuim funcțiile tip procedură cu un statement nul
+          sed -i 's/cgroup_enter_frozen()/((void)0)/g' kernel/fork.c kernel/signal.c kernel/cgroup/*.c
+          sed -i 's/cgroup_leave_frozen([^)]*)/((void)0)/g' kernel/fork.c kernel/signal.c kernel/cgroup/*.c
+          sed -i 's/cgroup_freezer_migrate_task([^)]*)/((void)0)/g' kernel/cgroup/*.c
+          sed -i 's/cgroup_freeze([^)]*)/((void)0)/g' kernel/cgroup/*.c
+          sed -i 's/cgroup_freezer_frozen_exit([^)]*)/((void)0)/g' kernel/cgroup/*.c
+          sed -i 's/cgroup_update_frozen([^)]*)/((void)0)/g' kernel/cgroup/*.c
 
-          # Fix arch/arm64/kernel/cpufeature.c (CRC32 error) - comentăm linia întreagă din structură
+          # Înlocuim verificările (IF) cu 0 pentru a trece mai departe
+          sed -i 's/cgroup_task_frozen([^)]*)/(0)/g' kernel/signal.c kernel/cgroup/*.c
+          sed -i 's/cgroup_task_freeze([^)]*)/(0)/g' kernel/cgroup/*.c
+
+          # Fix arch/arm64/kernel/cpufeature.c (CRC32 error)
           sed -i '/ARM64_HAS_CRC32/d' arch/arm64/kernel/cpufeature.c
 
-          # Fix mm/vmstat.c (CONFIG_VMSTAT_INTERVAL error)
+          # Fix mm/vmstat.c (Hard-code valoarea intervalului)
           sed -i 's/CONFIG_VMSTAT_INTERVAL/1/g' mm/vmstat.c
 
           echo "--- 3. Generating Config ---"
@@ -79,7 +83,7 @@ jobs:
             -e CONFIG_ARM64_CRC32 \
             --set-val CONFIG_VMSTAT_INTERVAL 1 \
             -d CONFIG_CC_STACKPROTECTOR_STRONG -e CONFIG_CC_STACKPROTECTOR_NONE \
-            --set-str CONFIG_LOCALVERSION "-Lumi-Hybrid-V4"
+            --set-str CONFIG_LOCALVERSION "-Lumi-Hybrid-V5"
 
           make $MAKE_ARGS olddefconfig
       - name: 5. Final Compilation
