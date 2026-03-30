@@ -34,47 +34,51 @@ jobs:
           ln -sf $(pwd)/clang/bin/ld.lld bin-force/ld
           echo "$(pwd)/bin-force" >> $GITHUB_PATH
 
-      - name: 4. Config Fusion & Deep Clean KernelSU
+      - name: 4. Config Optimization (Manual eBPF + Fix Errors)
         run: |
           export PATH="$GITHUB_WORKSPACE/clang/bin:$GITHUB_WORKSPACE/bin-force:$PATH"
           MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang AS=clang LD=ld.lld CROSS_COMPILE=aarch64-linux-gnu- O=out"
 
-          echo "--- Cleaning KernelSU References ---"
-          # Eliminăm referințele din Kconfig înainte ca 'make' să le caute
+          echo "--- Locating r5q_defconfig ---"
+          if [ -f "arch/arm64/configs/r5q_defconfig" ]; then
+              CONF_PATH="r5q_defconfig"
+          else
+              CONF_PATH="vendor/r5q_defconfig"
+          fi
+
+          # 1. Generăm config-ul de bază Samsung
+          make $MAKE_ARGS $CONF_PATH
+
+          # 2. Curățăm mizeria lăsată de KernelSU care blochează build-ul
           find drivers/android/ -name "Kconfig" -exec sed -i '/kernelsu/d' {} +
           find drivers/android/ -name "Makefile" -exec sed -i '/kernelsu/d' {} +
           rm -rf drivers/android/kernelsu || true
 
-          echo "--- Locating r5q_defconfig ---"
-          # Verificăm unde se află exact fișierul după merge
-          if [ -f "arch/arm64/configs/r5q_defconfig" ]; then
-              CONF_PATH="r5q_defconfig"
-          elif [ -f "arch/arm64/configs/vendor/r5q_defconfig" ]; then
-              CONF_PATH="vendor/r5q_defconfig"
-          else
-              echo "FATAL: r5q_defconfig not found!" && exit 1
-          fi
-
-          # Pasul A: Generăm baza cu config-ul tău găsit
-          make $MAKE_ARGS $CONF_PATH
-
-          # Pasul B: Fuzionăm cu config-ul generic de arm64 (eBPF & Standard AOSP)
-          ARCH=arm64 ./scripts/kconfig/merge_config.sh -O out/ out/.config arch/arm64/configs/defconfig
-
-          # Pasul C: Configurații Finale & Bypass Samsung
+          # 3. Activăm manual eBPF (fără să facem merge cu defconfig-ul generic care dă erori)
           ./scripts/config --file out/.config \
-            -d CONFIG_KSU \
-            -d CONFIG_KERNEL_SU \
             -e CONFIG_BPF_SYSCALL \
             -e CONFIG_BPF_JIT \
+            -e CONFIG_BPF_JIT_ALWAYS_ON \
             -e CONFIG_CGROUP_BPF \
             -e CONFIG_NET_CLS_BPF \
+            -e CONFIG_NET_ACT_BPF \
+            -e CONFIG_BPF_EVENTS \
+            -e CONFIG_IKCONFIG \
+            -e CONFIG_IKCONFIG_PROC \
             -d CONFIG_SAMSUNG_PRODUCT_SHIP \
             -d CONFIG_SEC_RESTRICT_SETID \
             -d CONFIG_KNOX_KAP \
             -d CONFIG_CC_STACKPROTECTOR_STRONG \
             -e CONFIG_CC_STACKPROTECTOR_NONE \
-            --set-str CONFIG_LOCALVERSION "-Lumi-R5Q-Fusion"
+            --set-val CONFIG_VMSTAT_INTERVAL 1 \
+            --set-str CONFIG_LOCALVERSION "-Lumi-Hybrid-V1"
+
+          # 4. REPARĂM erorile tale specifice din log:
+          # Fix pentru ARM64_HAS_CRC32 (eroarea din cpufeature.c)
+          ./scripts/config --file out/.config -e CONFIG_ARM64_CRC32
+          
+          # Dezactivăm FREEZER-ul problematic (eroarea din fork.c)
+          ./scripts/config --file out/.config -d CONFIG_CGROUP_FREEZER
 
           make $MAKE_ARGS olddefconfig
       - name: 5. Final Compilation
