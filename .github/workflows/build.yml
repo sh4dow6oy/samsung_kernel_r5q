@@ -40,20 +40,28 @@ jobs:
           MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang AS=clang LD=ld.lld CROSS_COMPILE=aarch64-linux-gnu- O=out"
 
           echo "--- Cleaning KernelSU References ---"
-          # Eliminăm liniile care fac 'source' la Kconfig-ul KernelSU pentru a opri eroarea de build
-          sed -i '/kernelsu/d' drivers/android/Kconfig || true
-          # Eliminăm referința din Makefile-ul driverelor de android
-          sed -i '/kernelsu/d' drivers/android/Makefile || true
-          # Ștergem folderul dacă a rămas ceva prin merge
+          # Eliminăm referințele din Kconfig înainte ca 'make' să le caute
+          find drivers/android/ -name "Kconfig" -exec sed -i '/kernelsu/d' {} +
+          find drivers/android/ -name "Makefile" -exec sed -i '/kernelsu/d' {} +
           rm -rf drivers/android/kernelsu || true
 
-          # Pasul A: Generăm baza cu config-ul tău de Samsung R5Q
-          make $MAKE_ARGS vendor/r5q_defconfig
+          echo "--- Locating r5q_defconfig ---"
+          # Verificăm unde se află exact fișierul după merge
+          if [ -f "arch/arm64/configs/r5q_defconfig" ]; then
+              CONF_PATH="r5q_defconfig"
+          elif [ -f "arch/arm64/configs/vendor/r5q_defconfig" ]; then
+              CONF_PATH="vendor/r5q_defconfig"
+          else
+              echo "FATAL: r5q_defconfig not found!" && exit 1
+          fi
 
-          # Pasul B: Fuzionăm cu config-ul generic de arm64
+          # Pasul A: Generăm baza cu config-ul tău găsit
+          make $MAKE_ARGS $CONF_PATH
+
+          # Pasul B: Fuzionăm cu config-ul generic de arm64 (eBPF & Standard AOSP)
           ARCH=arm64 ./scripts/kconfig/merge_config.sh -O out/ out/.config arch/arm64/configs/defconfig
 
-          # Pasul C: Fine-tuning și bypass securitate Samsung
+          # Pasul C: Configurații Finale & Bypass Samsung
           ./scripts/config --file out/.config \
             -d CONFIG_KSU \
             -d CONFIG_KERNEL_SU \
@@ -61,13 +69,12 @@ jobs:
             -e CONFIG_BPF_JIT \
             -e CONFIG_CGROUP_BPF \
             -e CONFIG_NET_CLS_BPF \
-            -e CONFIG_NET_ACT_BPF \
             -d CONFIG_SAMSUNG_PRODUCT_SHIP \
             -d CONFIG_SEC_RESTRICT_SETID \
             -d CONFIG_KNOX_KAP \
             -d CONFIG_CC_STACKPROTECTOR_STRONG \
             -e CONFIG_CC_STACKPROTECTOR_NONE \
-            --set-str CONFIG_LOCALVERSION "-Lumi-Lineage-Fusion"
+            --set-str CONFIG_LOCALVERSION "-Lumi-R5Q-Fusion"
 
           make $MAKE_ARGS olddefconfig
       - name: 5. Final Compilation
