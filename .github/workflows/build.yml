@@ -45,15 +45,19 @@ jobs:
           rm -rf drivers/android/kernelsu && mkdir -p drivers/android/kernelsu
           touch drivers/android/kernelsu/Kconfig drivers/android/kernelsu/Makefile
 
-          echo "--- 2. Patching Source Code Errors (Hard-Fix) ---"
-          # Fix kernel/fork.c (Eroarea cgroup_enter_frozen)
-          # Comentăm liniile care apelează funcțiile freezer care lipsesc în LineageOS
-          sed -i 's/cgroup_enter_frozen(/ \/\/ cgroup_enter_frozen(/g' kernel/fork.c
-          sed -i 's/cgroup_leave_frozen(/ \/\/ cgroup_leave_frozen(/g' kernel/fork.c
+          echo "--- 2. Patching Source Code Errors (The Big Fix) ---"
+          # Fix kernel/fork.c & kernel/signal.c (Erorile cgroup frozen)
+          # Comentăm toate apelurile către funcțiile de freezer care lipsesc
+          sed -i 's/cgroup_enter_frozen(/ \/\/ cgroup_enter_frozen(/g' kernel/fork.c kernel/signal.c
+          sed -i 's/cgroup_leave_frozen(/ \/\/ cgroup_leave_frozen(/g' kernel/fork.c kernel/signal.c
+          sed -i 's/cgroup_task_frozen(/ \/\/ cgroup_task_frozen(/g' kernel/signal.c
 
-          # Fix arch/arm64/kernel/cpufeature.c (Eroarea ARM64_HAS_CRC32)
-          # Dacă identificatorul lipsește, îl forțăm să fie ignorat în tabelul de capabilități
+          # Fix arch/arm64/kernel/cpufeature.c (CRC32 error)
           sed -i 's/.capability = ARM64_HAS_CRC32/\/\/ .capability = ARM64_HAS_CRC32/g' arch/arm64/kernel/cpufeature.c
+
+          # Fix mm/vmstat.c (CONFIG_VMSTAT_INTERVAL error)
+          # Dacă variabila nu este definită în config, o forțăm direct în cod
+          sed -i 's/CONFIG_VMSTAT_INTERVAL/1/g' mm/vmstat.c
 
           echo "--- 3. Generating Config ---"
           if [ -f "arch/arm64/configs/r5q_defconfig" ]; then
@@ -70,6 +74,7 @@ jobs:
             -d CONFIG_KSU -d CONFIG_KERNEL_SU \
             -d CONFIG_CGROUP_FREEZER \
             -d CONFIG_SAMSUNG_PRODUCT_SHIP \
+            -e CONFIG_ARM64_CRC32 \
             --set-val CONFIG_VMSTAT_INTERVAL 1 \
             -d CONFIG_CC_STACKPROTECTOR_STRONG -e CONFIG_CC_STACKPROTECTOR_NONE \
             --set-str CONFIG_LOCALVERSION "-Lumi-Hybrid-Fixed"
