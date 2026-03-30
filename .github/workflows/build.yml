@@ -34,18 +34,26 @@ jobs:
           ln -sf $(pwd)/clang/bin/ld.lld bin-force/ld
           echo "$(pwd)/bin-force" >> $GITHUB_PATH
 
-      - name: 4. Config Fusion & Disable KernelSU
+      - name: 4. Config Fusion & Deep Clean KernelSU
         run: |
           export PATH="$GITHUB_WORKSPACE/clang/bin:$GITHUB_WORKSPACE/bin-force:$PATH"
           MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang AS=clang LD=ld.lld CROSS_COMPILE=aarch64-linux-gnu- O=out"
 
-          # Pasul A: Generăm config-ul Samsung R5Q
+          echo "--- Cleaning KernelSU References ---"
+          # Eliminăm liniile care fac 'source' la Kconfig-ul KernelSU pentru a opri eroarea de build
+          sed -i '/kernelsu/d' drivers/android/Kconfig || true
+          # Eliminăm referința din Makefile-ul driverelor de android
+          sed -i '/kernelsu/d' drivers/android/Makefile || true
+          # Ștergem folderul dacă a rămas ceva prin merge
+          rm -rf drivers/android/kernelsu || true
+
+          # Pasul A: Generăm baza cu config-ul tău de Samsung R5Q
           make $MAKE_ARGS vendor/r5q_defconfig
 
-          # Pasul B: Fuzionăm cu defconfig-ul generic de arm64 (pentru eBPF & standarde AOSP)
+          # Pasul B: Fuzionăm cu config-ul generic de arm64
           ARCH=arm64 ./scripts/kconfig/merge_config.sh -O out/ out/.config arch/arm64/configs/defconfig
 
-          # Pasul C: Dezactivăm KernelSU și forțăm setările de Boot/eBPF
+          # Pasul C: Fine-tuning și bypass securitate Samsung
           ./scripts/config --file out/.config \
             -d CONFIG_KSU \
             -d CONFIG_KERNEL_SU \
@@ -59,14 +67,9 @@ jobs:
             -d CONFIG_KNOX_KAP \
             -d CONFIG_CC_STACKPROTECTOR_STRONG \
             -e CONFIG_CC_STACKPROTECTOR_NONE \
-            --set-str CONFIG_LOCALVERSION "-Lumi-Lineage-R5Q"
+            --set-str CONFIG_LOCALVERSION "-Lumi-Lineage-Fusion"
 
-          # Curățăm Makefile-ul de orice referință la KernelSU (Brute force disable)
-          sed -i '/kernelsu/d' drivers/android/Kconfig || true
-          sed -i '/kernelsu/d' drivers/android/Makefile || true
-          
           make $MAKE_ARGS olddefconfig
-
       - name: 5. Final Compilation
         run: |
           export PATH="$GITHUB_WORKSPACE/clang/bin:$GITHUB_WORKSPACE/bin-force:$PATH"
