@@ -40,12 +40,15 @@ jobs:
           MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang AS=clang LD=ld.lld CROSS_COMPILE=aarch64-linux-gnu- O=out"
 
           echo "--- 1. Nuclear Removal of KernelSU References ---"
-          # Curățăm recursiv orice referință la kernelsu în toate fișierele de configurare
+          # Curățăm referințele din fișierele de configurare
           find . -type f -name "Kconfig*" -exec sed -i '/[kK][eE][rR][nN][eE][lL][sS][uU]/d' {} +
           find . -type f -name "Makefile*" -exec sed -i '/[kK][eE][rR][nN][eE][lL][sS][uU]/d' {} +
           
-          # Failsafe: Creăm structura de directoare și fișiere goale ca să nu dea 'File not found'
+          # REPARAȚIE: Ștergem și recreăm folderul pentru a evita eroarea "File exists"
+          rm -rf drivers/android/kernelsu
           mkdir -p drivers/android/kernelsu
+          
+          # Creăm fișiere dummy goale (Failsafe pentru sistemul de build)
           touch drivers/android/kernelsu/Kconfig
           echo "obj-y += kernelsu/" > drivers/android/kernelsu/Makefile
           touch drivers/android/kernelsu/Makefile
@@ -71,8 +74,6 @@ jobs:
             -e CONFIG_NET_CLS_BPF \
             -e CONFIG_NET_ACT_BPF \
             -e CONFIG_BPF_EVENTS \
-            -e CONFIG_IKCONFIG \
-            -e CONFIG_IKCONFIG_PROC \
             -d CONFIG_KSU \
             -d CONFIG_KERNEL_SU \
             -d CONFIG_SAMSUNG_PRODUCT_SHIP \
@@ -83,9 +84,8 @@ jobs:
             --set-val CONFIG_VMSTAT_INTERVAL 1 \
             -d CONFIG_CC_STACKPROTECTOR_STRONG \
             -e CONFIG_CC_STACKPROTECTOR_NONE \
-            --set-str CONFIG_LOCALVERSION "-Lumi-Final-V1"
+            --set-str CONFIG_LOCALVERSION "-Lumi-Hybrid-V3"
 
-          # Aplicăm modificările
           make $MAKE_ARGS olddefconfig
       - name: 5. Final Compilation
         run: |
