@@ -1,99 +1,88 @@
-name: Build Kernel r5q (S10 Lite) - Fix MMU
+name: Lumi Kernel R5Q Fusion Build
 
 on:
   workflow_dispatch:
 
 jobs:
   build:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     steps:
-      - name: 1. Install System Dependencies
+      - name: 1. Setup Environment
         run: |
           sudo apt-get update
-          sudo apt-get install -y bc build-essential flex bison lz4 libssl-dev libelf-dev wget zstd zip git python3 curl
+          sudo apt-get install -y bc build-essential bison flex libssl-dev libelf-dev clang lld llvm-dev python3 python2 git
 
-      - name: 2. Checkout AOSP Base (SM8150 4.19)
+      - name: 2. Checkout Roynas (Base)
         uses: actions/checkout@v4
         with:
-          repository: sh4dow6oy/android_kernel_qcom_sm8150_419
+          repository: 'Roynas-Project-S10-Lite/android_kernel_samsung_sm8150' # Confirmă dacă acesta e repo-ul tău
           path: kernel
-          fetch-depth: 1
+          fetch-depth: 0
 
-      - name: 3. Setup Neutron Clang Toolchain
+      - name: 3. Merge LineageOS (AOSP Support)
+        working-directory: kernel
         run: |
-          mkdir clang
-          wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
-          tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
-          echo "$(pwd)/clang/bin" >> $GITHUB_PATH
+          git config --global user.email "lumi@kernel.build"
+          git config --global user.name "LumiBuilder"
+          git remote add lineage https://github.com/LineageOS/android_kernel_qcom_sm8150
+          git fetch lineage lineage-20 # Sau branch-ul dorit (20 e pt Android 13+)
+          # Încercăm merge-ul. Dacă sunt conflicte, forțăm strategia 'theirs' pe fișierele de sistem
+          git merge -X theirs lineage/lineage-20 --allow-unrelated-histories -m "Merge LineageOS SM8150" || echo "Conflicte detectate, continuăm cu patching manual"
 
-      - name: 4. Merge Config & Fix Header Errors
+      - name: 4. Nuclear Patching (KernelSU & Freezer Fix)
+        working-directory: kernel
         run: |
-          cd kernel
-          git remote add samsung https://github.com/sh4dow6oy/kernel_samsung_r3q
-          git fetch samsung master --depth=1
-          git checkout samsung/master -- arch/arm64/configs/r5q_defconfig
-          
-          # REPARAȚIE MMU NOTIFIER (Eroarea ta): 
-          # Forțăm includerea mmu_notifier.h să recunoască enum-ul corect
-          sed -i 's/enum mmu_notifier_event event/int event/g' include/linux/mmu_notifier.h
-          
-          # Merge Config
-          mkdir -p out
-          ARCH=arm64 scripts/kconfig/merge_config.sh -O out/ \
-            arch/arm64/configs/r5q_defconfig \
-            arch/arm64/configs/defconfig
+          echo "--- 1. Killer KernelSU ---"
+          find . -type f -name "Kconfig*" -exec sed -i '/[kK][eE][rR][nN][eE][lL][sS][uU]/d' {} +
+          find . -type f -name "Makefile*" -exec sed -i '/[kK][eE][rR][nN][eE][lL][sS][uU]/d' {} +
+          rm -rf drivers/android/kernelsu && mkdir -p drivers/android/kernelsu
+          touch drivers/android/kernelsu/Kconfig drivers/android/kernelsu/Makefile
 
-      - name: 5. Setup KernelSU
+          echo "--- 2. Injecting Cgroup Fix (AOSP 15 Compatibility) ---"
+          # Injectăm fix-ul pentru Freezer direct după header guards în cgroup.h
+          sed -i '/#define _LINUX_CGROUP_H/a \
+          #ifndef _LUMI_FREEZER_FIX\
+          #define _LUMI_FREEZER_FIX\
+          static inline bool cgroup_task_frozen(struct task_struct *task) { return false; }\
+          static inline bool cgroup_task_freeze(struct task_struct *task) { return false; }\
+          static inline void cgroup_enter_frozen(void) { }\
+          static inline void cgroup_leave_frozen(bool b) { }\
+          static inline void cgroup_update_frozen(struct cgroup *cgrp) { }\
+          static inline void cgroup_freeze(struct cgroup *cgrp, bool freeze) { }\
+          static inline void cgroup_freezer_frozen_exit(struct task_struct *task) { }\
+          static inline void cgroup_freezer_migrate_task(struct task_struct *task, struct cgroup *from, struct cgroup *to) { }\
+          #endif' include/linux/cgroup.h
+
+          echo "--- 3. Miscellaneous Fixes ---"
+          sed -i '/ARM64_HAS_CRC32/d' arch/arm64/kernel/cpufeature.c || true
+          echo "#define CONFIG_VMSTAT_INTERVAL 1" >> include/linux/vmstat.h
+
+      - name: 5. Compilare Kernel (The Fusion)
+        working-directory: kernel
         run: |
-          cd kernel
-          curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s main
-
-      - name: 6. Build Process
-        run: |
-          cd kernel
-          export ARCH=arm64
-          export SUBARCH=arm64
+          # Setează PATH-ul către Clang-ul tău (presupunem că e în folderul 'clang' din repo)
+          export PATH="$GITHUB_WORKSPACE/kernel/clang/bin:$PATH"
           
-          # Adăugăm -Wno-error pentru a trece de avertismentele stricte ale Neutron Clang
-          KCFLAGS="-Wno-implicit-function-declaration -Wno-strict-prototypes -Wno-format -Wno-visibility"
+          MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang AS=clang LD=ld.lld CROSS_COMPILE=aarch64-linux-gnu- O=out"
           
-          MAKE_PARAMS=(
-              O=out
-              CC=clang
-              LD=ld.lld
-              AR=llvm-ar
-              NM=llvm-nm
-              OBJCOPY=llvm-objcopy
-              OBJDUMP=llvm-objdump
-              STRIP=llvm-strip
-              HOSTCC=gcc
-              HOSTCXX=g++
-              CROSS_COMPILE=aarch64-linux-gnu-
-              CROSS_COMPILE_ARM32=arm-linux-gnueabi-
-              LLVM=1
-              LLVM_IAS=1
-              KCFLAGS="$KCFLAGS"
-          )
+          # Generare config R5Q
+          make $MAKE_ARGS r5q_defconfig || make $MAKE_ARGS vendor/r5q_defconfig
 
-          # Activăm KernelSU și optimizări
-          echo "CONFIG_KSU=y" >> out/.config
-          echo "CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE=y" >> out/.config
-          
-          make "${MAKE_PARAMS[@]}" olddefconfig
-          make -j$(nproc --all) "${MAKE_PARAMS[@]}"
+          # Activare eBPF pentru AOSP 15
+          ./scripts/config --file out/.config \
+            -e CONFIG_BPF_SYSCALL -e CONFIG_BPF_JIT -e CONFIG_CGROUP_BPF \
+            -e CONFIG_NET_CLS_BPF -e CONFIG_NET_ACT_BPF -e CONFIG_BPF_EVENTS \
+            -d CONFIG_KSU -d CONFIG_KERNEL_SU -d CONFIG_SAMSUNG_PRODUCT_SHIP \
+            -d CONFIG_KNOX_KAP -d CONFIG_SEC_RESTRICT_SETID \
+            --set-str CONFIG_LOCALVERSION "-Lumi-R5Q-Fusion"
 
-      - name: 7. AnyKernel3 Packaging
-        run: |
-          git clone https://github.com/osm0sis/AnyKernel3 --depth=1
-          find kernel/out/arch/arm64/boot/ -name "Image.gz-dtb" -exec cp {} AnyKernel3/ \; || \
-          find kernel/out/arch/arm64/boot/ -name "Image.gz" -exec cp {} AnyKernel3/ \;
-          
-          cd AnyKernel3
-          sed -i 's/device.name1=/device.name1=r5q/' anykernel.sh
-          zip -r9 ../r5q-Fixed-Kernel.zip *
+          make $MAKE_ARGS olddefconfig
+          make $MAKE_ARGS -j$(nproc --all) Image.gz-dtb
 
-      - name: 8. Upload Artifact
+      - name: 6. Upload Final Kernel
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-Fixed-Kernel
-          path: r5q-Fixed-Kernel.zip
+          name: Lumi-Fusion-Kernel-R5Q
+          path: |
+            kernel/out/arch/arm64/boot/Image.gz-dtb
+            kernel/out/.config
