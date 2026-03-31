@@ -1,4 +1,4 @@
-name: Lumi Kernel R5Q Neutron Fusion (AOSP 15 Ready)
+name: Lumi Kernel R3Q/R5Q Neutron Fusion
 
 on:
   workflow_dispatch:
@@ -10,61 +10,51 @@ jobs:
       - name: 1. Setup Build Environment
         run: |
           sudo apt-get update
-          # Instalăm pachetele de bază și ncurses6 (ca înlocuitor pentru ncurses5)
           sudo apt-get install -y bc build-essential bison flex libssl-dev libelf-dev \
           clang lld llvm-dev python3 python3-dev git python-is-python3 zstd libncurses6 \
           libncursesw6 wget curl libtinfo6 || true
           
-          # Fix pentru libncurses5: Creăm link-uri simbolice de la v6 la v5
-          # Acest pas păcălește Neutron Clang să creadă că are v5 instalat
+          # Fix pentru libncurses5 (necesar pentru Neutron Clang)
           sudo ln -s /usr/lib/x86_64-linux-gnu/libncurses.so.6 /usr/lib/x86_64-linux-gnu/libncurses.so.5 || true
           sudo ln -s /usr/lib/x86_64-linux-gnu/libtinfo.so.6 /usr/lib/x86_64-linux-gnu/libtinfo.so.5 || true
-          sudo ln -s /usr/lib/x86_64-linux-gnu/libncursesw.so.6 /usr/lib/x86_64-linux-gnu/libncursesw.so.5 || true
 
       - name: 2. Setup Neutron Clang Toolchain
         run: |
           mkdir -p clang
-          echo "--- Downloading Neutron Clang (10-03-2024) ---"
           wget -q --show-progress https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
-          
-          # Setăm variabilele de mediu pentru PATH și biblioteci
           echo "$GITHUB_WORKSPACE/clang/bin" >> $GITHUB_PATH
           echo "LD_LIBRARY_PATH=$GITHUB_WORKSPACE/clang/lib:$LD_LIBRARY_PATH" >> $GITHUB_ENV
-          
-          # Verificare rapidă dacă toolchain-ul execută comenzi
-          export LD_LIBRARY_PATH=$GITHUB_WORKSPACE/clang/lib:$LD_LIBRARY_PATH
-          ./clang/bin/clang --version
 
-      - name: 3. Checkout Roynas Base
+      - name: 3. Checkout Roynas Base (R3Q/S10 Lite)
         uses: actions/checkout@v4
         with:
-          # URL-ul bazei Samsung Project pentru R5Q (S10 Lite)
-          repository: 'Roynas-Project-S10-Lite/android_kernel_samsung_sm8150'
+          repository: 'Roynas-Android-Playground/kernel_samsung_r3q'
+          ref: 'master'
           path: kernel
           fetch-depth: 0
 
-      - name: 4. Merge LineageOS SM8150 (Kernel Core Upgrade)
+      - name: 4. Merge LineageOS SM8150 (AOSP 15 Support)
         working-directory: kernel
         run: |
           git config --global user.email "lumi@kernel.build"
           git config --global user.name "LumiBuilder"
           git remote add lineage https://github.com/LineageOS/android_kernel_qcom_sm8150
           git fetch lineage lineage-20
-          # Folosim strategia 'theirs' pentru a prioritiza codul Lineage pe conflictele de sistem (eBPF)
-          git merge -X theirs lineage/lineage-20 --allow-unrelated-histories -m "Merge LineageOS SM8150" || echo "Merge partial, fixing with patches"
+          # Fuziune cu logica LineageOS pentru eBPF și Cgroups
+          git merge -X theirs lineage/lineage-20 --allow-unrelated-histories -m "Merge LineageOS SM8150" || echo "Conflicts handled by patching"
 
-      - name: 5. Professional Patching (Freezer & Compatibility)
+      - name: 5. Essential Patching (Freezer & KernelSU Removal)
         working-directory: kernel
         run: |
-          echo "--- 1. Nuclear Removal of KernelSU ---"
+          echo "--- 1. Remove KernelSU ---"
           find . -type f -name "Kconfig*" -exec sed -i '/[kK][eE][rR][nN][eE][lL][sS][uU]/d' {} +
           find . -type f -name "Makefile*" -exec sed -i '/[kK][eE][rR][nN][eE][lL][sS][uU]/d' {} +
           rm -rf drivers/android/kernelsu && mkdir -p drivers/android/kernelsu
+          echo "obj-y += kernelsu/" > drivers/android/kernelsu/Makefile
           touch drivers/android/kernelsu/Kconfig drivers/android/kernelsu/Makefile
 
-          echo "--- 2. Injecting Cgroup Freezer Fix (For AOSP 15) ---"
-          # Injectăm definițiile lipsă direct în header-ul principal
+          echo "--- 2. Injecting Cgroup Fix ---"
           sed -i '/#define _LINUX_CGROUP_H/a \
           #ifndef _LUMI_FREEZER_FIX\
           #define _LUMI_FREEZER_FIX\
@@ -78,24 +68,24 @@ jobs:
           static inline void cgroup_freezer_migrate_task(struct task_struct *task, struct cgroup *from, struct cgroup *to) { }\
           #endif' include/linux/cgroup.h
 
-          echo "--- 3. Miscellaneous Build Fixes ---"
+          echo "--- 3. Build Fixes ---"
           sed -i '/ARM64_HAS_CRC32/d' arch/arm64/kernel/cpufeature.c || true
           echo "#define CONFIG_VMSTAT_INTERVAL 1" >> include/linux/vmstat.h
 
-      - name: 6. Build Kernel with Neutron Clang
+      - name: 6. Build Kernel (Neutron Optimized)
         working-directory: kernel
         run: |
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           export LD_LIBRARY_PATH="$GITHUB_WORKSPACE/clang/lib:$LD_LIBRARY_PATH"
           
-          # Argumente de compilare optimizate
           MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang AS=clang LD=ld.lld \
           CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
           
-          # Generare Config R5Q (Samsung Stock Drivers)
-          make $MAKE_ARGS r5q_defconfig || make $MAKE_ARGS vendor/r5q_defconfig
+          # Generare Config pentru R3Q/R5Q (Samsung Stock)
+          # Repository-ul Roynas foloseste de obicei 'r3q_defconfig'
+          make $MAKE_ARGS r3q_defconfig || make $MAKE_ARGS vendor/r3q_defconfig
 
-          # Configurare eBPF (Vital pentru Android 15) și eliminare restricții Samsung
+          # Optimizări eBPF pentru Android 15 & Clean Samsung Bloat
           ./scripts/config --file out/.config \
             -e CONFIG_BPF_SYSCALL -e CONFIG_BPF_JIT -e CONFIG_CGROUP_BPF \
             -e CONFIG_NET_CLS_BPF -e CONFIG_NET_ACT_BPF -e CONFIG_BPF_EVENTS \
@@ -105,16 +95,15 @@ jobs:
             -d CONFIG_CGROUP_FREEZER \
             --set-val CONFIG_VMSTAT_INTERVAL 1 \
             -d CONFIG_CC_STACKPROTECTOR_STRONG -e CONFIG_CC_STACKPROTECTOR_NONE \
-            --set-str CONFIG_LOCALVERSION "-Lumi-Neutron-AOSP15"
+            --set-str CONFIG_LOCALVERSION "-Lumi-R3Q-Neutron"
 
-          # Compilare finală
           make $MAKE_ARGS olddefconfig
           make $MAKE_ARGS -j$(nproc --all) Image.gz-dtb
 
       - name: 7. Upload Kernel Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: Lumi-Kernel-R5Q-AOSP15
+          name: Lumi-Kernel-R3Q-Fusion
           path: |
             kernel/out/arch/arm64/boot/Image.gz-dtb
             kernel/out/.config
