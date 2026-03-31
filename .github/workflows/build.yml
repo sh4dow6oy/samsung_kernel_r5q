@@ -1,7 +1,7 @@
-name: Samsung SM8150 Kernel Build (r5q + Rawr-BPF)
+name: Samsung SM8150 Kernel Build
 
 on:
-  workflow_dispatch: # Permite pornirea manuală din tab-ul Actions
+  workflow_dispatch:
 
 jobs:
   build-kernel:
@@ -15,13 +15,12 @@ jobs:
           ccache libncurses5-dev libncursesw5-dev zip python2 python3 python-is-python3 \
           lib32z1 wget xz-utils
 
-      - name: Setup LLVM 10 (Clang)
+      - name: Setup LLVM 10
         run: |
-          # Descarcă varianta x86_64 compatibilă cu runner-ul GitHub [cite: 1, 8]
           wget https://github.com/llvm/llvm-project/releases/download/llvmorg-10.0.0/clang+llvm-10.0.0-x86_64-linux-gnu-ubuntu-18.04.tar.xz
           tar -xf clang+llvm-10.0.0-x86_64-linux-gnu-ubuntu-18.04.tar.xz
           mv clang+llvm-10.0.0-x86_64-linux-gnu-ubuntu-18.04 llvm-toolchain
-          echo "$(pwd)/llvm-toolchain/bin" >> $GITHUB_PATH [cite: 1]
+          echo "$(pwd)/llvm-toolchain/bin" >> $GITHUB_PATH
 
       - name: Checkout Kernel Source
         uses: actions/checkout@v4
@@ -40,13 +39,8 @@ jobs:
       - name: Patch Source Code
         run: |
           cd kernel
-          # Fix eroare #elif în kernel/taskstats.c 
           sed -i 's/#elif$/#else/g' kernel/taskstats.c
-          
-          # Fix eroare inlining în include/linux/mm.h pentru need_memory_boosting 
           sed -i 's/extern inline bool need_memory_boosting/static inline bool need_memory_boosting/g' include/linux/mm.h
-          
-          # Fix format warnings în mm/page_alloc.c 
           sed -i 's/%u|%u rec:%lu|%lu/%llu|%u rec:%lu|%lu/g' mm/page_alloc.c
 
       - name: Compile Kernel
@@ -54,36 +48,28 @@ jobs:
           cd kernel
           mkdir -p out
           
-          # Căi absolute către toolchain [cite: 1]
           export KERNEL_ROOT=$(pwd)
           export BUILD_CROSS_COMPILE=$KERNEL_ROOT/../toolchain/bin/aarch64-linux-android-
           export KERNEL_LLVM_BIN=$KERNEL_ROOT/../llvm-toolchain/bin/clang
           export CLANG_TRIPLE=aarch64-linux-gnu-
-          
-          # Flag-uri pentru a ignora erorile de format, deprecarea OpenSSL și overflow [cite: 4, 7, 8]
           export KCFLAGS="-Wno-error -Wno-format -Wno-deprecated-declarations -Wno-incompatible-pointer-types -D_FORTIFY_SOURCE=0"
           
-          # Mediu cerut pentru DTC și Overlay [cite: 1]
           KERNEL_MAKE_ENV="DTC_EXT=$KERNEL_ROOT/scripts/dtc/dtc CONFIG_BUILD_ARM64_DT_OVERLAY=y"
 
-          # 1. Configurare inițială r5q
           make -j$(nproc) -C $KERNEL_ROOT O=$KERNEL_ROOT/out $KERNEL_MAKE_ENV \
             ARCH=arm64 CROSS_COMPILE=$BUILD_CROSS_COMPILE REAL_CC=$KERNEL_LLVM_BIN \
             CLANG_TRIPLE=$CLANG_TRIPLE r5q_eur_open_defconfig
 
-          # 2. Injectare config-uri BPF și Taskstats (fix-ul pentru erorile din log) 
           scripts/config --file out/.config --enable CONFIG_BPF_SYSCALL
           scripts/config --file out/.config --enable CONFIG_TASKSTATS
           scripts/config --file out/.config --enable CONFIG_TASK_DELAY_ACCT
           scripts/config --file out/.config --enable CONFIG_TASK_XACCT
           scripts/config --file out/.config --enable CONFIG_TASK_IO_ACCOUNTING
           
-          # Actualizare config cu noile dependințe
           make -j$(nproc) -C $KERNEL_ROOT O=$KERNEL_ROOT/out $KERNEL_MAKE_ENV \
             ARCH=arm64 CROSS_COMPILE=$BUILD_CROSS_COMPILE REAL_CC=$KERNEL_LLVM_BIN \
             CLANG_TRIPLE=$CLANG_TRIPLE olddefconfig
 
-          # 3. Compilare finală
           make -j$(nproc) -C $KERNEL_ROOT O=$KERNEL_ROOT/out $KERNEL_MAKE_ENV \
             ARCH=arm64 CROSS_COMPILE=$BUILD_CROSS_COMPILE REAL_CC=$KERNEL_LLVM_BIN \
             CLANG_TRIPLE=$CLANG_TRIPLE KCFLAGS="$KCFLAGS"
@@ -91,7 +77,7 @@ jobs:
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-SM8150-r5q-RawrBPF
+          name: Kernel-SM8150-r5q
           path: |
             kernel/out/arch/arm64/boot/Image.gz*
             kernel/out/arch/arm64/boot/dtbo.img
