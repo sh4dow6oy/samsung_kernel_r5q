@@ -1,94 +1,95 @@
-name: Lumi Kernel R5Q - Roynas Lineage Fusion (No KSU)
+name: Build Kernel r5q (S10 Lite) Generic Video
+
 on:
   workflow_dispatch:
 
 jobs:
   build:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-22.04
     steps:
-      - name: 1. Checkout Roynas Base (R3Q)
+      - name: Setup Environment
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bc build-essential zip curl libssl-dev flex bison libelf-dev binutils-aarch64-linux-gnu python3 git
+
+      - name: Checkout Base (SM8150 4.19)
         uses: actions/checkout@v4
         with:
-          repository: Roynas-Android-Playground/kernel_samsung_r3q
-          ref: master
-          fetch-depth: 0
+          repository: sh4dow6oy/android_kernel_qcom_sm8150_419
+          path: kernel
+          fetch-depth: 1
 
-      - name: 2. Merge LineageOS 20 (Full Codebase Sync)
+      - name: Integrate Samsung r5q Config & Core Drivers
         run: |
-          git config --global user.email "gh-actions@github.com"
-          git config --global user.name "GitHub Actions"
-          git remote add lineage https://github.com/LineageOS/android_kernel_qcom_sm8150.git
-          git fetch lineage lineage-20
+          cd kernel
+          git remote add samsung https://github.com/sh4dow6oy/kernel_samsung_r3q
+          git fetch samsung master --depth=1
           
-          echo "--- Merging LineageOS 20 into Roynas ---"
-          # Folosim strategia 'theirs' pentru a prioritiza fix-urile Lineage în codul comun
-          git merge lineage/lineage-20 -X theirs -m "Merge LineageOS 20 SM8150" || echo "Merge finished with some conflicts"
-
-      - name: 3. Setup Neutron Clang
-        run: |
-          sudo apt-get update && sudo apt-get install -y bc build-essential flex bison lz4 libssl-dev libelf-dev wget zstd zip
-          mkdir clang && wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
-          tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
-          mkdir -p bin-force
-          ln -sf $(pwd)/clang/bin/clang bin-force/as
-          ln -sf $(pwd)/clang/bin/ld.lld bin-force/ld
-          echo "$(pwd)/bin-force" >> $GITHUB_PATH
-
-      - name: 4. Hybrid Fusion (AOSP Logic + Samsung Drivers)
-        run: |
-          export PATH="$GITHUB_WORKSPACE/clang/bin:$GITHUB_WORKSPACE/bin-force:$PATH"
-          MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang AS=clang LD=ld.lld CROSS_COMPILE=aarch64-linux-gnu- O=out"
-
-          echo "--- 1. Clean KernelSU Presence ---"
-          # Ștergem referințele KSU care pot cauza conflicte de boot
-          find . -type f -name "Kconfig*" -exec sed -i '/[kK][eE][rR][nN][eE][lL][sS][uU]/d' {} +
-          find . -type f -name "Makefile*" -exec sed -i '/[kK][eE][rR][nN][eE][lL][sS][uU]/d' {} +
-          rm -rf drivers/android/kernelsu && mkdir -p drivers/android/kernelsu
-          touch drivers/android/kernelsu/Kconfig drivers/android/kernelsu/Makefile
-
-          echo "--- 2. Fix LineageOS Freezer (Proper Way) ---"
-          # În loc de redefinire, ne asigurăm că flag-ul CONFIG_CGROUP_FREEZER este setat corect 
-          # în codul sursă pentru a expune funcțiile necesare
-          sed -i 's/CONFIG_CGROUP_FREEZER/CONFIG_LUMI_FREEZER/g' kernel/cgroup/Makefile || true
-
-          echo "--- 3. Fix CRC32 & VMSTAT ---"
-          # Eliminăm eroarea de CRC32 din cpufeature.c fără să stricăm tabelul
-          sed -i 's/ARM64_HAS_CRC32/ARM64_HAS_CRC32_FIX/g' arch/arm64/kernel/cpufeature.c || true
-          # Definim o valoare fallback pentru VMSTAT direct în header
-          echo "#define CONFIG_VMSTAT_INTERVAL 1" >> include/linux/vmstat.h
-
-          echo "--- 4. Generating R5Q Config ---"
-          # Căutăm defconfig-ul tău de Samsung
-          [ -f "arch/arm64/configs/r5q_defconfig" ] && CONF="r5q_defconfig" || CONF="vendor/r5q_defconfig"
-          make $MAKE_ARGS $CONF
-
-          echo "--- 5. Enabling AOSP/A15 Features ---"
-          ./scripts/config --file out/.config \
-            -e CONFIG_BPF_SYSCALL \
-            -e CONFIG_BPF_JIT \
-            -e CONFIG_CGROUP_BPF \
-            -e CONFIG_NET_CLS_BPF \
-            -e CONFIG_NET_ACT_BPF \
-            -e CONFIG_BPF_EVENTS \
-            -d CONFIG_KSU \
-            -d CONFIG_SAMSUNG_PRODUCT_SHIP \
-            -d CONFIG_SEC_RESTRICT_SETID \
-            -d CONFIG_KNOX_KAP \
-            -e CONFIG_CGROUP_FREEZER \
-            -e CONFIG_FREEZER \
-            --set-str CONFIG_LOCALVERSION "-Lumi-AOSP-Hybrid"
-
-          make $MAKE_ARGS olddefconfig
-      - name: 5. Final Compilation
-        run: |
-          export PATH="$GITHUB_WORKSPACE/clang/bin:$GITHUB_WORKSPACE/bin-force:$PATH"
-          MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang AS=clang LD=ld.lld CROSS_COMPILE=aarch64-linux-gnu- O=out"
+          # Luăm config-ul r5q specific pentru S10 Lite
+          git checkout samsung/master -- arch/arm64/configs/r5q_defconfig
           
-          echo "--- Starting Lineage-Roynas Fusion Build ---"
-          make -j$(nproc --all) $MAKE_ARGS Image.gz-dtb
+          # Importăm doar driverele periferice necesare (fără video)
+          git checkout samsung/master -- drivers/input/touchscreen/
+          git checkout samsung/master -- drivers/battery_v2/
+          git checkout samsung/master -- drivers/sensors/
+          git checkout samsung/master -- drivers/motor/
 
-      - name: 6. Upload Artifact
+      - name: Setup KernelSU
+        run: |
+          cd kernel
+          curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s main
+
+      - name: Setup Proton Clang
+        run: |
+          git clone https://github.com/kdrag0n/proton-clang --depth=1 clang
+
+      - name: Compile Kernel
+        run: |
+          cd kernel
+          export PATH=$(pwd)/../clang/bin:$PATH
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
+          
+          # 1. Aplicăm configurația r5q
+          make O=out r5q_defconfig
+          
+          # 2. Injectăm optimizări de performanță și KernelSU
+          echo "CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE=y" >> out/.config
+          echo "CONFIG_KSU=y" >> out/.config
+          
+          # 3. Aliniere config pentru a evita conflictele
+          make O=out olddefconfig
+          
+          # 4. Build folosind toate resursele runner-ului
+          make -j$(nproc --all) O=out \
+            CC=clang \
+            LD=ld.lld \
+            AR=llvm-ar \
+            NM=llvm-nm \
+            OBJCOPY=llvm-objcopy \
+            OBJDUMP=llvm-objdump \
+            STRIP=llvm-strip
+
+      - name: Package with AnyKernel3
+        run: |
+          git clone https://github.com/osm0sis/AnyKernel3 --depth=1
+          # Identificăm bzImage sau Image.gz-dtb
+          if [ -f kernel/out/arch/arm64/boot/Image.gz-dtb ]; then
+            cp kernel/out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
+          elif [ -f kernel/out/arch/arm64/boot/Image.gz ]; then
+            cp kernel/out/arch/arm64/boot/Image.gz AnyKernel3/
+          else
+            cp kernel/out/arch/arm64/boot/Image AnyKernel3/
+          fi
+          
+          cd AnyKernel3
+          sed -i 's/device.name1=/device.name1=r5q/' anykernel.sh
+          zip -r9 ../r5q-Kernel-Generic-Video.zip *
+
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Lumi-Kernel-R5Q-A15-Ready
-          path: out/arch/arm64/boot/Image.gz-dtb
+          name: S10Lite-Kernel-r5q
+          path: r5q-Kernel-Generic-Video.zip
