@@ -5,14 +5,15 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-22.04
+    # Schimbăm la 24.04 pentru a avea GLIBC 2.38+ necesar pentru Neutron
+    runs-on: ubuntu-24.04
     steps:
       - name: 1. Install System Dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y bc build-essential flex bison lz4 libssl-dev libelf-dev wget zstd zip git python3 curl
 
-      - name: 2. Checkout Kernel Source (SM8150 4.19)
+      - name: 2. Checkout Kernel Source
         uses: actions/checkout@v4
         with:
           repository: sh4dow6oy/android_kernel_qcom_sm8150_419
@@ -21,18 +22,12 @@ jobs:
 
       - name: 3. Setup Neutron Clang Toolchain
         run: |
-          # Descarcă și extrage Neutron
           mkdir clang
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
           
-          # Creare forțată de symlinks pentru binare
-          mkdir -p bin-force
-          ln -sf $(pwd)/clang/bin/clang bin-force/as
-          ln -sf $(pwd)/clang/bin/ld.lld bin-force/ld
-          
-          # Adăugare în PATH (bin-force trebuie să fie primul pentru prioritate)
-          echo "$(pwd)/bin-force" >> $GITHUB_PATH
+          # Nu mai facem force-links globale pentru 'as' ca să nu stricăm HOSTCC (fixdep)
+          # Adăugăm doar folderul bin în PATH
           echo "$(pwd)/clang/bin" >> $GITHUB_PATH
 
       - name: 4. Integrate Samsung r5q Config & Drivers
@@ -40,12 +35,7 @@ jobs:
           cd kernel
           git remote add samsung https://github.com/sh4dow6oy/kernel_samsung_r3q
           git fetch samsung master --depth=1
-          
-          # Extragem config-ul vital r5q
           git checkout samsung/master -- arch/arm64/configs/r5q_defconfig
-          
-          # Extragem driverele periferice (Touch, Battery, Sensors, Motor)
-          # NOTĂ: Am exclus video/fbdev conform cerinței tale
           git checkout samsung/master -- drivers/input/touchscreen/
           git checkout samsung/master -- drivers/battery_v2/
           git checkout samsung/master -- drivers/sensors/
@@ -59,62 +49,54 @@ jobs:
       - name: 6. Build Kernel
         run: |
           cd kernel
-          
-          # Definim variabilele pentru Neutron Clang
           export ARCH=arm64
           export SUBARCH=arm64
-          export CC=clang
-          export NM=llvm-nm
-          export OBJCOPY=llvm-objcopy
-          export OBJDUMP=llvm-objdump
-          export STRIP=llvm-strip
-          export AR=llvm-ar
-          export LD=ld.lld
-          export CROSS_COMPILE=aarch64-linux-gnu-
-          export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
           
-          # Configurare inițială
-          make O=out r5q_defconfig
+          # Parametrii pentru compilare (Specificăm Clang direct aici)
+          # Folosim LLVM=1 pentru a activa automat majoritatea tool-urilor LLVM
+          MAKE_PARAMS=(
+              O=out
+              CC=clang
+              LD=ld.lld
+              AR=llvm-ar
+              NM=llvm-nm
+              OBJCOPY=llvm-objcopy
+              OBJDUMP=llvm-objdump
+              STRIP=llvm-strip
+              OBJSIZE=llvm-size
+              READELF=llvm-readelf
+              HOSTCC=gcc
+              HOSTCXX=g++
+              CROSS_COMPILE=aarch64-linux-gnu-
+              CROSS_COMPILE_ARM32=arm-linux-gnueabi-
+              LLVM=1
+              LLVM_IAS=1
+          )
+
+          # Configurare
+          make "${MAKE_PARAMS[@]}" r5q_defconfig
           
-          # Injectăm setări de performanță (WALT, Polly) și activăm KernelSU
+          # Optimizări
           echo "CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE=y" >> out/.config
-          echo "CONFIG_LLVM_POLLY=y" >> out/.config
           echo "CONFIG_KSU=y" >> out/.config
+          make "${MAKE_PARAMS[@]}" olddefconfig
           
-          # Ajustare config final (rezolvă dependențele automate)
-          make O=out olddefconfig
-          
-          # Compilare (folosind toate nucleele)
-          make -j$(nproc --all) O=out \
-            CC=$CC \
-            LD=$LD \
-            AR=$AR \
-            NM=$NM \
-            OBJCOPY=$OBJCOPY \
-            OBJDUMP=$OBJDUMP \
-            STRIP=$STRIP
+          # Compilare
+          make -j$(nproc --all) "${MAKE_PARAMS[@]}"
 
       - name: 7. Package with AnyKernel3
         run: |
           git clone https://github.com/osm0sis/AnyKernel3 --depth=1
-          
-          # Verificăm tipul de imagine generată (S10 Lite folosește de obicei Image.gz-dtb)
-          if [ -f kernel/out/arch/arm64/boot/Image.gz-dtb ]; then
-            cp kernel/out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
-          elif [ -f kernel/out/arch/arm64/boot/Image.gz ]; then
-            cp kernel/out/arch/arm64/boot/Image.gz AnyKernel3/
-          else
-            cp kernel/out/arch/arm64/boot/Image AnyKernel3/
-          fi
+          find kernel/out/arch/arm64/boot/ -name "Image.gz-dtb" -exec cp {} AnyKernel3/ \; || \
+          find kernel/out/arch/arm64/boot/ -name "Image.gz" -exec cp {} AnyKernel3/ \; || \
+          find kernel/out/arch/arm64/boot/ -name "Image" -exec cp {} AnyKernel3/ \;
           
           cd AnyKernel3
-          # Setăm numele corect pentru r5q în scriptul de flash
           sed -i 's/device.name1=/device.name1=r5q/' anykernel.sh
-          sed -i 's/device.name2=/device.name2=S10Lite/' anykernel.sh
           zip -r9 ../r5q-Neutron-Kernel.zip *
 
-      - name: 8. Upload Build Result
+      - name: 8. Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-r5q-Neutron-KSU
+          name: S10Lite-r5q-Neutron
           path: r5q-Neutron-Kernel.zip
