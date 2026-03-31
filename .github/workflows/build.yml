@@ -1,4 +1,4 @@
-name: Build Kernel r5q (S10 Lite) - Neutron Final
+name: Build Kernel r5q (S10 Lite) - Stable Generic Input
 
 on:
   workflow_dispatch:
@@ -26,26 +26,20 @@ jobs:
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
           echo "$(pwd)/clang/bin" >> $GITHUB_PATH
 
-      - name: 4. Integrate Samsung r5q Config & Core Drivers
+      - name: 4. Integrate Samsung r5q Config & Battery/Sensors
         run: |
           cd kernel
           git remote add samsung https://github.com/sh4dow6oy/kernel_samsung_r3q
           git fetch samsung master --depth=1
           
-          # Luăm configurația specifică r5q
+          # Luăm DOAR configurația r5q și driverele care nu se bat cu baza
           git checkout samsung/master -- arch/arm64/configs/r5q_defconfig
           
-          # Importăm driverele Samsung necesare
-          # Luăm TOT folderul input pentru a evita erorile de Kconfig la touchscreen
-          rm -rf drivers/input
-          git checkout samsung/master -- drivers/input/
+          # Păstrăm input/touchscreen generic din baza SM8150 (nu facem checkout pe el)
+          # Luăm doar restul componentelor vitale Samsung
           git checkout samsung/master -- drivers/battery_v2/
           git checkout samsung/master -- drivers/sensors/
           git checkout samsung/master -- drivers/motor/
-
-          # REPARAȚIE KCONFIG: Uneori checkout-ul parțial lasă fișiere Kconfig corupte
-          # Curățăm ghilimelele invalide raportate anterior în mss100
-          find drivers/input/touchscreen/melfas/mss100/ -name "Kconfig" -exec sed -i 's/"//g' {} + || true
 
       - name: 5. Setup KernelSU
         run: |
@@ -58,7 +52,6 @@ jobs:
           export ARCH=arm64
           export SUBARCH=arm64
           
-          # Parametrii de build pentru Neutron
           MAKE_PARAMS=(
               O=out
               CC=clang
@@ -68,8 +61,6 @@ jobs:
               OBJCOPY=llvm-objcopy
               OBJDUMP=llvm-objdump
               STRIP=llvm-strip
-              OBJSIZE=llvm-size
-              READELF=llvm-readelf
               HOSTCC=gcc
               HOSTCXX=g++
               CROSS_COMPILE=aarch64-linux-gnu-
@@ -78,33 +69,35 @@ jobs:
               LLVM_IAS=1
           )
 
-          # Configurare inițială
+          # Aplicăm r5q_defconfig
           make "${MAKE_PARAMS[@]}" r5q_defconfig
           
-          # Injectăm optimizări și activăm KernelSU
-          echo "CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE=y" >> out/.config
+          # Forțăm activarea KernelSU și optimizări de viteză
           echo "CONFIG_KSU=y" >> out/.config
+          echo "CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE=y" >> out/.config
           
-          # Reparăm config-ul după injecție
+          # Curățăm config-ul (rezolvă eventuale conflicte între defconfig-ul Samsung și baza SM8150)
           make "${MAKE_PARAMS[@]}" olddefconfig
           
-          # Compilare propriu-zisă
+          # Compilare
           make -j$(nproc --all) "${MAKE_PARAMS[@]}"
 
       - name: 7. Package with AnyKernel3
         run: |
           git clone https://github.com/osm0sis/AnyKernel3 --depth=1
-          # Căutăm imaginea generată în folderul out
+          
+          # Căutăm imaginea generată (Image.gz-dtb este standard pentru S10 Lite)
           find kernel/out/arch/arm64/boot/ -name "Image.gz-dtb" -exec cp {} AnyKernel3/ \; || \
           find kernel/out/arch/arm64/boot/ -name "Image.gz" -exec cp {} AnyKernel3/ \; || \
           find kernel/out/arch/arm64/boot/ -name "Image" -exec cp {} AnyKernel3/ \;
           
           cd AnyKernel3
           sed -i 's/device.name1=/device.name1=r5q/' anykernel.sh
-          zip -r9 ../r5q-Kernel-Neutron.zip *
+          sed -i 's/device.name2=/device.name2=S10Lite/' anykernel.sh
+          zip -r9 ../r5q-Kernel-Stable.zip *
 
-      - name: 8. Upload Artifact
+      - name: 8. Upload Result
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-Kernel-r5q
-          path: r5q-Kernel-Neutron.zip
+          name: S10Lite-r5q-Kernel
+          path: r5q-Kernel-Stable.zip
