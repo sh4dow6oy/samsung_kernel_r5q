@@ -1,4 +1,4 @@
-name: Lumi Kernel R5Q Neutron Fusion (AOSP 15 Ready)
+name: Lumi Kernel R5Q Neutron Fusion (AOSP 15 Fix)
 
 on:
   workflow_dispatch:
@@ -34,17 +34,30 @@ jobs:
           path: kernel
           fetch-depth: 0
 
-      - name: 4. Merge LineageOS SM8150 (Kernel Core Upgrade)
+      - name: 4. Merge LineageOS SM8150 (Anti-Conflict Strategy)
         working-directory: kernel
         run: |
           git config --global user.email "lumi@kernel.build"
           git config --global user.name "LumiBuilder"
           git remote add lineage https://github.com/LineageOS/android_kernel_qcom_sm8150
           git fetch lineage lineage-20
-          # Fuziune cu logica LineageOS pentru suportul de eBPF (Android 15)
-          git merge -X theirs lineage/lineage-20 --allow-unrelated-histories -m "Merge LineageOS SM8150" || echo "Conflicts handled by patching"
 
-      - name: 5. Professional Patching (Freezer & KernelSU Removal)
+          echo "--- Starting Merge ---"
+          # Încercăm merge-ul standard cu prioritate pe Lineage pe cât posibil
+          git merge -X theirs lineage/lineage-20 --allow-unrelated-histories -m "Merge LineageOS SM8150" || true
+          
+          echo "--- Resolving Conflicts (Prioritizing LineageOS Core) ---"
+          # Rezolvăm manual fișierele care dau erori de scheduler și cgroups
+          git checkout lineage/lineage-20 -- kernel/sched/core.c
+          git checkout lineage/lineage-20 -- kernel/sched/fair.c
+          git checkout lineage/lineage-20 -- kernel/cgroup/cgroup.c
+          git checkout lineage/lineage-20 -- include/linux/sched.h
+          
+          # Finalizăm merge-ul
+          git add .
+          git commit -m "Auto-resolve merge conflicts by prioritizing LineageOS core" || echo "No changes to commit"
+
+      - name: 5. Professional Patching (Clean Fixes)
         working-directory: kernel
         run: |
           echo "--- 1. Nuclear Removal of KernelSU ---"
@@ -53,25 +66,13 @@ jobs:
           rm -rf drivers/android/kernelsu && mkdir -p drivers/android/kernelsu
           touch drivers/android/kernelsu/Kconfig drivers/android/kernelsu/Makefile
 
-          echo "--- 2. Injecting Cgroup Freezer Fix ---"
-          sed -i '/#define _LINUX_CGROUP_H/a \
-          #ifndef _LUMI_FREEZER_FIX\
-          #define _LUMI_FREEZER_FIX\
-          static inline bool cgroup_task_frozen(struct task_struct *task) { return false; }\
-          static inline bool cgroup_task_freeze(struct task_struct *task) { return false; }\
-          static inline void cgroup_enter_frozen(void) { }\
-          static inline void cgroup_leave_frozen(bool b) { }\
-          static inline void cgroup_update_frozen(struct cgroup *cgrp) { }\
-          static inline void cgroup_freeze(struct cgroup *cgrp, bool freeze) { }\
-          static inline void cgroup_freezer_frozen_exit(struct task_struct *task) { }\
-          static inline void cgroup_freezer_migrate_task(struct task_struct *task, struct cgroup *from, struct cgroup *to) { }\
-          #endif' include/linux/cgroup.h
-
-          echo "--- 3. Miscellaneous Fixes ---"
+          echo "--- 2. Header Guards Fix ---"
+          # Fix pentru erorile de CRC32 și VMSTAT
           sed -i '/ARM64_HAS_CRC32/d' arch/arm64/kernel/cpufeature.c || true
-          echo "#define CONFIG_VMSTAT_INTERVAL 1" >> include/linux/vmstat.h
+          # Adăugăm definitia vmstat doar dacă lipsește
+          grep -q "CONFIG_VMSTAT_INTERVAL" include/linux/vmstat.h || echo "#define CONFIG_VMSTAT_INTERVAL 1" >> include/linux/vmstat.h
 
-      - name: 6. Build Kernel with Neutron Clang (R5Q Optimized)
+      - name: 6. Build Kernel with Neutron Clang (R5Q)
         working-directory: kernel
         run: |
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
@@ -80,29 +81,29 @@ jobs:
           MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang AS=clang LD=ld.lld \
           CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
           
-          # Generare Config R5Q (Samsung Stock Drivers)
+          # Generare Config R5Q
           make $MAKE_ARGS r5q_defconfig
 
-          # Configurare eBPF & Disable Samsung Bloat/Knox
+          # Configurare eBPF pentru Android 15 & Clean Bloat
           ./scripts/config --file out/.config \
             -e CONFIG_BPF_SYSCALL -e CONFIG_BPF_JIT -e CONFIG_CGROUP_BPF \
             -e CONFIG_NET_CLS_BPF -e CONFIG_NET_ACT_BPF -e CONFIG_BPF_EVENTS \
             -e CONFIG_IKCONFIG -e CONFIG_IKCONFIG_PROC \
             -d CONFIG_KSU -d CONFIG_KERNEL_SU -d CONFIG_SAMSUNG_PRODUCT_SHIP \
             -d CONFIG_KNOX_KAP -d CONFIG_SEC_RESTRICT_SETID \
-            -d CONFIG_CGROUP_FREEZER \
+            -e CONFIG_CGROUP_FREEZER -e CONFIG_FREEZER \
             --set-val CONFIG_VMSTAT_INTERVAL 1 \
             -d CONFIG_CC_STACKPROTECTOR_STRONG -e CONFIG_CC_STACKPROTECTOR_NONE \
-            --set-str CONFIG_LOCALVERSION "-Lumi-R5Q-AOSP15"
+            --set-str CONFIG_LOCALVERSION "-Lumi-Fusion-V2"
 
-          # Compilare finală
+          # Compilare
           make $MAKE_ARGS olddefconfig
           make $MAKE_ARGS -j$(nproc --all) Image.gz-dtb
 
       - name: 7. Upload Kernel Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: Lumi-Kernel-R5Q-Fusion
+          name: Lumi-Kernel-R5Q-AOSP15
           path: |
             kernel/out/arch/arm64/boot/Image.gz-dtb
             kernel/out/.config
