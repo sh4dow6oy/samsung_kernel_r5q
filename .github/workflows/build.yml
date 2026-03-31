@@ -1,4 +1,4 @@
-name: Lumi Kernel R5Q Neutron Fusion
+name: Lumi Kernel R5Q Neutron Fusion (AOSP 15)
 
 on:
   workflow_dispatch:
@@ -7,45 +7,49 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: 1. Setup Environment
+      - name: 1. Setup Build Environment
         run: |
           sudo apt-get update
-          sudo apt-get install -y bc build-essential bison flex libssl-dev libelf-dev clang lld llvm-dev python3 python3-dev git python-is-python3
+          sudo apt-get install -y bc build-essential bison flex libssl-dev libelf-dev \
+          clang lld llvm-dev python3 python3-dev git python-is-python3 zstd libncurses5 wget curl
 
-      - name: 2. Download Neutron Clang
+      - name: 2. Setup Neutron Clang Toolchain
         run: |
-          mkdir clang
-          cd clang
-          # Descarcă ultima versiune de Neutron Clang (Antman)
-          curl -LSs "https://raw.githubusercontent.com/Neutron-Builds/antman/main/antman" | bash -s -- -p . --no-ccache
-          cd ..
+          mkdir -p clang
+          wget -q --show-progress https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
+          tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
+          echo "$GITHUB_WORKSPACE/clang/bin" >> $GITHUB_PATH
+          # Verificare toolchain
+          ./clang/bin/clang --version
 
-      - name: 3. Checkout Roynas (Base)
+      - name: 3. Checkout Roynas Base
         uses: actions/checkout@v4
         with:
-          repository: 'Roynas-Project-S10-Lite/android_kernel_samsung_sm8150' 
+          repository: 'Roynas-Project-S10-Lite/android_kernel_samsung_sm8150'
           path: kernel
           fetch-depth: 0
 
-      - name: 4. Merge LineageOS (SM8150 Base)
+      - name: 4. Merge LineageOS SM8150 (AOSP Logic)
         working-directory: kernel
         run: |
           git config --global user.email "lumi@kernel.build"
           git config --global user.name "LumiBuilder"
           git remote add lineage https://github.com/LineageOS/android_kernel_qcom_sm8150
           git fetch lineage lineage-20
-          git merge -X theirs lineage/lineage-20 --allow-unrelated-histories -m "Merge LineageOS SM8150" || echo "Merge conflict, handled by patching"
+          # Strategia 'theirs' forțează codul Lineage pe conflictele de sistem (eBPF/Cgroups)
+          git merge -X theirs lineage/lineage-20 --allow-unrelated-histories -m "Merge LineageOS SM8150" || echo "Conflicte detectate, rezolvăm prin patching"
 
-      - name: 5. Nuclear Patching (KernelSU & Freezer Fix)
+      - name: 5. Nuclear Patching & Core Fixes
         working-directory: kernel
         run: |
-          echo "--- 1. Killer KernelSU ---"
+          echo "--- 1. Nuclear Removal of KernelSU ---"
           find . -type f -name "Kconfig*" -exec sed -i '/[kK][eE][rR][nN][eE][lL][sS][uU]/d' {} +
           find . -type f -name "Makefile*" -exec sed -i '/[kK][eE][rR][nN][eE][lL][sS][uU]/d' {} +
           rm -rf drivers/android/kernelsu && mkdir -p drivers/android/kernelsu
           touch drivers/android/kernelsu/Kconfig drivers/android/kernelsu/Makefile
 
-          echo "--- 2. Injecting Cgroup Fix ---"
+          echo "--- 2. Injecting Cgroup Freezer Fix ---"
+          # Rezolvă erorile de redefinire/lipsă pentru Android 13-15
           sed -i '/#define _LINUX_CGROUP_H/a \
           #ifndef _LUMI_FREEZER_FIX\
           #define _LUMI_FREEZER_FIX\
@@ -59,38 +63,43 @@ jobs:
           static inline void cgroup_freezer_migrate_task(struct task_struct *task, struct cgroup *from, struct cgroup *to) { }\
           #endif' include/linux/cgroup.h
 
-          echo "--- 3. Miscellaneous Fixes ---"
+          echo "--- 3. Fixing CRC32 & VMSTAT ---"
           sed -i '/ARM64_HAS_CRC32/d' arch/arm64/kernel/cpufeature.c || true
           echo "#define CONFIG_VMSTAT_INTERVAL 1" >> include/linux/vmstat.h
 
       - name: 6. Compilare cu Neutron Clang
         working-directory: kernel
         run: |
-          # Setează calea către Neutron Clang descărcat la pasul 2
+          # Toolchain Path
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           
-          # Argumente specifice pentru Neutron (folosește LLVM=1 pentru a forța toolchain-ul complet)
-          MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang AS=clang LD=ld.lld CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
+          # Argumente Build (Neutron Optimizat)
+          MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang AS=clang LD=ld.lld \
+          CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
           
-          # Generare config R5Q
+          # 1. Generare Config Stock R5Q
           make $MAKE_ARGS r5q_defconfig || make $MAKE_ARGS vendor/r5q_defconfig
 
-          # Optimizări AOSP 15 & Disable Samsung Bloat
+          # 2. Configurare AOSP 15 (eBPF, BPF JIT, No Knox)
           ./scripts/config --file out/.config \
             -e CONFIG_BPF_SYSCALL -e CONFIG_BPF_JIT -e CONFIG_CGROUP_BPF \
             -e CONFIG_NET_CLS_BPF -e CONFIG_NET_ACT_BPF -e CONFIG_BPF_EVENTS \
+            -e CONFIG_IKCONFIG -e CONFIG_IKCONFIG_PROC \
             -d CONFIG_KSU -d CONFIG_KERNEL_SU -d CONFIG_SAMSUNG_PRODUCT_SHIP \
             -d CONFIG_KNOX_KAP -d CONFIG_SEC_RESTRICT_SETID \
-            --set-str CONFIG_LOCALVERSION "-Lumi-Neutron-V1"
+            -d CONFIG_CGROUP_FREEZER \
+            --set-val CONFIG_VMSTAT_INTERVAL 1 \
+            -d CONFIG_CC_STACKPROTECTOR_STRONG -e CONFIG_CC_STACKPROTECTOR_NONE \
+            --set-str CONFIG_LOCALVERSION "-Lumi-Neutron-Fusion"
 
+          # 3. Compilare Finală
           make $MAKE_ARGS olddefconfig
-          # Compilare rapidă folosind toate nucleele disponibile
           make $MAKE_ARGS -j$(nproc --all) Image.gz-dtb
 
-      - name: 7. Upload Final Kernel
+      - name: 7. Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: Lumi-Neutron-Kernel-R5Q
+          name: Lumi-Kernel-R5Q-Neutron
           path: |
             kernel/out/arch/arm64/boot/Image.gz-dtb
             kernel/out/.config
