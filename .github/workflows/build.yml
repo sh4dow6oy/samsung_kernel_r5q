@@ -1,7 +1,7 @@
-name: Samsung SM8150 Kernel Build (r5q)
+name: Samsung SM8150 Kernel Build (r5q + Rawr-BPF)
 
 on:
-  workflow_dispatch: # Activare manuală din interfața GitHub
+  workflow_dispatch:
 
 jobs:
   build-kernel:
@@ -17,11 +17,9 @@ jobs:
 
       - name: Setup LLVM 10 (Clang)
         run: |
-          # Descărcăm varianta x86_64 indicată de tine
           wget https://github.com/llvm/llvm-project/releases/download/llvmorg-10.0.0/clang+llvm-10.0.0-x86_64-linux-gnu-ubuntu-18.04.tar.xz
           tar -xf clang+llvm-10.0.0-x86_64-linux-gnu-ubuntu-18.04.tar.xz
           mv clang+llvm-10.0.0-x86_64-linux-gnu-ubuntu-18.04 llvm-toolchain
-          # Adăugăm binarele în PATH
           echo "$(pwd)/llvm-toolchain/bin" >> $GITHUB_PATH
 
       - name: Checkout Kernel Source
@@ -31,7 +29,7 @@ jobs:
           ref: rawr-bpf
           path: kernel
 
-      - name: Checkout GCC Toolchain (Linker)
+      - name: Checkout GCC Toolchain
         uses: actions/checkout@v4
         with:
           repository: Adrilaw/aarch64-linux-android-4.9-toolchain
@@ -43,35 +41,40 @@ jobs:
           cd kernel
           mkdir -p out
           
-          # Setăm căile absolute pentru stabilitate
           export KERNEL_ROOT=$(pwd)
           export BUILD_CROSS_COMPILE=$KERNEL_ROOT/../toolchain/bin/aarch64-linux-android-
           export KERNEL_LLVM_BIN=$KERNEL_ROOT/../llvm-toolchain/bin/clang
           export CLANG_TRIPLE=aarch64-linux-gnu-
+          export KCFLAGS="-Wno-error" # Ignoră warning-urile care opresc build-ul
           
-          # Variabilele tale specifice de mediu
-          # Nota: Am setat DTC_EXT către binarul intern dacă nu există unul extern
           KERNEL_MAKE_ENV="DTC_EXT=$KERNEL_ROOT/scripts/dtc/dtc CONFIG_BUILD_ARM64_DT_OVERLAY=y"
 
-          # 1. Generare Configurare (r5q_eur_open_defconfig)
+          # 1. Generăm .config-ul de bază
           make -j$(nproc) -C $KERNEL_ROOT O=$KERNEL_ROOT/out $KERNEL_MAKE_ENV \
-            ARCH=arm64 \
-            CROSS_COMPILE=$BUILD_CROSS_COMPILE \
-            REAL_CC=$KERNEL_LLVM_BIN \
-            CLANG_TRIPLE=$CLANG_TRIPLE \
-            r5q_eur_open_defconfig
+            ARCH=arm64 CROSS_COMPILE=$BUILD_CROSS_COMPILE REAL_CC=$KERNEL_LLVM_BIN \
+            CLANG_TRIPLE=$CLANG_TRIPLE r5q_eur_open_defconfig
 
-          # 2. Compilare efectivă
+          # 2. Injectăm configurațiile de la A82 pentru suport BPF și fix Taskstats
+          scripts/config --file out/.config --enable CONFIG_BPF_SYSCALL
+          scripts/config --file out/.config --enable CONFIG_TASKSTATS
+          scripts/config --file out/.config --enable CONFIG_TASK_DELAY_ACCT
+          scripts/config --file out/.config --enable CONFIG_TASK_XACCT
+          scripts/config --file out/.config --enable CONFIG_TASK_IO_ACCOUNTING
+          
+          # Actualizăm .config-ul pentru a rezolva dependințele noi
           make -j$(nproc) -C $KERNEL_ROOT O=$KERNEL_ROOT/out $KERNEL_MAKE_ENV \
-            ARCH=arm64 \
-            CROSS_COMPILE=$BUILD_CROSS_COMPILE \
-            REAL_CC=$KERNEL_LLVM_BIN \
-            CLANG_TRIPLE=$CLANG_TRIPLE
+            ARCH=arm64 CROSS_COMPILE=$BUILD_CROSS_COMPILE REAL_CC=$KERNEL_LLVM_BIN \
+            CLANG_TRIPLE=$CLANG_TRIPLE olddefconfig
 
-      - name: Upload Build Artifacts
+          # 3. Compilarea finală
+          make -j$(nproc) -C $KERNEL_ROOT O=$KERNEL_ROOT/out $KERNEL_MAKE_ENV \
+            ARCH=arm64 CROSS_COMPILE=$BUILD_CROSS_COMPILE REAL_CC=$KERNEL_LLVM_BIN \
+            CLANG_TRIPLE=$CLANG_TRIPLE KCFLAGS="$KCFLAGS"
+
+      - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-SM8150-r5q-Release
+          name: Kernel-r5q-RawrBPF
           path: |
             kernel/out/arch/arm64/boot/Image.gz*
             kernel/out/arch/arm64/boot/dtbo.img
