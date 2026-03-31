@@ -1,4 +1,4 @@
-name: Lumi Kernel R5Q Fusion Build
+name: Lumi Kernel R5Q Neutron Fusion
 
 on:
   workflow_dispatch:
@@ -10,26 +10,33 @@ jobs:
       - name: 1. Setup Environment
         run: |
           sudo apt-get update
-          sudo apt-get install -y bc build-essential bison flex libssl-dev libelf-dev clang lld llvm-dev python3 python2 git
+          sudo apt-get install -y bc build-essential bison flex libssl-dev libelf-dev clang lld llvm-dev python3 python3-dev git python-is-python3
 
-      - name: 2. Checkout Roynas (Base)
+      - name: 2. Download Neutron Clang
+        run: |
+          mkdir clang
+          cd clang
+          # Descarcă ultima versiune de Neutron Clang (Antman)
+          curl -LSs "https://raw.githubusercontent.com/Neutron-Builds/antman/main/antman" | bash -s -- -p . --no-ccache
+          cd ..
+
+      - name: 3. Checkout Roynas (Base)
         uses: actions/checkout@v4
         with:
-          repository: 'Roynas-Project-S10-Lite/android_kernel_samsung_sm8150' # Confirmă dacă acesta e repo-ul tău
+          repository: 'Roynas-Project-S10-Lite/android_kernel_samsung_sm8150' 
           path: kernel
           fetch-depth: 0
 
-      - name: 3. Merge LineageOS (AOSP Support)
+      - name: 4. Merge LineageOS (SM8150 Base)
         working-directory: kernel
         run: |
           git config --global user.email "lumi@kernel.build"
           git config --global user.name "LumiBuilder"
           git remote add lineage https://github.com/LineageOS/android_kernel_qcom_sm8150
-          git fetch lineage lineage-20 # Sau branch-ul dorit (20 e pt Android 13+)
-          # Încercăm merge-ul. Dacă sunt conflicte, forțăm strategia 'theirs' pe fișierele de sistem
-          git merge -X theirs lineage/lineage-20 --allow-unrelated-histories -m "Merge LineageOS SM8150" || echo "Conflicte detectate, continuăm cu patching manual"
+          git fetch lineage lineage-20
+          git merge -X theirs lineage/lineage-20 --allow-unrelated-histories -m "Merge LineageOS SM8150" || echo "Merge conflict, handled by patching"
 
-      - name: 4. Nuclear Patching (KernelSU & Freezer Fix)
+      - name: 5. Nuclear Patching (KernelSU & Freezer Fix)
         working-directory: kernel
         run: |
           echo "--- 1. Killer KernelSU ---"
@@ -38,8 +45,7 @@ jobs:
           rm -rf drivers/android/kernelsu && mkdir -p drivers/android/kernelsu
           touch drivers/android/kernelsu/Kconfig drivers/android/kernelsu/Makefile
 
-          echo "--- 2. Injecting Cgroup Fix (AOSP 15 Compatibility) ---"
-          # Injectăm fix-ul pentru Freezer direct după header guards în cgroup.h
+          echo "--- 2. Injecting Cgroup Fix ---"
           sed -i '/#define _LINUX_CGROUP_H/a \
           #ifndef _LUMI_FREEZER_FIX\
           #define _LUMI_FREEZER_FIX\
@@ -57,32 +63,34 @@ jobs:
           sed -i '/ARM64_HAS_CRC32/d' arch/arm64/kernel/cpufeature.c || true
           echo "#define CONFIG_VMSTAT_INTERVAL 1" >> include/linux/vmstat.h
 
-      - name: 5. Compilare Kernel (The Fusion)
+      - name: 6. Compilare cu Neutron Clang
         working-directory: kernel
         run: |
-          # Setează PATH-ul către Clang-ul tău (presupunem că e în folderul 'clang' din repo)
-          export PATH="$GITHUB_WORKSPACE/kernel/clang/bin:$PATH"
+          # Setează calea către Neutron Clang descărcat la pasul 2
+          export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           
-          MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang AS=clang LD=ld.lld CROSS_COMPILE=aarch64-linux-gnu- O=out"
+          # Argumente specifice pentru Neutron (folosește LLVM=1 pentru a forța toolchain-ul complet)
+          MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang AS=clang LD=ld.lld CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
           
           # Generare config R5Q
           make $MAKE_ARGS r5q_defconfig || make $MAKE_ARGS vendor/r5q_defconfig
 
-          # Activare eBPF pentru AOSP 15
+          # Optimizări AOSP 15 & Disable Samsung Bloat
           ./scripts/config --file out/.config \
             -e CONFIG_BPF_SYSCALL -e CONFIG_BPF_JIT -e CONFIG_CGROUP_BPF \
             -e CONFIG_NET_CLS_BPF -e CONFIG_NET_ACT_BPF -e CONFIG_BPF_EVENTS \
             -d CONFIG_KSU -d CONFIG_KERNEL_SU -d CONFIG_SAMSUNG_PRODUCT_SHIP \
             -d CONFIG_KNOX_KAP -d CONFIG_SEC_RESTRICT_SETID \
-            --set-str CONFIG_LOCALVERSION "-Lumi-R5Q-Fusion"
+            --set-str CONFIG_LOCALVERSION "-Lumi-Neutron-V1"
 
           make $MAKE_ARGS olddefconfig
+          # Compilare rapidă folosind toate nucleele disponibile
           make $MAKE_ARGS -j$(nproc --all) Image.gz-dtb
 
-      - name: 6. Upload Final Kernel
+      - name: 7. Upload Final Kernel
         uses: actions/upload-artifact@v4
         with:
-          name: Lumi-Fusion-Kernel-R5Q
+          name: Lumi-Neutron-Kernel-R5Q
           path: |
             kernel/out/arch/arm64/boot/Image.gz-dtb
-            kernel/out/.config
+            kernel/out/.configS
