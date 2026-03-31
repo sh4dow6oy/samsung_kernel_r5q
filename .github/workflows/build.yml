@@ -1,11 +1,10 @@
-name: Build Kernel r5q (S10 Lite) - Neutron Edition
+name: Build Kernel r5q (S10 Lite) - Neutron Final
 
 on:
   workflow_dispatch:
 
 jobs:
   build:
-    # Schimbăm la 24.04 pentru a avea GLIBC 2.38+ necesar pentru Neutron
     runs-on: ubuntu-24.04
     steps:
       - name: 1. Install System Dependencies
@@ -13,7 +12,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y bc build-essential flex bison lz4 libssl-dev libelf-dev wget zstd zip git python3 curl
 
-      - name: 2. Checkout Kernel Source
+      - name: 2. Checkout Kernel Source (SM8150 4.19)
         uses: actions/checkout@v4
         with:
           repository: sh4dow6oy/android_kernel_qcom_sm8150_419
@@ -25,21 +24,28 @@ jobs:
           mkdir clang
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
-          
-          # Nu mai facem force-links globale pentru 'as' ca să nu stricăm HOSTCC (fixdep)
-          # Adăugăm doar folderul bin în PATH
           echo "$(pwd)/clang/bin" >> $GITHUB_PATH
 
-      - name: 4. Integrate Samsung r5q Config & Drivers
+      - name: 4. Integrate Samsung r5q Config & Core Drivers
         run: |
           cd kernel
           git remote add samsung https://github.com/sh4dow6oy/kernel_samsung_r3q
           git fetch samsung master --depth=1
+          
+          # Luăm configurația specifică r5q
           git checkout samsung/master -- arch/arm64/configs/r5q_defconfig
-          git checkout samsung/master -- drivers/input/touchscreen/
+          
+          # Importăm driverele Samsung necesare
+          # Luăm TOT folderul input pentru a evita erorile de Kconfig la touchscreen
+          rm -rf drivers/input
+          git checkout samsung/master -- drivers/input/
           git checkout samsung/master -- drivers/battery_v2/
           git checkout samsung/master -- drivers/sensors/
           git checkout samsung/master -- drivers/motor/
+
+          # REPARAȚIE KCONFIG: Uneori checkout-ul parțial lasă fișiere Kconfig corupte
+          # Curățăm ghilimelele invalide raportate anterior în mss100
+          find drivers/input/touchscreen/melfas/mss100/ -name "Kconfig" -exec sed -i 's/"//g' {} + || true
 
       - name: 5. Setup KernelSU
         run: |
@@ -52,8 +58,7 @@ jobs:
           export ARCH=arm64
           export SUBARCH=arm64
           
-          # Parametrii pentru compilare (Specificăm Clang direct aici)
-          # Folosim LLVM=1 pentru a activa automat majoritatea tool-urilor LLVM
+          # Parametrii de build pentru Neutron
           MAKE_PARAMS=(
               O=out
               CC=clang
@@ -73,30 +78,33 @@ jobs:
               LLVM_IAS=1
           )
 
-          # Configurare
+          # Configurare inițială
           make "${MAKE_PARAMS[@]}" r5q_defconfig
           
-          # Optimizări
+          # Injectăm optimizări și activăm KernelSU
           echo "CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE=y" >> out/.config
           echo "CONFIG_KSU=y" >> out/.config
+          
+          # Reparăm config-ul după injecție
           make "${MAKE_PARAMS[@]}" olddefconfig
           
-          # Compilare
+          # Compilare propriu-zisă
           make -j$(nproc --all) "${MAKE_PARAMS[@]}"
 
       - name: 7. Package with AnyKernel3
         run: |
           git clone https://github.com/osm0sis/AnyKernel3 --depth=1
+          # Căutăm imaginea generată în folderul out
           find kernel/out/arch/arm64/boot/ -name "Image.gz-dtb" -exec cp {} AnyKernel3/ \; || \
           find kernel/out/arch/arm64/boot/ -name "Image.gz" -exec cp {} AnyKernel3/ \; || \
           find kernel/out/arch/arm64/boot/ -name "Image" -exec cp {} AnyKernel3/ \;
           
           cd AnyKernel3
           sed -i 's/device.name1=/device.name1=r5q/' anykernel.sh
-          zip -r9 ../r5q-Neutron-Kernel.zip *
+          zip -r9 ../r5q-Kernel-Neutron.zip *
 
       - name: 8. Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-r5q-Neutron
-          path: r5q-Neutron-Kernel.zip
+          name: S10Lite-Kernel-r5q
+          path: r5q-Kernel-Neutron.zip
