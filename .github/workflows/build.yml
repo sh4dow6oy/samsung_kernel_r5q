@@ -1,4 +1,4 @@
-name: Build Kernel r5q (S10 Lite) - Stable Generic Input
+name: Build Kernel r5q (S10 Lite) - Hybrid Config
 
 on:
   workflow_dispatch:
@@ -12,7 +12,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y bc build-essential flex bison lz4 libssl-dev libelf-dev wget zstd zip git python3 curl
 
-      - name: 2. Checkout Kernel Source (SM8150 4.19)
+      - name: 2. Checkout AOSP Base (SM8150 4.19)
         uses: actions/checkout@v4
         with:
           repository: sh4dow6oy/android_kernel_qcom_sm8150_419
@@ -26,27 +26,31 @@ jobs:
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
           echo "$(pwd)/clang/bin" >> $GITHUB_PATH
 
-      - name: 4. Integrate Samsung r5q Config & Battery/Sensors
+      - name: 4. Merge Samsung r5q with AOSP Defconfig
         run: |
           cd kernel
           git remote add samsung https://github.com/sh4dow6oy/kernel_samsung_r3q
           git fetch samsung master --depth=1
           
-          # Luăm DOAR configurația r5q și driverele care nu se bat cu baza
+          # Luăm r5q_defconfig de la Samsung
           git checkout samsung/master -- arch/arm64/configs/r5q_defconfig
           
-          # Păstrăm input/touchscreen generic din baza SM8150 (nu facem checkout pe el)
-          # Luăm doar restul componentelor vitale Samsung
-          git checkout samsung/master -- drivers/battery_v2/
-          git checkout samsung/master -- drivers/sensors/
-          git checkout samsung/master -- drivers/motor/
+          # Creăm un folder pentru build (Output)
+          mkdir -p out
+          
+          # Folosim utilitarul oficial de kernel pentru a îmbina cele două config-uri:
+          # Baza: r5q_defconfig (Samsung)
+          # Merge cu: defconfig (AOSP/Qualcomm)
+          ARCH=arm64 scripts/kconfig/merge_config.sh -O out/ \
+            arch/arm64/configs/r5q_defconfig \
+            arch/arm64/configs/defconfig
 
       - name: 5. Setup KernelSU
         run: |
           cd kernel
           curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s main
 
-      - name: 6. Build Kernel
+      - name: 6. Build Process
         run: |
           cd kernel
           export ARCH=arm64
@@ -69,35 +73,30 @@ jobs:
               LLVM_IAS=1
           )
 
-          # Aplicăm r5q_defconfig
-          make "${MAKE_PARAMS[@]}" r5q_defconfig
-          
-          # Forțăm activarea KernelSU și optimizări de viteză
+          # Activăm KernelSU și optimizări Neutron manual în .config-ul rezultat
           echo "CONFIG_KSU=y" >> out/.config
           echo "CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE=y" >> out/.config
           
-          # Curățăm config-ul (rezolvă eventuale conflicte între defconfig-ul Samsung și baza SM8150)
+          # Validăm config-ul final combinat
           make "${MAKE_PARAMS[@]}" olddefconfig
           
           # Compilare
           make -j$(nproc --all) "${MAKE_PARAMS[@]}"
 
-      - name: 7. Package with AnyKernel3
+      - name: 7. AnyKernel3 Packaging
         run: |
           git clone https://github.com/osm0sis/AnyKernel3 --depth=1
-          
-          # Căutăm imaginea generată (Image.gz-dtb este standard pentru S10 Lite)
+          # S10 Lite (r5q) are nevoie de Image.gz-dtb
           find kernel/out/arch/arm64/boot/ -name "Image.gz-dtb" -exec cp {} AnyKernel3/ \; || \
-          find kernel/out/arch/arm64/boot/ -name "Image.gz" -exec cp {} AnyKernel3/ \; || \
-          find kernel/out/arch/arm64/boot/ -name "Image" -exec cp {} AnyKernel3/ \;
+          find kernel/out/arch/arm64/boot/ -name "Image.gz" -exec cp {} AnyKernel3/ \;
           
           cd AnyKernel3
           sed -i 's/device.name1=/device.name1=r5q/' anykernel.sh
           sed -i 's/device.name2=/device.name2=S10Lite/' anykernel.sh
-          zip -r9 ../r5q-Kernel-Stable.zip *
+          zip -r9 ../r5q-Hybrid-Kernel.zip *
 
-      - name: 8. Upload Result
+      - name: 8. Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-r5q-Kernel
-          path: r5q-Kernel-Stable.zip
+          name: S10Lite-Hybrid-Kernel
+          path: r5q-Hybrid-Kernel.zip
