@@ -93,4 +93,4 @@ jobs:
           name: Lumi-Neutron-Kernel-R5Q
           path: |
             kernel/out/arch/arm64/boot/Image.gz-dtb
-            kernel/out/.configS
+            kernel/out/.config
