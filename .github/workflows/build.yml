@@ -57,7 +57,7 @@ jobs:
           git add .
           git commit -m "Auto-resolve merge conflicts by prioritizing LineageOS core" || echo "No changes to commit"
 
-      - name: 5. Professional Patching (Clean Fixes)
+      - name: 5. Professional Patching (Final Fix for Fork.c)
         working-directory: kernel
         run: |
           echo "--- 1. Nuclear Removal of KernelSU ---"
@@ -66,12 +66,24 @@ jobs:
           rm -rf drivers/android/kernelsu && mkdir -p drivers/android/kernelsu
           touch drivers/android/kernelsu/Kconfig drivers/android/kernelsu/Makefile
 
-          echo "--- 2. Header Guards Fix ---"
-          # Fix pentru erorile de CRC32 și VMSTAT
-          sed -i '/ARM64_HAS_CRC32/d' arch/arm64/kernel/cpufeature.c || true
-          # Adăugăm definitia vmstat doar dacă lipsește
-          grep -q "CONFIG_VMSTAT_INTERVAL" include/linux/vmstat.h || echo "#define CONFIG_VMSTAT_INTERVAL 1" >> include/linux/vmstat.h
+          echo "--- 2. Injecting Freezer Definitions (Global Visibility) ---"
+          # Adăugăm definițiile la începutul include/linux/cgroup.h după header guards
+          # Folosim static inline pentru a evita conflictele de linkare
+          sed -i '/#define _LINUX_CGROUP_H/a \
+          static inline void cgroup_enter_frozen(void) { }\
+          static inline void cgroup_leave_frozen(bool b) { }\
+          static inline bool cgroup_task_frozen(struct task_struct *task) { return false; }\
+          static inline bool cgroup_task_freeze(struct task_struct *task) { return false; }\
+          static inline void cgroup_update_frozen(struct cgroup *cgrp) { }\
+          static inline void cgroup_freeze(struct cgroup *cgrp, bool freeze) { }\
+          static inline void cgroup_freezer_frozen_exit(struct task_struct *task) { }\
+          static inline void cgroup_freezer_migrate_task(struct task_struct *task, struct cgroup *from, struct cgroup *to) { }' include/linux/cgroup.h
 
+          echo "--- 3. Miscellaneous Build Fixes ---"
+          sed -i '/ARM64_HAS_CRC32/d' arch/arm64/kernel/cpufeature.c || true
+          # Fix pentru redefinirea VMSTAT_INTERVAL
+          sed -i 's/#define CONFIG_VMSTAT_INTERVAL 1/\/* CONFIG_VMSTAT_INTERVAL removed *\//g' include/linux/vmstat.h || true
+          echo "#define CONFIG_VMSTAT_INTERVAL 1" >> include/linux/vmstat.h
       - name: 6. Build Kernel with Neutron Clang (R5Q)
         working-directory: kernel
         run: |
