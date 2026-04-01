@@ -1,4 +1,4 @@
-name: Build Prime Kernel R5Q
+name: Build Prime Kernel R5Q (BPF Fixed)
 
 on:
   workflow_dispatch:
@@ -8,10 +8,6 @@ on:
           type: boolean
           required: true
           default: false
-      changelog:
-          description: 'Changelog'
-          type: string
-          required: false
 
 jobs:
   prepare:
@@ -27,10 +23,12 @@ jobs:
     runs-on: ubuntu-latest
     needs: prepare
     steps:
-      - name: Checkout repository
+      # MODIFICARE: Descarcă sursa de pe branch-ul specific rawr-bpf
+      - name: Checkout kernel source
         uses: actions/checkout@v4
         with:
-          submodules: true
+          repository: LumiPlayground/android_kernel_samsung_sm8150
+          ref: rawr-bpf
           fetch-depth: 1
 
       - name: Install build tools
@@ -52,7 +50,7 @@ jobs:
         run: |
           CLANG_DIR="$(pwd)/clang-stable"
           
-          # 1. Fix Samsung Scripts & Security tools
+          # Fix Samsung scripts
           mkdir -p out
           echo "#!/bin/bash" > secgetspf
           echo "exit 0" >> secgetspf
@@ -60,12 +58,13 @@ jobs:
           cp secgetspf out/
           export PATH="$(pwd):$PATH"
 
-          # 2. Fix asm-goto (dezactivăm testul care crapă compilarea pe Clang)
+          # Fix asm-goto
           echo "exit 0" > scripts/gcc-goto.sh
           chmod +x scripts/gcc-goto.sh
 
-          # 3. Parametrii Make - Metoda "Injecție"
-          # Adăugăm flag-uri pentru a ignora erorile Samsung în loc să ștergem Makefile-urile
+          # Parametrii de build
+          # Observație: Pe ramura rawr-bpf, s-ar putea să nu mai avem nevoie de -Wno- flags,
+          # dar le păstrăm pentru siguranță.
           MAKE_ARGS="ARCH=arm64 \
             O=out \
             HOSTCC=gcc \
@@ -82,55 +81,31 @@ jobs:
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             CLANG_TRIPLE=aarch64-linux-gnu- \
             DTC_EXT=$(pwd)/scripts/dtc \
-            KCFLAGS=-Wno-implicit-function-declaration \
-            KCPPFLAGS=-Wno-unknown-warning-option"
+            KCFLAGS='-Wno-implicit-function-declaration -Wno-incompatible-pointer-types -fno-stack-protector' \
+            KCPPFLAGS='-Wno-unknown-warning-option'"
 
-          # 4. Build Sequence
-          # Resetăm eventualele resturi de la sed-ul anterior dacă rulezi pe același mediu
-          git checkout . 
-
-          # Generare config
+          # Generare config pentru R5Q (S10 Lite / SM8150)
           make $MAKE_ARGS r5q_eur_open_defconfig
 
-          # 5. Patch .config (Dezactivăm SEC_DEBUG care cauzează probleme de linkare)
+          # Patch .config
           sed -i 's/CONFIG_SEC_DEBUG=y/CONFIG_SEC_DEBUG=n/g' out/.config || true
           sed -i 's/CONFIG_CC_STACKPROTECTOR_STRONG=y/CONFIG_CC_STACKPROTECTOR_NONE=y/g' out/.config || true
           echo "CONFIG_CC_HAVE_ASM_GOTO=y" >> out/.config
 
-          # 6. Compilare finală
+          # Compilare
           make $MAKE_ARGS olddefconfig
           make $MAKE_ARGS -j$(nproc --all) Image.gz-dtb
 
-          # 7. Verificare rezultat
+          # Rezultat
           if [ -f "out/arch/arm64/boot/Image.gz-dtb" ]; then
-            mkdir -p AnyKernel3
-            cp out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
+            echo "Kernel built successfully!"
           else
-            echo "Build failed: Image.gz-dtb not found!"
+            echo "Build failed!"
             exit 1
           fi
 
-      - name: Upload artifact
+      - name: Upload Image.gz-dtb
         uses: actions/upload-artifact@v4
         with:
-          name: PrimeKernel-R5Q-${{ needs.prepare.outputs.release_ts }}
-          path: AnyKernel3/Image.gz-dtb
-
-  release:
-    needs: [prepare, build]
-    if: github.event.inputs.release == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Download build artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: artifacts/
-      - name: Create Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: "${{ needs.prepare.outputs.release_ts }}"
-          name: "PrimeKernel-R5Q-${{ needs.prepare.outputs.release_ts }}"
-          body: "${{ github.event.inputs.changelog }}"
-          files: artifacts/PrimeKernel-R5Q-*/Image.gz-dtb
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          name: PrimeKernel-R5Q-BPF-${{ needs.prepare.outputs.release_ts }}
+          path: out/arch/arm64/boot/Image.gz-dtb
