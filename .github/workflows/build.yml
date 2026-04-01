@@ -56,27 +56,26 @@ jobs:
           # 1. Setup Toolchain Path
           export PATH="$(pwd)/llvm-21/bin:$PATH"
           export CLANG_TRIPLE=aarch64-linux-gnu-
-
-          # 2. Hard-Patch Makefile (Eliminăm -Werror și bypass la Stack Protector Check)
-          find . -name Makefile -exec sed -i 's/-Werror//g' {} +
+          
+          # 3. Hard-Patch pentru bypass Stack Protector Check
           sed -i 's/$(error Cannot use CONFIG_CC_STACKPROTECTOR_STRONG.*/$(warning Bypassed)/g' Makefile
           
-          # 3. Fix 'secgetspf' Error (Creăm un utilitar binar fals pentru Makefile-ul Samsung)
+          # 4. Fix 'secgetspf' (Utilitar Samsung necesar în build)
           echo "#!/bin/bash" > secgetspf
           echo "exit 0" >> secgetspf
           chmod +x secgetspf
           export PATH="$PATH:$(pwd)"
 
-          # 4. Mediul de compilare solicitat (DTC & Overlay)
+          # 5. Configurare mediu de compilare (DTC & Overlay)
           export KERNEL_MAKE_ENV="DTC_EXT=$(pwd)/scripts/dtc CONFIG_BUILD_ARM64_DT_OVERLAY=y CONFIG_CC_STACKPROTECTOR_NONE=y"
           
           MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang AS=clang LD=ld.lld \
           CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
 
-          # 5. Generare Config R5Q
+          # 6. Generare Config specific S10 Lite (R5Q)
           make $MAKE_ARGS $KERNEL_MAKE_ENV r5q_eur_open_defconfig
 
-          # 6. Dezactivare SEC_DEBUG și forțare Stack Protector None în .config
+          # 7. Dezactivare SEC_DEBUG și forțare Stack Protector None
           ./scripts/config --file out/.config \
             -d CONFIG_SEC_DEBUG \
             -d CONFIG_SEC_DEBUG_COMMON \
@@ -88,11 +87,11 @@ jobs:
             -e CONFIG_IKCONFIG \
             -e CONFIG_IKCONFIG_PROC
 
-          # 7. Re-procesare config și Compilare Finală
+          # 8. Compilare finală
           make $MAKE_ARGS $KERNEL_MAKE_ENV olddefconfig
           make $MAKE_ARGS $KERNEL_MAKE_ENV -j$(nproc --all) Image.gz-dtb
 
-          # 8. Pregătire AnyKernel3
+          # 9. Pregătire AnyKernel3
           if [ -d "AnyKernel3" ]; then
             cp out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
           fi
