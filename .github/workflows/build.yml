@@ -50,47 +50,50 @@ jobs:
 
       - name: Build kernel
         run: |
+          # 1. Setup Toolchain Path
           export PATH="$(pwd)/llvm-21/bin:$PATH"
           export CLANG_TRIPLE=aarch64-linux-gnu-
 
-          # --- NUCLEAR CLEAN PENTRU FLAG-URI (Rezolvă clang-real error) ---
-          # Eliminăm complet flag-urile problematice din toată sursa
+          # 2. NUCLEAR CLEAN & SEGFAULT FIX
+          # Dezactivăm scriptul care cauzează Segmentation Fault
+          echo "exit 0" > scripts/gcc-goto.sh
+          
+          # Curățăm flag-urile problematice
           grep -rl "implicit-function-declaration" . | xargs sed -i 's/-Werror=implicit-function-declaration//g' || true
           grep -rl "unknown-warning-option" . | xargs sed -i 's/-Wno-unknown-warning-option//g' || true
-          grep -rl "unknown-warning-option" . | xargs sed -i 's/-Wunknown-warning-option//g' || true
           
-          # Dezactivăm Werror global în toate Makefile-urile
+          # Eliminăm Werror global
           find . -name Makefile -exec sed -i 's/-Werror//g' {} +
           find scripts -name Makefile* -exec sed -i 's/-Werror//g' {} +
 
-          # Bypass Stack Protector Check
+          # 3. Hard-Patch pentru bypass Stack Protector
           sed -i 's/$(error Cannot use CONFIG_CC_STACKPROTECTOR_STRONG.*/$(warning Bypassed)/g' Makefile
           
-          # Fix 'secgetspf'
+          # 4. Fix 'secgetspf'
           echo "#!/bin/bash" > secgetspf
           echo "exit 0" >> secgetspf
           chmod +x secgetspf
           export PATH="$PATH:$(pwd)"
 
-          # --- CONFIGURARE BUILD ---
-          export KERNEL_MAKE_ENV="DTC_EXT=$(pwd)/scripts/dtc CONFIG_BUILD_ARM64_DT_OVERLAY=y CONFIG_CC_STACKPROTECTOR_NONE=y"
+          # 5. Configurare mediu
+          # Adăugăm shell=/bin/bash pentru a stabiliza execuția scripturilor
+          export KERNEL_MAKE_ENV="DTC_EXT=$(pwd)/scripts/dtc CONFIG_BUILD_ARM64_DT_OVERLAY=y CONFIG_CC_STACKPROTECTOR_NONE=y SHELL=/bin/bash"
+          
           MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang AS=clang LD=ld.lld \
           CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
 
-          # Generare Config
+          # 6. Generare Config
           make $MAKE_ARGS $KERNEL_MAKE_ENV r5q_eur_open_defconfig
 
-          # Dezactivare SEC_DEBUG și forțare Stack Protector None
+          # 7. Patch .config pentru a preveni crash-ul la compilare
           ./scripts/config --file out/.config \
+            -e CONFIG_CC_HAVE_ASM_GOTO \
             -d CONFIG_SEC_DEBUG \
-            -d CONFIG_SEC_DEBUG_COMMON \
-            -d CONFIG_SEC_DEBUG_EXTRA \
             -d CONFIG_CC_STACKPROTECTOR_STRONG \
             -e CONFIG_CC_STACKPROTECTOR_NONE \
-            -d CONFIG_SAMSUNG_PRODUCT_SHIP \
-            -d CONFIG_KNOX_KAP
+            -d CONFIG_SAMSUNG_PRODUCT_SHIP
 
-          # Compilare Finală
+          # 8. Compilare finală
           make $MAKE_ARGS $KERNEL_MAKE_ENV olddefconfig
           make $MAKE_ARGS $KERNEL_MAKE_ENV -j$(nproc --all) Image.gz-dtb
 
