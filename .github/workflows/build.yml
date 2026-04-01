@@ -42,14 +42,14 @@ jobs:
 
       - name: Download Stable AOSP Clang & GCC
         run: |
-          # Descarcă Clang r487747c (folosit oficial de Google/Samsung pentru Android 12/13)
+          # Folosim un mirror stabil pentru Clang r487747c
           mkdir clang-stable
-          wget https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r487747c.tar.gz
-          tar -C clang-stable -xf clang-r487747c.tar.gz
+          wget https://github.com/ZyCromerZ/Clang/releases/download/17.0.0-20230522-release/Clang-17.0.0-20230522.tar.gz
+          tar -C clang-stable -xf Clang-17.0.0-20230522.tar.gz
           
-          # Descarcă GCC-urile necesare pentru cross-compiling (nu pot fi scoase pe kernel-uri vechi)
-          git clone https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 -b ndk-release-r16 --depth=1 gcc64
-          git clone https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9 -b ndk-release-r16 --depth=1 gcc32
+          # GCC-urile necesare pentru cross-compiling (Legacy Samsung requirement)
+          git clone https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9.git --depth=1 gcc64
+          git clone https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9.git --depth=1 gcc32
 
       - name: Build kernel
         run: |
@@ -59,16 +59,16 @@ jobs:
           export GCC32_PATH=$(pwd)/gcc32/bin
           export PATH="$CLANG_PATH:$GCC64_PATH:$GCC32_PATH:$PATH"
 
-          # 2. NUCLEAR CLEAN (Fix Segmentation Faults)
-          # Dezactivăm scriptul de test asm-goto care crăpa
+          # 2. NUCLEAR CLEAN (Fix Segmentation Faults & Clang Issues)
+          # Dezactivăm scriptul de test asm-goto care dă greș pe compilatoare noi
           echo "exit 0" > scripts/gcc-goto.sh
           
-          # Curățăm flag-urile "murdare" din Makefile-uri
+          # Eliminăm flag-urile care blochează compilarea pe Clang
           grep -rl "implicit-function-declaration" . | xargs sed -i 's/-Werror=implicit-function-declaration//g' || true
           grep -rl "unknown-warning-option" . | xargs sed -i 's/-Wno-unknown-warning-option//g' || true
           find . -name Makefile* -exec sed -i 's/-Werror//g' {} +
 
-          # 3. Fix Samsung-specific tools
+          # 3. Fix Samsung tools
           echo "#!/bin/bash" > secgetspf
           echo "exit 0" >> secgetspf
           chmod +x secgetspf
@@ -90,10 +90,10 @@ jobs:
             STRIP=llvm-strip \
             O=out"
 
-          # 5. Configurare
+          # 5. Generare Config (R5Q = S10 Lite)
           make $MAKE_ARGS $KERNEL_MAKE_ENV r5q_eur_open_defconfig
 
-          # 6. DEZACTIVARE SEC_DEBUG & SEC_DEBUG_COMMON
+          # 6. Forțare Config (Dezactivare SEC_DEBUG și Stack Protector Strong)
           ./scripts/config --file out/.config \
             -d CONFIG_SEC_DEBUG \
             -d CONFIG_SEC_DEBUG_COMMON \
@@ -107,7 +107,7 @@ jobs:
           make $MAKE_ARGS $KERNEL_MAKE_ENV olddefconfig
           make $MAKE_ARGS $KERNEL_MAKE_ENV -j$(nproc --all) Image.gz-dtb
 
-          # 8. Pregătire AnyKernel3
+          # 8. Copiere în AnyKernel3
           if [ -d "AnyKernel3" ]; then
             cp out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
           fi
