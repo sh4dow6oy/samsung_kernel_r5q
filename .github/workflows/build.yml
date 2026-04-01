@@ -45,70 +45,74 @@ jobs:
         run: |
           mkdir clang-stable
           wget https://github.com/kdrag0n/proton-clang/archive/refs/heads/master.tar.gz -O clang.tar.gz
-          tar -C clang-stable --strip-components=1 -xf clang.tar.gz
+          tar -xf clang.tar.gz -C clang-stable --strip-components=1
           chmod -R +x clang-stable/bin/
 
       - name: Build kernel
         run: |
-          # 1. Setup PATH
-          export CLANG_BIN="$(pwd)/clang-stable/bin"
-          export PATH="$CLANG_BIN:$PATH"
-
-          # 2. NUCLEAR CLEAN
+          # 1. Setup PATH corect
+          export PATH="$(pwd)/clang-stable/bin:$PATH"
+          
+          # 2. Definire variabile de build (fara spatii problematice)
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export HEADER_ARCH=arm64
+          export KBUILD_BUILD_USER=Prime
+          export KBUILD_BUILD_HOST=Kernel
+          
+          # 3. NUCLEAR CLEAN & Fix Samsung Scripts
           echo "exit 0" > scripts/gcc-goto.sh
           chmod +x scripts/gcc-goto.sh
-          
-          # Eliminăm flag-urile care cauzează segfault la teste
-          find . -name Makefile* -exec sed -i 's/-Werror//g' {} +
-          sed -i 's/$(error Cannot use CONFIG_CC_STACKPROTECTOR_STRONG.*/$(warning Bypassed)/g' Makefile
-
-          # 3. Fix Samsung tools
           echo "#!/bin/bash" > secgetspf
           echo "exit 0" >> secgetspf
           chmod +x secgetspf
           export PATH="$PATH:$(pwd)"
 
-          # 4. Mediul de compilare - SOLUȚIA PENTRU .relr.dyn
-          # Forțăm HOSTCC să fie GCC-ul nativ din Ubuntu, nu cel din folderul Clang
-          export KERNEL_MAKE_ENV="DTC_EXT=$(pwd)/scripts/dtc CONFIG_BUILD_ARM64_DT_OVERLAY=y SHELL=/bin/bash HOSTCC=gcc HOSTCXX=g++ HOSTLDFLAGS='-L/usr/lib/x86_64-linux-gnu -L/lib/x86_64-linux-gnu'"
-          
+          # 4. Parametrii Make
+          # Folosim LLVM=1 pentru a seta automat majoritatea utilitarelor (clang, ld.lld, etc.)
           MAKE_ARGS="ARCH=arm64 \
+            O=out \
             CC=clang \
+            HOSTCC=gcc \
+            HOSTCXX=g++ \
+            LD=ld.lld \
+            LLVM=1 \
+            LLVM_IAS=1 \
             CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-            LD=ld.lld \
-            AR=llvm-ar \
-            NM=llvm-nm \
-            OBJCOPY=llvm-objcopy \
-            OBJDUMP=llvm-objdump \
-            STRIP=llvm-strip \
-            O=out"
+            DTC_EXT=$(pwd)/scripts/dtc"
 
-          # 5. Configurare
-          make $MAKE_ARGS $KERNEL_MAKE_ENV r5q_eur_open_defconfig
+          # 5. Build Sequence
+          # Initializare out directory
+          mkdir -p out
+          
+          # Defconfig
+          make $MAKE_ARGS r5q_eur_open_defconfig
 
-          # 6. Patch Config
-          ./scripts/config --file out/.config \
-            -d CONFIG_SEC_DEBUG \
-            -d CONFIG_SEC_DEBUG_COMMON \
-            -d CONFIG_CC_STACKPROTECTOR_STRONG \
-            -e CONFIG_CC_STACKPROTECTOR_NONE \
-            -d CONFIG_SAMSUNG_PRODUCT_SHIP \
-            -e CONFIG_CC_HAVE_ASM_GOTO
+          # 6. Patch .config direct (evita erorile de scripturi Samsung)
+          sed -i 's/CONFIG_SEC_DEBUG=y/CONFIG_SEC_DEBUG=n/g' out/.config || true
+          sed -i 's/CONFIG_SEC_DEBUG_COMMON=y/CONFIG_SEC_DEBUG_COMMON=n/g' out/.config || true
+          sed -i 's/CONFIG_CC_STACKPROTECTOR_STRONG=y/CONFIG_CC_STACKPROTECTOR_NONE=y/g' out/.config || true
+          echo "CONFIG_CC_HAVE_ASM_GOTO=y" >> out/.config
 
-          # 7. Compilare Finală
-          make $MAKE_ARGS $KERNEL_MAKE_ENV olddefconfig
-          make $MAKE_ARGS $KERNEL_MAKE_ENV -j$(nproc --all) Image.gz-dtb
+          # 7. Compilare efectiva
+          make $MAKE_ARGS olddefconfig
+          make $MAKE_ARGS -j$(nproc --all) Image.gz-dtb
 
-          if [ -d "AnyKernel3" ]; then
+          # 8. Mutare rezultat
+          if [ -f "out/arch/arm64/boot/Image.gz-dtb" ]; then
+            mkdir -p AnyKernel3
             cp out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
+          else
+            echo "Kernel build failed - Image.gz-dtb not found!"
+            exit 1
           fi
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: PrimeKernel-R5Q-${{ needs.prepare.outputs.release_ts }}
-          path: AnyKernel3/
+          path: AnyKernel3/Image.gz-dtb
 
   release:
     needs: [prepare, build]
@@ -119,20 +123,12 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: artifacts/
-      - name: Zip and Release
-        run: |
-          cd artifacts
-          for dir in PrimeKernel-*; do
-            if [ -d "$dir" ]; then
-              (cd "$dir" && zip -r "../${dir}.zip" .)
-            fi
-          done
-      - name: Upload release assets
+      - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: "${{ needs.prepare.outputs.release_ts }}"
           name: "PrimeKernel-R5Q-${{ needs.prepare.outputs.release_ts }}"
           body: "${{ github.event.inputs.changelog }}"
-          files: artifacts/*.zip
+          files: artifacts/PrimeKernel-R5Q-*/Image.gz-dtb
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
