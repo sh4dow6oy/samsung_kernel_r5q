@@ -50,29 +50,33 @@ jobs:
 
       - name: Build kernel
         run: |
-          # 1. Definim calea absoluta catre Clang fara sa stricam PATH-ul global
           CLANG_DIR="$(pwd)/clang-stable"
           
-          # 2. Fix Samsung Scripts & Flags
-          echo "exit 0" > scripts/gcc-goto.sh
-          chmod +x scripts/gcc-goto.sh
+          # 1. Curățare FLAG-uri (Metoda sigură: înlocuim cu spațiu, nu ștergem parțial)
+          # Samsung adaugă flag-uri care nu există în Clang-ul modern
+          find . -name Makefile* -exec sed -i 's/-implicit-function-declaration//g' {} +
+          find . -name Makefile* -exec sed -i 's/-Wno-unknown-warning-option//g' {} +
+          find . -name Makefile* -exec sed -i 's/-Werror//g' {} +
+
+          # 2. Fix Samsung Scripts (Trebuie să fie și în PATH și în folderul de build)
+          mkdir -p out
           echo "#!/bin/bash" > secgetspf
           echo "exit 0" >> secgetspf
           chmod +x secgetspf
-          
-          # Curatare flag-uri problematice
-          find . -name Makefile* -exec sed -i 's/-Werror//g' {} +
+          cp secgetspf out/ # Unele Makefile-uri Samsung caută direct în folderul O=out
+          export PATH="$(pwd):$PATH"
 
-          # 3. Parametrii Make - Fortam HOSTCC sa ramana cel din sistem (/usr/bin/gcc)
-          # si folosim calea completa pentru CC (Clang)
+          # 3. Fix asm-goto
+          echo "exit 0" > scripts/gcc-goto.sh
+          chmod +x scripts/gcc-goto.sh
+
+          # 4. Parametrii Make
+          # Folosim calea completă pentru toate uneltele pentru a evita conflictele de sistem
           MAKE_ARGS="ARCH=arm64 \
             O=out \
             HOSTCC=gcc \
             HOSTCXX=g++ \
             CC=${CLANG_DIR}/bin/clang \
-            CLANG_TRIPLE=aarch64-linux-gnu- \
-            CROSS_COMPILE=aarch64-linux-gnu- \
-            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             LD=${CLANG_DIR}/bin/ld.lld \
             AR=${CLANG_DIR}/bin/llvm-ar \
             NM=${CLANG_DIR}/bin/llvm-nm \
@@ -80,29 +84,30 @@ jobs:
             OBJDUMP=${CLANG_DIR}/bin/llvm-objdump \
             STRIP=${CLANG_DIR}/bin/llvm-strip \
             OBJSIZE=${CLANG_DIR}/bin/llvm-size \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
             DTC_EXT=$(pwd)/scripts/dtc"
 
-          # 4. Build Sequence
-          mkdir -p out
-          
-          # Generare config
+          # 5. Build Sequence
+          # Configurare
           make $MAKE_ARGS r5q_eur_open_defconfig
 
-          # 5. Patch .config (Force settings)
+          # Patch .config direct
           sed -i 's/CONFIG_SEC_DEBUG=y/CONFIG_SEC_DEBUG=n/g' out/.config || true
           sed -i 's/CONFIG_CC_STACKPROTECTOR_STRONG=y/CONFIG_CC_STACKPROTECTOR_NONE=y/g' out/.config || true
           echo "CONFIG_CC_HAVE_ASM_GOTO=y" >> out/.config
 
-          # 6. Compilare efectiva
+          # Compilare
           make $MAKE_ARGS olddefconfig
           make $MAKE_ARGS -j$(nproc --all) Image.gz-dtb
 
-          # 7. Verificare si pregatire AnyKernel
+          # 6. Rezultat
           if [ -f "out/arch/arm64/boot/Image.gz-dtb" ]; then
             mkdir -p AnyKernel3
             cp out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
           else
-            echo "EROARE: Kernelul nu s-a compilat!"
+            echo "Build failed!"
             exit 1
           fi
 
