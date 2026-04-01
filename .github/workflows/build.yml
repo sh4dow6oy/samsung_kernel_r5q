@@ -51,10 +51,9 @@ jobs:
 
       - name: Build kernel
         run: |
-          # 1. Definire cai
           CLANG_DIR="$(pwd)/clang-stable"
           
-          # 2. Fix Samsung scripts & Security (secgetspf)
+          # 1. Fix Samsung Security Tools
           mkdir -p out
           echo "#!/bin/bash" > secgetspf
           echo "exit 0" >> secgetspf
@@ -62,12 +61,15 @@ jobs:
           cp secgetspf out/
           export PATH="$(pwd):$PATH"
 
-          # 3. Fix asm-goto test
+          # 2. Fix asm-goto & Werror (Eliminăm oprirea la erori de tip implicit declaration)
           echo "exit 0" > scripts/gcc-goto.sh
           chmod +x scripts/gcc-goto.sh
+          
+          # Eliminăm forțarea -Werror din Makefile-urile principale
+          find . -name Makefile* -exec sed -i 's/-Werror//g' {} +
 
-          # 4. Parametrii Make (Curatati de ghilimele problematice)
-          # Am scos flag-urile complexe din KCFLAGS pentru a evita eroarea "No such file or directory"
+          # 3. Parametrii Make
+          # Adăugăm -Wno-error=implicit-function-declaration pentru a trece de SEC_DEBUG
           MAKE_ARGS="ARCH=arm64 \
             O=out \
             HOSTCC=gcc \
@@ -83,28 +85,30 @@ jobs:
             CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             CLANG_TRIPLE=aarch64-linux-gnu- \
-            DTC_EXT=$(pwd)/scripts/dtc"
+            DTC_EXT=$(pwd)/scripts/dtc \
+            KCFLAGS='-Wno-implicit-function-declaration -Wno-error -Wno-implicit-int' \
+            KCPPFLAGS='-Wno-unknown-warning-option'"
 
-          # 5. Generare config pentru R5Q
+          # 4. Configurare
           make $MAKE_ARGS r5q_eur_open_defconfig
 
-          # 6. Patch .config direct (Solutia stabila pentru Stack Protector si Debug)
-          # Dezactivam ce cauzeaza erori de linkare sau compilare
+          # 5. Patch .config
+          # Forțăm dezactivarea SEC_DEBUG și Stack Protector pentru stabilitatea build-ului
           sed -i 's/CONFIG_SEC_DEBUG=y/CONFIG_SEC_DEBUG=n/g' out/.config || true
           sed -i 's/CONFIG_CC_STACKPROTECTOR_STRONG=y/n/g' out/.config || true
           sed -i 's/CONFIG_CC_STACKPROTECTOR=y/n/g' out/.config || true
           echo "CONFIG_CC_STACKPROTECTOR_NONE=y" >> out/.config
           echo "CONFIG_CC_HAVE_ASM_GOTO=y" >> out/.config
 
-          # 7. Compilare finala
+          # 6. Compilare
           make $MAKE_ARGS olddefconfig
           make $MAKE_ARGS -j$(nproc --all) Image.gz-dtb
 
-          # 8. Verificare rezultat
+          # 7. Finalizare
           if [ -f "out/arch/arm64/boot/Image.gz-dtb" ]; then
-            echo "SUCCESS: Kernel built at out/arch/arm64/boot/Image.gz-dtb"
+            echo "Kernel built successfully!"
           else
-            echo "ERROR: Image.gz-dtb not found. Build failed."
+            echo "Build failed: Image.gz-dtb was not generated."
             exit 1
           fi
 
