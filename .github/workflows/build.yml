@@ -1,60 +1,66 @@
-name: Build Samsung SM8150 Kernel
+name: Lumi Kernel R5Q Raw Build (DTC Optimized)
 
 on:
-  workflow_dispatch: # Permite pornirea manuală a build-ului
+  workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Kernel Source
-        uses: actions/checkout@v4
-        with:
-          ref: rawr-bpf # Branch-ul menționat de tine
-
-      - name: Install Dependencies
+      - name: 1. Setup Build Environment
         run: |
           sudo apt-get update
-          sudo apt-get install -y bc build-essential flex bison ncurses-dev libssl-dev libelf-dev xz-utils libfl-dev python3
-
-      - name: Setup Clang
-        run: |
-          mkdir clang
-          cd clang
-          # Descarcă un toolchain Clang stabil (exemplu: Proton Clang)
-          wget https://github.com/kdrag0n/proton-clang/archive/refs/heads/master.tar.gz
-          tar -xf master.tar.gz
-          echo "$(pwd)/proton-clang-master/bin" >> $GITHUB_PATH
-
-      - name: Build Kernel
-        run: |
-          export ARCH=arm64
-          export SUBARCH=arm64
-          export CROSS_COMPILE=aarch64-linux-gnu-
-          export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
-          export CC=clang
+          sudo apt-get install -y bc build-essential bison flex libssl-dev libelf-dev \
+          clang lld llvm-dev python3 python3-dev git python-is-python3 zstd libncurses6 \
+          libncursesw6 wget curl libtinfo6 || true
           
-          # Definirea fișierului de config
-          make O=out r5q_eur_open_defconfig
-          
-          # Compilarea propriu-zisă (folosim toate thread-urile disponibile)
-          make -j$(nproc --all) O=out \
-                      ARCH=arm64 \
-                      CC=clang \
-                      CROSS_COMPILE=aarch64-linux-gnu- \
-                      CROSS_COMPILE_ARM32=arm-linux-gnueabi-
+          # Fix biblioteci Neutron Clang (Legacy Support)
+          sudo ln -s /usr/lib/x86_64-linux-gnu/libncurses.so.6 /usr/lib/x86_64-linux-gnu/libncurses.so.5 || true
+          sudo ln -s /usr/lib/x86_64-linux-gnu/libtinfo.so.6 /usr/lib/x86_64-linux-gnu/libtinfo.so.5 || true
 
-      - name: Check for Image
+      - name: 2. Setup Neutron Clang Toolchain
         run: |
-          if [ -f out/arch/arm64/boot/Image.gz-dtb ]; then
-              echo "Build successful!"
-          else
-              echo "Build failed! Image.gz-dtb not found."
-              exit 1
-          fi
+          mkdir -p clang
+          wget -q --show-progress https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
+          tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
+          echo "$GITHUB_WORKSPACE/clang/bin" >> $GITHUB_PATH
+          echo "LD_LIBRARY_PATH=$GITHUB_WORKSPACE/clang/lib:$LD_LIBRARY_PATH" >> $GITHUB_ENV
 
-      - name: Upload Kernel Image
+      - name: 3. Checkout LumiPlayground (rawr-bpf branch)
+        uses: actions/checkout@v4
+        with:
+          repository: 'LumiPlayground/android_kernel_samsung_sm8150'
+          ref: 'rawr-bpf'
+          path: kernel
+
+      - name: 4. Build Prep
+        working-directory: kernel
+        run: |
+          # Dezactivăm oprirea build-ului la Warning-uri pentru Neutron Clang
+          find . -name Makefile -exec sed -i 's/-Werror//g' {} +
+
+      - name: 5. Compilare Kernel (r5q_eur_open_defconfig)
+        working-directory: kernel
+        run: |
+          export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
+          export LD_LIBRARY_PATH="$GITHUB_WORKSPACE/clang/lib:$LD_LIBRARY_PATH"
+          
+          # Definirea mediului de compilare solicitat
+          KERNEL_MAKE_ENV="DTC_EXT=$(pwd)/scripts/dtc CONFIG_BUILD_ARM64_DT_OVERLAY=y"
+          
+          MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang AS=clang LD=ld.lld \
+          CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
+          
+          # 1. Generare Config
+          make $MAKE_ARGS $KERNEL_MAKE_ENV r5q_eur_open_defconfig
+
+          # 2. Build direct folosind mediul specificat
+          make $MAKE_ARGS $KERNEL_MAKE_ENV -j$(nproc --all) Image.gz-dtb
+
+      - name: 6. Upload Kernel
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-r5q-SM8150
-          path: out/arch/arm64/boot/Image.gz-dtb
+          name: Lumi-Kernel-R5Q-Raw-DTC
+          path: |
+            kernel/out/arch/arm64/boot/Image.gz-dtb
+            kernel/out/.config
