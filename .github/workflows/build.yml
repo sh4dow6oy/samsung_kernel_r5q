@@ -31,7 +31,7 @@ jobs:
     needs: prepare
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v4
         with:
           submodules: true
           fetch-depth: 1
@@ -40,20 +40,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            build-essential \
-            git \
-            curl \
-            unzip \
-            wget \
-            zip \
-            zstd \
-            bc \
-            bison \
-            flex \
-            libssl-dev \
-            libelf-dev \
-            python3 \
-            python-is-python3
+            build-essential git curl unzip wget zip zstd \
+            bc bison flex libssl-dev libelf-dev python3 python-is-python3
 
       - name: Download latest Google clang
         run: |
@@ -65,25 +53,46 @@ jobs:
 
       - name: Build kernel
         run: |
-          # Adăugăm Google Clang în PATH
+          # 1. Setup Toolchain Path
           export PATH="$(pwd)/llvm-21/bin:$PATH"
           export CLANG_TRIPLE=aarch64-linux-gnu-
 
-          # Bypass erori de securitate și warnings stricte (Esențial pentru Clang modern pe surse vechi)
+          # 2. Hard-Patch Makefile (Eliminăm -Werror și bypass la Stack Protector Check)
           find . -name Makefile -exec sed -i 's/-Werror//g' {} +
           sed -i 's/$(error Cannot use CONFIG_CC_STACKPROTECTOR_STRONG.*/$(warning Bypassed)/g' Makefile
+          
+          # 3. Fix 'secgetspf' Error (Creăm un utilitar binar fals pentru Makefile-ul Samsung)
+          echo "#!/bin/bash" > secgetspf
+          echo "exit 0" >> secgetspf
+          chmod +x secgetspf
+          export PATH="$PATH:$(pwd)"
 
-          # Mediul de compilare solicitat de tine
+          # 4. Mediul de compilare solicitat (DTC & Overlay)
           export KERNEL_MAKE_ENV="DTC_EXT=$(pwd)/scripts/dtc CONFIG_BUILD_ARM64_DT_OVERLAY=y CONFIG_CC_STACKPROTECTOR_NONE=y"
           
           MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang AS=clang LD=ld.lld \
           CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
 
-          # Generare config R5Q și compilare
+          # 5. Generare Config R5Q
           make $MAKE_ARGS $KERNEL_MAKE_ENV r5q_eur_open_defconfig
+
+          # 6. Dezactivare SEC_DEBUG și forțare Stack Protector None în .config
+          ./scripts/config --file out/.config \
+            -d CONFIG_SEC_DEBUG \
+            -d CONFIG_SEC_DEBUG_COMMON \
+            -d CONFIG_SEC_DEBUG_EXTRA \
+            -d CONFIG_CC_STACKPROTECTOR_STRONG \
+            -e CONFIG_CC_STACKPROTECTOR_NONE \
+            -d CONFIG_SAMSUNG_PRODUCT_SHIP \
+            -d CONFIG_KNOX_KAP \
+            -e CONFIG_IKCONFIG \
+            -e CONFIG_IKCONFIG_PROC
+
+          # 7. Re-procesare config și Compilare Finală
+          make $MAKE_ARGS $KERNEL_MAKE_ENV olddefconfig
           make $MAKE_ARGS $KERNEL_MAKE_ENV -j$(nproc --all) Image.gz-dtb
 
-          # Copiere în AnyKernel3
+          # 8. Pregătire AnyKernel3
           if [ -d "AnyKernel3" ]; then
             cp out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
           fi
@@ -105,13 +114,13 @@ jobs:
           fi
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v4
         with:
           name: PrimeKernel-R5Q-${{ needs.prepare.outputs.release_ts }}
           path: AnyKernel3/
 
       - name: Upload release notes
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v4
         with:
           name: release-notes
           path: version.txt
