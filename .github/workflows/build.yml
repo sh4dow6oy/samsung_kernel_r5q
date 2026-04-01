@@ -40,63 +40,74 @@ jobs:
             build-essential git curl unzip wget zip zstd \
             bc bison flex libssl-dev libelf-dev python3 python-is-python3
 
-      - name: Download Google clang (NDK r29)
+      - name: Download Stable AOSP Clang & GCC
         run: |
-          wget -O llvm.tar.zst https://github.com/Ylarod/setup-ndk-clang/releases/download/prebuilt/clang-linux-x86-ndk-r29-r563880c.tar.zst
-          mkdir llvm-21; cd llvm-21
-          tar -I unzstd -xf ../llvm.tar.zst
-          rm ../llvm.tar.zst
-          cd ..
+          # Descarcă Clang r487747c (folosit oficial de Google/Samsung pentru Android 12/13)
+          mkdir clang-stable
+          wget https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r487747c.tar.gz
+          tar -C clang-stable -xf clang-r487747c.tar.gz
+          
+          # Descarcă GCC-urile necesare pentru cross-compiling (nu pot fi scoase pe kernel-uri vechi)
+          git clone https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 -b ndk-release-r16 --depth=1 gcc64
+          git clone https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9 -b ndk-release-r16 --depth=1 gcc32
 
       - name: Build kernel
         run: |
-          # 1. Setup Toolchain Path
-          export PATH="$(pwd)/llvm-21/bin:$PATH"
-          export CLANG_TRIPLE=aarch64-linux-gnu-
+          # 1. Setup PATH
+          export CLANG_PATH=$(pwd)/clang-stable/bin
+          export GCC64_PATH=$(pwd)/gcc64/bin
+          export GCC32_PATH=$(pwd)/gcc32/bin
+          export PATH="$CLANG_PATH:$GCC64_PATH:$GCC32_PATH:$PATH"
 
-          # 2. NUCLEAR CLEAN & SEGFAULT FIX
-          # Dezactivăm scriptul care cauzează Segmentation Fault
+          # 2. NUCLEAR CLEAN (Fix Segmentation Faults)
+          # Dezactivăm scriptul de test asm-goto care crăpa
           echo "exit 0" > scripts/gcc-goto.sh
           
-          # Curățăm flag-urile problematice
+          # Curățăm flag-urile "murdare" din Makefile-uri
           grep -rl "implicit-function-declaration" . | xargs sed -i 's/-Werror=implicit-function-declaration//g' || true
           grep -rl "unknown-warning-option" . | xargs sed -i 's/-Wno-unknown-warning-option//g' || true
-          
-          # Eliminăm Werror global
-          find . -name Makefile -exec sed -i 's/-Werror//g' {} +
-          find scripts -name Makefile* -exec sed -i 's/-Werror//g' {} +
+          find . -name Makefile* -exec sed -i 's/-Werror//g' {} +
 
-          # 3. Hard-Patch pentru bypass Stack Protector
-          sed -i 's/$(error Cannot use CONFIG_CC_STACKPROTECTOR_STRONG.*/$(warning Bypassed)/g' Makefile
-          
-          # 4. Fix 'secgetspf'
+          # 3. Fix Samsung-specific tools
           echo "#!/bin/bash" > secgetspf
           echo "exit 0" >> secgetspf
           chmod +x secgetspf
           export PATH="$PATH:$(pwd)"
 
-          # 5. Configurare mediu
-          # Adăugăm shell=/bin/bash pentru a stabiliza execuția scripturilor
-          export KERNEL_MAKE_ENV="DTC_EXT=$(pwd)/scripts/dtc CONFIG_BUILD_ARM64_DT_OVERLAY=y CONFIG_CC_STACKPROTECTOR_NONE=y SHELL=/bin/bash"
+          # 4. Mediul de compilare
+          export KERNEL_MAKE_ENV="DTC_EXT=$(pwd)/scripts/dtc CONFIG_BUILD_ARM64_DT_OVERLAY=y SHELL=/bin/bash"
           
-          MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang AS=clang LD=ld.lld \
-          CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
+          MAKE_ARGS="ARCH=arm64 \
+            CC=clang \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            CROSS_COMPILE=aarch64-linux-android- \
+            CROSS_COMPILE_ARM32=arm-linux-androideabi- \
+            LD=ld.lld \
+            AR=llvm-ar \
+            NM=llvm-nm \
+            OBJCOPY=llvm-objcopy \
+            OBJDUMP=llvm-objdump \
+            STRIP=llvm-strip \
+            O=out"
 
-          # 6. Generare Config
+          # 5. Configurare
           make $MAKE_ARGS $KERNEL_MAKE_ENV r5q_eur_open_defconfig
 
-          # 7. Patch .config pentru a preveni crash-ul la compilare
+          # 6. DEZACTIVARE SEC_DEBUG & SEC_DEBUG_COMMON
           ./scripts/config --file out/.config \
-            -e CONFIG_CC_HAVE_ASM_GOTO \
             -d CONFIG_SEC_DEBUG \
+            -d CONFIG_SEC_DEBUG_COMMON \
+            -d CONFIG_SEC_DEBUG_EXTRA \
             -d CONFIG_CC_STACKPROTECTOR_STRONG \
             -e CONFIG_CC_STACKPROTECTOR_NONE \
-            -d CONFIG_SAMSUNG_PRODUCT_SHIP
+            -d CONFIG_SAMSUNG_PRODUCT_SHIP \
+            -e CONFIG_CC_HAVE_ASM_GOTO
 
-          # 8. Compilare finală
+          # 7. Compilare Finală
           make $MAKE_ARGS $KERNEL_MAKE_ENV olddefconfig
           make $MAKE_ARGS $KERNEL_MAKE_ENV -j$(nproc --all) Image.gz-dtb
 
+          # 8. Pregătire AnyKernel3
           if [ -d "AnyKernel3" ]; then
             cp out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
           fi
