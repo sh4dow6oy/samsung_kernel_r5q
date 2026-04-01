@@ -8,6 +8,10 @@ on:
           type: boolean
           required: true
           default: false
+      changelog:
+          description: 'Changelog'
+          type: string
+          required: false
 
 jobs:
   prepare:
@@ -23,7 +27,6 @@ jobs:
     runs-on: ubuntu-latest
     needs: prepare
     steps:
-      # MODIFICARE: Descarcă sursa de pe branch-ul specific rawr-bpf
       - name: Checkout kernel source
         uses: actions/checkout@v4
         with:
@@ -48,9 +51,10 @@ jobs:
 
       - name: Build kernel
         run: |
+          # 1. Definire cai
           CLANG_DIR="$(pwd)/clang-stable"
           
-          # Fix Samsung scripts
+          # 2. Fix Samsung scripts & Security (secgetspf)
           mkdir -p out
           echo "#!/bin/bash" > secgetspf
           echo "exit 0" >> secgetspf
@@ -58,13 +62,12 @@ jobs:
           cp secgetspf out/
           export PATH="$(pwd):$PATH"
 
-          # Fix asm-goto
+          # 3. Fix asm-goto test
           echo "exit 0" > scripts/gcc-goto.sh
           chmod +x scripts/gcc-goto.sh
 
-          # Parametrii de build
-          # Observație: Pe ramura rawr-bpf, s-ar putea să nu mai avem nevoie de -Wno- flags,
-          # dar le păstrăm pentru siguranță.
+          # 4. Parametrii Make (Curatati de ghilimele problematice)
+          # Am scos flag-urile complexe din KCFLAGS pentru a evita eroarea "No such file or directory"
           MAKE_ARGS="ARCH=arm64 \
             O=out \
             HOSTCC=gcc \
@@ -80,27 +83,28 @@ jobs:
             CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             CLANG_TRIPLE=aarch64-linux-gnu- \
-            DTC_EXT=$(pwd)/scripts/dtc \
-            KCFLAGS='-Wno-implicit-function-declaration -Wno-incompatible-pointer-types -fno-stack-protector' \
-            KCPPFLAGS='-Wno-unknown-warning-option'"
+            DTC_EXT=$(pwd)/scripts/dtc"
 
-          # Generare config pentru R5Q (S10 Lite / SM8150)
+          # 5. Generare config pentru R5Q
           make $MAKE_ARGS r5q_eur_open_defconfig
 
-          # Patch .config
+          # 6. Patch .config direct (Solutia stabila pentru Stack Protector si Debug)
+          # Dezactivam ce cauzeaza erori de linkare sau compilare
           sed -i 's/CONFIG_SEC_DEBUG=y/CONFIG_SEC_DEBUG=n/g' out/.config || true
-          sed -i 's/CONFIG_CC_STACKPROTECTOR_STRONG=y/CONFIG_CC_STACKPROTECTOR_NONE=y/g' out/.config || true
+          sed -i 's/CONFIG_CC_STACKPROTECTOR_STRONG=y/n/g' out/.config || true
+          sed -i 's/CONFIG_CC_STACKPROTECTOR=y/n/g' out/.config || true
+          echo "CONFIG_CC_STACKPROTECTOR_NONE=y" >> out/.config
           echo "CONFIG_CC_HAVE_ASM_GOTO=y" >> out/.config
 
-          # Compilare
+          # 7. Compilare finala
           make $MAKE_ARGS olddefconfig
           make $MAKE_ARGS -j$(nproc --all) Image.gz-dtb
 
-          # Rezultat
+          # 8. Verificare rezultat
           if [ -f "out/arch/arm64/boot/Image.gz-dtb" ]; then
-            echo "Kernel built successfully!"
+            echo "SUCCESS: Kernel built at out/arch/arm64/boot/Image.gz-dtb"
           else
-            echo "Build failed!"
+            echo "ERROR: Image.gz-dtb not found. Build failed."
             exit 1
           fi
 
@@ -109,3 +113,22 @@ jobs:
         with:
           name: PrimeKernel-R5Q-BPF-${{ needs.prepare.outputs.release_ts }}
           path: out/arch/arm64/boot/Image.gz-dtb
+
+  release:
+    needs: [prepare, build]
+    if: github.event.inputs.release == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: "${{ needs.prepare.outputs.release_ts }}"
+          name: "PrimeKernel-R5Q-BPF-${{ needs.prepare.outputs.release_ts }}"
+          body: "${{ github.event.inputs.changelog }}"
+          files: artifacts/PrimeKernel-R5Q-BPF-*/Image.gz-dtb
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
