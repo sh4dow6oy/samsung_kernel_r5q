@@ -52,26 +52,20 @@ jobs:
         run: |
           CLANG_DIR="$(pwd)/clang-stable"
           
-          # 1. Curățare FLAG-uri (Metoda sigură: înlocuim cu spațiu, nu ștergem parțial)
-          # Samsung adaugă flag-uri care nu există în Clang-ul modern
-          find . -name Makefile* -exec sed -i 's/-implicit-function-declaration//g' {} +
-          find . -name Makefile* -exec sed -i 's/-Wno-unknown-warning-option//g' {} +
-          find . -name Makefile* -exec sed -i 's/-Werror//g' {} +
-
-          # 2. Fix Samsung Scripts (Trebuie să fie și în PATH și în folderul de build)
+          # 1. Fix Samsung Scripts & Security tools
           mkdir -p out
           echo "#!/bin/bash" > secgetspf
           echo "exit 0" >> secgetspf
           chmod +x secgetspf
-          cp secgetspf out/ # Unele Makefile-uri Samsung caută direct în folderul O=out
+          cp secgetspf out/
           export PATH="$(pwd):$PATH"
 
-          # 3. Fix asm-goto
+          # 2. Fix asm-goto (dezactivăm testul care crapă compilarea pe Clang)
           echo "exit 0" > scripts/gcc-goto.sh
           chmod +x scripts/gcc-goto.sh
 
-          # 4. Parametrii Make
-          # Folosim calea completă pentru toate uneltele pentru a evita conflictele de sistem
+          # 3. Parametrii Make - Metoda "Injecție"
+          # Adăugăm flag-uri pentru a ignora erorile Samsung în loc să ștergem Makefile-urile
           MAKE_ARGS="ARCH=arm64 \
             O=out \
             HOSTCC=gcc \
@@ -87,27 +81,32 @@ jobs:
             CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             CLANG_TRIPLE=aarch64-linux-gnu- \
-            DTC_EXT=$(pwd)/scripts/dtc"
+            DTC_EXT=$(pwd)/scripts/dtc \
+            KCFLAGS=-Wno-implicit-function-declaration \
+            KCPPFLAGS=-Wno-unknown-warning-option"
 
-          # 5. Build Sequence
-          # Configurare
+          # 4. Build Sequence
+          # Resetăm eventualele resturi de la sed-ul anterior dacă rulezi pe același mediu
+          git checkout . 
+
+          # Generare config
           make $MAKE_ARGS r5q_eur_open_defconfig
 
-          # Patch .config direct
+          # 5. Patch .config (Dezactivăm SEC_DEBUG care cauzează probleme de linkare)
           sed -i 's/CONFIG_SEC_DEBUG=y/CONFIG_SEC_DEBUG=n/g' out/.config || true
           sed -i 's/CONFIG_CC_STACKPROTECTOR_STRONG=y/CONFIG_CC_STACKPROTECTOR_NONE=y/g' out/.config || true
           echo "CONFIG_CC_HAVE_ASM_GOTO=y" >> out/.config
 
-          # Compilare
+          # 6. Compilare finală
           make $MAKE_ARGS olddefconfig
           make $MAKE_ARGS -j$(nproc --all) Image.gz-dtb
 
-          # 6. Rezultat
+          # 7. Verificare rezultat
           if [ -f "out/arch/arm64/boot/Image.gz-dtb" ]; then
             mkdir -p AnyKernel3
             cp out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
           else
-            echo "Build failed!"
+            echo "Build failed: Image.gz-dtb not found!"
             exit 1
           fi
 
