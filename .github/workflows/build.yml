@@ -1,68 +1,154 @@
-name: Lumi Kernel R5Q Raw Build (DTC Optimized)
+name: Build Prime Kernel R5Q
 
 on:
   workflow_dispatch:
+    inputs:
+      release:
+          description: 'Upload release'
+          type: boolean
+          required: true
+          default: false
+      changelog:
+          description: 'Changelog'
+          type: string
+          required: false
 
 jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      release_ts: ${{ steps.ts.outputs.release_ts }}
+
+    steps:
+      - name: Generate release date
+        id: ts
+        run: |
+          RELEASE_TS=$(date +'%Y%m%d-%H%M%S')
+          echo "release_ts=$RELEASE_TS" >> $GITHUB_OUTPUT
+
   build:
     runs-on: ubuntu-latest
+    needs: prepare
     steps:
-      - name: 1. Setup Build Environment
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          submodules: true
+          fetch-depth: 1
+
+      - name: Install build tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y bc build-essential bison flex libssl-dev libelf-dev \
-          clang lld llvm-dev python3 python3-dev git python-is-python3 zstd libncurses6 \
-          libncursesw6 wget curl libtinfo6 || true
-          
-          # Fix biblioteci Neutron Clang
-          sudo ln -s /usr/lib/x86_64-linux-gnu/libncurses.so.6 /usr/lib/x86_64-linux-gnu/libncurses.so.5 || true
-          sudo ln -s /usr/lib/x86_64-linux-gnu/libtinfo.so.6 /usr/lib/x86_64-linux-gnu/libtinfo.so.5 || true
+          sudo apt-get install -y \
+            build-essential \
+            git \
+            curl \
+            unzip \
+            wget \
+            zip \
+            zstd \
+            bc \
+            bison \
+            flex \
+            libssl-dev \
+            libelf-dev \
+            python3 \
+            python-is-python3
 
-      - name: 2. Setup Neutron Clang Toolchain
+      - name: Download latest Google clang
         run: |
-          mkdir -p clang
-          wget -q --show-progress https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
-          tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
-          echo "$GITHUB_WORKSPACE/clang/bin" >> $GITHUB_PATH
-          echo "LD_LIBRARY_PATH=$GITHUB_WORKSPACE/clang/lib:$LD_LIBRARY_PATH" >> $GITHUB_ENV
+          wget -O llvm.tar.zst https://github.com/Ylarod/setup-ndk-clang/releases/download/prebuilt/clang-linux-x86-ndk-r29-r563880c.tar.zst
+          mkdir llvm-21; cd llvm-21
+          tar -I unzstd -xf ../llvm.tar.zst
+          rm ../llvm.tar.zst
+          cd ..
 
-      - name: 3. Checkout LumiPlayground (rawr-bpf branch)
-        uses: actions/checkout@v4
-        with:
-          repository: 'LumiPlayground/android_kernel_samsung_sm8150'
-          ref: 'rawr-bpf'
-          path: kernel
-
-      - name: 4. Build Prep (DTC & Warnings Fix)
-        working-directory: kernel
+      - name: Build kernel
         run: |
-          # Dezactivăm -Werror pentru a trece de avertismentele stricte ale Neutron Clang
+          # Adăugăm Google Clang în PATH
+          export PATH="$(pwd)/llvm-21/bin:$PATH"
+          export CLANG_TRIPLE=aarch64-linux-gnu-
+
+          # Bypass erori de securitate și warnings stricte (Esențial pentru Clang modern pe surse vechi)
           find . -name Makefile -exec sed -i 's/-Werror//g' {} +
-          # Dezactivăm verificarea stack-protector care blochează build-ul
-          sed -i 's/$(error Cannot use CONFIG_CC_STACKPROTECTOR_STRONG.*/$(warning Stack protector check bypassed)/g' Makefile
+          sed -i 's/$(error Cannot use CONFIG_CC_STACKPROTECTOR_STRONG.*/$(warning Bypassed)/g' Makefile
 
-      - name: 5. Compilare Kernel (r5q_eur_open_defconfig)
-        working-directory: kernel
-        run: |
-          export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
-          export LD_LIBRARY_PATH="$GITHUB_WORKSPACE/clang/lib:$LD_LIBRARY_PATH"
-          
-          # Mediul de compilare solicitat + deactivare stack protector din argumente pentru siguranță
-          KERNEL_MAKE_ENV="DTC_EXT=$(pwd)/scripts/dtc CONFIG_BUILD_ARM64_DT_OVERLAY=y CONFIG_CC_STACKPROTECTOR_NONE=y"
+          # Mediul de compilare solicitat de tine
+          export KERNEL_MAKE_ENV="DTC_EXT=$(pwd)/scripts/dtc CONFIG_BUILD_ARM64_DT_OVERLAY=y CONFIG_CC_STACKPROTECTOR_NONE=y"
           
           MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang AS=clang LD=ld.lld \
           CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
-          
-          # 1. Generare Config
-          make $MAKE_ARGS $KERNEL_MAKE_ENV r5q_eur_open_defconfig
 
-          # 2. Compilare propriu-zisă
+          # Generare config R5Q și compilare
+          make $MAKE_ARGS $KERNEL_MAKE_ENV r5q_eur_open_defconfig
           make $MAKE_ARGS $KERNEL_MAKE_ENV -j$(nproc --all) Image.gz-dtb
 
-      - name: 6. Upload Kernel
-        uses: actions/upload-artifact@v4
+          # Copiere în AnyKernel3
+          if [ -d "AnyKernel3" ]; then
+            cp out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
+          fi
+
+      - name: Generate release notes
+        run: |
+          : > version.txt
+          echo "**Kernel version:** $(cat out/include/config/kernel.release)  " >> version.txt
+          echo >> version.txt
+          export KHASH="$(git rev-parse HEAD)"
+          echo "**Kernel source:** [LumiPlayground/sm8150](https://github.com/LumiPlayground/android_kernel_samsung_sm8150/tree/$KHASH)" >> version.txt
+
+          if [ "${{ github.event.inputs.release }}" = "true" ] && \
+             [ -n "${{ github.event.inputs.changelog }}" ]; then
+            echo >> version.txt
+            echo "**Changelog:**" >> version.txt
+            echo >> version.txt
+            printf "%b\n" "${{ github.event.inputs.changelog }}" >> version.txt
+          fi
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v5
         with:
-          name: Lumi-Kernel-R5Q-Raw-DTC
-          path: |
-            kernel/out/arch/arm64/boot/Image.gz-dtb
-            kernel/out/.config
+          name: PrimeKernel-R5Q-${{ needs.prepare.outputs.release_ts }}
+          path: AnyKernel3/
+
+      - name: Upload release notes
+        uses: actions/upload-artifact@v5
+        with:
+          name: release-notes
+          path: version.txt
+          retention-days: 1
+
+  release:
+    needs: [prepare, build]
+    if: github.event.inputs.release == 'true'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+
+      - name: Zip build artifacts
+        run: |
+          cd artifacts
+          for dir in PrimeKernel-*; do
+            if [ -d "$dir" ]; then
+              (cd "$dir" && zip -r "../${dir}.zip" .)
+            fi
+          done
+
+      - name: Download release version
+        uses: actions/download-artifact@v4
+        with:
+          name: release-notes
+          path: ./
+
+      - name: Upload release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          body_path: version.txt
+          tag_name: "${{ needs.prepare.outputs.release_ts }}"
+          name: "PrimeKernel-R5Q-${{ needs.prepare.outputs.release_ts }}"
+          files: artifacts/*.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
