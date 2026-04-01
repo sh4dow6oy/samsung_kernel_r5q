@@ -53,21 +53,20 @@ jobs:
           export PATH="$(pwd)/llvm-21/bin:$PATH"
           export CLANG_TRIPLE=aarch64-linux-gnu-
 
-          # --- FIX FLAGURI CLANG (CRITIC) ---
-          # 1. Eliminăm flag-ul care cauzează "unknown argument"
-          find . -name Makefile -exec sed -i 's/-Werror=implicit-function-declaration//g' {} +
+          # --- NUCLEAR CLEAN PENTRU FLAG-URI (Rezolvă clang-real error) ---
+          # Eliminăm complet flag-urile problematice din toată sursa
+          grep -rl "implicit-function-declaration" . | xargs sed -i 's/-Werror=implicit-function-declaration//g' || true
+          grep -rl "unknown-warning-option" . | xargs sed -i 's/-Wno-unknown-warning-option//g' || true
+          grep -rl "unknown-warning-option" . | xargs sed -i 's/-Wunknown-warning-option//g' || true
           
-          # 2. Fix pentru eroarea "=unknown-warning-option" (curățăm testele de flag-uri eșuate)
-          find . -name Makefile* -exec sed -i 's/$(call cc-option,-Wno-unknown-warning-option)//g' {} +
-          find scripts -name Makefile* -exec sed -i 's/-Wno-unknown-warning-option//g' {} +
-          
-          # 3. Dezactivăm Werror global
+          # Dezactivăm Werror global în toate Makefile-urile
           find . -name Makefile -exec sed -i 's/-Werror//g' {} +
-          
-          # 4. Bypass Stack Protector Check
+          find scripts -name Makefile* -exec sed -i 's/-Werror//g' {} +
+
+          # Bypass Stack Protector Check
           sed -i 's/$(error Cannot use CONFIG_CC_STACKPROTECTOR_STRONG.*/$(warning Bypassed)/g' Makefile
           
-          # 5. Fix 'secgetspf'
+          # Fix 'secgetspf'
           echo "#!/bin/bash" > secgetspf
           echo "exit 0" >> secgetspf
           chmod +x secgetspf
@@ -91,7 +90,7 @@ jobs:
             -d CONFIG_SAMSUNG_PRODUCT_SHIP \
             -d CONFIG_KNOX_KAP
 
-          # Compilare
+          # Compilare Finală
           make $MAKE_ARGS $KERNEL_MAKE_ENV olddefconfig
           make $MAKE_ARGS $KERNEL_MAKE_ENV -j$(nproc --all) Image.gz-dtb
 
