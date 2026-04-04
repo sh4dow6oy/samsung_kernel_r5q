@@ -9,8 +9,8 @@ jobs:
       - name: Checkout Source
         uses: actions/checkout@v4
         with:
-          repository: Roynas-Android-Playground/kernel_samsung_r3q
-          ref: master
+          repository: LumiPlayground/android_kernel_samsung_sm8150
+          ref: rawr-bpf
           fetch-depth: 1
 
       - name: Install Dependencies
@@ -26,12 +26,6 @@ jobs:
       - name: Build Kernel
         run: |
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
-
-          # --- SPOOF KERNEL VERSION & NAME (About Phone) ---
-          sed -i 's/^VERSION =.*/VERSION = 4/' Makefile
-          sed -i 's/^PATCHLEVEL =.*/PATCHLEVEL = 19/' Makefile
-          sed -i 's/^SUBLEVEL =.*/SUBLEVEL = 325/' Makefile
-          sed -i 's/^LOCALVERSION =.*/LOCALVERSION = -sh4dow6oy/' Makefile
           
           # 1. NUCLEAR CLEANUP (Prevenim Error 1)
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
@@ -65,9 +59,6 @@ jobs:
           # 5. Configurare
           make $MAKE_ARGS r5q_defconfig
           ./scripts/config --file out/.config \
-            -e CONFIG_BPF_JIT_ALWAYS_ON \
-            -d CONFIG_LOCALVERSION_AUTO \
-            --set-str CONFIG_LOCALVERSION "-sh4dow6oy" \
             -d CONFIG_LTO -d CONFIG_LTO_CLANG -e CONFIG_LTO_NONE \
             -d CONFIG_CC_STACKPROTECTOR_STRONG -e CONFIG_CC_STACKPROTECTOR_NONE \
             -d CONFIG_SHADOW_CALL_STACK -d CONFIG_KNOX_KAP -d CONFIG_SECURITY_SAMSUNG_KNOX \
