@@ -10,7 +10,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: LumiPlayground/android_kernel_samsung_sm8150
-          ref: rawr-bpf
+          ref: rawr-bpf-new
           fetch-depth: 1
 
       - name: Install Dependencies
