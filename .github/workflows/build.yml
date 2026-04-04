@@ -62,7 +62,7 @@ jobs:
             -d CONFIG_LTO -d CONFIG_LTO_CLANG -e CONFIG_LTO_NONE \
             -d CONFIG_CC_STACKPROTECTOR_STRONG -e CONFIG_CC_STACKPROTECTOR_NONE \
             -d CONFIG_SHADOW_CALL_STACK -d CONFIG_KNOX_KAP -d CONFIG_SECURITY_SAMSUNG_KNOX \
-            -d CONFIG_ASSIST_KSU -d CONFIG_KSU
+            -d CONFIG_ASSIST_KSU -d CONFIG_KSU -e CONFIG_BUILD_ARM64_DT_OVERLAY
           make $MAKE_ARGS olddefconfig
           
           # 6. Compilare
