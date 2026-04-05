@@ -1,4 +1,4 @@
-name: Build Lumi R5Q - Professional Fix
+name: Build Lumi R5Q - Ultra Final Fix
 
 on:
   workflow_dispatch:
@@ -34,7 +34,7 @@ jobs:
           chmod -R +x tools/
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           
-          # Rezolvare conflict Multiple Definition (identificat in log-uri)
+          # Fix Multiple Definition detectat in log-uri
           grep -r "bool main_ext_ss_not_working" . | cut -d: -f1 | xargs sed -i 's/bool main_ext_ss_not_working/static bool main_ext_ss_not_working/g' || true
           
           export MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang \
@@ -48,12 +48,11 @@ jobs:
 
           make $MAKE_ARGS r5q_eur_open_defconfig
           make $MAKE_ARGS olddefconfig
-          # KCFLAGS fix pentru stabilitatea simbolurilor
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fno-common -Wno-error -w" O=out Image.gz-dtb dtbs
 
       - name: Professional DTBO Packaging
         run: |
-          # 1. Download utilitar oficial (LineageOS version)
+          # 1. Download mkdtboimg.py (LineageOS)
           wget -q https://raw.githubusercontent.com/LineageOS/android_system_libufdt/lineage-18.1/utils/src/mkdtboimg.py -O mkdtboimg.py
           chmod +x mkdtboimg.py
           
@@ -61,7 +60,7 @@ jobs:
           git clone https://github.com/osm0sis/AnyKernel3.git
           cp kernel/out/arch/arm64/boot/Image.gz-dtb AnyKernel3/Image.gz-dtb
           
-          # 3. Compilare DTBO (Fix pentru reg_format si address-cells)
+          # 3. Compilare DTBO Manuala (Fix pentru reg_format si address-cells)
           RENO_PATH="kernel/arch/arm64/boot/dts/samsung/renovation"
           DTS_ROOT="kernel/arch/arm64/boot/dts/samsung"
           mkdir -p dtbo_manual
@@ -79,7 +78,7 @@ jobs:
             target_file="$RENO_PATH/$dts_name"
             if [ -f "$target_file" ]; then
               dtbo_out=$(basename "$dts_name" .dts).dtbo
-              # Adaugam include-ul qcom pentru a fixa lungimea "reg" (invalid length 16 bytes)
+              # Includem qcom dts pentru a fixa lungimea 'reg' de 16 bytes 
               clang -E -nostdinc -undef -D__DTS__ -x assembler-with-cpp \
                 -I kernel/include \
                 -I kernel/arch/arm64/boot/dts/qcom \
@@ -92,7 +91,7 @@ jobs:
             fi
           done
           
-          # 4. Creare DTBO.img (Fix TypeError: asigura ca lista nu este goala)
+          # 4. Creare DTBO.img (Fix pentru TypeError: NoneType object is not iterable) 
           DTBO_LIST=$(ls dtbo_manual/*.dtbo 2>/dev/null)
           if [ -n "$DTBO_LIST" ]; then
             python3 mkdtboimg.py create AnyKernel3/dtbo.img --version=2 $DTBO_LIST
@@ -100,20 +99,19 @@ jobs:
             echo "EROARE: Niciun fisier .dtbo nu a fost generat!" && exit 1
           fi
           
-          # 5. Configurare AnyKernel3 (Cai specifice Samsung r5q)
+          # 5. Configurare AnyKernel3 pentru S10 Lite 
           cd AnyKernel3
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
           sed -i 's|block=auto;|block=/dev/block/by-name/boot;|g' anykernel.sh
-          # Setam tipul corect pentru Image.gz-dtb
           sed -i 's/kernel.type=inline/kernel.type=gzip-dtb/g' anykernel.sh
           sed -i 's/patch_vbmeta_flag=auto/patch_vbmeta_flag=1/g' anykernel.sh
-          # Injectam partitia DTBO
+          # Injectam partitia de dtbo pentru scriere 
           sed -i '/block=\/dev\/block\/by-name\/boot;/a dtbo_block=/dev/block/by-name/dtbo;' anykernel.sh
           
-          zip -r9 ../Lumi-R5Q-Complete-BPF.zip *
+          zip -r9 ../Lumi-R5Q-Kernel-Final.zip *
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Lumi-R5Q-Kernel-Fixed
-          path: Lumi-R5Q-Complete-BPF.zip
+          name: Lumi-R5Q-Complete-Build
+          path: Lumi-R5Q-Kernel-Final.zip
