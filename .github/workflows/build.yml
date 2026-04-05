@@ -1,10 +1,10 @@
-name: Build ONLY DTBO - Ultra Fast
+name: Build Lumi R5Q - Ultimate Final Fix
 
 on:
   workflow_dispatch:
 
 jobs:
-  build_dtbo:
+  build:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Source
@@ -18,18 +18,49 @@ jobs:
       - name: Install Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y bc build-essential flex bison python3 wget device-tree-compiler clang
+          sudo apt-get install -y bc build-essential flex bison lz4 libssl-dev libelf-dev \
+          ccache python3 python-is-python3 libarchive-tools wget zstd zip \
+          gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi device-tree-compiler clang
 
-      - name: Fast DTBO Compilation
+      - name: Setup Toolchain (NDK Clang)
         run: |
-          # 1. Setup Utilities
+          mkdir -p clang
+          wget -q https://github.com/Ylarod/setup-ndk-clang/releases/download/prebuilt/clang-linux-x86-ndk-r29-r563880c.tar.zst
+          tar -I zstd -xf clang-linux-x86-ndk-r29-r563880c.tar.zst -C clang
+
+      - name: Build Kernel
+        run: |
+          cd kernel
+          chmod -R +x tools/
+          export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
+          
+          # Fix Multiple Definition (Conflict detectat în log anterior)
+          grep -r "bool main_ext_ss_not_working" . | cut -d: -f1 | xargs sed -i 's/bool main_ext_ss_not_working/static bool main_ext_ss_not_working/g' || true
+          
+          export MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang \
+            DTC_EXT=$(pwd)/tools/dtc \
+            CONFIG_BUILD_ARM64_DT_OVERLAY=y \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            LD=ld.lld \
+            O=out"
+
+          make $MAKE_ARGS r5q_eur_open_defconfig
+          make $MAKE_ARGS olddefconfig
+          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fno-common -Wno-error -w" O=out Image.gz-dtb dtbs
+
+      - name: Professional DTBO Packaging
+        run: |
+          # 1. Download mkdtboimg.py
           wget -q https://raw.githubusercontent.com/LineageOS/android_system_libufdt/lineage-18.1/utils/src/mkdtboimg.py -O mkdtboimg.py
           chmod +x mkdtboimg.py
           
-          # 2. Setup AnyKernel3 (fără kernel de data asta, doar pentru structură)
+          # 2. Setup AnyKernel3
           git clone https://github.com/osm0sis/AnyKernel3.git
+          cp kernel/out/arch/arm64/boot/Image.gz-dtb AnyKernel3/Image.gz-dtb
           
-          # 3. Compilare DTBO (Fix-ul pentru reg_format inclus)
+          # 3. Compilare DTBO (Fix pentru reg_format prin adăugarea include-ului QCOM)
           RENO_PATH="kernel/arch/arm64/boot/dts/samsung/renovation"
           DTS_ROOT="kernel/arch/arm64/boot/dts/samsung"
           mkdir -p dtbo_manual
@@ -47,7 +78,7 @@ jobs:
             target_file="$RENO_PATH/$dts_name"
             if [ -f "$target_file" ]; then
               dtbo_out=$(basename "$dts_name" .dts).dtbo
-              # Preprocesare RAPIDĂ (folosim headerele direct din sursa checkout-uită)
+              # Adăugăm explicit calea qcom și include-prefixes pentru a fixa adresele de 16 bytes
               clang -E -nostdinc -undef -D__DTS__ -x assembler-with-cpp \
                 -I kernel/include \
                 -I kernel/arch/arm64/boot/dts/qcom \
@@ -56,33 +87,31 @@ jobs:
                 -I "$RENO_PATH" \
                 "$target_file" -o "dtbo_manual/tmp.dts"
               
-              # Folosim DTC-ul sistemului pentru viteză (nu cel din kernel out)
-              dtc -@ -I dts -O dtb -o "dtbo_manual/$dtbo_out" "dtbo_manual/tmp.dts"
+              kernel/tools/dtc -@ -I dts -O dtb -o "dtbo_manual/$dtbo_out" "dtbo_manual/tmp.dts"
             fi
           done
           
-          # 4. Creare DTBO.img
+          # 4. Creare DTBO.img (Fix TypeError: verificăm dacă lista de fișiere este validă)
           DTBO_LIST=$(ls dtbo_manual/*.dtbo 2>/dev/null)
           if [ -n "$DTBO_LIST" ]; then
             python3 mkdtboimg.py create AnyKernel3/dtbo.img --version=2 $DTBO_LIST
           else
-            echo "EROARE: Niciun fisier .dtbo generat!" && exit 1
+            echo "EROARE: Nu s-au generat fișiere DTBO. Verificați sursele!" && exit 1
           fi
           
-          # 5. Configurare AnyKernel3 (Doar flash DTBO)
+          # 5. Configurare AnyKernel3 (Căi și flag-uri S10 Lite)
           cd AnyKernel3
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-          # Stergem liniile de kernel block deoarece acum flash-uim DOAR DTBO
-          sed -i 's|block=auto;|block=none;|g' anykernel.sh
-          sed -i '/block=none;/a dtbo_block=/dev/block/by-name/dtbo;' anykernel.sh
+          sed -i 's|block=auto;|block=/dev/block/by-name/boot;|g' anykernel.sh
+          sed -i 's/kernel.type=inline/kernel.type=gzip-dtb/g' anykernel.sh
+          sed -i 's/patch_vbmeta_flag=auto/patch_vbmeta_flag=1/g' anykernel.sh
+          # Adăugăm manual suportul pentru scrierea dtbo.img
+          sed -i '/block=\/dev\/block\/by-name\/boot;/a dtbo_block=/dev/block/by-name/dtbo;' anykernel.sh
           
-          # Ștergem placeholder-ul de kernel din zip ca să nu facă flash la nimic gol
-          rm -f Image*
-          
-          zip -r9 ../DTBO-Only-r5q.zip *
+          zip -r9 ../Lumi-R5Q-Kernel-Final.zip *
 
-      - name: Upload DTBO Only
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: DTBO-Only-Package
-          path: DTBO-Only-r5q.zip
+          name: Lumi-R5Q-Build-Final
+          path: Lumi-R5Q-Kernel-Final.zip
