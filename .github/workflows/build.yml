@@ -1,4 +1,5 @@
-name: Build Lumi R5Q - Final Fix
+name: Build Lumi R5Q - Ultra Fix
+
 on:
   workflow_dispatch:
 
@@ -20,18 +21,20 @@ jobs:
           sudo apt-get install -y bc build-essential flex bison lz4 libssl-dev libelf-dev \
           ccache python3 python-is-python3 libarchive-tools wget zstd zip \
           gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi device-tree-compiler clang
-      - name: Setup Toolchain (Neutron Clang)
+
+      - name: Setup Toolchain (NDK Clang)
         run: |
           mkdir -p clang
           wget -q https://github.com/Ylarod/setup-ndk-clang/releases/download/prebuilt/clang-linux-x86-ndk-r29-r563880c.tar.zst
           tar -I zstd -xf clang-linux-x86-ndk-r29-r563880c.tar.zst -C clang
+
       - name: Build Kernel
         run: |
           cd kernel
           chmod -R +x tools/
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           
-          # Fix Multiple Definition
+          # Fix Multiple Definition (Conflict detectat în log)
           grep -r "bool main_ext_ss_not_working" . | cut -d: -f1 | xargs sed -i 's/bool main_ext_ss_not_working/static bool main_ext_ss_not_working/g' || true
           
           export MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang \
@@ -42,25 +45,33 @@ jobs:
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             LD=ld.lld \
             O=out"
+
           make $MAKE_ARGS r5q_eur_open_defconfig
-            
+          
+          # Injectare setări Permissive direct în .config
+          echo "CONFIG_SECURITY_SELINUX_BOOTPARAM=y" >> out/.config
+          echo "CONFIG_SECURITY_SELINUX_BOOTPARAM_VALUE=0" >> out/.config
+          
           make $MAKE_ARGS olddefconfig
+          # Folosim -fno-common pentru a evita coliziunile de simboluri [cite: 1]
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fno-common -Wno-error -w" O=out Image.gz-dtb dtbs
-      - name: Professional DTBO Packaging (Final Fix)
+
+      - name: Professional DTBO Packaging
         run: |
-          # 1. Download mkdtboimg.py
+          # 1. Setup Utilities
           wget -q https://raw.githubusercontent.com/LineageOS/android_system_libufdt/lineage-18.1/utils/src/mkdtboimg.py -O mkdtboimg.py
           chmod +x mkdtboimg.py
+          
           # 2. Setup AnyKernel3
           git clone https://github.com/osm0sis/AnyKernel3.git
-          cp kernel/out/arch/arm64/boot/Image.gz-dtb AnyKernel3/Image.gz
+          # Copiem cu numele original pentru a păstra integritatea DTB-ului concatenat 
+          cp kernel/out/arch/arm64/boot/Image.gz-dtb AnyKernel3/Image.gz-dtb
           
-          # 3. Detectare folder Renovation (Evităm folderul 'out')
+          # 3. Compilare DTBO Manuală cu Include-uri Fixate
           RENO_PATH=$(find kernel/arch/arm64/boot/dts/samsung -name "renovation" -type d | grep -v "out" | head -n 1)
           DTS_ROOT="kernel/arch/arm64/boot/dts/samsung"
           mkdir -p dtbo_manual
-          echo "Folder Renovation: $RENO_PATH"
-          # Lista oficiala din Makefile-ul tau
+          
           FILES_TO_BUILD=(
             "sm8150-sec-r5q-overlay-r00.dts"
             "sm8150-sec-r5q-overlay-r01.dts"
@@ -69,47 +80,41 @@ jobs:
             "sm8150-sec-r5q-overlay-r09.dts"
             "sm8150-sec-system-update-overlay.dts"
           )
+          
           for dts_name in "${FILES_TO_BUILD[@]}"; do
             target_file="$RENO_PATH/$dts_name"
             if [ -f "$target_file" ]; then
-              echo "--- Preprocesare & Compilare: $dts_name ---"
               dtbo_out=$(basename "$dts_name" .dts).dtbo
-              
-              # ADĂUGĂM TOATE INCLUDE-URILE CRITICE (Fix pentru arm-gic.h)
+              # Fix pentru reg_format: adăugăm toate căile de include necesare 
               clang -E -nostdinc -undef -D__DTS__ -x assembler-with-cpp \
                 -I kernel/include \
+                -I kernel/arch/arm64/boot/dts/qcom \
                 -I kernel/scripts/dtc/include-prefixes \
                 -I "$DTS_ROOT" \
-                -I "$DTS_ROOT/qcom" \
-                -I "$DTS_ROOT/samsung" \
                 -I "$RENO_PATH" \
                 "$target_file" -o "dtbo_manual/tmp.dts"
               
-              # Compilare DTC (Folosim DTC-ul din kernel)
               kernel/tools/dtc -@ -I dts -O dtb -o "dtbo_manual/$dtbo_out" "dtbo_manual/tmp.dts"
-            else
-              echo "Skip: $dts_name nu exista in aceasta ramura."
             fi
           done
-          # 4. Creare DTBO.img
-          if [ "$(ls -A dtbo_manual/*.dtbo 2>/dev/null)" ]; then
+          
+          # 4. Creare DTBO.img cu Header Version 2 (Critic pentru S10 Lite) 
           python3 mkdtboimg.py create AnyKernel3/dtbo.img --version=2 dtbo_manual/*.dtbo
-            echo "SUCCES: DTBO.img creat cu $(ls dtbo_manual/*.dtbo | wc -l) overlay-uri."
-          else
-            echo "EROARE CRITICA: Niciun fisier DTBO nu a fost compilat!"
-            exit 1
-          fi
-          # 5. Configurare AnyKernel3 (Căi block S10 Lite și VBMeta Patch)
+          
+          # 5. Configurare AnyKernel3 pentru Samsung (Non-A/B)
           cd AnyKernel3
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
           sed -i 's|block=auto;|block=/dev/block/by-name/boot;|g' anykernel.sh
-          sed -i 's/cmdline=/cmdline=androidboot.selinux=permissive /' anykernel.sh
-          sed -i '/block=\/dev\/block\/by-name\/boot;/a dtbo_block=/dev/block/by-name/dtbo;' anykernel.sh
+          # Setăm tipul de kernel ca gzip-dtb pentru a procesa corect Image.gz-dtb 
+          sed -i 's/kernel.type=inline/kernel.type=gzip-dtb/g' anykernel.sh
           sed -i 's/patch_vbmeta_flag=auto/patch_vbmeta_flag=1/g' anykernel.sh
           
+          # Injectăm manual flash_dtbo în scriptul de instalare 
+          sed -i '/flash_dtb;/a flash_dtbo;' anykernel.sh
+          
           zip -r9 ../Lumi-R5Q-Complete-BPF.zip *
-            
-      - name: Upload Kernel
+
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: Lumi-R5Q-Final-Kernel
