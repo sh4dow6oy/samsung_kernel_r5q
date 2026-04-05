@@ -1,4 +1,4 @@
-name: Build Lumi R5Q - Ultra Fix
+name: Build Lumi R5Q - Final Fix
 
 on:
   workflow_dispatch:
@@ -34,7 +34,7 @@ jobs:
           chmod -R +x tools/
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           
-          # Fix Multiple Definition (Conflict detectat în log)
+          # Fix Multiple Definition
           grep -r "bool main_ext_ss_not_working" . | cut -d: -f1 | xargs sed -i 's/bool main_ext_ss_not_working/static bool main_ext_ss_not_working/g' || true
           
           export MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang \
@@ -47,31 +47,26 @@ jobs:
             O=out"
 
           make $MAKE_ARGS r5q_eur_open_defconfig
-          
-          # Injectare setări Permissive direct în .config
-          echo "CONFIG_SECURITY_SELINUX_BOOTPARAM=y" >> out/.config
-          echo "CONFIG_SECURITY_SELINUX_BOOTPARAM_VALUE=0" >> out/.config
-          
           make $MAKE_ARGS olddefconfig
-          # Folosim -fno-common pentru a evita coliziunile de simboluri [cite: 1]
+          # Folosim -fno-common pentru a rezolva avertismentele de tip COMMON symbol [cite: 1]
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fno-common -Wno-error -w" O=out Image.gz-dtb dtbs
 
       - name: Professional DTBO Packaging
         run: |
-          # 1. Setup Utilities
+          # 1. Download utilitar oficial LineageOS
           wget -q https://raw.githubusercontent.com/LineageOS/android_system_libufdt/lineage-18.1/utils/src/mkdtboimg.py -O mkdtboimg.py
           chmod +x mkdtboimg.py
           
           # 2. Setup AnyKernel3
           git clone https://github.com/osm0sis/AnyKernel3.git
-          # Copiem cu numele original pentru a păstra integritatea DTB-ului concatenat 
           cp kernel/out/arch/arm64/boot/Image.gz-dtb AnyKernel3/Image.gz-dtb
           
-          # 3. Compilare DTBO Manuală cu Include-uri Fixate
-          RENO_PATH=$(find kernel/arch/arm64/boot/dts/samsung -name "renovation" -type d | grep -v "out" | head -n 1)
+          # 3. Detectare surse surse din folderul renovation [cite: 2]
+          RENO_PATH="kernel/arch/arm64/boot/dts/samsung/renovation"
           DTS_ROOT="kernel/arch/arm64/boot/dts/samsung"
           mkdir -p dtbo_manual
           
+          # Lista de overlay-uri specifice r5q [cite: 6]
           FILES_TO_BUILD=(
             "sm8150-sec-r5q-overlay-r00.dts"
             "sm8150-sec-r5q-overlay-r01.dts"
@@ -85,10 +80,9 @@ jobs:
             target_file="$RENO_PATH/$dts_name"
             if [ -f "$target_file" ]; then
               dtbo_out=$(basename "$dts_name" .dts).dtbo
-              # Fix pentru reg_format: adăugăm toate căile de include necesare 
+              # Preprocesare cu include-urile necesare pentru a evita erorile de tip reg_format 
               clang -E -nostdinc -undef -D__DTS__ -x assembler-with-cpp \
                 -I kernel/include \
-                -I kernel/arch/arm64/boot/dts/qcom \
                 -I kernel/scripts/dtc/include-prefixes \
                 -I "$DTS_ROOT" \
                 -I "$RENO_PATH" \
@@ -98,24 +92,27 @@ jobs:
             fi
           done
           
-          # 4. Creare DTBO.img cu Header Version 2 (Critic pentru S10 Lite) 
-          python3 mkdtboimg.py create AnyKernel3/dtbo.img --version=2 dtbo_manual/*.dtbo
+          # 4. Creare DTBO.img (Fix pentru TypeError: asigura lista de fisiere nu este goala)
+          DTBO_LIST=$(ls dtbo_manual/*.dtbo 2>/dev/null)
+          if [ -n "$DTBO_LIST" ]; then
+            python3 mkdtboimg.py create AnyKernel3/dtbo.img --version=2 $DTBO_LIST
+          else
+            echo "EROARE: Nu s-au generat fisiere DTBO!" && exit 1
+          fi
           
-          # 5. Configurare AnyKernel3 pentru Samsung (Non-A/B)
+          # 5. Configurare AnyKernel3
           cd AnyKernel3
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
           sed -i 's|block=auto;|block=/dev/block/by-name/boot;|g' anykernel.sh
-          # Setăm tipul de kernel ca gzip-dtb pentru a procesa corect Image.gz-dtb 
           sed -i 's/kernel.type=inline/kernel.type=gzip-dtb/g' anykernel.sh
           sed -i 's/patch_vbmeta_flag=auto/patch_vbmeta_flag=1/g' anykernel.sh
-          
-          # Injectăm manual flash_dtbo în scriptul de instalare 
-          sed -i '/flash_dtb;/a flash_dtbo;' anykernel.sh
+          # Adaugam calea pentru partitia dtbo
+          sed -i '/block=\/dev\/block\/by-name\/boot;/a dtbo_block=/dev/block/by-name/dtbo;' anykernel.sh
           
           zip -r9 ../Lumi-R5Q-Complete-BPF.zip *
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Lumi-R5Q-Final-Kernel
+          name: Lumi-R5Q-Kernel
           path: Lumi-R5Q-Complete-BPF.zip
