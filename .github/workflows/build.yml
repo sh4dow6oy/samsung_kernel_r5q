@@ -45,7 +45,7 @@ jobs:
           make $MAKE_ARGS r5q_eur_open_defconfig
             
           make $MAKE_ARGS olddefconfig
-          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -w" O=out Image.gz-dtb dtbs
+          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fno-common -Wno-error -w" O=out Image.gz-dtb dtbs
       - name: Professional DTBO Packaging (Final Fix)
         run: |
           # 1. Download mkdtboimg.py
@@ -93,7 +93,7 @@ jobs:
           done
           # 4. Creare DTBO.img
           if [ "$(ls -A dtbo_manual/*.dtbo 2>/dev/null)" ]; then
-            python3 mkdtboimg.py create AnyKernel3/dtbo.img dtbo_manual/*.dtbo
+          python3 mkdtboimg.py create AnyKernel3/dtbo.img --version=2 dtbo_manual/*.dtbo
             echo "SUCCES: DTBO.img creat cu $(ls dtbo_manual/*.dtbo | wc -l) overlay-uri."
           else
             echo "EROARE CRITICA: Niciun fisier DTBO nu a fost compilat!"
