@@ -41,33 +41,12 @@ jobs:
 
           # 4. KCONFIG FIX (KernelSU Missing)
           sed -i '/kernelsu/d' drivers/android/Kconfig
-
-          # 5. TASKSTATS FIX (Metoda de RECONSTRUCȚIE)
-          # Ștergem tot blocul de la #elif până la începutul funcției următoare pentru a evita orice conflict
-          # Folosim un script python scurt pentru a face înlocuirea sigură, deoarece sed cu mai multe linii e riscant
-          python3 -c "
-          import sys
-          path = 'kernel/taskstats.c'
-          with open(path, 'r') as f:
-              content = f.read()
           
-          # Căutăm secțiunea problematică și o rescriem curat
-          old_text = '#elif defined(CONFIG_POSIX_MQUEUE)'
-          new_text = '#else\n#ifdef CONFIG_POSIX_MQUEUE'
-          content = content.replace(old_text, new_text)
-          
-          # Adăugăm un #endif chiar înainte de taskstats_init_early pentru a închide blocul nou creat
-          content = content.replace('void __init taskstats_init_early(void)', '#endif\nvoid __init taskstats_init_early(void)')
-          
-          with open(path, 'w') as f:
-              f.write(content)
-          "
-
-      - name: Setup NDK Clang (r29)
+      - name: Setup Neutron Clang
         run: |
-          mkdir -p clang
-          wget -q https://github.com/Ylarod/setup-ndk-clang/releases/download/prebuilt/clang-linux-x86-ndk-r29-r563880c.tar.zst
-          tar -I zstd -xf clang-linux-x86-ndk-r29-r563880c.tar.zst -C clang
+          mkdir clang
+          wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
+          tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
 
       - name: Build Kernel Lumi R5Q
         run: |
@@ -77,7 +56,7 @@ jobs:
           export MAKE_ARGS="ARCH=arm64 \
             LLVM=1 \
             LLVM_IAS=1 \
-            CLANG=1 \
+            CC=clang \  
             CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
@@ -106,13 +85,14 @@ jobs:
           make $MAKE_ARGS olddefconfig
           
           # Compilare finală
-          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-Wno-error -w" O=out Image.gz-dtb modules
+          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -Wno-error -w" O=out Image.gz-dtb modules
 
       - name: Package AnyKernel3
         run: |
           git clone https://github.com/osm0sis/AnyKernel3.git
           if [ -f kernel/out/arch/arm64/boot/Image.gz-dtb ]; then
             cp kernel/out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
+            cp kernel/out/arch/arm64/boot/dtbo.img AnyKernel3/
           fi
           mkdir -p AnyKernel3/modules/vendor/lib/modules
           find kernel/out -name "*.ko" -exec cp {} AnyKernel3/modules/vendor/lib/modules/ \;
