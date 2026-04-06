@@ -1,4 +1,4 @@
-name: Build Lumi R5Q - Final Fix
+name: Build Lumi R5Q - Nuclear Backport Edition
 on:
   workflow_dispatch:
 
@@ -20,35 +20,32 @@ jobs:
           cd ath-tree
           git checkout v5.2-ath10k-sdio-v2 || git checkout v5.2-ath10k-sdio
 
-      - name: Replace ath10k Driver & Fix KernelSU
+      - name: Nuclear Cleanup & Driver Replacement
         run: |
-          # 1. Înlocuim folderul ath10k cu cel nou (Backport 5.2)
+          # 1. BRUTE FORCE DRIVER REPLACEMENT (v5.2 Backport)
+          # Înlocuim folderul ath10k existent cu cel modernizat de Erstrom
           rm -rf kernel/drivers/net/wireless/ath/ath10k
           cp -r ath-tree/drivers/net/wireless/ath/ath10k kernel/drivers/net/wireless/ath/
           
           cd kernel
-          # 2. FIX EROARE Kconfig: Eliminăm referința la KernelSU care oprea build-ul
+          
+          # 2. NUCLEAR CLEANUP (Eliminăm optimizările Polly care crapă Clang r29)
+          find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
+          find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm//g' {} +
+          find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-polly[^ ]*//g' {} +
+          
+          # 3. VDSO FIX (Prevenim eroarea de link-uire statică)
+          if [ -f arch/arm64/kernel/vdso/Makefile ]; then
+            sed -i 's/-static//g' arch/arm64/kernel/vdso/Makefile
+            sed -i 's/$(LDFLAGS)/$(filter-out -static,$(LDFLAGS))/g' arch/arm64/kernel/vdso/Makefile
+          fi
+
+          # 4. KCONFIG FIX (Rezolvăm eroarea "can't open KernelSU")
           sed -i '/kernelsu/d' drivers/android/Kconfig
           
-          # 3. FIX Taskstats (eroarea de #elif)
+          # 5. TASKSTATS FIX (Rezolvăm eroarea de preprocesor #elif)
           sed -i 's/#elif defined(CONFIG_POSIX_MQUEUE)/#else\n#if defined(CONFIG_POSIX_MQUEUE)/' kernel/taskstats.c || true
           echo "#endif" >> kernel/taskstats.c
-
-      - name: Configure & BPF Inject
-        run: |
-          cd kernel
-          export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
-          CONF="arch/arm64/configs/r5q_defconfig"
-          
-          # Injectăm suportul BPF pentru Android 12+
-          {
-            echo "CONFIG_BPF=y"
-            echo "CONFIG_BPF_SYSCALL=y"
-            echo "CONFIG_NETFILTER_XT_MATCH_BPF=y"
-            echo "CONFIG_CGROUP_BPF=y"
-            echo "CONFIG_BPF_JIT=y"
-            echo "CONFIG_DTC_WERROR=n"
-          } >> $CONF
 
       - name: Setup NDK Clang (r29)
         run: |
@@ -56,10 +53,12 @@ jobs:
           wget -q https://github.com/Ylarod/setup-ndk-clang/releases/download/prebuilt/clang-linux-x86-ndk-r29-r563880c.tar.zst
           tar -I zstd -xf clang-linux-x86-ndk-r29-r563880c.tar.zst -C clang
 
-      - name: Build Kernel
+      - name: Build Kernel Lumi R5Q
         run: |
           cd kernel
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
+          
+          # Setăm argumentele de compilare (LLVM_IAS=0 pentru stabilitate pe 4.14)
           export MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=0 \
             CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=aarch64-linux-gnu- \
@@ -67,28 +66,50 @@ jobs:
             LD=ld.lld \
             O=out"
           
-          # Creăm config-ul r5q
+          # Generăm configurația de bază pentru S10 Lite
           make $MAKE_ARGS r5q_defconfig
           
-          # Compilăm Kernelul
-          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-Wno-error -w" O=out Image.gz-dtb
+          # 6. BPF INJECTION (Suport obligatoriu pentru Android 12/13/14)
+          {
+            echo "CONFIG_BPF=y"
+            echo "CONFIG_BPF_SYSCALL=y"
+            echo "CONFIG_NETFILTER_XT_MATCH_BPF=y"
+            echo "CONFIG_CGROUP_BPF=y"
+            echo "CONFIG_BPF_JIT=y"
+            echo "CONFIG_DTC_WERROR=n"
+            # Setăm ath10k ca modul conform documentației de backport
+            echo "CONFIG_ATH10K=m"
+            echo "CONFIG_ATH10K_SDIO=m"
+          } >> out/.config
+          
+          # Actualizăm config-ul cu noile flag-uri
+          make $MAKE_ARGS olddefconfig
+          
+          # Compilăm Kernel-ul și Modulele
+          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-Wno-error -w" O=out Image.gz-dtb modules
 
-      - name: Package with AnyKernel3
+      - name: Package AnyKernel3
         run: |
           git clone https://github.com/osm0sis/AnyKernel3.git
+          
+          # Copiem imaginea kernelului
           if [ -f kernel/out/arch/arm64/boot/Image.gz-dtb ]; then
             cp kernel/out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
-          else
-            echo "EROARE: Imaginea kernelului nu a fost găsită!" && exit 1
           fi
           
+          # Colectăm modulele wireless generate (.ko)
+          mkdir -p AnyKernel3/modules/vendor/lib/modules
+          find kernel/out -name "*.ko" -exec cp {} AnyKernel3/modules/vendor/lib/modules/ \;
+          
           cd AnyKernel3
+          # Dezactivăm verificarea de dispozitiv pentru flexibilitate
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
+          # Setăm calea corectă către partiția de boot a S10 Lite
           sed -i 's|block=auto;|block=/dev/block/by-name/boot;|g' anykernel.sh
-          zip -r9 ../Lumi-R5Q-Final-Fixed.zip *
+          zip -r9 ../Lumi-Kernel-R5Q-Nuclear.zip *
 
-      - name: Upload Artifact
+      - name: Upload Build
         uses: actions/upload-artifact@v4
         with:
-          name: Lumi-Kernel-R5Q
-          path: Lumi-R5Q-Final-Fixed.zip
+          name: Lumi-R5Q-Nuclear-Kernel
+          path: Lumi-Kernel-R5Q-Nuclear.zip
