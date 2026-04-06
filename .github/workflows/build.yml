@@ -1,4 +1,4 @@
-name: Build Lumi R5Q - Fix DTBS Syntax
+name: Build Lumi R5Q - Makefile Fix
 
 on:
   workflow_dispatch:
@@ -26,23 +26,22 @@ jobs:
           echo "CONFIG_BPF_SYSCALL=y" >> $CONF
           echo "CONFIG_NETFILTER_XT_MATCH_BPF=y" >> $CONF
           echo "CONFIG_CGROUP_BPF=y" >> $CONF
-          # Dezactivăm avertismentele care opresc build-ul
           echo "CONFIG_DTC_WERROR=n" >> $CONF
 
-      - name: Source Code Hotfixes
+      - name: Source Code Hotfixes (Safe Method)
         run: |
           cd kernel
-          # 1. Fix eroarea de sintaxă ptep/pte
+          # 1. Fix ptep vs pte
           sed -i 's/ptep = huge_pmd_share/pte = huge_pmd_share/g' arch/arm64/mm/hugetlbpage.c || true
           
-          # 2. FIX CRITIC: pm8150.dtsi syntax error
-          # Eroarea apare de obicei la nodurile de rețea sau de pini. 
-          # Curățăm Makefile-ul de platformele auto care declanșează eroarea în pm8150.dtsi
-          sed -i '/sa8155/d' arch/arm64/boot/dts/qcom/Makefile
-          sed -i '/sa6155/d' arch/arm64/boot/dts/qcom/Makefile
-          
-          # 3. Fix taskstats (#elif gol)
+          # 2. Fix taskstats (#elif gol)
           sed -i 's/#elif/#else/g' kernel/taskstats.c || true
+          
+          # 3. FIX Makefile (Metoda sigură fără a strica structura)
+          # În loc să ștergem linii, le comentăm folosind '#' pentru a nu lăsa comenzi orfane
+          sed -i 's/.*sa8155.*/# &/' arch/arm64/boot/dts/qcom/Makefile
+          sed -i 's/.*sa6155.*/# &/' arch/arm64/boot/dts/qcom/Makefile
+          sed -i 's/.*qrb5165.*/# &/' arch/arm64/boot/dts/qcom/Makefile
 
       - name: Install Dependencies
         run: |
@@ -71,8 +70,7 @@ jobs:
           make $MAKE_ARGS r5q_optimized_defconfig
           make $MAKE_ARGS olddefconfig
           
-          # Folosim -k (keep going) pentru a trece de eventuale DTB-uri secundare corupte
-          # Dar principala țintă este Image.gz-dtb
+          # Compilăm Kernelul
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-Wno-error -w" O=out Image.gz-dtb
 
       - name: AnyKernel3 Packaging
@@ -81,8 +79,7 @@ jobs:
           if [ -f kernel/out/arch/arm64/boot/Image.gz-dtb ]; then
             cp kernel/out/arch/arm64/boot/Image.gz-dtb AnyKernel3/Image.gz-dtb
           else
-            echo "EROARE: Kernelul nu s-a compilat! Verifică log-urile de mai sus."
-            exit 1
+            echo "EROARE: Image.gz-dtb nu a fost găsit!" && exit 1
           fi
           
           cd AnyKernel3
@@ -91,10 +88,10 @@ jobs:
           sed -i 's/kernel.type=inline/kernel.type=gzip-dtb/g' anykernel.sh
           sed -i 's/patch_vbmeta_flag=auto/patch_vbmeta_flag=1/g' anykernel.sh
           
-          zip -r9 ../Lumi-R5Q-Fixed.zip *
+          zip -r9 ../Lumi-R5Q-Final-Fixed.zip *
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Lumi-Final-Kernel
-          path: Lumi-R5Q-Fixed.zip
+          name: Lumi-Fixed-Kernel
+          path: Lumi-R5Q-Final-Fixed.zip
