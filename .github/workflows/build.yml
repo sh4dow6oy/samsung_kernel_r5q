@@ -19,7 +19,6 @@ jobs:
           git clone https://github.com/erstrom/linux-ath.git ath-tree
           cd ath-tree
           git checkout v5.2-ath10k-sdio-v2 || git checkout v5.2-ath10k-sdio
-
       - name: Nuclear Cleanup & Hard Fixes
         run: |
           # 1. Înlocuim driverul ath10k (Brute Force)
@@ -39,7 +38,6 @@ jobs:
             sed -i 's/-static//g' arch/arm64/kernel/vdso/Makefile
             sed -i 's/$(LDFLAGS)/$(filter-out -static,$(LDFLAGS))/g' arch/arm64/kernel/vdso/Makefile
           fi
-
           # 4. KCONFIG FIX (KernelSU Missing)
           sed -i '/kernelsu/d' drivers/android/Kconfig
           
@@ -48,7 +46,6 @@ jobs:
           mkdir clang
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
-
       - name: Build Kernel Lumi R5Q
         run: |
           cd kernel
@@ -85,37 +82,20 @@ jobs:
           make $MAKE_ARGS olddefconfig
           
           # Compilare finală
-          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -Wno-error -w" O=out Image.gz-dtb modules dtbo
-
+          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -Wno-error -w" O=out Image.gz-dtb modules
       - name: Package AnyKernel3
         run: |
           git clone https://github.com/osm0sis/AnyKernel3.git
-          
-          # 1. Copiem imaginea principală (care conține deja DTB-ul)
           if [ -f kernel/out/arch/arm64/boot/Image.gz-dtb ]; then
             cp kernel/out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
-          else
-            echo "EROARE: Image.gz-dtb nu a fost găsit!" && exit 1
           fi
-
-          # 2. Copiem dtbo.img DOAR DACĂ EXISTĂ (nu mai dă eroare dacă lipsește)
-          if [ -f kernel/out/arch/arm64/boot/dtbo.img ]; then
-            cp kernel/out/arch/arm64/boot/dtbo.img AnyKernel3/
-          fi
-          
-          # 3. Colectăm modulele wireless noi (.ko)
           mkdir -p AnyKernel3/modules/vendor/lib/modules
           find kernel/out -name "*.ko" -exec cp {} AnyKernel3/modules/vendor/lib/modules/ \;
           
           cd AnyKernel3
-          # Configurare AnyKernel3 pentru r5q
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
           sed -i 's|block=auto;|block=/dev/block/by-name/boot;|g' anykernel.sh
-          
-          # Asigură-te că AnyKernel3 caută fișierul corect
-          # Dacă AnyKernel3 este configurat să caute "zImage", îl redenumim sau schimbăm scriptul
-          sed -i 's/kernel.type=raw/kernel.type=gzip/g' anykernel.sh || true
-
+          zip -r9 ../Lumi-R5Q-Nuclear-Taskstats-Fixed.zip *
       - name: Upload Build
         uses: actions/upload-artifact@v4
         with:
