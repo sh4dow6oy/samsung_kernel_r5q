@@ -1,4 +1,4 @@
-name: Build Lumi R5Q - Ultimate Final Fix
+name: Build Lumi R5Q - Lineage BPF + Peripheral Merge
 
 on:
   workflow_dispatch:
@@ -7,20 +7,56 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Source
+      - name: Checkout LineageOS Base
+        uses: actions/checkout@v4
+        with:
+          repository: LineageOS/android_kernel_qcom_sm8150
+          ref: lineage-20
+          path: kernel
+          fetch-depth: 1
+
+      - name: Checkout Samsung Source (for config extraction)
         uses: actions/checkout@v4
         with:
           repository: sh4dow6oy/android_kernel_samsung_sm8150
           ref: rawr-bpf
-          path: kernel
+          path: samsung_src
           fetch-depth: 1
+
+      - name: Merge BPF & Peripheral Config
+        run: |
+          LINEAGE_CONF="kernel/arch/arm64/configs/defconfig"
+          SAMSUNG_CONF="samsung_src/arch/arm64/configs/r5q_eur_open_defconfig"
+          MERGED_CONF="kernel/arch/arm64/configs/lumi_defconfig"
+
+          # Pornim de la baza LineageOS
+          cp $LINEAGE_CONF $MERGED_CONF
+
+          echo "" >> $MERGED_CONF
+          echo "# --- LUMI INJECTED CONFIGS ---" >> $MERGED_CONF
+          
+          # 1. INJECTARE SUPORT BPF (Extras din sursa ta)
+          grep "CONFIG_BPF" $SAMSUNG_CONF >> $MERGED_CONF || true
+          grep "CONFIG_NETFILTER_XT_MATCH_BPF" $SAMSUNG_CONF >> $MERGED_CONF || true
+          grep "CONFIG_CGROUP_BPF" $SAMSUNG_CONF >> $MERGED_CONF || true
+          
+          # 2. INJECTARE PERIFERICE & SAMSUNG SPECIFIC
+          grep "CONFIG_INPUT_TOUCHSCREEN" $SAMSUNG_CONF >> $MERGED_CONF || true
+          grep "CONFIG_SENSORS_SSC" $SAMSUNG_CONF >> $MERGED_CONF || true
+          grep "CONFIG_SND_SOC_SAMSUNG" $SAMSUNG_CONF >> $MERGED_CONF || true
+          
+          # 3. SETĂRI BOOT & SECURITY
+          echo "CONFIG_SECURITY_SELINUX_BOOTPARAM=y" >> $MERGED_CONF
+          echo "CONFIG_SECURITY_SELINUX_BOOTPARAM_VALUE=0" >> $MERGED_CONF
+          echo "CONFIG_MODULE_SIG=n" >> $MERGED_CONF
+          echo "CONFIG_ANDROID_PARANOID_NETWORK=n" >> $MERGED_CONF
 
       - name: Install Dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y bc build-essential flex bison lz4 libssl-dev libelf-dev \
           ccache python3 python-is-python3 libarchive-tools wget zstd zip \
-          gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi device-tree-compiler clang
+          gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi clang
 
       - name: Setup Toolchain (NDK Clang)
         run: |
@@ -31,87 +67,37 @@ jobs:
       - name: Build Kernel
         run: |
           cd kernel
-          chmod -R +x tools/
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           
-          # Fix Multiple Definition (Conflict detectat în log anterior)
-          grep -r "bool main_ext_ss_not_working" . | cut -d: -f1 | xargs sed -i 's/bool main_ext_ss_not_working/static bool main_ext_ss_not_working/g' || true
-          
           export MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang \
-            DTC_EXT=$(pwd)/tools/dtc \
-            CONFIG_BUILD_ARM64_DT_OVERLAY=y \
             CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             LD=ld.lld \
             O=out"
 
-          make $MAKE_ARGS r5q_eur_open_defconfig
+          make $MAKE_ARGS lumi_defconfig
           make $MAKE_ARGS olddefconfig
-          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fno-common -Wno-error -w" O=out Image.gz-dtb dtbs
-
-      - name: Professional DTBO Packaging
-        run: |
-          # 1. Download mkdtboimg.py
-          wget -q https://raw.githubusercontent.com/LineageOS/android_system_libufdt/lineage-18.1/utils/src/mkdtboimg.py -O mkdtboimg.py
-          chmod +x mkdtboimg.py
           
-          # 2. Setup AnyKernel3
+          # Compilăm Kernel + DTB (fără DTBO extern)
+          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-Wno-error -w" O=out Image.gz-dtb
+
+      - name: AnyKernel3 Packaging (Safe Mode)
+        run: |
           git clone https://github.com/osm0sis/AnyKernel3.git
           cp kernel/out/arch/arm64/boot/Image.gz-dtb AnyKernel3/Image.gz-dtb
           
-          # 3. Compilare DTBO (Fix pentru reg_format prin adăugarea include-ului QCOM)
-          RENO_PATH="kernel/arch/arm64/boot/dts/samsung/renovation"
-          DTS_ROOT="kernel/arch/arm64/boot/dts/samsung"
-          mkdir -p dtbo_manual
-          
-          FILES_TO_BUILD=(
-            "sm8150-sec-r5q-overlay-r00.dts"
-            "sm8150-sec-r5q-overlay-r01.dts"
-            "sm8150-sec-r5q-overlay-r07.dts"
-            "sm8150-sec-r5q-overlay-r08.dts"
-            "sm8150-sec-r5q-overlay-r09.dts"
-            "sm8150-sec-system-update-overlay.dts"
-          )
-          
-          for dts_name in "${FILES_TO_BUILD[@]}"; do
-            target_file="$RENO_PATH/$dts_name"
-            if [ -f "$target_file" ]; then
-              dtbo_out=$(basename "$dts_name" .dts).dtbo
-              # Adăugăm explicit calea qcom și include-prefixes pentru a fixa adresele de 16 bytes
-              clang -E -nostdinc -undef -D__DTS__ -x assembler-with-cpp \
-                -I kernel/include \
-                -I kernel/arch/arm64/boot/dts/qcom \
-                -I kernel/scripts/dtc/include-prefixes \
-                -I "$DTS_ROOT" \
-                -I "$RENO_PATH" \
-                "$target_file" -o "dtbo_manual/tmp.dts"
-              
-              kernel/tools/dtc -@ -I dts -O dtb -o "dtbo_manual/$dtbo_out" "dtbo_manual/tmp.dts"
-            fi
-          done
-          
-          # 4. Creare DTBO.img (Fix TypeError: verificăm dacă lista de fișiere este validă)
-          DTBO_LIST=$(ls dtbo_manual/*.dtbo 2>/dev/null)
-          if [ -n "$DTBO_LIST" ]; then
-            python3 mkdtboimg.py create AnyKernel3/dtbo.img --version=2 $DTBO_LIST
-          else
-            echo "EROARE: Nu s-au generat fișiere DTBO. Verificați sursele!" && exit 1
-          fi
-          
-          # 5. Configurare AnyKernel3 (Căi și flag-uri S10 Lite)
           cd AnyKernel3
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
           sed -i 's|block=auto;|block=/dev/block/by-name/boot;|g' anykernel.sh
           sed -i 's/kernel.type=inline/kernel.type=gzip-dtb/g' anykernel.sh
           sed -i 's/patch_vbmeta_flag=auto/patch_vbmeta_flag=1/g' anykernel.sh
-          # Adăugăm manual suportul pentru scrierea dtbo.img
-          sed -i '/block=\/dev\/block\/by-name\/boot;/a dtbo_block=/dev/block/by-name/dtbo;' anykernel.sh
           
-          zip -r9 ../Lumi-R5Q-Kernel-Final.zip *
+          # Nu flash-uim DTBO, lăsăm hardware-ul să folosească tabelul original
+          zip -r9 ../Lumi-Lineage-BPF-r5q.zip *
 
-      - name: Upload Artifact
+      - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Lumi-R5Q-Build-Final
-          path: Lumi-R5Q-Kernel-Final.zip
+          name: Lumi-BPF-Kernel
+          path: Lumi-Lineage-BPF-r5q.zip
