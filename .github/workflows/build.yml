@@ -85,7 +85,7 @@ jobs:
           make $MAKE_ARGS olddefconfig
           
           # Compilare finală
-          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -Wno-error -w" O=out Image.gz-dtb modules
+          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -Wno-error -w" O=out Image.gz-dtb modules dtbo
 
       - name: Package AnyKernel3
         run: |
