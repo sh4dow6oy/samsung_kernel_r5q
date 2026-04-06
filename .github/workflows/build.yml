@@ -1,4 +1,4 @@
-name: Build Lumi R5Q - Lineage Merge Fix
+name: Build Lumi R5Q - Lineage Optimized Config
 
 on:
   workflow_dispatch:
@@ -7,7 +7,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout LineageOS Base
+      - name: Checkout LineageOS Base (SM8150)
         uses: actions/checkout@v4
         with:
           repository: LineageOS/android_kernel_qcom_sm8150
@@ -15,44 +15,33 @@ jobs:
           path: kernel
           fetch-depth: 1
 
-      - name: Checkout Samsung Source (Defconfig)
-        uses: actions/checkout@v4
-        with:
-          repository: sh4dow6oy/android_kernel_samsung_sm8150
-          ref: rawr-bpf
-          path: samsung_src
-          fetch-depth: 1
-
-      - name: Merge & Fix Config
+      - name: Download Optimized r5q Defconfig
         run: |
-          LINEAGE_CONF="kernel/arch/arm64/configs/defconfig"
-          SAMSUNG_CONF="samsung_src/arch/arm64/configs/r5q_eur_open_defconfig"
-          MERGED_CONF="kernel/arch/arm64/configs/lumi_defconfig"
+          # Descarcă config-ul optimizat de Lineage special pentru r5q
+          wget https://raw.githubusercontent.com/mainey/android_kernel_samsung_r5q/lineage-19.0/arch/arm64/configs/r5q_eur_open_defconfig -O kernel/arch/arm64/configs/r5q_optimized_defconfig
 
-          cp $LINEAGE_CONF $MERGED_CONF
+      - name: Prepare & BPF Inject
+        run: |
+          CONF="kernel/arch/arm64/configs/r5q_optimized_defconfig"
           
-          # Injectare periferice si BPF
-          echo "" >> $MERGED_CONF
-          echo "# --- LUMI INJECTED ---" >> $MERGED_CONF
-          grep "CONFIG_BPF" $SAMSUNG_CONF >> $MERGED_CONF || true
-          grep "CONFIG_INPUT_TOUCHSCREEN" $SAMSUNG_CONF >> $MERGED_CONF || true
+          # Injectăm suportul BPF cerut pentru Android modern / Networking
+          echo "CONFIG_BPF=y" >> $CONF
+          echo "CONFIG_BPF_SYSCALL=y" >> $CONF
+          echo "CONFIG_NETFILTER_XT_MATCH_BPF=y" >> $CONF
+          echo "CONFIG_CGROUP_BPF=y" >> $CONF
           
-          # FIX: NR_CPUS Error (S10 Lite are 8 nuclee)
-          echo "CONFIG_NR_CPUS=8" >> $MERGED_CONF
-          
-          # Fortare setari boot
-          echo "CONFIG_SECURITY_SELINUX_BOOTPARAM=y" >> $MERGED_CONF
-          echo "CONFIG_SECURITY_SELINUX_BOOTPARAM_VALUE=0" >> $MERGED_CONF
-          echo "CONFIG_SECTION_MISMATCH_WARN_ONLY=y" >> $MERGED_CONF
+          # Fix-uri pentru stabilitate boot
+          echo "CONFIG_SECURITY_SELINUX_BOOTPARAM=y" >> $CONF
+          echo "CONFIG_SECURITY_SELINUX_BOOTPARAM_VALUE=0" >> $CONF
+          echo "CONFIG_SECTION_MISMATCH_WARN_ONLY=y" >> $CONF
 
-      - name: Apply Source Hotfixes
+      - name: Apply Source Hotfixes (Just in case)
         run: |
           cd kernel
-          # Fix pentru eroarea ptep vs pte in hugetlbpage.c
-          sed -i 's/ptep = huge_pmd_share/pte = huge_pmd_share/g' arch/arm64/mm/hugetlbpage.c
-          
-          # Fix pentru eroarea de tracepoint (dezactivam eroarea de NR_CPUS daca apare)
-          sed -i 's/#error "Unsupported NR_CPUS for lb tracepoint."/\/\/#error "Unsupported NR_CPUS"/g' include/trace/events/sched.h
+          # Rezolvă eroarea de typo ptep/pte dacă baza Lineage20 încă o are
+          sed -i 's/ptep = huge_pmd_share/pte = huge_pmd_share/g' arch/arm64/mm/hugetlbpage.c || true
+          # Fix pentru taskstats (#elif gol)
+          sed -i 's/#elif/#else/g' kernel/taskstats.c || true
 
       - name: Install Dependencies
         run: |
@@ -78,12 +67,13 @@ jobs:
             LD=ld.lld \
             O=out"
 
-          make $MAKE_ARGS lumi_defconfig
+          make $MAKE_ARGS r5q_optimized_defconfig
           make $MAKE_ARGS olddefconfig
-          # Compilam ignorand avertismentele ramase
+          
+          # Compilăm Kernel + DTB principal
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-Wno-error -w" O=out Image.gz-dtb
 
-      - name: AnyKernel3 Packaging
+      - name: AnyKernel3 Packaging (No DTBO)
         run: |
           git clone https://github.com/osm0sis/AnyKernel3.git
           cp kernel/out/arch/arm64/boot/Image.gz-dtb AnyKernel3/Image.gz-dtb
@@ -94,10 +84,10 @@ jobs:
           sed -i 's/kernel.type=inline/kernel.type=gzip-dtb/g' anykernel.sh
           sed -i 's/patch_vbmeta_flag=auto/patch_vbmeta_flag=1/g' anykernel.sh
           
-          zip -r9 ../Lumi-Kernel-Fixed-r5q.zip *
+          zip -r9 ../Lumi-Kernel-R5Q-Optimized.zip *
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Lumi-Kernel-Fixed
-          path: Lumi-Kernel-Fixed-r5q.zip
+          name: Lumi-Optimized-Kernel
+          path: Lumi-Kernel-R5Q-Optimized.zip
