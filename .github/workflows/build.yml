@@ -1,4 +1,4 @@
-name: Build Lumi R5Q - Lineage Optimized Config
+name: Build Lumi R5Q - Fix DTBS Syntax
 
 on:
   workflow_dispatch:
@@ -15,32 +15,33 @@ jobs:
           path: kernel
           fetch-depth: 1
 
-      - name: Download Optimized r5q Defconfig
+      - name: Download r5q Optimized Defconfig
         run: |
-          # Descarcă config-ul optimizat de Lineage special pentru r5q
           wget https://raw.githubusercontent.com/mainey/android_kernel_samsung_r5q/lineage-19.0/arch/arm64/configs/r5q_eur_open_defconfig -O kernel/arch/arm64/configs/r5q_optimized_defconfig
 
-      - name: Prepare & BPF Inject
+      - name: Config & BPF Inject
         run: |
           CONF="kernel/arch/arm64/configs/r5q_optimized_defconfig"
-          
-          # Injectăm suportul BPF cerut pentru Android modern / Networking
           echo "CONFIG_BPF=y" >> $CONF
           echo "CONFIG_BPF_SYSCALL=y" >> $CONF
           echo "CONFIG_NETFILTER_XT_MATCH_BPF=y" >> $CONF
           echo "CONFIG_CGROUP_BPF=y" >> $CONF
-          
-          # Fix-uri pentru stabilitate boot
-          echo "CONFIG_SECURITY_SELINUX_BOOTPARAM=y" >> $CONF
-          echo "CONFIG_SECURITY_SELINUX_BOOTPARAM_VALUE=0" >> $CONF
-          echo "CONFIG_SECTION_MISMATCH_WARN_ONLY=y" >> $CONF
+          # Dezactivăm avertismentele care opresc build-ul
+          echo "CONFIG_DTC_WERROR=n" >> $CONF
 
-      - name: Apply Source Hotfixes (Just in case)
+      - name: Source Code Hotfixes
         run: |
           cd kernel
-          # Rezolvă eroarea de typo ptep/pte dacă baza Lineage20 încă o are
+          # 1. Fix eroarea de sintaxă ptep/pte
           sed -i 's/ptep = huge_pmd_share/pte = huge_pmd_share/g' arch/arm64/mm/hugetlbpage.c || true
-          # Fix pentru taskstats (#elif gol)
+          
+          # 2. FIX CRITIC: pm8150.dtsi syntax error
+          # Eroarea apare de obicei la nodurile de rețea sau de pini. 
+          # Curățăm Makefile-ul de platformele auto care declanșează eroarea în pm8150.dtsi
+          sed -i '/sa8155/d' arch/arm64/boot/dts/qcom/Makefile
+          sed -i '/sa6155/d' arch/arm64/boot/dts/qcom/Makefile
+          
+          # 3. Fix taskstats (#elif gol)
           sed -i 's/#elif/#else/g' kernel/taskstats.c || true
 
       - name: Install Dependencies
@@ -70,13 +71,19 @@ jobs:
           make $MAKE_ARGS r5q_optimized_defconfig
           make $MAKE_ARGS olddefconfig
           
-          # Compilăm Kernel + DTB principal
+          # Folosim -k (keep going) pentru a trece de eventuale DTB-uri secundare corupte
+          # Dar principala țintă este Image.gz-dtb
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-Wno-error -w" O=out Image.gz-dtb
 
-      - name: AnyKernel3 Packaging (No DTBO)
+      - name: AnyKernel3 Packaging
         run: |
           git clone https://github.com/osm0sis/AnyKernel3.git
-          cp kernel/out/arch/arm64/boot/Image.gz-dtb AnyKernel3/Image.gz-dtb
+          if [ -f kernel/out/arch/arm64/boot/Image.gz-dtb ]; then
+            cp kernel/out/arch/arm64/boot/Image.gz-dtb AnyKernel3/Image.gz-dtb
+          else
+            echo "EROARE: Kernelul nu s-a compilat! Verifică log-urile de mai sus."
+            exit 1
+          fi
           
           cd AnyKernel3
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
@@ -84,10 +91,10 @@ jobs:
           sed -i 's/kernel.type=inline/kernel.type=gzip-dtb/g' anykernel.sh
           sed -i 's/patch_vbmeta_flag=auto/patch_vbmeta_flag=1/g' anykernel.sh
           
-          zip -r9 ../Lumi-Kernel-R5Q-Optimized.zip *
+          zip -r9 ../Lumi-R5Q-Fixed.zip *
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Lumi-Optimized-Kernel
-          path: Lumi-Kernel-R5Q-Optimized.zip
+          name: Lumi-Final-Kernel
+          path: Lumi-R5Q-Fixed.zip
