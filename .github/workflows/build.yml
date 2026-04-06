@@ -1,4 +1,4 @@
-name: Build Lumi R5Q - Nuclear Backport Edition
+name: Build Lumi R5Q - Nuclear Final Fix
 on:
   workflow_dispatch:
 
@@ -22,28 +22,25 @@ jobs:
 
       - name: Nuclear Cleanup & Driver Replacement
         run: |
-          # 1. BRUTE FORCE DRIVER REPLACEMENT (v5.2 Backport)
-          # Înlocuim folderul ath10k existent cu cel modernizat de Erstrom
+          # 1. BRUTE FORCE DRIVER REPLACEMENT
           rm -rf kernel/drivers/net/wireless/ath/ath10k
           cp -r ath-tree/drivers/net/wireless/ath/ath10k kernel/drivers/net/wireless/ath/
           
           cd kernel
           
-          # 2. NUCLEAR CLEANUP (Eliminăm optimizările Polly care crapă Clang r29)
+          # 2. NUCLEAR CLEANUP (Prevenim Error 1 la flag-uri Polly)
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm//g' {} +
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-polly[^ ]*//g' {} +
           
-          # 3. VDSO FIX (Prevenim eroarea de link-uire statică)
+          # 3. VDSO FIX (Anti -static)
           if [ -f arch/arm64/kernel/vdso/Makefile ]; then
             sed -i 's/-static//g' arch/arm64/kernel/vdso/Makefile
             sed -i 's/$(LDFLAGS)/$(filter-out -static,$(LDFLAGS))/g' arch/arm64/kernel/vdso/Makefile
           fi
 
-          # 4. KCONFIG FIX (Rezolvăm eroarea "can't open KernelSU")
+          # 4. KCONFIG & SOURCE FIXES
           sed -i '/kernelsu/d' drivers/android/Kconfig
-          
-          # 5. TASKSTATS FIX (Rezolvăm eroarea de preprocesor #elif)
           sed -i 's/#elif defined(CONFIG_POSIX_MQUEUE)/#else\n#if defined(CONFIG_POSIX_MQUEUE)/' kernel/taskstats.c || true
           echo "#endif" >> kernel/taskstats.c
 
@@ -58,18 +55,26 @@ jobs:
           cd kernel
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           
-          # Setăm argumentele de compilare (LLVM_IAS=0 pentru stabilitate pe 4.14)
-          export MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=0 \
+          # FOLOSIM LLVM_IAS=1 pentru a evita eroarea /usr/bin/as: unrecognized option '-EL'
+          # Aceasta forțează folosirea asamblorului intern din Clang
+          export MAKE_ARGS="ARCH=arm64 \
+            LLVM=1 \
+            LLVM_IAS=1 \
             CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             LD=ld.lld \
+            AR=llvm-ar \
+            NM=llvm-nm \
+            OBJCOPY=llvm-objcopy \
+            OBJDUMP=llvm-objdump \
+            STRIP=llvm-strip \
             O=out"
           
-          # Generăm configurația de bază pentru S10 Lite
+          # Generăm config
           make $MAKE_ARGS r5q_defconfig
           
-          # 6. BPF INJECTION (Suport obligatoriu pentru Android 12/13/14)
+          # BPF & WiFi MODULE INJECTION
           {
             echo "CONFIG_BPF=y"
             echo "CONFIG_BPF_SYSCALL=y"
@@ -77,39 +82,33 @@ jobs:
             echo "CONFIG_CGROUP_BPF=y"
             echo "CONFIG_BPF_JIT=y"
             echo "CONFIG_DTC_WERROR=n"
-            # Setăm ath10k ca modul conform documentației de backport
             echo "CONFIG_ATH10K=m"
             echo "CONFIG_ATH10K_SDIO=m"
           } >> out/.config
           
-          # Actualizăm config-ul cu noile flag-uri
           make $MAKE_ARGS olddefconfig
           
-          # Compilăm Kernel-ul și Modulele
+          # COMPILARE FINALĂ
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-Wno-error -w" O=out Image.gz-dtb modules
 
       - name: Package AnyKernel3
         run: |
           git clone https://github.com/osm0sis/AnyKernel3.git
-          
-          # Copiem imaginea kernelului
           if [ -f kernel/out/arch/arm64/boot/Image.gz-dtb ]; then
             cp kernel/out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
           fi
           
-          # Colectăm modulele wireless generate (.ko)
+          # Colectăm modulele wireless noi (.ko)
           mkdir -p AnyKernel3/modules/vendor/lib/modules
           find kernel/out -name "*.ko" -exec cp {} AnyKernel3/modules/vendor/lib/modules/ \;
           
           cd AnyKernel3
-          # Dezactivăm verificarea de dispozitiv pentru flexibilitate
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-          # Setăm calea corectă către partiția de boot a S10 Lite
           sed -i 's|block=auto;|block=/dev/block/by-name/boot;|g' anykernel.sh
-          zip -r9 ../Lumi-Kernel-R5Q-Nuclear.zip *
+          zip -r9 ../Lumi-R5Q-Nuclear-Final.zip *
 
       - name: Upload Build
         uses: actions/upload-artifact@v4
         with:
-          name: Lumi-R5Q-Nuclear-Kernel
-          path: Lumi-Kernel-R5Q-Nuclear.zip
+          name: Lumi-R5Q-Kernel
+          path: Lumi-R5Q-Nuclear-Final.zip
