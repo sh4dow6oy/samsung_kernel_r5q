@@ -23,7 +23,9 @@ jobs:
         run: |
           # 1. Înlocuim driverul ath10k (Brute Force)
           rm -rf kernel/drivers/net/wireless/ath/ath10k
+          rm -rf kernel/kernel/bpf
           cp -r ath-tree/drivers/net/wireless/ath/ath10k kernel/drivers/net/wireless/ath/
+          cp -r ath-tree/kernel/bpf kernel/kernel/bpf/
           
           cd kernel
           
