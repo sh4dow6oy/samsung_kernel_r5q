@@ -90,17 +90,31 @@ jobs:
       - name: Package AnyKernel3
         run: |
           git clone https://github.com/osm0sis/AnyKernel3.git
+          
+          # 1. Copiem imaginea principală (care conține deja DTB-ul)
           if [ -f kernel/out/arch/arm64/boot/Image.gz-dtb ]; then
             cp kernel/out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
+          else
+            echo "EROARE: Image.gz-dtb nu a fost găsit!" && exit 1
+          fi
+
+          # 2. Copiem dtbo.img DOAR DACĂ EXISTĂ (nu mai dă eroare dacă lipsește)
+          if [ -f kernel/out/arch/arm64/boot/dtbo.img ]; then
             cp kernel/out/arch/arm64/boot/dtbo.img AnyKernel3/
           fi
+          
+          # 3. Colectăm modulele wireless noi (.ko)
           mkdir -p AnyKernel3/modules/vendor/lib/modules
           find kernel/out -name "*.ko" -exec cp {} AnyKernel3/modules/vendor/lib/modules/ \;
           
           cd AnyKernel3
+          # Configurare AnyKernel3 pentru r5q
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
           sed -i 's|block=auto;|block=/dev/block/by-name/boot;|g' anykernel.sh
-          zip -r9 ../Lumi-R5Q-Nuclear-Taskstats-Fixed.zip *
+          
+          # Asigură-te că AnyKernel3 caută fișierul corect
+          # Dacă AnyKernel3 este configurat să caute "zImage", îl redenumim sau schimbăm scriptul
+          sed -i 's/kernel.type=raw/kernel.type=gzip/g' anykernel.sh || true
 
       - name: Upload Build
         uses: actions/upload-artifact@v4
