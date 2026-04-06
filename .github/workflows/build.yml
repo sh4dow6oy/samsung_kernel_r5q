@@ -28,10 +28,11 @@ jobs:
           
           cd kernel
           
-          # 2. NUCLEAR CLEANUP (Prevenim Error 1 cauzată de LLVM/Polly)
-          find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
-          find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm//g' {} +
-          find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-polly[^ ]*//g' {} +
+          # 2. FIX LTO & POLLY (Elimină flag-urile care crapă ld.lld r29)
+          # Căutăm în toate Makefile-urile și fișierele .include
+          find . -type f \( -name "Makefile*" -o -name "*.mk" -o -name "*.include" \) -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
+          find . -type f \( -name "Makefile*" -o -name "*.mk" -o -name "*.include" \) -exec sed -i 's/-mllvm -import-instr-limit=5//g' {} +
+          find . -type f \( -name "Makefile*" -o -name "*.mk" -o -name "*.include" \) -exec sed -i 's/-import-instr-limit=5//g' {} +
           
           # 3. VDSO FIX (Anti-static)
           if [ -f arch/arm64/kernel/vdso/Makefile ]; then
