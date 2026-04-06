@@ -1,4 +1,4 @@
-name: Build Lumi R5Q - Lineage BPF + Peripheral Merge
+name: Build Lumi R5Q - Lineage Merge Fix
 
 on:
   workflow_dispatch:
@@ -15,7 +15,7 @@ jobs:
           path: kernel
           fetch-depth: 1
 
-      - name: Checkout Samsung Source (for config extraction)
+      - name: Checkout Samsung Source (Defconfig)
         uses: actions/checkout@v4
         with:
           repository: sh4dow6oy/android_kernel_samsung_sm8150
@@ -23,33 +23,36 @@ jobs:
           path: samsung_src
           fetch-depth: 1
 
-      - name: Merge BPF & Peripheral Config
+      - name: Merge & Fix Config
         run: |
           LINEAGE_CONF="kernel/arch/arm64/configs/defconfig"
           SAMSUNG_CONF="samsung_src/arch/arm64/configs/r5q_eur_open_defconfig"
           MERGED_CONF="kernel/arch/arm64/configs/lumi_defconfig"
 
-          # Pornim de la baza LineageOS
           cp $LINEAGE_CONF $MERGED_CONF
-
+          
+          # Injectare periferice si BPF
           echo "" >> $MERGED_CONF
-          echo "# --- LUMI INJECTED CONFIGS ---" >> $MERGED_CONF
-          
-          # 1. INJECTARE SUPORT BPF (Extras din sursa ta)
+          echo "# --- LUMI INJECTED ---" >> $MERGED_CONF
           grep "CONFIG_BPF" $SAMSUNG_CONF >> $MERGED_CONF || true
-          grep "CONFIG_NETFILTER_XT_MATCH_BPF" $SAMSUNG_CONF >> $MERGED_CONF || true
-          grep "CONFIG_CGROUP_BPF" $SAMSUNG_CONF >> $MERGED_CONF || true
-          
-          # 2. INJECTARE PERIFERICE & SAMSUNG SPECIFIC
           grep "CONFIG_INPUT_TOUCHSCREEN" $SAMSUNG_CONF >> $MERGED_CONF || true
-          grep "CONFIG_SENSORS_SSC" $SAMSUNG_CONF >> $MERGED_CONF || true
-          grep "CONFIG_SND_SOC_SAMSUNG" $SAMSUNG_CONF >> $MERGED_CONF || true
           
-          # 3. SETĂRI BOOT & SECURITY
+          # FIX: NR_CPUS Error (S10 Lite are 8 nuclee)
+          echo "CONFIG_NR_CPUS=8" >> $MERGED_CONF
+          
+          # Fortare setari boot
           echo "CONFIG_SECURITY_SELINUX_BOOTPARAM=y" >> $MERGED_CONF
           echo "CONFIG_SECURITY_SELINUX_BOOTPARAM_VALUE=0" >> $MERGED_CONF
-          echo "CONFIG_MODULE_SIG=n" >> $MERGED_CONF
-          echo "CONFIG_ANDROID_PARANOID_NETWORK=n" >> $MERGED_CONF
+          echo "CONFIG_SECTION_MISMATCH_WARN_ONLY=y" >> $MERGED_CONF
+
+      - name: Apply Source Hotfixes
+        run: |
+          cd kernel
+          # Fix pentru eroarea ptep vs pte in hugetlbpage.c
+          sed -i 's/ptep = huge_pmd_share/pte = huge_pmd_share/g' arch/arm64/mm/hugetlbpage.c
+          
+          # Fix pentru eroarea de tracepoint (dezactivam eroarea de NR_CPUS daca apare)
+          sed -i 's/#error "Unsupported NR_CPUS for lb tracepoint."/\/\/#error "Unsupported NR_CPUS"/g' include/trace/events/sched.h
 
       - name: Install Dependencies
         run: |
@@ -68,7 +71,6 @@ jobs:
         run: |
           cd kernel
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
-          
           export MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang \
             CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=aarch64-linux-gnu- \
@@ -78,11 +80,10 @@ jobs:
 
           make $MAKE_ARGS lumi_defconfig
           make $MAKE_ARGS olddefconfig
-          
-          # Compilăm Kernel + DTB (fără DTBO extern)
+          # Compilam ignorand avertismentele ramase
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-Wno-error -w" O=out Image.gz-dtb
 
-      - name: AnyKernel3 Packaging (Safe Mode)
+      - name: AnyKernel3 Packaging
         run: |
           git clone https://github.com/osm0sis/AnyKernel3.git
           cp kernel/out/arch/arm64/boot/Image.gz-dtb AnyKernel3/Image.gz-dtb
@@ -93,11 +94,10 @@ jobs:
           sed -i 's/kernel.type=inline/kernel.type=gzip-dtb/g' anykernel.sh
           sed -i 's/patch_vbmeta_flag=auto/patch_vbmeta_flag=1/g' anykernel.sh
           
-          # Nu flash-uim DTBO, lăsăm hardware-ul să folosească tabelul original
-          zip -r9 ../Lumi-Lineage-BPF-r5q.zip *
+          zip -r9 ../Lumi-Kernel-Fixed-r5q.zip *
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Lumi-BPF-Kernel
-          path: Lumi-Lineage-BPF-r5q.zip
+          name: Lumi-Kernel-Fixed
+          path: Lumi-Kernel-Fixed-r5q.zip
