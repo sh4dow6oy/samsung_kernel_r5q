@@ -1,5 +1,4 @@
-name: Build Lumi R5Q - Makefile Fix
-
+name: Build Lumi R5Q - Backport 5.2
 on:
   workflow_dispatch:
 
@@ -7,91 +6,94 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout LineageOS Base (SM8150)
+      - name: Checkout Kernel (Roynas 4.14)
         uses: actions/checkout@v4
         with:
-          repository: LineageOS/android_kernel_qcom_sm8150
-          ref: lineage-20
+          repository: Roynas-Android-Playground/kernel_samsung_r3q
+          ref: master
           path: kernel
           fetch-depth: 1
 
-      - name: Download r5q Optimized Defconfig
+      - name: Clone Erstrom ath Tree (v5.2)
         run: |
-          wget https://raw.githubusercontent.com/mainey/android_kernel_samsung_r5q/lineage-19.0/arch/arm64/configs/r5q_eur_open_defconfig -O kernel/arch/arm64/configs/r5q_optimized_defconfig
+          git clone https://github.com/erstrom/linux-ath.git ath-tree
+          cd ath-tree
+          git checkout v5.2-ath10k-sdio-v2 || git checkout v5.2-ath10k-sdio
+          # Generăm cele 19 patch-uri de la v5.2 (0ecfebd)
+          git format-patch 0ecfebd..HEAD -o ../patches/
 
-      - name: Config & BPF Inject
-        run: |
-          CONF="kernel/arch/arm64/configs/r5q_optimized_defconfig"
-          echo "CONFIG_BPF=y" >> $CONF
-          echo "CONFIG_BPF_SYSCALL=y" >> $CONF
-          echo "CONFIG_NETFILTER_XT_MATCH_BPF=y" >> $CONF
-          echo "CONFIG_CGROUP_BPF=y" >> $CONF
-          echo "CONFIG_DTC_WERROR=n" >> $CONF
-
-      - name: Source Code Hotfixes (Safe Method)
+      - name: Apply Backport Patches
         run: |
           cd kernel
-          # 1. Fix ptep vs pte
-          sed -i 's/ptep = huge_pmd_share/pte = huge_pmd_share/g' arch/arm64/mm/hugetlbpage.c || true
-          
-          # 2. Fix taskstats (#elif gol)
-          sed -i 's/#elif/#else/g' kernel/taskstats.c || true
-          
-          # 3. FIX Makefile (Metoda sigură fără a strica structura)
-          # În loc să ștergem linii, le comentăm folosind '#' pentru a nu lăsa comenzi orfane
-          sed -i 's/.*sa8155.*/# &/' arch/arm64/boot/dts/qcom/Makefile
-          sed -i 's/.*sa6155.*/# &/' arch/arm64/boot/dts/qcom/Makefile
-          sed -i 's/.*qrb5165.*/# &/' arch/arm64/boot/dts/qcom/Makefile
+          # Încercăm să aplicăm patch-urile. Folosim -p1 și ignorăm spațiile albe (--ignore-whitespace)
+          # Dacă un patch eșuează critic, am pus 'true' ca să nu oprească tot workflow-ul, dar va lăsa mesaje de eroare în log.
+          for p in ../patches/*.patch; do
+            echo "Applying $p..."
+            patch -p1 --ignore-whitespace < "$p" || echo "CONFLICT in $p - needs manual check"
+          done
 
-      - name: Install Dependencies
+      - name: Configure r5q for Backport Modules
         run: |
-          sudo apt-get update
-          sudo apt-get install -y bc build-essential flex bison lz4 libssl-dev libelf-dev \
-          ccache python3 python-is-python3 libarchive-tools wget zstd zip \
-          gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi clang
+          cd kernel
+          CONF="arch/arm64/configs/r5q_defconfig"
+          
+          # 1. Mutăm driverele de la Built-in (=y) la Module (=m)
+          sed -i 's/CONFIG_ATH10K=y/CONFIG_ATH10K=m/' $CONF
+          sed -i 's/CONFIG_ATH10K_SDIO=y/CONFIG_ATH10K_SDIO=m/' $CONF
+          
+          # 2. Injectăm suportul BPF pentru Android 12+ (cerut de tine)
+          {
+            echo "CONFIG_BPF=y"
+            echo "CONFIG_BPF_SYSCALL=y"
+            echo "CONFIG_NETFILTER_XT_MATCH_BPF=y"
+            echo "CONFIG_CGROUP_BPF=y"
+            echo "CONFIG_NET_CLS_BPF=m"
+            echo "CONFIG_NET_ACT_BPF=m"
+            echo "CONFIG_BPF_JIT=y"
+          } >> $CONF
+          
+          # 3. Fix-uri de compatibilitate Clang
+          echo "CONFIG_DTC_WERROR=n" >> $CONF
 
-      - name: Setup Toolchain (NDK Clang)
+      - name: Setup NDK Clang (r29)
         run: |
           mkdir -p clang
           wget -q https://github.com/Ylarod/setup-ndk-clang/releases/download/prebuilt/clang-linux-x86-ndk-r29-r563880c.tar.zst
           tar -I zstd -xf clang-linux-x86-ndk-r29-r563880c.tar.zst -C clang
 
-      - name: Build Kernel
+      - name: Build Kernel & Modules
         run: |
           cd kernel
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
-          export MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang \
+          # Folosim LLVM_IAS=0 pentru stabilitate pe kernel 4.14 cu backport-uri
+          export MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=0 \
             CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             LD=ld.lld \
             O=out"
-
-          make $MAKE_ARGS r5q_optimized_defconfig
-          make $MAKE_ARGS olddefconfig
           
-          # Compilăm Kernelul
-          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-Wno-error -w" O=out Image.gz-dtb
+          make $MAKE_ARGS r5q_defconfig
+          # Compilăm Kernelul (Image.gz-dtb) și Modulele (.ko)
+          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-Wno-error -w" O=out Image.gz-dtb modules
 
-      - name: AnyKernel3 Packaging
+      - name: Prepare AnyKernel3 with Modules
         run: |
           git clone https://github.com/osm0sis/AnyKernel3.git
-          if [ -f kernel/out/arch/arm64/boot/Image.gz-dtb ]; then
-            cp kernel/out/arch/arm64/boot/Image.gz-dtb AnyKernel3/Image.gz-dtb
-          else
-            echo "EROARE: Image.gz-dtb nu a fost găsit!" && exit 1
-          fi
+          cp kernel/out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
+          
+          # Colectăm toate modulele .ko generate (ath10k, cfg80211 etc)
+          mkdir -p AnyKernel3/modules/vendor/lib/modules
+          find kernel/out -name "*.ko" -exec cp {} AnyKernel3/modules/vendor/lib/modules/ \;
           
           cd AnyKernel3
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
+          # Setăm calea corectă pentru blocul de boot pe S10 Lite
           sed -i 's|block=auto;|block=/dev/block/by-name/boot;|g' anykernel.sh
-          sed -i 's/kernel.type=inline/kernel.type=gzip-dtb/g' anykernel.sh
-          sed -i 's/patch_vbmeta_flag=auto/patch_vbmeta_flag=1/g' anykernel.sh
-          
-          zip -r9 ../Lumi-R5Q-Final-Fixed.zip *
+          zip -r9 ../Lumi-R5Q-Backport.zip *
 
-      - name: Upload
+      - name: Upload Build
         uses: actions/upload-artifact@v4
         with:
-          name: Lumi-Fixed-Kernel
-          path: Lumi-R5Q-Final-Fixed.zip
+          name: Lumi-R5Q-Final
+          path: Lumi-R5Q-Backport.zip
