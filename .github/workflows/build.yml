@@ -1,4 +1,4 @@
-name: Build Lumi R5Q - Nuclear Final Fix
+name: Build Lumi R5Q - Taskstats Fixed
 on:
   workflow_dispatch:
 
@@ -20,29 +20,34 @@ jobs:
           cd ath-tree
           git checkout v5.2-ath10k-sdio-v2 || git checkout v5.2-ath10k-sdio
 
-      - name: Nuclear Cleanup & Driver Replacement
+      - name: Nuclear Cleanup & Hard Fixes
         run: |
-          # 1. BRUTE FORCE DRIVER REPLACEMENT
+          # 1. Înlocuim driverul ath10k
           rm -rf kernel/drivers/net/wireless/ath/ath10k
           cp -r ath-tree/drivers/net/wireless/ath/ath10k kernel/drivers/net/wireless/ath/
           
           cd kernel
           
-          # 2. NUCLEAR CLEANUP (Prevenim Error 1 la flag-uri Polly)
+          # 2. NUCLEAR CLEANUP (Polly/LLVM)
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm//g' {} +
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-polly[^ ]*//g' {} +
           
-          # 3. VDSO FIX (Anti -static)
+          # 3. VDSO FIX
           if [ -f arch/arm64/kernel/vdso/Makefile ]; then
             sed -i 's/-static//g' arch/arm64/kernel/vdso/Makefile
             sed -i 's/$(LDFLAGS)/$(filter-out -static,$(LDFLAGS))/g' arch/arm64/kernel/vdso/Makefile
           fi
 
-          # 4. KCONFIG & SOURCE FIXES
+          # 4. KCONFIG FIX (KernelSU)
           sed -i '/kernelsu/d' drivers/android/Kconfig
-          sed -i 's/#elif defined(CONFIG_POSIX_MQUEUE)/#else\n#if defined(CONFIG_POSIX_MQUEUE)/' kernel/taskstats.c || true
-          echo "#endif" >> kernel/taskstats.c
+
+          # 5. TASKSTATS DEFINITIVE FIX (Rezolvăm eroarea #endif without #if)
+          # Această metodă rescrie blocul problematic fără a lăsa directive orfane
+          sed -i 's/#elif defined(CONFIG_POSIX_MQUEUE)/#else\n#ifdef CONFIG_POSIX_MQUEUE/g' kernel/taskstats.c
+          # Adăugăm un #endif doar dacă este necesar pentru a închide noul #ifdef creat mai sus, 
+          # chiar înainte de funcția taskstats_exit
+          sed -i '/void __init taskstats_init_early(void)/i #endif' kernel/taskstats.c
 
       - name: Setup NDK Clang (r29)
         run: |
@@ -55,8 +60,6 @@ jobs:
           cd kernel
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           
-          # FOLOSIM LLVM_IAS=1 pentru a evita eroarea /usr/bin/as: unrecognized option '-EL'
-          # Aceasta forțează folosirea asamblorului intern din Clang
           export MAKE_ARGS="ARCH=arm64 \
             LLVM=1 \
             LLVM_IAS=1 \
@@ -71,10 +74,9 @@ jobs:
             STRIP=llvm-strip \
             O=out"
           
-          # Generăm config
           make $MAKE_ARGS r5q_defconfig
           
-          # BPF & WiFi MODULE INJECTION
+          # BPF & WiFi MODULES
           {
             echo "CONFIG_BPF=y"
             echo "CONFIG_BPF_SYSCALL=y"
@@ -88,7 +90,7 @@ jobs:
           
           make $MAKE_ARGS olddefconfig
           
-          # COMPILARE FINALĂ
+          # Compilăm kernel-ul (Image.gz-dtb)
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-Wno-error -w" O=out Image.gz-dtb modules
 
       - name: Package AnyKernel3
@@ -97,18 +99,16 @@ jobs:
           if [ -f kernel/out/arch/arm64/boot/Image.gz-dtb ]; then
             cp kernel/out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
           fi
-          
-          # Colectăm modulele wireless noi (.ko)
           mkdir -p AnyKernel3/modules/vendor/lib/modules
           find kernel/out -name "*.ko" -exec cp {} AnyKernel3/modules/vendor/lib/modules/ \;
           
           cd AnyKernel3
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
           sed -i 's|block=auto;|block=/dev/block/by-name/boot;|g' anykernel.sh
-          zip -r9 ../Lumi-R5Q-Nuclear-Final.zip *
+          zip -r9 ../Lumi-R5Q-Fixed-V2.zip *
 
       - name: Upload Build
         uses: actions/upload-artifact@v4
         with:
-          name: Lumi-R5Q-Kernel
-          path: Lumi-R5Q-Nuclear-Final.zip
+          name: Lumi-R5Q-Final
+          path: Lumi-R5Q-Fixed-V2.zip
