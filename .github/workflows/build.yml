@@ -23,19 +23,18 @@ jobs:
           cp -r pascua_tree/init kernel/
           cp pascua_tree/scripts/gen_initramfs_list.sh kernel/scripts/
           
-          # 3. FIX COMPATIBILITATE 4.14 (Folosim căi directe pentru a evita erorile de 'cd')
-          # Eliminăm monitorizarea de memorie Samsung
+          # 3. FIX COMPATIBILITATE BRUTALĂ 4.14
+          # (Liniile anterioare de sed rămân...)
           sed -i '/set_memsize_kernel_type/d' kernel/init/main.c
-          
-          # Eliminăm tracing-ul care lipsește în 4.14
           sed -i '/trace\/events\/initcall.h/d' kernel/init/main.c
-          
-          # Fix pentru initcall_entry_t (TypeDef obligatoriu pentru 4.14)
           sed -i '40i typedef int (*initcall_t)(void);' kernel/init/main.c
           sed -i '41i typedef initcall_t initcall_entry_t;' kernel/init/main.c
-          
-          # Fix variabilă debug Samsung
           sed -i 's/initcall_sec_debug/initcall_debug/g' kernel/init/main.c
+          
+          # --- FIX-UL NOU PENTRU EROAREA DE ASTĂZI ---
+          # Eliminăm macro-ul initcall_from_entry care cauzează eroarea de cast (int to pointer)
+          sed -i 's/initcall_from_entry(fn)/fn/g' kernel/init/main.c
+          # -------------------------------------------
           
           # Eliminăm BPF Preload din Kconfig
           sed -i '/kernel\/bpf\/preload\/Kconfig/d' kernel/init/Kconfig
