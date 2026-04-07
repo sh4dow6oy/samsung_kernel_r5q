@@ -16,7 +16,7 @@ jobs:
 
       - name: Kernel Surgical Fixes (VDSO, Polly, Security)
         run: |
-        
+          cd kernel
           # 1. NUCLEAR CLEANUP (Prevenim Error 1)
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm//g' {} +
