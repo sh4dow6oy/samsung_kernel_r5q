@@ -16,15 +16,22 @@ jobs:
 
       - name: Kernel Surgical Fixes (VDSO, Polly, Security)
         run: |
-          cd kernel
-          # --- 1. FIX VDSO: Rezolvă eroarea de link-uire LLVM (-static) ---
-          find arch/arm64/kernel/vdso -type f -name "Makefile*" -exec sed -i 's/-static//g' {} +
-          find arch/arm64/kernel/vdso -type f -name "Makefile*" -exec sed -i 's/$(LDFLAGS)/$(filter-out -static,$(LDFLAGS))/g' {} +
-
-          # --- 2. FIX POLLY: Elimină flag-urile de optimizare care cauzează crash-uri ---
-          find . -type f -name "Makefile*" -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
-          find . -type f -name "Makefile*" -exec sed -i 's/-mllvm -enable-loop-distribute//g' {} +
-          find . -type f -name "Makefile*" -exec sed -i 's/-mllvm -enable-recursive-eval//g' {} +
+        
+          # 1. NUCLEAR CLEANUP (Prevenim Error 1)
+          find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
+          find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm//g' {} +
+          find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-polly[^ ]*//g' {} +
+          
+          # 2. VDSO FIX (Anti -static)
+          if [ -f arch/arm64/kernel/vdso/Makefile ]; then
+            sed -i 's/-static//g' arch/arm64/kernel/vdso/Makefile
+            sed -i 's/$(LDFLAGS)/$(filter-out -static,$(LDFLAGS))/g' arch/arm64/kernel/vdso/Makefile
+          fi
+          # 3. KERNELSU & SAMSUNG CLEANUP
+          sed -i '/kernelsu/d' drivers/android/Kconfig || true
+          sed -i '/kernelsu/d' drivers/android/Makefile || true
+          rm -rf drivers/kernelsu
+          sed -i 's/ifneq ($(wildcard $(srctree)\/scripts\/gcc-wrapper.py),)/ifeq (0,1)/g' Makefile
 
           # --- 3. FORCE SELINUX PERMISSIVE ---
           # Ne asigurăm că SELinux nu blochează boot-ul pe OneUI 7
