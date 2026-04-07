@@ -19,12 +19,14 @@ jobs:
           
           # 2. Integrăm folderul INIT de la pascua28
           git clone --depth=1 -b sixteen https://github.com/pascua28/android_kernel_samsung_sm7150 pascua_tree
-          rm -rf $KERNEL_DIR/init
-          cp -r $ROOT_DIR/pascua_tree/init $KERNEL_DIR/
-          cp $ROOT_DIR/pascua_tree/scripts/gen_initramfs_list.sh $KERNEL_DIR/scripts/
           
-          # 3. FIX COMPATIBILITATE BRUTALĂ (Rezolvăm erorile de main.c și Kconfig)
-          cd $KERNEL_DIR/init
+          # Ștergem init-ul vechi și copiem cel nou (fără slash la început pentru căi relative)
+          rm -rf kernel/init
+          cp -r pascua_tree/init kernel/
+          cp pascua_tree/scripts/gen_initramfs_list.sh kernel/scripts/
+          
+          # 3. FIX COMPATIBILITATE BRUTALĂ 4.14 (Rezolvăm erorile de main.c)
+          cd kernel/init
           
           # Eliminăm monitorizarea de memorie Samsung (erorile MEMSIZE)
           sed -i '/set_memsize_kernel_type/d' main.c
@@ -32,14 +34,14 @@ jobs:
           # Eliminăm tracing-ul care lipsește în 4.14
           sed -i '/trace\/events\/initcall.h/d' main.c
           
-          # Fix pentru initcall_entry_t (TypeDef pentru 4.14)
+          # Fix pentru initcall_entry_t (TypeDef obligatoriu pentru 4.14)
           sed -i '40i typedef int (*initcall_t)(void);' main.c
           sed -i '41i typedef initcall_t initcall_entry_t;' main.c
           
-          # Fix variabilă debug
+          # Fix variabilă debug Samsung
           sed -i 's/initcall_sec_debug/initcall_debug/g' main.c
           
-          # Eliminăm BPF Preload din Kconfig (fișier lipsă în 4.14)
+          # Eliminăm BPF Preload din Kconfig
           sed -i '/kernel\/bpf\/preload\/Kconfig/d' Kconfig
           
           cd kernel
