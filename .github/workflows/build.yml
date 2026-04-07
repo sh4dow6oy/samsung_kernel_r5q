@@ -23,13 +23,26 @@ jobs:
           cp -r pascua_tree/init kernel/
           cp pascua_tree/scripts/gen_initramfs_list.sh kernel/scripts/
           
-          # --- FIX COMPATIBILITATE 4.14 ---
-          # Ștergem includerea headerului de tracing care lipsește în 4.14
-          sed -i '/trace\/events\/initcall.h/d' kernel/init/main.c
+          # --- FIX COMPATIBILITATE BRUTALĂ 4.14 ---
+          cd kernel/init
           
-          # Eliminăm referința BPF care a dat eroare anterior
-          sed -i '/kernel\/bpf\/preload\/Kconfig/d' kernel/init/Kconfig
-          # ---------------------------------
+          # Eliminăm liniile cu MEMSIZE_KERNEL (funcții de monitorizare Samsung lipsă)
+          sed -i '/set_memsize_kernel_type/d' main.c
+          
+          # Eliminăm referința la initcall_sec_debug
+          sed -i 's/initcall_sec_debug/initcall_debug/g' main.c
+          
+          # FIX pentru initcall_entry_t (în 4.14 se folosește typedef-ul vechi)
+          # Adăugăm definitia manual în main.c pentru a fi siguri
+          sed -i '40i typedef int (*initcall_t)(void);' main.c
+          sed -i '41i typedef initcall_t initcall_entry_t;' main.c
+          
+          # Eliminăm include-ul de tracing care a dat eroare anterior
+          sed -i '/trace\/events\/initcall.h/d' main.c
+          
+          # Eliminăm BPF Preload din Kconfig
+          sed -i '/kernel\/bpf\/preload\/Kconfig/d' Kconfig
+          # ----------------------------------------
           
           cd kernel
           # 2. FIX LTO & POLLY (Elimină flag-urile care crapă ld.lld r29)
