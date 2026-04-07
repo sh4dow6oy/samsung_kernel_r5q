@@ -16,9 +16,6 @@ jobs:
 
       - name: Nuclear Cleanup & Init Sixteen Integration
         run: |
-          # 1. Înlocuim driverul ath10k
-          rm -rf kernel/drivers/net/wireless/ath/ath10k
-          cp -r ath-tree/drivers/net/wireless/ath/ath10k kernel/drivers/net/wireless/ath/
           
           # 2. Integrăm folderul INIT de la pascua28
           git clone --depth=1 -b sixteen https://github.com/pascua28/android_kernel_samsung_sm7150 pascua_tree
