@@ -17,14 +17,19 @@ jobs:
       - name: Nuclear Cleanup & Init Sixteen Integration
         run: |
           
-          # 2. Integrăm folderul INIT de la pascua28 (Android 15 logic)
+          # 2. Integrăm folderul INIT de la pascua28
           git clone --depth=1 -b sixteen https://github.com/pascua28/android_kernel_samsung_sm7150 pascua_tree
           rm -rf kernel/init
           cp -r pascua_tree/init kernel/
           cp pascua_tree/scripts/gen_initramfs_list.sh kernel/scripts/
           
-          # 3. FIX CRITIC: Eliminăm referințele BPF inexistente în 4.14 care opresc build-ul
+          # --- FIX COMPATIBILITATE 4.14 ---
+          # Ștergem includerea headerului de tracing care lipsește în 4.14
+          sed -i '/trace\/events\/initcall.h/d' kernel/init/main.c
+          
+          # Eliminăm referința BPF care a dat eroare anterior
           sed -i '/kernel\/bpf\/preload\/Kconfig/d' kernel/init/Kconfig
+          # ---------------------------------
           
           cd kernel
           # 2. FIX LTO & POLLY (Elimină flag-urile care crapă ld.lld r29)
