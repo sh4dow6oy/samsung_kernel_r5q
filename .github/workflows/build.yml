@@ -95,33 +95,31 @@ jobs:
           
           # --- INJECTĂM SUPORTUL PENTRU ANDROID 15 (ONEUI 7) ---
           {
-            # System-as-Root (SAR) - Fix pentru mount error /system
-            echo "CONFIG_ANDROID_SAR_RAMDISK=y"
-            echo "CONFIG_BLK_DEV_INITRD=y"
+            {
+            # 1. ANTI-BOOTLOOP: Dezactivăm verificările de semnătură
+            echo "CONFIG_SEC_ABC=n"
+            echo "CONFIG_SEC_ABC_HUB=n"
+            echo "CONFIG_SEC_DEBUG=y"
             
-            # File Systems (EROFS este formatul OneUI 7)
+            # 2. SUPORT PARTIȚII LOGICE (Critic pentru OneUI 7)
+            echo "CONFIG_BLK_DEV_DM=y"
+            echo "CONFIG_DM_ANDROID_VERITY=n"
+            echo "CONFIG_DM_BOW=y"
+            echo "CONFIG_DM_USER=y"
+            
+            # 3. FIX EROFS (Formatul nou de system în A15)
             echo "CONFIG_EROFS_FS=y"
             echo "CONFIG_EROFS_FS_ZIP=y"
-            echo "CONFIG_INCREMENTAL_FS=y"
+            echo "CONFIG_EROFS_FS_XATTR=y"
+            echo "CONFIG_EROFS_FS_POSIX_ACL=y"
             
-            # Cgroups V2 & BPF (Fix pentru freeze la Powered by Android)
-            echo "CONFIG_CGROUPS=y"
-            echo "CONFIG_CGROUP_BPF=y"
-            echo "CONFIG_BPF_SYSCALL=y"
-            echo "CONFIG_CPUSETS=y"
-            echo "CONFIG_CGROUP_CPUACCT=y"
-            echo "CONFIG_CGROUP_FREEZER=y"
+            # 4. DEZACTIVARE RKP/KNOX (Motivul principal de panică în log)
+            echo "CONFIG_RKP_KDP=n"
+            echo "CONFIG_KNOX_KAP=n"
+            echo "CONFIG_SAMSUNG_PRODUCT_SHIP=y"
             
-            # Logical Partitions & DM
-            echo "CONFIG_BLK_DEV_DM=y"
-            echo "CONFIG_DM_BOW=y"
-            
-            # WiFi ath10k Modules
-            echo "CONFIG_ATH10K=m"
-            echo "CONFIG_ATH10K_SDIO=m"
-            
-            # Cmdline Permissive
-            echo 'CONFIG_CMDLINE="androidboot.selinux=permissive androidboot.fips=0"'
+            # 5. CMDLINE AGRESIV (Forțăm Permissive și ignorăm Verity)
+            echo 'CONFIG_CMDLINE="androidboot.selinux=permissive androidboot.veritymode=logging androidboot.verifiedbootstate=orange printk.devkmsg=on"'
             echo "CONFIG_CMDLINE_EXTEND=y"
           } >> out/.config
           
