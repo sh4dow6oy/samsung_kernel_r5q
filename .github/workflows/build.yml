@@ -16,6 +16,8 @@ jobs:
 
       - name: Nuclear Cleanup & Init Sixteen Integration
         run: |
+          # 1. Backup la init_task.c original (cel bun pentru 4.14)
+          cp kernel/init/init_task.c kernel/init_task.c.bak
           
           # 2. Integrăm folderul INIT de la pascua28
           git clone --depth=1 -b sixteen https://github.com/pascua28/android_kernel_samsung_sm7150 pascua_tree
@@ -23,18 +25,16 @@ jobs:
           cp -r pascua_tree/init kernel/
           cp pascua_tree/scripts/gen_initramfs_list.sh kernel/scripts/
           
-          # 3. FIX COMPATIBILITATE BRUTALĂ 4.14
-          # (Liniile anterioare de sed rămân...)
+          # 3. RESTAURARE init_task.c (Esențial pentru a evita erorile de structură procese)
+          cp kernel/init_task.c.bak kernel/init/init_task.c
+          
+          # 4. FIX COMPATIBILITATE main.c (Toate sed-urile anterioare)
           sed -i '/set_memsize_kernel_type/d' kernel/init/main.c
           sed -i '/trace\/events\/initcall.h/d' kernel/init/main.c
           sed -i '40i typedef int (*initcall_t)(void);' kernel/init/main.c
           sed -i '41i typedef initcall_t initcall_entry_t;' kernel/init/main.c
           sed -i 's/initcall_sec_debug/initcall_debug/g' kernel/init/main.c
-          
-          # --- FIX-UL NOU PENTRU EROAREA DE ASTĂZI ---
-          # Eliminăm macro-ul initcall_from_entry care cauzează eroarea de cast (int to pointer)
           sed -i 's/initcall_from_entry(fn)/fn/g' kernel/init/main.c
-          # -------------------------------------------
           
           # Eliminăm BPF Preload din Kconfig
           sed -i '/kernel\/bpf\/preload\/Kconfig/d' kernel/init/Kconfig
