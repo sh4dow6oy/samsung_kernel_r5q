@@ -1,4 +1,4 @@
-name: Build Lumi R5Q - Stock Init & Polly Fix
+name: Build Lumi R5Q - Stock Init Clean
 on:
   workflow_dispatch:
 
@@ -17,17 +17,17 @@ jobs:
       - name: Kernel Surgical Fixes (VDSO, Polly, Security)
         run: |
           cd kernel
-          # --- 1. FIX VDSO: Elimină -static (Eroare de Linker LLVM) ---
+          # --- 1. FIX VDSO: Rezolvă eroarea de link-uire LLVM (-static) ---
           find arch/arm64/kernel/vdso -type f -name "Makefile*" -exec sed -i 's/-static//g' {} +
           find arch/arm64/kernel/vdso -type f -name "Makefile*" -exec sed -i 's/$(LDFLAGS)/$(filter-out -static,$(LDFLAGS))/g' {} +
 
-          # --- 2. FIX POLLY: Elimină optimizările care crapă compilarea ---
-          # Căutăm și ștergem orice referință la plugin-ul Polly sau optimizări de loop-uri specifice
+          # --- 2. FIX POLLY: Elimină flag-urile de optimizare care cauzează crash-uri ---
           find . -type f -name "Makefile*" -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
           find . -type f -name "Makefile*" -exec sed -i 's/-mllvm -enable-loop-distribute//g' {} +
           find . -type f -name "Makefile*" -exec sed -i 's/-mllvm -enable-recursive-eval//g' {} +
 
           # --- 3. FORCE SELINUX PERMISSIVE ---
+          # Ne asigurăm că SELinux nu blochează boot-ul pe OneUI 7
           sed -i 's/selinux_enforcing_boot = 1/selinux_enforcing_boot = 0/g' security/selinux/hooks.c || true
 
       - name: Setup Neutron Clang
@@ -58,31 +58,46 @@ jobs:
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             O=out"
           
+          # Generare config de bază
           make $MAKE_ARGS r5q_defconfig
           
-          # --- CONFIGURARE ONEUI 7 & ANTI-BOOTLOOP ---
-          # Dezactivăm SAR-ul vechi care căuta sda21
+          # --- CONFIGURARE ONEUI 7 (OBLIGATORIU) ---
+          # Dezactivăm SAR-ul legacy (cel care căuta partiția sda21)
           printf "CONFIG_ANDROID_SAR_RAMDISK=n\n" >> out/.config
           
-          # Activăm Device Mapper pentru Dynamic Partitions
-          printf "CONFIG_BLK_DEV_DM=y\nCONFIG_DM_REMAPPER=y\nCONFIG_DM_UEVENT=y\nCONFIG_DM_VERITY=n\n" >> out/.config
+          # Activăm Device Mapper pentru Dynamic Partitions (System/Vendor/Product)
+          printf "CONFIG_BLK_DEV_DM=y\n" >> out/.config
+          printf "CONFIG_DM_REMAPPER=y\n" >> out/.config
+          printf "CONFIG_DM_UEVENT=y\n" >> out/.config
+          printf "CONFIG_DM_VERITY=n\n" >> out/.config
           
-          # Suport Android 15 (EROFS, APEX, BinderFS)
-          printf "CONFIG_EROFS_FS=y\nCONFIG_EROFS_FS_ZIP=y\nCONFIG_BLK_DEV_INITRD=y\nCONFIG_ANDROID_BINDERFS=y\n" >> out/.config
-          printf "CONFIG_BLK_DEV_LOOP=y\nCONFIG_BLK_DEV_LOOP_MIN_COUNT=16\n" >> out/.config
+          # Suport Android 15 (EROFS pentru partitii noi, BinderFS pentru servicii)
+          printf "CONFIG_EROFS_FS=y\n" >> out/.config
+          printf "CONFIG_EROFS_FS_ZIP=y\n" >> out/.config
+          printf "CONFIG_BLK_DEV_INITRD=y\n" >> out/.config
+          printf "CONFIG_ANDROID_BINDERFS=y\n" >> out/.config
           
-          # Dezactivare securitate Samsung
-          printf "CONFIG_RKP_KDP=n\nCONFIG_KNOX_KAP=n\nCONFIG_SEC_ABC=n\n" >> out/.config
+          # Creștem numărul de loop devices pentru containerele APEX din Android 15
+          printf "CONFIG_BLK_DEV_LOOP=y\n" >> out/.config
+          printf "CONFIG_BLK_DEV_LOOP_MIN_COUNT=16\n" >> out/.config
           
-          # CMDLINE final
+          # Dezactivăm securitatea Samsung care provoacă Kernel Panic la modificări
+          printf "CONFIG_RKP_KDP=n\n" >> out/.config
+          printf "CONFIG_KNOX_KAP=n\n" >> out/.config
+          printf "CONFIG_SEC_ABC=n\n" >> out/.config
+          
+          # CMDLINE: Forțăm boot-ul în sistem, nu în recovery, și punem SELinux în permissive
           printf "CONFIG_CMDLINE=\"loop.max_part=16 androidboot.force_normal_boot=1 androidboot.selinux=permissive\"\n" >> out/.config
           printf "CONFIG_CMDLINE_EXTEND=y\n" >> out/.config
 
+          # Aplicăm noile setări
           make $MAKE_ARGS olddefconfig
+          
+          # Compilăm kernelul (KCFLAGS ajută la ignorarea avertismentelor minore)
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -Wno-error -w" O=out Image.gz-dtb
 
       - name: Upload Image.gz-dtb
         uses: actions/upload-artifact@v4
         with:
-          name: Image-Lumi-PollyFix
+          name: Image-Lumi-Clean-Stock
           path: kernel/out/arch/arm64/boot/Image.gz-dtb
