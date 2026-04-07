@@ -16,7 +16,7 @@ jobs:
 
       - name: Clone Erstrom ath Tree (WiFi Fix)
         run: |
-          git clone --depth=1 https://github.com/erstrom/linux-ath.git ath-tree
+          git clone https://github.com/erstrom/linux-ath.git ath-tree
           cd ath-tree
           git checkout v5.2-ath10k-sdio-v2 || git checkout v5.2-ath10k-sdio
 
