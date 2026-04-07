@@ -50,44 +50,46 @@ jobs:
           cd kernel
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           
-          MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
-          
+          # Definim argumentele separat pentru a evita conflictele de linker la HOST
+          MAKE_ARGS="ARCH=arm64 \
+            LLVM=1 \
+            LLVM_IAS=1 \
+            CC=clang \
+            LD=ld.lld \
+            AR=llvm-ar \
+            NM=llvm-nm \
+            OBJCOPY=llvm-objcopy \
+            OBJDUMP=llvm-objdump \
+            STRIP=llvm-strip \
+            HOSTCC=clang \
+            HOSTCXX=clang++ \
+            HOSTLD=ld.lld \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            O=out"
+
+          # 1. Creăm folderul de out înainte de orice
+          mkdir -p out
+
+          # 2. Generăm defconfig-ul
           make $MAKE_ARGS r5q_defconfig
           
-          # --- INJECTĂM LOGICA ANDROID 15 (ONEUI 7) ---
+          # 3. Injectăm restul de config-uri (SAR, EROFS, etc.)
           {
-            # System-as-Root & Initramfs
             echo "CONFIG_ANDROID_SAR_RAMDISK=y"
             echo "CONFIG_BLK_DEV_INITRD=y"
-            
-            # Cgroups V2 & BPF (Esențial pentru bootloop fix)
-            echo "CONFIG_CGROUPS=y"
-            echo "CONFIG_CGROUP_BPF=y"
-            echo "CONFIG_BPF_SYSCALL=y"
-            echo "CONFIG_CPUSETS=y"
-            echo "CONFIG_CGROUP_CPUACCT=y"
-            echo "CONFIG_CGROUP_FREEZER=y"
-            
-            # File Systems (EROFS este obligatoriu pe OneUI 7)
             echo "CONFIG_EROFS_FS=y"
             echo "CONFIG_EROFS_FS_ZIP=y"
-            echo "CONFIG_INCREMENTAL_FS=y"
-            
-            # Logical Partitions Support
-            echo "CONFIG_BLK_DEV_DM=y"
-            echo "CONFIG_DM_BOW=y"
-            echo "CONFIG_DM_VERITY=y"
-            
-            # WiFi ath10k Modules
+            echo "CONFIG_CGROUPS=y"
+            echo "CONFIG_CGROUP_BPF=y"
             echo "CONFIG_ATH10K=m"
             echo "CONFIG_ATH10K_SDIO=m"
-            
-            # Force Permissive Cmdline
-            echo 'CONFIG_CMDLINE="androidboot.selinux=permissive androidboot.fips=0"'
-            echo "CONFIG_CMDLINE_EXTEND=y"
           } >> out/.config
           
+          # 4. Aplicăm schimbările
           make $MAKE_ARGS olddefconfig
+          
+          # 5. Compilarea propriu-zisă
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -Wno-error -w" O=out Image.gz-dtb dtbo.img modules
 
       - name: Package AnyKernel3
