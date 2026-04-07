@@ -16,48 +16,48 @@ jobs:
 
       - name: Nuclear Cleanup & Init Sixteen Integration
         run: |
+          # 1. Înlocuim driverul ath10k
+          rm -rf kernel/drivers/net/wireless/ath/ath10k
+          cp -r ath-tree/drivers/net/wireless/ath/ath10k kernel/drivers/net/wireless/ath/
           
           # 2. Integrăm folderul INIT de la pascua28
           git clone --depth=1 -b sixteen https://github.com/pascua28/android_kernel_samsung_sm7150 pascua_tree
-          
-          # Ștergem init-ul vechi și copiem cel nou (fără slash la început pentru căi relative)
           rm -rf kernel/init
           cp -r pascua_tree/init kernel/
           cp pascua_tree/scripts/gen_initramfs_list.sh kernel/scripts/
           
-          # 3. FIX COMPATIBILITATE BRUTALĂ 4.14 (Rezolvăm erorile de main.c)
-          cd kernel/init
-          
-          # Eliminăm monitorizarea de memorie Samsung (erorile MEMSIZE)
-          sed -i '/set_memsize_kernel_type/d' main.c
+          # 3. FIX COMPATIBILITATE 4.14 (Folosim căi directe pentru a evita erorile de 'cd')
+          # Eliminăm monitorizarea de memorie Samsung
+          sed -i '/set_memsize_kernel_type/d' kernel/init/main.c
           
           # Eliminăm tracing-ul care lipsește în 4.14
-          sed -i '/trace\/events\/initcall.h/d' main.c
+          sed -i '/trace\/events\/initcall.h/d' kernel/init/main.c
           
           # Fix pentru initcall_entry_t (TypeDef obligatoriu pentru 4.14)
-          sed -i '40i typedef int (*initcall_t)(void);' main.c
-          sed -i '41i typedef initcall_t initcall_entry_t;' main.c
+          sed -i '40i typedef int (*initcall_t)(void);' kernel/init/main.c
+          sed -i '41i typedef initcall_t initcall_entry_t;' kernel/init/main.c
           
           # Fix variabilă debug Samsung
-          sed -i 's/initcall_sec_debug/initcall_debug/g' main.c
+          sed -i 's/initcall_sec_debug/initcall_debug/g' kernel/init/main.c
           
           # Eliminăm BPF Preload din Kconfig
-          sed -i '/kernel\/bpf\/preload\/Kconfig/d' Kconfig
+          sed -i '/kernel\/bpf\/preload\/Kconfig/d' kernel/init/Kconfig
           
+          # 4. FIX LTO, POLLY & VDSO (Intrăm în folderul kernel o singură dată)
           cd kernel
-          # 2. FIX LTO & POLLY (Elimină flag-urile care crapă ld.lld r29)
-          # Căutăm în toate Makefile-urile și fișierele .include
           find . -type f \( -name "Makefile*" -o -name "*.mk" -o -name "*.include" \) -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
           find . -type f \( -name "Makefile*" -o -name "*.mk" -o -name "*.include" \) -exec sed -i 's/-mllvm -import-instr-limit=5//g' {} +
           find . -type f \( -name "Makefile*" -o -name "*.mk" -o -name "*.include" \) -exec sed -i 's/-import-instr-limit=5//g' {} +
           
-          # 3. VDSO FIX (Anti-static)
           if [ -f arch/arm64/kernel/vdso/Makefile ]; then
             sed -i 's/-static//g' arch/arm64/kernel/vdso/Makefile
             sed -i 's/$(LDFLAGS)/$(filter-out -static,$(LDFLAGS))/g' arch/arm64/kernel/vdso/Makefile
           fi
-          # 4. KCONFIG FIX (KernelSU Missing)
+          
           sed -i '/kernelsu/d' drivers/android/Kconfig
+          
+          # Force Permissive Hardcoded
+          sed -i 's/selinux_enforcing_boot = 1/selinux_enforcing_boot = 0/g' security/selinux/hooks.c || true
 
       - name: Setup Neutron Clang
         run: |
