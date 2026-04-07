@@ -19,30 +19,28 @@ jobs:
           
           # 2. Integrăm folderul INIT de la pascua28
           git clone --depth=1 -b sixteen https://github.com/pascua28/android_kernel_samsung_sm7150 pascua_tree
-          rm -rf kernel/init
-          cp -r pascua_tree/init kernel/
-          cp pascua_tree/scripts/gen_initramfs_list.sh kernel/scripts/
+          rm -rf $KERNEL_DIR/init
+          cp -r $ROOT_DIR/pascua_tree/init $KERNEL_DIR/
+          cp $ROOT_DIR/pascua_tree/scripts/gen_initramfs_list.sh $KERNEL_DIR/scripts/
           
-          # --- FIX COMPATIBILITATE BRUTALĂ 4.14 ---
-          cd kernel/init
+          # 3. FIX COMPATIBILITATE BRUTALĂ (Rezolvăm erorile de main.c și Kconfig)
+          cd $KERNEL_DIR/init
           
-          # Eliminăm liniile cu MEMSIZE_KERNEL (funcții de monitorizare Samsung lipsă)
+          # Eliminăm monitorizarea de memorie Samsung (erorile MEMSIZE)
           sed -i '/set_memsize_kernel_type/d' main.c
           
-          # Eliminăm referința la initcall_sec_debug
-          sed -i 's/initcall_sec_debug/initcall_debug/g' main.c
+          # Eliminăm tracing-ul care lipsește în 4.14
+          sed -i '/trace\/events\/initcall.h/d' main.c
           
-          # FIX pentru initcall_entry_t (în 4.14 se folosește typedef-ul vechi)
-          # Adăugăm definitia manual în main.c pentru a fi siguri
+          # Fix pentru initcall_entry_t (TypeDef pentru 4.14)
           sed -i '40i typedef int (*initcall_t)(void);' main.c
           sed -i '41i typedef initcall_t initcall_entry_t;' main.c
           
-          # Eliminăm include-ul de tracing care a dat eroare anterior
-          sed -i '/trace\/events\/initcall.h/d' main.c
+          # Fix variabilă debug
+          sed -i 's/initcall_sec_debug/initcall_debug/g' main.c
           
-          # Eliminăm BPF Preload din Kconfig
+          # Eliminăm BPF Preload din Kconfig (fișier lipsă în 4.14)
           sed -i '/kernel\/bpf\/preload\/Kconfig/d' Kconfig
-          # ----------------------------------------
           
           cd kernel
           # 2. FIX LTO & POLLY (Elimină flag-urile care crapă ld.lld r29)
