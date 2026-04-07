@@ -1,4 +1,4 @@
-name: Build Lumi R5Q - Final Taskstats Repair
+name: Build Lumi R5Q - OneUI 7 Final
 on:
   workflow_dispatch:
 
@@ -14,92 +14,108 @@ jobs:
           path: kernel
           fetch-depth: 1
 
-      - name: Clone Erstrom ath Tree (v5.2)
+      - name: Clone Erstrom ath Tree (WiFi Fix)
         run: |
-          git clone https://github.com/erstrom/linux-ath.git ath-tree
+          git clone --depth=1 https://github.com/erstrom/linux-ath.git ath-tree
           cd ath-tree
           git checkout v5.2-ath10k-sdio-v2 || git checkout v5.2-ath10k-sdio
-      - name: Nuclear Cleanup & Hard Fixes
+
+      - name: Nuclear Cleanup & Init Sixteen Integration
         run: |
-          # 1. Înlocuim driverul ath10k (Brute Force)
+          # 1. Înlocuim driverul ath10k
           rm -rf kernel/drivers/net/wireless/ath/ath10k
-          rm -rf kernel/kernel/bpf
           cp -r ath-tree/drivers/net/wireless/ath/ath10k kernel/drivers/net/wireless/ath/
-          cp -r ath-tree/kernel/bpf kernel/kernel/bpf/
+          
+          # 2. Integrăm folderul INIT de la pascua28 (Android 15 / Sixteen branch)
+          git clone --depth=1 -b sixteen https://github.com/pascua28/android_kernel_samsung_sm7150 pascua_tree
+          rm -rf kernel/init
+          cp -r pascua_tree/init kernel/
+          cp pascua_tree/scripts/gen_initramfs_list.sh kernel/scripts/
           
           cd kernel
-          
-          # 2. FIX LTO & POLLY (Elimină flag-urile care crapă ld.lld r29)
-          # Căutăm în toate Makefile-urile și fișierele .include
+          # 3. Fix-uri compilator & LTO
           find . -type f \( -name "Makefile*" -o -name "*.mk" -o -name "*.include" \) -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
-          find . -type f \( -name "Makefile*" -o -name "*.mk" -o -name "*.include" \) -exec sed -i 's/-mllvm -import-instr-limit=5//g' {} +
-          find . -type f \( -name "Makefile*" -o -name "*.mk" -o -name "*.include" \) -exec sed -i 's/-import-instr-limit=5//g' {} +
           
-          # 3. VDSO FIX (Anti-static)
-          if [ -f arch/arm64/kernel/vdso/Makefile ]; then
-            sed -i 's/-static//g' arch/arm64/kernel/vdso/Makefile
-            sed -i 's/$(LDFLAGS)/$(filter-out -static,$(LDFLAGS))/g' arch/arm64/kernel/vdso/Makefile
-          fi
-          # 4. KCONFIG FIX (KernelSU Missing)
-          sed -i '/kernelsu/d' drivers/android/Kconfig
-          
+          # 4. Force Permissive Hardcoded
+          sed -i 's/selinux_enforcing_boot = 1/selinux_enforcing_boot = 0/g' security/selinux/hooks.c || true
+
       - name: Setup Neutron Clang
         run: |
           mkdir clang
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
-      - name: Build Kernel Lumi R5Q
+
+      - name: Build Kernel
         run: |
           cd kernel
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           
-          MAKE_ARGS="ARCH=arm64 \
-            LLVM=1 \
-            LLVM_IAS=1 \
-            CC=clang \
-            LD=ld.lld \
-            AR=llvm-ar \
-            NM=llvm-nm \
-            OBJCOPY=llvm-objcopy \
-            OBJDUMP=llvm-objdump \
-            STRIP=llvm-strip \
-            CROSS_COMPILE=aarch64-linux-gnu- \
-            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-            O=out"
+          MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
           
           make $MAKE_ARGS r5q_defconfig
           
-          # BPF & WiFi MODULES INJECTION
+          # --- INJECTĂM LOGICA ANDROID 15 (ONEUI 7) ---
           {
-            echo "CONFIG_BPF=y"
-            echo "CONFIG_BPF_SYSCALL=y"
-            echo "CONFIG_NETFILTER_XT_MATCH_BPF=y"
+            # System-as-Root & Initramfs
+            echo "CONFIG_ANDROID_SAR_RAMDISK=y"
+            echo "CONFIG_BLK_DEV_INITRD=y"
+            
+            # Cgroups V2 & BPF (Esențial pentru bootloop fix)
+            echo "CONFIG_CGROUPS=y"
             echo "CONFIG_CGROUP_BPF=y"
-            echo "CONFIG_BPF_JIT=y"
-            echo "CONFIG_DTC_WERROR=n"
+            echo "CONFIG_BPF_SYSCALL=y"
+            echo "CONFIG_CPUSETS=y"
+            echo "CONFIG_CGROUP_CPUACCT=y"
+            echo "CONFIG_CGROUP_FREEZER=y"
+            
+            # File Systems (EROFS este obligatoriu pe OneUI 7)
+            echo "CONFIG_EROFS_FS=y"
+            echo "CONFIG_EROFS_FS_ZIP=y"
+            echo "CONFIG_INCREMENTAL_FS=y"
+            
+            # Logical Partitions Support
+            echo "CONFIG_BLK_DEV_DM=y"
+            echo "CONFIG_DM_BOW=y"
+            echo "CONFIG_DM_VERITY=y"
+            
+            # WiFi ath10k Modules
             echo "CONFIG_ATH10K=m"
             echo "CONFIG_ATH10K_SDIO=m"
+            
+            # Force Permissive Cmdline
+            echo 'CONFIG_CMDLINE="androidboot.selinux=permissive androidboot.fips=0"'
+            echo "CONFIG_CMDLINE_EXTEND=y"
           } >> out/.config
           
           make $MAKE_ARGS olddefconfig
-          
-          # Compilare finală
-          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -Wno-error -w" O=out Image.gz-dtb modules
+          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -Wno-error -w" O=out Image.gz-dtb dtbo.img modules
+
       - name: Package AnyKernel3
         run: |
           git clone https://github.com/osm0sis/AnyKernel3.git
-          if [ -f kernel/out/arch/arm64/boot/Image.gz-dtb ]; then
-            cp kernel/out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
-          fi
+          cp kernel/out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
+          cp kernel/out/arch/arm64/boot/dtbo.img AnyKernel3/
+          
           mkdir -p AnyKernel3/modules/vendor/lib/modules
           find kernel/out -name "*.ko" -exec cp {} AnyKernel3/modules/vendor/lib/modules/ \;
           
           cd AnyKernel3
+          # Proprietăți AnyKernel
+          sed -i 's/kernel.string=.*/kernel.string=Lumi-OneUI7-Nuclear/g' anykernel.sh
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
+          sed -i 's/supported.versions=.*/supported.versions=11, 12, 13, 14, 15/g' anykernel.sh
           sed -i 's|block=auto;|block=/dev/block/by-name/boot;|g' anykernel.sh
-          zip -r9 ../Lumi-R5Q-Nuclear-Taskstats-Fixed.zip *
-      - name: Upload Build
+          
+          # Patch VBMETA (Elimină blocajul la logo-ul Samsung)
+          sed -i 's/PATCH_VBMETA_FLAG=auto/PATCH_VBMETA_FLAG=1/g' anykernel.sh || echo "PATCH_VBMETA_FLAG=1" >> anykernel.sh
+          
+          # Injectăm scrierea DTBO în scriptul de instalare
+          sed -i '/dump_boot;/a BLOCK=/dev/block/by-name/dtbo; reset_ak; split_boot; flash_boot;' anykernel.sh
+
+          zip -r9 ../Lumi-R5Q-A15-PRO-Final.zip *
+
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Lumi-R5Q-Kernel
-          path: Lumi-R5Q-Nuclear-Taskstats-Fixed.zip
+          name: Lumi-R5Q-OneUI7-Final
+          path: Lumi-R5Q-A15-PRO-Final.zip
