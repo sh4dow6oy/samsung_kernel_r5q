@@ -14,17 +14,8 @@ jobs:
           path: kernel
           fetch-depth: 1
 
-      - name: Clone Erstrom ath Tree (WiFi)
-        run: |
-          git clone --depth=1 https://github.com/erstrom/linux-ath.git ath-tree
-          cd ath-tree
-          git checkout v5.2-ath10k-sdio-v2 || git checkout v5.2-ath10k-sdio
-
       - name: Nuclear Cleanup & Init Sixteen Integration
         run: |
-          # 1. Înlocuim driverul ath10k
-          rm -rf kernel/drivers/net/wireless/ath/ath10k
-          cp -r ath-tree/drivers/net/wireless/ath/ath10k kernel/drivers/net/wireless/ath/
           
           # 2. Integrăm folderul INIT de la pascua28 (Android 15 logic)
           git clone --depth=1 -b sixteen https://github.com/pascua28/android_kernel_samsung_sm7150 pascua_tree
