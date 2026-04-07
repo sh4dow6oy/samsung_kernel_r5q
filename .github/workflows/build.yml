@@ -1,4 +1,4 @@
-name: Build Lumi R5Q - OneUI 7 PRO
+name: Build Lumi R5Q - Only Image.gz
 on:
   workflow_dispatch:
 
@@ -6,7 +6,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Kernel (Roynas 4.14)
+      - name: Checkout Kernel
         uses: actions/checkout@v4
         with:
           repository: Roynas-Android-Playground/kernel_samsung_r3q
@@ -14,21 +14,27 @@ jobs:
           path: kernel
           fetch-depth: 1
 
+      - name: Clone Erstrom ath Tree
+        run: |
+          git clone --depth=1 https://github.com/erstrom/linux-ath.git ath-tree
+          cd ath-tree
+          git checkout v5.2-ath10k-sdio-v2 || git checkout v5.2-ath10k-sdio
+
       - name: Nuclear Cleanup & Init Sixteen Integration
         run: |
-          # 1. Backup la init_task.c original
+          # Backup la init_task.c original
           cp kernel/init/init_task.c kernel/init_task.c.bak
           
-          # 2. Integrăm folderul INIT de la pascua28
+          # Integrăm folderul INIT de la pascua28
           git clone --depth=1 -b sixteen https://github.com/pascua28/android_kernel_samsung_sm7150 pascua_tree
           rm -rf kernel/init
           cp -r pascua_tree/init kernel/
           cp pascua_tree/scripts/gen_initramfs_list.sh kernel/scripts/
           
-          # 3. RESTAURARE init_task.c
+          # Restaurare init_task.c
           cp kernel/init_task.c.bak kernel/init/init_task.c
           
-          # 4. CURĂȚARE RADICALĂ main.c (Fix Linker Errors & Undefined Symbols)
+          # Fix-uri chirurgicale main.c
           cd kernel/init
           sed -i '/_memsize_reserved_name/d' main.c
           sed -i '/set_memsize_kernel_type/d' main.c
@@ -43,22 +49,22 @@ jobs:
           # Fix Kconfig BPF
           sed -i '/kernel\/bpf\/preload\/Kconfig/d' Kconfig
           
-          # 5. FIX KCONFIG (KernelSU Missing Error Fix)
+          # Cleanup global
           cd ../..
-          # Eliminăm referința la KernelSU care blochează defconfig-ul
           sed -i '/kernelsu/d' kernel/drivers/android/Kconfig
           
-          # 6. FIX LTO & VDSO
+          # --- FIX VDSO & LTO ---
           cd kernel
-          find . -type f \( -name "Makefile*" -o -name "*.mk" -o -name "*.include" \) -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
-          find . -type f \( -name "Makefile*" -o -name "*.mk" -o -name "*.include" \) -exec sed -i 's/-mllvm -import-instr-limit=5//g' {} +
-          
+          # Eliminăm flag-ul -static care blochează linker-ul LLVM
           if [ -f arch/arm64/kernel/vdso/Makefile ]; then
             sed -i 's/-static//g' arch/arm64/kernel/vdso/Makefile
             sed -i 's/$(LDFLAGS)/$(filter-out -static,$(LDFLAGS))/g' arch/arm64/kernel/vdso/Makefile
           fi
           
-          # Force Permissive Hardcoded
+          # Eliminăm Polly care dă erori de optimizare
+          find . -type f \( -name "Makefile*" -o -name "*.mk" -o -name "*.include" \) -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
+          
+          # Force Permissive
           sed -i 's/selinux_enforcing_boot = 1/selinux_enforcing_boot = 0/g' security/selinux/hooks.c || true
 
       - name: Setup Neutron Clang
@@ -67,12 +73,11 @@ jobs:
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
 
-      - name: Build Kernel
+      - name: Build Only Image.gz-dtb
         run: |
           cd kernel
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           
-          # Adăugăm HOSTCC pentru a evita blocajul la scripts/kconfig/conf
           MAKE_ARGS="ARCH=arm64 \
             LLVM=1 \
             LLVM_IAS=1 \
@@ -93,63 +98,14 @@ jobs:
           mkdir -p out
           make $MAKE_ARGS r5q_defconfig
           
-          # --- INJECTĂM SUPORTUL PENTRU ANDROID 15 (ONEUI 7) ---
-          {
-            # 1. ANTI-BOOTLOOP: Dezactivăm verificările de semnătură
-            echo "CONFIG_SEC_ABC=n"
-            echo "CONFIG_SEC_ABC_HUB=n"
-            echo "CONFIG_SEC_DEBUG=y"
-            
-            # 2. SUPORT PARTIȚII LOGICE (Critic pentru OneUI 7)
-            echo "CONFIG_BLK_DEV_DM=y"
-            echo "CONFIG_DM_ANDROID_VERITY=n"
-            echo "CONFIG_DM_BOW=y"
-            echo "CONFIG_DM_USER=y"
-            
-            # 3. FIX EROFS (Formatul nou de system în A15)
-            echo "CONFIG_EROFS_FS=y"
-            echo "CONFIG_EROFS_FS_ZIP=y"
-            echo "CONFIG_EROFS_FS_XATTR=y"
-            echo "CONFIG_EROFS_FS_POSIX_ACL=y"
-            
-            # 4. DEZACTIVARE RKP/KNOX (Motivul principal de panică în log)
-            echo "CONFIG_RKP_KDP=n"
-            echo "CONFIG_KNOX_KAP=n"
-            echo "CONFIG_SAMSUNG_PRODUCT_SHIP=y"
-            
-            # 5. CMDLINE AGRESIV (Forțăm Permissive și ignorăm Verity)
-            echo 'CONFIG_CMDLINE="androidboot.selinux=permissive androidboot.veritymode=logging androidboot.verifiedbootstate=orange printk.devkmsg=on"'
-            echo "CONFIG_CMDLINE_EXTEND=y"
-          } >> out/.config
+          # Injectăm setările anti-bootloop (Fixed Syntax)
+          printf "CONFIG_RKP_KDP=n\nCONFIG_KNOX_KAP=n\nCONFIG_SAMSUNG_PRODUCT_SHIP=y\nCONFIG_ANDROID_SAR_RAMDISK=y\nCONFIG_BLK_DEV_INITRD=y\nCONFIG_EROFS_FS=y\nCONFIG_EROFS_FS_ZIP=y\nCONFIG_DM_VERITY=n\nCONFIG_SEC_ABC=n\nCONFIG_CMDLINE=\"androidboot.selinux=permissive androidboot.veritymode=logging\"\nCONFIG_CMDLINE_EXTEND=y\n" >> out/.config
           
           make $MAKE_ARGS olddefconfig
-          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -Wno-error -w" O=out Image.gz-dtb dtbo.img modules
+          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -Wno-error -w" O=out Image.gz-dtb
 
-      - name: Package AnyKernel3
-        run: |
-          git clone https://github.com/osm0sis/AnyKernel3.git
-          cp kernel/out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
-          cp kernel/out/arch/arm64/boot/dtbo.img AnyKernel3/
-          
-          mkdir -p AnyKernel3/modules/vendor/lib/modules
-          find kernel/out -name "*.ko" -exec cp {} AnyKernel3/modules/vendor/lib/modules/ \;
-          
-          cd AnyKernel3
-          sed -i 's/kernel.string=.*/kernel.string=Lumi-OneUI7-R5Q-Nuclear/g' anykernel.sh
-          sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-          sed -i 's/supported.versions=.*/supported.versions=11, 12, 13, 14, 15/g' anykernel.sh
-          sed -i 's|block=auto;|block=/dev/block/by-name/boot;|g' anykernel.sh
-          
-          # Patch VBMETA (Elimină blocajul la logo-ul Samsung)
-          sed -i 's/PATCH_VBMETA_FLAG=auto/PATCH_VBMETA_FLAG=1/g' anykernel.sh || echo "PATCH_VBMETA_FLAG=1" >> anykernel.sh
-          
-          # Injectăm instalarea DTBO
-          sed -i '/dump_boot;/a BLOCK=/dev/block/by-name/dtbo; reset_ak; split_boot; flash_boot;' anykernel.sh
-
-          zip -r9 ../Lumi-R5Q-OneUI7-PRO.zip *
-
-      - name: Upload Build
+      - name: Upload Image.gz-dtb
         uses: actions/upload-artifact@v4
         with:
-          name: Lumi-OneUI7-Kernel
-          path: Lumi-R5Q-OneUI7-PRO.zip
+          name: Image-Lumi-R5Q
+          path: kernel/out/arch/arm64/boot/Image.gz-dtb
