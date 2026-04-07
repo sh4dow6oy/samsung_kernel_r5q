@@ -16,7 +16,7 @@ jobs:
 
       - name: Nuclear Cleanup & Init Sixteen Integration
         run: |
-          # 1. Backup la init_task.c original (cel bun pentru 4.14)
+          # 1. Backup la init_task.c original
           cp kernel/init/init_task.c kernel/init_task.c.bak
           
           # 2. Integrăm folderul INIT de la pascua28
@@ -25,35 +25,38 @@ jobs:
           cp -r pascua_tree/init kernel/
           cp pascua_tree/scripts/gen_initramfs_list.sh kernel/scripts/
           
-          # 3. RESTAURARE init_task.c (Esențial pentru a evita erorile de structură procese)
+          # 3. RESTAURARE init_task.c (Esențial)
           cp kernel/init_task.c.bak kernel/init/init_task.c
           
-          # 4. FIX COMPATIBILITATE main.c (Toate sed-urile anterioare)
-          sed -i '/set_memsize_kernel_type/d' kernel/init/main.c
-          sed -i '/trace\/events\/initcall.h/d' kernel/init/main.c
-          sed -i '40i typedef int (*initcall_t)(void);' kernel/init/main.c
-          sed -i '41i typedef initcall_t initcall_entry_t;' kernel/init/main.c
-          sed -i 's/initcall_sec_debug/initcall_debug/g' kernel/init/main.c
-          sed -i 's/initcall_from_entry(fn)/fn/g' kernel/init/main.c
+          # 4. CURĂȚARE RADICALĂ main.c (Linker Error Fix)
+          cd kernel/init
           
-          # Eliminăm BPF Preload din Kconfig
-          sed -i '/kernel\/bpf\/preload\/Kconfig/d' kernel/init/Kconfig
+          # Eliminăm apelurile de memsize (set_memsize / unset_memsize)
+          sed -i '/_memsize_reserved_name/d' main.c
+          sed -i '/set_memsize_kernel_type/d' main.c
           
-          # 4. FIX LTO, POLLY & VDSO (Intrăm în folderul kernel o singură dată)
+          # Eliminăm apelurile de trace_initcall (start/finish/level)
+          sed -i '/trace_initcall_/d' main.c
+          
+          # Eliminăm pid_idr_init (nu există în 4.14, cauzează Kernel Panic sau Link Error)
+          sed -i '/pid_idr_init()/d' main.c
+          
+          # Fix-urile de tipuri de date anterioare
+          sed -i '/trace\/events\/initcall.h/d' main.c
+          sed -i '40i typedef int (*initcall_t)(void);' main.c
+          sed -i '41i typedef initcall_t initcall_entry_t;' main.c
+          sed -i 's/initcall_sec_debug/initcall_debug/g' main.c
+          sed -i 's/initcall_from_entry(fn)/fn/g' main.c
+          
+          # 5. Fix Kconfig (BPF error)
+          sed -i '/kernel\/bpf\/preload\/Kconfig/d' Kconfig
+          
+          # Revenim în rădăcină pentru restul fix-urilor
+          cd ../..
+          
+          # 6. Restul fix-urilor tale (LTO, VDSO, etc.)
           cd kernel
           find . -type f \( -name "Makefile*" -o -name "*.mk" -o -name "*.include" \) -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
-          find . -type f \( -name "Makefile*" -o -name "*.mk" -o -name "*.include" \) -exec sed -i 's/-mllvm -import-instr-limit=5//g' {} +
-          find . -type f \( -name "Makefile*" -o -name "*.mk" -o -name "*.include" \) -exec sed -i 's/-import-instr-limit=5//g' {} +
-          
-          if [ -f arch/arm64/kernel/vdso/Makefile ]; then
-            sed -i 's/-static//g' arch/arm64/kernel/vdso/Makefile
-            sed -i 's/$(LDFLAGS)/$(filter-out -static,$(LDFLAGS))/g' arch/arm64/kernel/vdso/Makefile
-          fi
-          
-          sed -i '/kernelsu/d' drivers/android/Kconfig
-          
-          # Force Permissive Hardcoded
-          sed -i 's/selinux_enforcing_boot = 1/selinux_enforcing_boot = 0/g' security/selinux/hooks.c || true
 
       - name: Setup Neutron Clang
         run: |
