@@ -1,4 +1,4 @@
-name: Build Lumi R5Q - Only Image.gz
+name: Build Lumi R5Q - Stock Init & Polly Fix
 on:
   workflow_dispatch:
 
@@ -14,51 +14,20 @@ jobs:
           path: kernel
           fetch-depth: 1
 
-      - name: Nuclear Cleanup & Init Sixteen Integration
+      - name: Kernel Surgical Fixes (VDSO, Polly, Security)
         run: |
-          # Backup la init_task.c original
-          cp kernel/init/init_task.c kernel/init_task.c.bak
-          
-          # Integrăm folderul INIT de la pascua28
-          git clone --depth=1 -b sixteen https://github.com/pascua28/android_kernel_samsung_sm7150 pascua_tree
-          rm -rf kernel/init
-          cp -r pascua_tree/init kernel/
-          cp pascua_tree/scripts/gen_initramfs_list.sh kernel/scripts/
-          
-          # Restaurare init_task.c
-          cp kernel/init_task.c.bak kernel/init/init_task.c
-          
-          # Fix-uri chirurgicale main.c
-          cd kernel/init
-          sed -i '/_memsize_reserved_name/d' main.c
-          sed -i '/set_memsize_kernel_type/d' main.c
-          sed -i '/trace_initcall_/d' main.c
-          sed -i '/pid_idr_init()/d' main.c
-          sed -i '/trace\/events\/initcall.h/d' main.c
-          sed -i '40i typedef int (*initcall_t)(void);' main.c
-          sed -i '41i typedef initcall_t initcall_entry_t;' main.c
-          sed -i 's/initcall_sec_debug/initcall_debug/g' main.c
-          sed -i 's/initcall_from_entry(fn)/fn/g' main.c
-          
-          # Fix Kconfig BPF
-          sed -i '/kernel\/bpf\/preload\/Kconfig/d' Kconfig
-          
-          # Cleanup global
-          cd ../..
-          sed -i '/kernelsu/d' kernel/drivers/android/Kconfig
-          
-          # --- FIX VDSO & LTO ---
           cd kernel
-          # Eliminăm flag-ul -static care blochează linker-ul LLVM
-          if [ -f arch/arm64/kernel/vdso/Makefile ]; then
-            sed -i 's/-static//g' arch/arm64/kernel/vdso/Makefile
-            sed -i 's/$(LDFLAGS)/$(filter-out -static,$(LDFLAGS))/g' arch/arm64/kernel/vdso/Makefile
-          fi
-          
-          # Eliminăm Polly care dă erori de optimizare
-          find . -type f \( -name "Makefile*" -o -name "*.mk" -o -name "*.include" \) -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
-          
-          # Force Permissive
+          # --- 1. FIX VDSO: Elimină -static (Eroare de Linker LLVM) ---
+          find arch/arm64/kernel/vdso -type f -name "Makefile*" -exec sed -i 's/-static//g' {} +
+          find arch/arm64/kernel/vdso -type f -name "Makefile*" -exec sed -i 's/$(LDFLAGS)/$(filter-out -static,$(LDFLAGS))/g' {} +
+
+          # --- 2. FIX POLLY: Elimină optimizările care crapă compilarea ---
+          # Căutăm și ștergem orice referință la plugin-ul Polly sau optimizări de loop-uri specifice
+          find . -type f -name "Makefile*" -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
+          find . -type f -name "Makefile*" -exec sed -i 's/-mllvm -enable-loop-distribute//g' {} +
+          find . -type f -name "Makefile*" -exec sed -i 's/-mllvm -enable-recursive-eval//g' {} +
+
+          # --- 3. FORCE SELINUX PERMISSIVE ---
           sed -i 's/selinux_enforcing_boot = 1/selinux_enforcing_boot = 0/g' security/selinux/hooks.c || true
 
       - name: Setup Neutron Clang
@@ -67,7 +36,7 @@ jobs:
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
 
-      - name: Build Only Image.gz-dtb
+      - name: Build Image.gz-dtb
         run: |
           cd kernel
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
@@ -89,17 +58,31 @@ jobs:
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             O=out"
           
-          mkdir -p out
           make $MAKE_ARGS r5q_defconfig
           
-          # Injectăm setările anti-bootloop (Fixed Syntax)
-          printf "CONFIG_RKP_KDP=n\nCONFIG_KNOX_KAP=n\nCONFIG_SAMSUNG_PRODUCT_SHIP=y\nCONFIG_ANDROID_SAR_RAMDISK=y\nCONFIG_BLK_DEV_INITRD=y\nCONFIG_EROFS_FS=y\nCONFIG_EROFS_FS_ZIP=y\nCONFIG_DM_VERITY=n\nCONFIG_SEC_ABC=n\nCONFIG_CMDLINE=\"androidboot.selinux=permissive androidboot.veritymode=logging\"\nCONFIG_CMDLINE_EXTEND=y\n" >> out/.config
+          # --- CONFIGURARE ONEUI 7 & ANTI-BOOTLOOP ---
+          # Dezactivăm SAR-ul vechi care căuta sda21
+          printf "CONFIG_ANDROID_SAR_RAMDISK=n\n" >> out/.config
           
+          # Activăm Device Mapper pentru Dynamic Partitions
+          printf "CONFIG_BLK_DEV_DM=y\nCONFIG_DM_REMAPPER=y\nCONFIG_DM_UEVENT=y\nCONFIG_DM_VERITY=n\n" >> out/.config
+          
+          # Suport Android 15 (EROFS, APEX, BinderFS)
+          printf "CONFIG_EROFS_FS=y\nCONFIG_EROFS_FS_ZIP=y\nCONFIG_BLK_DEV_INITRD=y\nCONFIG_ANDROID_BINDERFS=y\n" >> out/.config
+          printf "CONFIG_BLK_DEV_LOOP=y\nCONFIG_BLK_DEV_LOOP_MIN_COUNT=16\n" >> out/.config
+          
+          # Dezactivare securitate Samsung
+          printf "CONFIG_RKP_KDP=n\nCONFIG_KNOX_KAP=n\nCONFIG_SEC_ABC=n\n" >> out/.config
+          
+          # CMDLINE final
+          printf "CONFIG_CMDLINE=\"loop.max_part=16 androidboot.force_normal_boot=1 androidboot.selinux=permissive\"\n" >> out/.config
+          printf "CONFIG_CMDLINE_EXTEND=y\n" >> out/.config
+
           make $MAKE_ARGS olddefconfig
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -Wno-error -w" O=out Image.gz-dtb
 
       - name: Upload Image.gz-dtb
         uses: actions/upload-artifact@v4
         with:
-          name: Image-Lumi-R5Q
+          name: Image-Lumi-PollyFix
           path: kernel/out/arch/arm64/boot/Image.gz-dtb
