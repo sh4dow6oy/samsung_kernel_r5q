@@ -14,12 +14,6 @@ jobs:
           path: kernel
           fetch-depth: 1
 
-      - name: Clone Erstrom ath Tree
-        run: |
-          git clone --depth=1 https://github.com/erstrom/linux-ath.git ath-tree
-          cd ath-tree
-          git checkout v5.2-ath10k-sdio-v2 || git checkout v5.2-ath10k-sdio
-
       - name: Nuclear Cleanup & Init Sixteen Integration
         run: |
           # Backup la init_task.c original
