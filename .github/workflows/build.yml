@@ -95,7 +95,6 @@ jobs:
           
           # --- INJECTĂM SUPORTUL PENTRU ANDROID 15 (ONEUI 7) ---
           {
-            {
             # 1. ANTI-BOOTLOOP: Dezactivăm verificările de semnătură
             echo "CONFIG_SEC_ABC=n"
             echo "CONFIG_SEC_ABC_HUB=n"
