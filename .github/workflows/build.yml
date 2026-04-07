@@ -27,11 +27,19 @@ jobs:
           sed -i '/kernel\/bpf\/preload\/Kconfig/d' kernel/init/Kconfig
           
           cd kernel
-          # 4. Fix-uri compilator & LTO
+          # 2. FIX LTO & POLLY (Elimină flag-urile care crapă ld.lld r29)
+          # Căutăm în toate Makefile-urile și fișierele .include
           find . -type f \( -name "Makefile*" -o -name "*.mk" -o -name "*.include" \) -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
+          find . -type f \( -name "Makefile*" -o -name "*.mk" -o -name "*.include" \) -exec sed -i 's/-mllvm -import-instr-limit=5//g' {} +
+          find . -type f \( -name "Makefile*" -o -name "*.mk" -o -name "*.include" \) -exec sed -i 's/-import-instr-limit=5//g' {} +
           
-          # 5. Force Permissive Hardcoded (security fix)
-          sed -i 's/selinux_enforcing_boot = 1/selinux_enforcing_boot = 0/g' security/selinux/hooks.c || true
+          # 3. VDSO FIX (Anti-static)
+          if [ -f arch/arm64/kernel/vdso/Makefile ]; then
+            sed -i 's/-static//g' arch/arm64/kernel/vdso/Makefile
+            sed -i 's/$(LDFLAGS)/$(filter-out -static,$(LDFLAGS))/g' arch/arm64/kernel/vdso/Makefile
+          fi
+          # 4. KCONFIG FIX (KernelSU Missing)
+          sed -i '/kernelsu/d' drivers/android/Kconfig
 
       - name: Setup Neutron Clang
         run: |
