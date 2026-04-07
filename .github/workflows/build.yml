@@ -50,6 +50,7 @@ jobs:
           
           # 5. Fix Kconfig (BPF error)
           sed -i '/kernel\/bpf\/preload\/Kconfig/d' Kconfig
+          sed -i '/kernelsu/d' drivers/android/Kconfig
           
           # Revenim în rădăcină pentru restul fix-urilor
           cd ../..
