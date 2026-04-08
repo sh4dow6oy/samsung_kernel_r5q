@@ -84,6 +84,7 @@ jobs:
       - name: Build Kernel
         run: |
           cd kernel
+          sed -i 's/CONFIG_KPERFMON=y/CONFIG_KPERFMON=n/g' arch/arm64/configs/r5q_eur_open_defconfig
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           export MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=0 CC=clang \
             CLANG_TRIPLE=aarch64-linux-gnu- \
