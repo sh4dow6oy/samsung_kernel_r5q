@@ -56,9 +56,6 @@ jobs:
           
           # Fix DTC (Ignore warnings)
           find arch/arm64/boot/dts -name "Makefile" -exec sed -i 's/-Werror//g' {} +
-          
-          # Force Permissive
-          sed -i 's/selinux_enforcing_boot = 1/selinux_enforcing_boot = 0/g' security/selinux/hooks.c || true
 
       - name: Setup Toolchain
         run: |
