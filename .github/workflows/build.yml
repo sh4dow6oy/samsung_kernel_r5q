@@ -50,6 +50,10 @@ jobs:
           # --- FIX FSCRYPT ---
           sed -i 's/ci->ci_iv_key/ci->ci_raw_key/g' fs/crypto/keysetup_v1.c || true
 
+          # --- FIX BINDER TF_CLEAR_BUF ---
+          sed -i '/TF_ACCEPT_FDS/a #define TF_CLEAR_BUF 0x20' drivers/android/binder_internal.h || true
+          sed -i '/TF_ACCEPT_FDS/a #define TF_CLEAR_BUF 0x20' include/uapi/linux/android/binder.h || true
+
           # --- FIX RESTUL ERORILOR ---
           sed -i '/#define _LINUX_CONST_H/a #ifndef UL\n#define UL(x) _AC(x, UL)\n#endif' include/uapi/linux/const.h
           sed -i 's/unsigned long stack\[THREAD_SIZE\/sizeof(long)\];/unsigned long stack\[0\]; \/* Fixed *\/ /g' include/linux/sched.h || true
