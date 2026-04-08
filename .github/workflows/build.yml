@@ -64,11 +64,15 @@ jobs:
           # 3. Fix GPU Adreno (IDR_INIT)
           sed -i 's/IDR_INIT/{ 0 }/g' drivers/gpu/msm/kgsl_device.h
 
-          # 4. DISABLE KPERFMON & FIX _perflog
+          # 4. DISABLE KPERFMON & FIX _perflog (Conflict preventer)
           sed -i 's/CONFIG_KPERFMON=y/CONFIG_KPERFMON=n/g' arch/arm64/configs/r5q_eur_open_defconfig || true
           sed -i 's/obj-$(CONFIG_KPERFMON)/# obj-$(CONFIG_KPERFMON)/g' drivers/Makefile || true
-          # Definim _perflog ca fiind nimic în kernel.h (cea mai sigură metodă)
-          echo "#define _perflog(...) do {} while (0)" >> include/linux/kernel.h
+          
+          # Comentăm declarația care se bate cu macro-ul nostru
+          sed -i 's/extern void _perflog/\/\/extern void _perflog/g' include/linux/ologk.h || true
+          
+          # Adăugăm macro-ul protector la finalul kernel.h
+          echo -e "\n#ifndef _PERFLOG_DUMMY\n#define _PERFLOG_DUMMY\n#define _perflog(...) do {} while (0)\n#endif" >> include/linux/kernel.h
 
           # 5. FIX TUN XDP
           sed -i 's/\.ndo_xdp/\/\/.ndo_xdp/g' drivers/net/tun.c
@@ -90,7 +94,6 @@ jobs:
           #define trace_sde_rot_bw_ao_as_context(...) do {} while (0)
           #endif
           EOF
-          # Dezactivăm BPF în rotator
           find drivers/media/platform/msm/sde/rotator/ -name "*.c" -exec sed -i 's/include <trace\/bpf_probe.h>/\/\/&/g' {} +
 
           # 7. Globale (VDSO & DTC)
