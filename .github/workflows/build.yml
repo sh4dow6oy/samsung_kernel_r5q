@@ -73,6 +73,27 @@ jobs:
           find arch/arm64/kernel/vdso -type f -name "Makefile*" -exec sed -i 's/-static//g' {} +
           find arch/arm64/boot/dts -name "Makefile" -exec sed -i 's/-Werror//g' {} +
 
+          # --- FIX LINKER ERRORS (Undefined Symbols) ---
+          
+          # 1. Fix _perflog (Eliminăm apelurile de logging din nucleu)
+          sed -i 's/_perflog(//g' drivers/cpufreq/cpufreq.c block/genhd.c mm/vmscan.c || true
+          # Notă: Dacă sed-ul de mai sus e prea simplu, folosim unul care comentează linia:
+          sed -i '/_perflog/d' drivers/cpufreq/cpufreq.c block/genhd.c mm/vmscan.c || true
+
+          # 2. Fix ZRAM Symbols în task_mmu.c (Incompatibilitate Sunmughan ZRAM vs Lumi MM)
+          # Comentăm liniile care apelează funcții de writeback/prefetch care nu există în driver
+          sed -i '/zram_writeback_list/d' fs/proc/task_mmu.c
+          sed -i '/flush_writeback_buffer/d' fs/proc/task_mmu.c
+          sed -i '/zram_get_entry_type/d' fs/proc/task_mmu.c
+          sed -i '/zram_add_to_writeback_list/d' fs/proc/task_mmu.c
+          sed -i '/zram_prefetch_entry/d' fs/proc/task_mmu.c
+
+          # 3. Fix BPF Trace (SDE Rotator)
+          # Eroarea __CAST0 și bpf_trace_run0 apare din cauza macro-urilor de trace stricate
+          # Dezactivăm complet tracing-ul în rotator_base.c pentru a opri generarea bpf_probe
+          sed -i 's/CONFIG_BINARY_PRINTF/CONFIG_NO_BINARY_PRINTF/g' drivers/media/platform/msm/sde/rotator/Makefile || true
+          echo "" > drivers/media/platform/msm/sde/rotator/sde_rotator_trace.h
+
       - name: Setup Toolchain
         run: |
           sudo apt-get update
@@ -104,6 +125,8 @@ jobs:
           printf "CONFIG_BLK_DEV_DM=y\nCONFIG_DM_REMAPPER=y\nCONFIG_DM_UEVENT=y\n" >> out/.config
           printf "CONFIG_EROFS_FS=y\nCONFIG_EROFS_FS_ZIP=y\n" >> out/.config
           printf "CONFIG_ANDROID_BINDERFS=y\n" >> out/.config
+          
+          sed -i 's/CONFIG_MODVERSIONS=y/CONFIG_MODVERSIONS=n/g' out/.config
 
           make $MAKE_ARGS olddefconfig
           
