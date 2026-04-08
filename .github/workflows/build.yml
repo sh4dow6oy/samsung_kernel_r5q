@@ -24,21 +24,21 @@ jobs:
           cp -r royna_source/drivers kernel/
           cp -r royna_source/techpack kernel/
 
-          # 2. Fix KernelSU & WALT Redefinitions
+          # 2. FIX KERNELSU & SCHEDULER
           sed -i '/kernelsu/d' kernel/drivers/android/Kconfig
           
-          # Ștergem orice definiție care începe cu walt_inc_cumulative_runnable_avg până la prima acoladă închisă
-          # Folosim o metodă care caută pattern-ul și șterge blocul de funcție inline
-          sed -i '/walt_inc_cumulative_runnable_avg/,/}/d' kernel/kernel/sched/walt.h
-          sed -i '/walt_dec_cumulative_runnable_avg/,/}/d' kernel/kernel/sched/walt.h
+          # Dezactivăm funcțiile inline problematice din walt.h folosind comentarii C
+          # Căutăm funcțiile și le "încercuim" cu /* */
+          sed -i '/static inline void walt_inc_cumulative_runnable_avg/,/}/ s/^/\/\//' kernel/kernel/sched/walt.h
+          sed -i '/static inline void walt_dec_cumulative_runnable_avg/,/}/ s/^/\/\//' kernel/kernel/sched/walt.h
           
           # 3. Fix Scheduler Struct (Run Queue)
-          # Ne asigurăm că adăugăm câmpurile doar dacă nu există deja
+          # Adăugăm variabilele necesare doar dacă lipsesc
           if ! grep -q "cum_window_demand" kernel/kernel/sched/sched.h; then
             sed -i '/s64 cum_window_start;/a \		s64 cum_window_demand;\n		s64 cumulative_runnable_avg;' kernel/kernel/sched/sched.h
           fi
           
-          # Redenumim task_load-ul din header ca să nu se bată cu cel din walt.c
+          # Redenumim task_load-ul din header
           sed -i 's/unsigned int task_load(/unsigned int __unused_task_load(/g' kernel/kernel/sched/sched.h
 
           # 4. Header-e SOC și Config
