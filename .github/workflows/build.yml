@@ -51,6 +51,11 @@ jobs:
           sed -i '20i #define __page_aligned_rkp_bss __section(".bss..page_aligned")' arch/arm64/mm/mmu.c
           sed -i '21i #define __page_aligned_rkp_data __section(".data..page_aligned")' arch/arm64/mm/mmu.c
 
+          # Fix ZRAM & Task MMU
+          sed -i '40i #define ZRAM_WB_TYPE 4\n#define ZRAM_WB_HUGE_TYPE 5\n#define ZRAM_HUGE_TYPE 3\n#define ZRAM_SAME_TYPE 2' fs/proc/task_mmu.c
+          sed -i 's/count_vm_events(SQZR_/\/\/&/g' drivers/block/zram/zram_drv.c
+          sed -i 's/count_vm_event(SQZR_/\/\/&/g' drivers/block/zram/zram_drv.c
+
           # Fix VDSO (Linker error fix)
           find arch/arm64/kernel/vdso -type f -name "Makefile*" -exec sed -i 's/-static//g' {} +
           
