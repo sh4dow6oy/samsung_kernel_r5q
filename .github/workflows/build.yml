@@ -88,11 +88,6 @@ jobs:
           printf "CONFIG_BLK_DEV_LOOP=y\n" >> out/.config
           printf "CONFIG_BLK_DEV_LOOP_MIN_COUNT=16\n" >> out/.config
           
-          # Dezactivăm securitatea Samsung care provoacă Kernel Panic la modificări
-          printf "CONFIG_RKP_KDP=n\n" >> out/.config
-          printf "CONFIG_KNOX_KAP=n\n" >> out/.config
-          printf "CONFIG_SEC_ABC=n\n" >> out/.config
-          
           # CMDLINE: Forțăm boot-ul în sistem, nu în recovery, și punem SELinux în permissive
           printf "CONFIG_CMDLINE=\"loop.max_part=16 androidboot.force_normal_boot=1 androidboot.selinux=permissive\"\n" >> out/.config
           printf "CONFIG_CMDLINE_EXTEND=y\n" >> out/.config
@@ -107,4 +102,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: Image-Lumi-Clean-Stock
-          path: kernel/out/arch/arm64/boot/Image.gz-dtb
+          path: kernel/out/arch/arm64/boot/Image.gz
