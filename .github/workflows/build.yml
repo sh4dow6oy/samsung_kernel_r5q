@@ -21,7 +21,7 @@ jobs:
           ref: master
           path: r3q_source
 
-      - name: Surgical Merge & Setup
+      - name: Surgical Merge & KernelSU Disable
         run: |
           # 1. Backup JIT BPF din Lumi
           mkdir -p net_arch_backup
@@ -40,14 +40,18 @@ jobs:
           mkdir -p kernel/arch/arm64/net
           cp -r net_arch_backup/* kernel/arch/arm64/net/
 
+          # 4. FIX: Dezactivare KernelSU (Eliminăm sursa din Kconfig)
+          # Ștergem linia care încearcă să încarce KernelSU
+          sed -i '/kernelsu/d' kernel/drivers/android/Kconfig
+
       - name: Apply Hotfixes
         run: |
           cd kernel
-          # Fix ptep vs pte (eroare frecventă în hugetlbpage.c)
+          # Fix ptep vs pte
           sed -i 's/ptep = huge_pmd_share/pte = huge_pmd_share/g' arch/arm64/mm/hugetlbpage.c || true
           # Fix taskstats
           sed -i 's/#elif/#else/g' kernel/taskstats.c || true
-          # Eliminăm Werror pentru DTS (previne eșecul la avertismente DT)
+          # Eliminăm Werror pentru DTS
           find arch/arm64/boot/dts -name "Makefile" -exec sed -i 's/-Werror//g' {} +
 
       - name: Setup Toolchain (NDK Clang)
@@ -72,11 +76,16 @@ jobs:
             LD=ld.lld \
             O=out"
 
-          # Utilizăm defconfig-ul specific găsit de tine
+          # Utilizăm r5q_defconfig din Roynas
           make $MAKE_ARGS r5q_defconfig
+          
+          # Dezactivăm KernelSU și din config dacă este prezent
+          scripts/config --file out/.config -d CONFIG_KSU
+          scripts/config --file out/.config -d CONFIG_KSU_DEBUG
+          
           make $MAKE_ARGS olddefconfig
           
-          # Compilăm Image.gz-dtb (Kernel + Device Tree)
+          # Compilăm Image.gz-dtb
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-w -Wno-error -Wno-int-conversion" O=out Image.gz-dtb
 
       - name: AnyKernel3 Packaging
@@ -85,7 +94,7 @@ jobs:
           if [ -f kernel/out/arch/arm64/boot/Image.gz-dtb ]; then
             cp kernel/out/arch/arm64/boot/Image.gz-dtb AnyKernel3/Image.gz-dtb
           else
-            echo "EROARE: Fisierul Image.gz-dtb nu a fost generat!" && exit 1
+            echo "EROARE: Compilarea a eșuat!" && exit 1
           fi
           
           cd AnyKernel3
@@ -93,10 +102,10 @@ jobs:
           sed -i 's|block=auto;|block=/dev/block/by-name/boot;|g' anykernel.sh
           sed -i 's/kernel.type=inline/kernel.type=gzip-dtb/g' anykernel.sh
           
-          zip -r9 ../Lumi-R5Q-Roynas-Final.zip *
+          zip -r9 ../Lumi-R5Q-NoKSU.zip *
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Lumi-R5Q-Final-Kernel
-          path: Lumi-R5Q-Roynas-Final.zip
+          name: Lumi-NoKSU-Kernel
+          path: Lumi-R5Q-NoKSU.zip
