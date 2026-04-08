@@ -1,4 +1,4 @@
-name: Lumi R5Q - Roynas Arch with Lumi Entry.S Restore
+name: Lumi R5Q - Surgical Merge (Sunmughan Drivers)
 
 on:
   workflow_dispatch:
@@ -7,79 +7,57 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Lumi Base
+      - name: Checkout Lumi Base (The Core)
         uses: actions/checkout@v4
         with:
           repository: LumiPlayground/android_kernel_samsung_sm8150
           ref: rawr-bpf
           path: kernel
 
-      - name: Checkout Roynas Source
+      - name: Checkout Sunmughan Source (The Drivers)
         uses: actions/checkout@v4
         with:
-          repository: Roynas-Android-Playground/kernel_samsung_r3q
+          repository: sunmughan/samsung_kernel_r5q
           ref: master
-          path: r3q_source
+          path: sunmughan_source
 
       - name: Surgical Merge & Entry.S Restore
         run: |
-          # 1. Backup fișierele critice din Lumi
+          # 1. Backup fișierele critice din Lumi (BPF JIT & Entry)
           mkdir -p lumi_backup
           cp -r kernel/arch/arm64/net lumi_backup/
           cp kernel/arch/arm64/kernel/entry.S lumi_backup/
           
-          # 2. Swap Hardware & Arch (Drivers, Techpack, Arch/arm64 din Roynas)
+          # 2. Swap Hardware & Arch (Drivers, Techpack, Arch/arm64 din Sunmughan)
+          # Folosim Sunmughan pentru stabilitatea driverelor de S10 Lite
           rm -rf kernel/drivers kernel/techpack kernel/arch/arm64
-          cp -r r3q_source/drivers kernel/
-          cp -r r3q_source/techpack kernel/
-          cp -r r3q_source/arch/arm64 kernel/arch/
+          cp -r sunmughan_source/drivers kernel/
+          cp -r sunmughan_source/techpack kernel/
+          cp -r sunmughan_source/arch/arm64 kernel/arch/
           
-          # 3. RESTAURARE fișiere Lumi
+          # 3. RESTAURARE fișiere Lumi în arhitectura nouă
+          # Re-injectăm JIT-ul BPF și codul de entry original Lumi
           rm -rf kernel/arch/arm64/net/*
           cp -r lumi_backup/net/* kernel/arch/arm64/net/
           cp lumi_backup/entry.S kernel/arch/arm64/kernel/entry.S
 
-      - name: Apply Hotfixes & SMCCC Fix
+      - name: Apply Universal Hotfixes
         run: |
           cd kernel
-          # 1. FIX SMCCC WORKAROUND 3 (Spectre)
-          sed -i '/ARM_SMCCC_ARCH_WORKAROUND_3/d' include/linux/arm-smccc.h
-          sed -i '15i #define ARM_SMCCC_ARCH_WORKAROUND_3 0x80003f01' include/linux/arm-smccc.h
-          sed -i '16i #define SMCCC_ARCH_WORKAROUND_RET_UNAFFECTED 1' include/linux/arm-smccc.h
-
-          # 2. FIX FSCRYPT (Criptare)
-          sed -i 's/ci->ci_iv_key/ci->ci_raw_key/g' fs/crypto/keysetup_v1.c || true
-
-          # 3. FIX BINDER (Android IPC)
-          sed -i '/TF_ACCEPT_FDS/a #define TF_CLEAR_BUF 0x20' drivers/android/binder_internal.h || true
-          sed -i '/TF_ACCEPT_FDS/a #define TF_CLEAR_BUF 0x20' include/uapi/linux/android/binder.h || true
-
-          # 4. FIX DRIVERS BASE CORE (IOMMU)
-          sed -i 's/raw_spin_lock_init(&dev->msi_lock);/\/\/&/g' drivers/base/core.c
-          sed -i 's/INIT_LIST_HEAD(&dev->iommu_map_list);/\/\/&/g' drivers/base/core.c
-          sed -i 's/mutex_init(&dev->iommu_map_lock);/\/\/&/g' drivers/base/core.c
-
-          # 5. FIX BRD (RAM Disk Sector Shift)
-          sed -i '30i #ifndef SECTOR_SHIFT\n#define SECTOR_SHIFT 9\n#endif' drivers/block/brd.c
-
-          # 6. FIX RESTUL ERORILOR GLOBALE
-          sed -i '/#define _LINUX_CONST_H/a #ifndef UL\n#define UL(x) _AC(x, UL)\n#endif' include/uapi/linux/const.h
-          sed -i 's/unsigned long stack\[THREAD_SIZE\/sizeof(long)\];/unsigned long stack\[0\]; \/* Fixed *\/ /g' include/linux/sched.h || true
-          sed -i 's/ptep = huge_pmd_share/pte = huge_pmd_share/g' arch/arm64/mm/hugetlbpage.c || true
+          # Fix VDSO (elimină -static pentru link-uirea LLVM)
+          find arch/arm64/kernel/vdso -type f -name "Makefile*" -exec sed -i 's/-static//g' {} +
+          
+          # Fix DTC (ignoră avertismentele tratate ca erori în Device Tree)
           find arch/arm64/boot/dts -name "Makefile" -exec sed -i 's/-Werror//g' {} +
           
-          # Dezactivare KernelSU (dacă există)
-          sed -i '/kernelsu/d' drivers/android/Kconfig || true
-          
-          # Fix DTC warnings as errors
-          find arch/arm64/boot/dts -name "Makefile" -exec sed -i 's/-Werror//g' {} +
+          # Dezactivare forțată SELinux Enforcing
+          sed -i 's/selinux_enforcing_boot = 1/selinux_enforcing_boot = 0/g' security/selinux/hooks.c || true
 
-      - name: Setup Toolchain
+      - name: Setup Toolchain (NDK Clang r29)
         run: |
           sudo apt-get update
           sudo apt-get install -y bc build-essential flex bison lz4 libssl-dev libelf-dev \
-          ccache python3 python-is-python3 libarchive-tools wget zstd zip \
-          gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi clang
+          ccache python3 libarchive-tools wget zstd zip gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi
           
           mkdir -p clang
           wget -q https://github.com/Ylarod/setup-ndk-clang/releases/download/prebuilt/clang-linux-x86-ndk-r29-r563880c.tar.zst
@@ -96,15 +74,21 @@ jobs:
             LD=ld.lld \
             O=out"
 
+          # Folosim defconfig-ul din baza de drivere (Sunmughan)
           make $MAKE_ARGS r5q_defconfig
-
-          # --- CONFIG PENTRU BOOT PE ONEUI 7 ---
+          
+          # --- CONFIGURARE ONEUI 7 & DYNAMIC PARTITIONS ---
           printf "CONFIG_ANDROID_SAR_RAMDISK=n\n" >> out/.config
           printf "CONFIG_BLK_DEV_DM=y\nCONFIG_DM_REMAPPER=y\nCONFIG_DM_UEVENT=y\n" >> out/.config
+          printf "CONFIG_EROFS_FS=y\nCONFIG_EROFS_FS_ZIP=y\n" >> out/.config
           printf "CONFIG_ANDROID_BINDERFS=y\n" >> out/.config
+          
+          # Optimizări de performanță
+          printf "CONFIG_HZ_300=y\n" >> out/.config
 
           make $MAKE_ARGS olddefconfig
           
+          # Compilare cu ignorarea avertismentelor (KCFLAGS face build-ul mai permisiv)
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-w -Wno-error -Wno-int-conversion" O=out Image.gz-dtb
 
       - name: AnyKernel3 Packaging
@@ -119,10 +103,10 @@ jobs:
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
           sed -i 's|block=auto;|block=/dev/block/by-name/boot;|g' anykernel.sh
           sed -i 's/kernel.type=inline/kernel.type=gzip-dtb/g' anykernel.sh
-          zip -r9 ../Lumi-R5Q-Restore-Fixed.zip *
+          zip -r9 ../Lumi-R5Q-Surgical-Sunmughan.zip *
 
-      - name: Upload
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Lumi-Restore-Kernel-Fixed
-          path: Lumi-R5Q-Restore-Final.zip
+          name: Lumi-Surgical-Kernel
+          path: Lumi-R5Q-Surgical-Sunmughan.zip
