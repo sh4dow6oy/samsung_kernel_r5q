@@ -112,15 +112,22 @@ jobs:
       - name: AnyKernel3 Packaging
         run: |
           git clone https://github.com/osm0sis/AnyKernel3.git
-          if [ -f kernel/out/arch/arm64/boot/Image.gz-dtb ]; then
-            cp kernel/out/arch/arm64/boot/Image.gz-dtb AnyKernel3/Image.gz-dtb
-          else
-            echo "EROARE: Compilarea a eșuat!" && exit 1
+          # Copiem Kernel-ul
+          cp kernel/out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
+          
+          # Copiem DTBO-ul (foarte important!)
+          if [ -f kernel/out/arch/arm64/boot/dtbo.img ]; then
+            cp kernel/out/arch/arm64/boot/dtbo.img AnyKernel3/
           fi
+          
           cd AnyKernel3
+          # Setăm AnyKernel să flash-uiască și DTBO dacă îl găsește
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-          sed -i 's|block=auto;|block=/dev/block/by-name/boot;|g' anykernel.sh
-          sed -i 's/kernel.type=inline/kernel.type=gzip-dtb/g' anykernel.sh
+          # Adăugăm linia de flash pentru dtbo în anykernel.sh dacă nu există
+          echo 'dtbo_block=/dev/block/by-name/dtbo;
+          if [ -f $home/dtbo.img ]; then
+            flash_dtbo;
+          fi;' >> anykernel.sh
           zip -r9 ../Lumi-R5Q-Surgical-Final.zip *
 
       - name: Upload
