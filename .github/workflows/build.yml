@@ -20,25 +20,29 @@ jobs:
           ref: master          
           path: sunmughan_source      
 
-      - name: Surgical Merge & Restore        
-        run: |          
-          # 1. Backup fișierele critice din Lumi
-          mkdir -p lumi_backup          
-          cp -r kernel/arch/arm64/net lumi_backup/          
-          cp kernel/arch/arm64/kernel/entry.S lumi_backup/          
-          cp kernel/arch/arm64/configs/r5q_eur_open_defconfig lumi_backup/                    
-
-          # 2. Swap Hardware & Arch (Drivers, Techpack, Arch/arm64 din Sunmughan)          
-          rm -rf kernel/drivers kernel/techpack kernel/arch/arm64          
-          cp -r sunmughan_source/drivers kernel/          
-          cp -r sunmughan_source/techpack kernel/          
-          cp -r sunmughan_source/arch/arm64 kernel/arch/                    
-
-          # 3. RESTAURARE fișiere Lumi          
-          rm -rf kernel/arch/arm64/net/* cp -r lumi_backup/net/* kernel/arch/arm64/net/          
-          cp lumi_backup/entry.S kernel/arch/arm64/kernel/entry.S                    
-          mkdir -p kernel/arch/arm64/configs/          
-          cp lumi_backup/r5q_eur_open_defconfig kernel/arch/arm64/configs/r5q_eur_open_defconfig      
+      - name: Surgical Merge & Restore
+        run: |
+          # 1. Backup complet folderul NET și fișierele critice din Lumi
+          mkdir -p lumi_backup
+          cp -r kernel/arch/arm64/net lumi_backup/
+          cp kernel/arch/arm64/kernel/entry.S lumi_backup/
+          cp kernel/arch/arm64/configs/r5q_eur_open_defconfig lumi_backup/
+          
+          # 2. Swap Hardware (Ștergem arch/arm64 din Lumi și punem din Sunmughan)
+          rm -rf kernel/drivers kernel/techpack kernel/arch/arm64
+          cp -r sunmughan_source/drivers kernel/
+          cp -r sunmughan_source/techpack kernel/
+          cp -r sunmughan_source/arch/arm64 kernel/arch/
+          
+          # 3. RESTAURARE CHIRURGICALĂ (Punem înapoi inima BPF/NET din Lumi)
+          # Ștergem ce a venit din Sunmughan pe partea de NET și punem backup-ul Lumi
+          rm -rf kernel/arch/arm64/net
+          cp -r lumi_backup/net kernel/arch/arm64/
+          
+          # Restaurăm și restul elementelor vitale
+          cp lumi_backup/entry.S kernel/arch/arm64/kernel/entry.S
+          mkdir -p kernel/arch/arm64/configs/
+          cp lumi_backup/r5q_eur_open_defconfig kernel/arch/arm64/configs/r5q_eur_open_defconfig  
 
       - name: Apply Universal Hotfixes        
         run: |          
