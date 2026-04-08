@@ -71,17 +71,20 @@ jobs:
             CROSS_COMPILE=aarch64-linux-gnu- \
             LD=ld.lld O=out"
           
-          # Rulăm config-ul exact cum l-a lăsat Royna
+          # 1. Generăm config-ul de bază
           make $MAKE_ARGS r5q_defconfig
           
-          # Olddefconfig pentru a seta restul opțiunilor la default fără intervenție manuală
-          make $MAKE_ARGS olddefconfig
-
-          # DEZACTIVARE TOTALĂ WALT & ACTIVARE PELT
-          scripts/config --file out/.config --disable SCHED_WALT
-          scripts/config --file out/.config --enable SCHED_PELT
+          # 2. Dezactivăm WALT și forțăm opțiunile de bandwidth (pentru a evita întrebările)
+          # Folosim sed direct pe .config pentru a fi siguri
+          sed -i 's/CONFIG_SCHED_WALT=y/# CONFIG_SCHED_WALT is not set/g' out/.config
+          echo "CONFIG_CFS_BANDWIDTH=y" >> out/.config
+          echo "CONFIG_FAIR_GROUP_SCHED=y" >> out/.config
+          echo "CONFIG_RT_GROUP_SCHED=y" >> out/.config
           
-          # Compilare Image.gz-dtb și DTBs
+          # 3. REPARAȚIA CRITICĂ: Folosim yes "" | make pentru a accepta orice întrebare nouă
+          yes "" | make $MAKE_ARGS olddefconfig
+          
+          # 4. Compilare
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-w" O=out Image.gz-dtb dtbs
 
       - name: Generate DTBO Image
