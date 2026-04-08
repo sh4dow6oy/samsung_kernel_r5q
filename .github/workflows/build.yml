@@ -1,147 +1,67 @@
-name: Lumi R5Q - Surgical Merge (Sunmughan Drivers + Lumi Config)
-
-on:
-  workflow_dispatch:
+name: R5Q - Lineage Base + Samsung Drivers
+on: workflow_dispatch
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Lumi Base (The Core)
+      - name: Checkout LineageOS Base
         uses: actions/checkout@v4
         with:
-          repository: LumiPlayground/android_kernel_samsung_sm8150
-          ref: rawr-bpf
+          repository: LineageOS/android_kernel_google_msm-4.14
           path: kernel
 
-      - name: Checkout Sunmughan Source (The Drivers)
+      - name: Checkout Samsung Drivers (Sunmughan)
         uses: actions/checkout@v4
         with:
           repository: sunmughan/samsung_kernel_r5q
-          ref: master
           path: sunmughan_source
 
-      - name: Surgical Merge & Restore
+      - name: Surgical Injection
         run: |
-          # 1. Backup fișierele critice din Lumi (BPF, Entry și CONFIG-ul dorit)
-          mkdir -p lumi_backup
-          cp -r kernel/arch/arm64/net lumi_backup/
-          cp kernel/arch/arm64/kernel/entry.S lumi_backup/
-          cp kernel/arch/arm64/configs/r5q_eur_open_defconfig lumi_backup/
+          # 1. Ștergem driverele generice și techpack-ul din Lineage
+          rm -rf kernel/drivers kernel/techpack
           
-          # 2. Swap Hardware & Arch (Drivers, Techpack, Arch/arm64 din Sunmughan)
-          rm -rf kernel/drivers kernel/techpack kernel/arch/arm64
+          # 2. Injectăm driverele Samsung
           cp -r sunmughan_source/drivers kernel/
           cp -r sunmughan_source/techpack kernel/
-          cp -r sunmughan_source/arch/arm64 kernel/arch/
           
-          # 3. RESTAURARE fișiere Lumi
-          rm -rf kernel/arch/arm64/net/*
-          cp -r lumi_backup/net/* kernel/arch/arm64/net/
-          cp lumi_backup/entry.S kernel/arch/arm64/kernel/entry.S
-          
-          # Restaurăm Config-ul Lumi (Esențial pentru setările tale)
-          mkdir -p kernel/arch/arm64/configs/
-          cp lumi_backup/r5q_eur_open_defconfig kernel/arch/arm64/configs/r5q_eur_open_defconfig
-      - name: Apply Universal Hotfixes
+          # 3. Descărcăm Config-ul Royna (R5Q)
+          mkdir -p kernel/arch/arm64/configs
+          wget -O kernel/arch/arm64/configs/r5q_defconfig https://raw.githubusercontent.com/Roynas-Android-Playground/kernel_samsung_r3q/master/arch/arm64/configs/r5q_defconfig
+
+      - name: Apply Fixes for Lineage Base
         run: |
           cd kernel
-          # 1. Fix RKP sintaxă în mmu.c
-          sed -i '20i #define __page_aligned_rkp_bss __section(".bss..page_aligned")' arch/arm64/mm/mmu.c
-          sed -i '21i #define __page_aligned_rkp_data __section(".data..page_aligned")' arch/arm64/mm/mmu.c
-          # 2. Fix ZRAM & Task MMU
-          sed -i '40i #define ZRAM_WB_TYPE 4\n#define ZRAM_WB_HUGE_TYPE 5\n#define ZRAM_HUGE_TYPE 3\n#define ZRAM_SAME_TYPE 2' fs/proc/task_mmu.c
-          sed -i 's/count_vm_events(SQZR_/\/\/&/g' drivers/block/zram/zram_drv.c
-          sed -i 's/count_vm_event(SQZR_/\/\/&/g' drivers/block/zram/zram_drv.c
-          sed -i '/zram_writeback_list/d' fs/proc/task_mmu.c
-          sed -i '/flush_writeback_buffer/d' fs/proc/task_mmu.c
-          sed -i '/zram_get_entry_type/d' fs/proc/task_mmu.c
-          sed -i '/zram_add_to_writeback_list/d' fs/proc/task_mmu.c
-          sed -i '/zram_prefetch_entry/d' fs/proc/task_mmu.c
-          # 3. Fix GPU Adreno (IDR_INIT)
+          # Fix-uri obligatorii pentru drivere Samsung pe bază non-Samsung
           sed -i 's/IDR_INIT/{ 0 }/g' drivers/gpu/msm/kgsl_device.h
-          # 4. DISABLE KPERFMON & FIX _perflog (Conflict preventer)
-          sed -i 's/CONFIG_KPERFMON=y/CONFIG_KPERFMON=n/g' arch/arm64/configs/r5q_eur_open_defconfig || true
-          sed -i 's/obj-$(CONFIG_KPERFMON)/# obj-$(CONFIG_KPERFMON)/g' drivers/Makefile || true
-          
-          # Comentăm declarația care se bate cu macro-ul nostru
-          sed -i 's/extern void _perflog/\/\/extern void _perflog/g' include/linux/ologk.h || true
-          
-          # Adăugăm macro-ul protector la finalul kernel.h
-          echo -e "\n#ifndef _PERFLOG_DUMMY\n#define _PERFLOG_DUMMY\n#define _perflog(...) do {} while (0)\n#endif" >> include/linux/kernel.h
-          # 5. FIX TUN XDP
-          sed -i 's/\.ndo_xdp/\/\/.ndo_xdp/g' drivers/net/tun.c
-          sed -i '1066,1078s/^/\/\//' drivers/net/tun.c
-          # 6. NUCLEAR FIX SDE ROTATOR TRACE (Toate simbolurile undefined)
-          cat <<EOF > drivers/media/platform/msm/sde/rotator/sde_rotator_trace.h
-          #ifndef _SDE_ROTATOR_TRACE_H
-          #define _SDE_ROTATOR_TRACE_H
-          #include <linux/types.h>
-          #define trace_rot_perf_set_qos_luts(...) do {} while (0)
-          #define trace_rot_trace_counter(...) do {} while (0)
-          #define trace_rot_perf_set_ot(...) do {} while (0)
-          #define trace_rot_bw_ao_as_context(...) do {} while (0)
-          #define trace_rot_mark_write(...) do {} while (0)
-          #define trace_rot_entry_fence(...) do {} while (0)
-          #define trace_rot_entry_commit(...) do {} while (0)
-          #define trace_rot_entry_done(...) do {} while (0)
-          #define trace_sde_rot_bw_ao_as_context(...) do {} while (0)
-          #endif
-          EOF
-          find drivers/media/platform/msm/sde/rotator/ -name "*.c" -exec sed -i 's/include <trace\/bpf_probe.h>/\/\/&/g' {} +
-          # 7. Globale (VDSO & DTC)
-          find arch/arm64/kernel/vdso -type f -name "Makefile*" -exec sed -i 's/-static//g' {} +
+          # Eliminăm logging-ul care va lipsi din baza Lineage
+          echo -e "\n#define _perflog(...) do {} while (0)" >> include/linux/kernel.h
+          # Dezactivăm Werror pentru DTS
           find arch/arm64/boot/dts -name "Makefile" -exec sed -i 's/-Werror//g' {} +
+
       - name: Setup Toolchain
         run: |
           sudo apt-get update
-          sudo apt-get install -y bc build-essential flex bison lz4 libssl-dev libelf-dev \
-          ccache python3 libarchive-tools wget zstd zip gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi
-          
+          sudo apt-get install -y bc build-essential flex bison lz4 libssl-dev libelf-dev zstd zip gcc-aarch64-linux-gnu
           mkdir -p clang
           wget -q https://github.com/Ylarod/setup-ndk-clang/releases/download/prebuilt/clang-linux-x86-ndk-r29-r563880c.tar.zst
           tar -I zstd -xf clang-linux-x86-ndk-r29-r563880c.tar.zst -C clang
+
       - name: Build Kernel
         run: |
           cd kernel
-          sed -i 's/CONFIG_KPERFMON=y/CONFIG_KPERFMON=n/g' arch/arm64/configs/r5q_eur_open_defconfig
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           export MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=0 CC=clang \
             CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=aarch64-linux-gnu- \
-            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-            LD=ld.lld \
-            O=out"
-          # Folosim config-ul restaurat din Lumi
-          make $MAKE_ARGS r5q_eur_open_defconfig
+            LD=ld.lld O=out"
           
-          sed -i 's/CONFIG_MODVERSIONS=y/CONFIG_MODVERSIONS=n/g' out/.config
+          make $MAKE_ARGS r5q_defconfig
+          
+          # Activăm suportul de OneUI 7 pe config-ul Royna
+          printf "CONFIG_EROFS_FS=y\nCONFIG_EROFS_FS_ZIP=y\nCONFIG_ANDROID_BINDERFS=y\n" >> out/.config
           make $MAKE_ARGS olddefconfig
           
-          # Build
-          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-w -Wno-error -Wno-int-conversion" O=out Image.gz-dtb
-      - name: AnyKernel3 Packaging
-        run: |
-          git clone https://github.com/osm0sis/AnyKernel3.git
-          # Copiem Kernel-ul
-          cp kernel/out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
-          
-          # Copiem DTBO-ul (foarte important!)
-          if [ -f kernel/out/arch/arm64/boot/dtbo.img ]; then
-            cp kernel/out/arch/arm64/boot/dtbo.img AnyKernel3/
-          fi
-          
-          cd AnyKernel3
-          # Setăm AnyKernel să flash-uiască și DTBO dacă îl găsește
-          sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-          # Adăugăm linia de flash pentru dtbo în anykernel.sh dacă nu există
-          echo 'dtbo_block=/dev/block/by-name/dtbo;
-          if [ -f $home/dtbo.img ]; then
-            flash_dtbo;
-          fi;' >> anykernel.sh
-          zip -r9 ../Lumi-R5Q-Surgical-Final.zip *
-      - name: Upload
-        uses: actions/upload-artifact@v4
-        with:
-          name: Lumi-Final-Kernel
-          path: Lumi-R5Q-Surgical-Final.zip
+          # Compilare
+          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-w" O=out Image.gz-dtb dtbs
