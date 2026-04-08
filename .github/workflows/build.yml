@@ -1,4 +1,4 @@
-name: Lumi R5Q - Ultimate Hybrid Build
+name: Lumi R5Q - Roynas Hybrid (Fixed UL & IAS)
 
 on:
   workflow_dispatch:
@@ -7,14 +7,14 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Lumi Base (Your BPF Source)
+      - name: Checkout Lumi Base
         uses: actions/checkout@v4
         with:
           repository: LumiPlayground/android_kernel_samsung_sm8150
           ref: rawr-bpf
           path: kernel
 
-      - name: Checkout Roynas Source (Hardware Provider)
+      - name: Checkout Roynas Source
         uses: actions/checkout@v4
         with:
           repository: Roynas-Android-Playground/kernel_samsung_r3q
@@ -23,40 +23,41 @@ jobs:
 
       - name: Surgical Merge & Restore
         run: |
-          # 1. Backup JIT BPF (Specific arhitecturii tale)
           mkdir -p net_arch_backup
           if [ -d kernel/arch/arm64/net ]; then
             cp -r kernel/arch/arm64/net/* net_arch_backup/
           fi
           
-          # 2. Swap Hardware & Arch (Drivers, Techpack, Arch/arm64 din Roynas)
           rm -rf kernel/drivers kernel/techpack kernel/arch/arm64
           cp -r r3q_source/drivers kernel/
           cp -r r3q_source/techpack kernel/
           cp -r r3q_source/arch/arm64 kernel/arch/
           
-          # 3. Restaurare JIT BPF în noua structură Roynas
           rm -rf kernel/arch/arm64/net/*
           mkdir -p kernel/arch/arm64/net
           cp -r net_arch_backup/* kernel/arch/arm64/net/
 
-      - name: Apply Hotfixes (Compilation Fixes)
+      - name: Apply Compilation Fixes (UL, WORKAROUND_3, THREAD_SIZE)
         run: |
           cd kernel
-          # Fix ptep vs pte (Eroare mm)
+          # 1. Fix UL macro definition globally in const.h if missing
+          # Adaugam definitia UL in headerul de baza pentru a repara mmu.c si proc.S
+          sed -i '/#define _LINUX_CONST_H/a #ifndef UL\n#define UL(x) _AC(x, UL)\n#endif' include/uapi/linux/const.h
+
+          # 2. Fix THREAD_SIZE (VLA error)
+          sed -i 's/unsigned long stack\[THREAD_SIZE\/sizeof(long)\];/unsigned long stack\[0\]; \/* Fixed *\/ /g' include/linux/sched.h || true
+
+          # 3. Fix ptep (mm fix)
           sed -i 's/ptep = huge_pmd_share/pte = huge_pmd_share/g' arch/arm64/mm/hugetlbpage.c || true
-          
-          # FIX CRITIC: THREAD_SIZE (VLA in structure) - Rezolvă eroarea de asm-offsets.c
-          # Schimbăm definiția stack-ului pentru a fi compatibilă cu Clang modern
-          sed -i 's/unsigned long stack\[THREAD_SIZE\/sizeof(long)\];/unsigned long stack\[0\]; \/* Lumi Fix *\/ /g' include/linux/sched.h || true
-          
-          # Fix taskstats (#elif error)
-          sed -i 's/#elif/#else/g' kernel/taskstats.c || true
-          
-          # Dezactivare KernelSU (Eliminare referință Kconfig)
+
+          # 4. Dummy definition for missing SMCCC WORKAROUND (Roynas leak)
+          # Prevenim eroarea din entry.S
+          echo "#define ARM_SMCCC_ARCH_WORKAROUND_3 0x80008002" >> arch/arm64/include/asm/cpucaps.h || true
+
+          # 5. Disable KernelSU from Kconfig
           sed -i '/kernelsu/d' drivers/android/Kconfig || true
           
-          # Dezactivare Werror pentru DTS (Ignoră avertismentele la Device Tree)
+          # 6. DTC Fix
           find arch/arm64/boot/dts -name "Makefile" -exec sed -i 's/-Werror//g' {} +
 
       - name: Setup Toolchain (NDK Clang)
@@ -74,24 +75,19 @@ jobs:
         run: |
           cd kernel
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
-          export MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang \
+          # NOTA: Folosim LLVM_IAS=0 pentru a folosi asamblatorul GCC (mai tolerant cu sintaxa Samsung)
+          export MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=0 CC=clang \
             CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             LD=ld.lld \
             O=out"
 
-          # Utilizăm r5q_defconfig care a venit odată cu folderul arch de la Roynas
           make $MAKE_ARGS r5q_defconfig
-          
-          # Ne asigurăm că KSU este oprit în .config
           scripts/config --file out/.config -d CONFIG_KSU
-          scripts/config --file out/.config -d CONFIG_KSU_DEBUG
-          
           make $MAKE_ARGS olddefconfig
           
-          # Compilare Image.gz-dtb
-          # KCFLAGS="-w" ignoră avertismentele de tip casting/deprecare (OpenSSL etc.)
+          # Compilare cu ignorare warning-uri
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-w -Wno-error -Wno-int-conversion" O=out Image.gz-dtb
 
       - name: AnyKernel3 Packaging
@@ -100,18 +96,17 @@ jobs:
           if [ -f kernel/out/arch/arm64/boot/Image.gz-dtb ]; then
             cp kernel/out/arch/arm64/boot/Image.gz-dtb AnyKernel3/Image.gz-dtb
           else
-            echo "EROARE: Kernel-ul nu s-a compilat! Verifică log-urile de CC." && exit 1
+            echo "EROARE: Kernel-ul nu s-a compilat!" && exit 1
           fi
           
           cd AnyKernel3
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
           sed -i 's|block=auto;|block=/dev/block/by-name/boot;|g' anykernel.sh
           sed -i 's/kernel.type=inline/kernel.type=gzip-dtb/g' anykernel.sh
-          
-          zip -r9 ../Lumi-R5Q-Ultimate-Hybrid.zip *
+          zip -r9 ../Lumi-R5Q-Hybrid-V2.zip *
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Lumi-Hybrid-Kernel
-          path: Lumi-R5Q-Ultimate-Hybrid.zip
+          name: Lumi-V2-Kernel
+          path: Lumi-R5Q-Hybrid-V2.zip
