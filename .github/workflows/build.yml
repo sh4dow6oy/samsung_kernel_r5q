@@ -24,18 +24,24 @@ jobs:
           cp -r royna_source/drivers kernel/
           cp -r royna_source/techpack kernel/
 
-          # 2. FIX PENTRU KERNELSU & WALT
+          # 2. Fix KernelSU & WALT Redefinitions
           sed -i '/kernelsu/d' kernel/drivers/android/Kconfig
           
-          # Eliminăm funcțiile inline care se bat cu walt.c
-          sed -i '/static inline void walt_inc_cumulative_runnable_avg/,/}/d' kernel/kernel/sched/walt.h
-          sed -i '/static inline void walt_dec_cumulative_runnable_avg/,/}/d' kernel/kernel/sched/walt.h
+          # Ștergem orice definiție care începe cu walt_inc_cumulative_runnable_avg până la prima acoladă închisă
+          # Folosim o metodă care caută pattern-ul și șterge blocul de funcție inline
+          sed -i '/walt_inc_cumulative_runnable_avg/,/}/d' kernel/kernel/sched/walt.h
+          sed -i '/walt_dec_cumulative_runnable_avg/,/}/d' kernel/kernel/sched/walt.h
           
           # 3. Fix Scheduler Struct (Run Queue)
-          sed -i '/s64 cum_window_start;/a \		s64 cum_window_demand;\n		s64 cumulative_runnable_avg;' kernel/kernel/sched/sched.h
-          sed -i 's/static inline unsigned int task_load/static unsigned int __unused_task_load/g' kernel/kernel/sched/sched.h
+          # Ne asigurăm că adăugăm câmpurile doar dacă nu există deja
+          if ! grep -q "cum_window_demand" kernel/kernel/sched/sched.h; then
+            sed -i '/s64 cum_window_start;/a \		s64 cum_window_demand;\n		s64 cumulative_runnable_avg;' kernel/kernel/sched/sched.h
+          fi
           
-          # 4. Copiem header-ele SOC și Config-ul
+          # Redenumim task_load-ul din header ca să nu se bată cu cel din walt.c
+          sed -i 's/unsigned int task_load(/unsigned int __unused_task_load(/g' kernel/kernel/sched/sched.h
+
+          # 4. Header-e SOC și Config
           mkdir -p kernel/include/soc/samsung
           cp -r royna_source/include/soc/samsung/* kernel/include/soc/samsung/ || true
           cp royna_source/arch/arm64/configs/r5q_defconfig kernel/arch/arm64/configs/r5q_defconfig
