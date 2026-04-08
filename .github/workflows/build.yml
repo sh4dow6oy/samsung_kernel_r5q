@@ -63,10 +63,11 @@ jobs:
           sed -i 's/CONFIG_KPERFMON=y/CONFIG_KPERFMON=n/g' arch/arm64/configs/r5q_eur_open_defconfig || true
           sed -i 's/obj-$(CONFIG_KPERFMON)/# obj-$(CONFIG_KPERFMON)/g' drivers/Makefile || true
 
-          # 5. FIX SDE ROTATOR TRACE & TUN XDP
+          # 5. FIX SDE ROTATOR TRACE & TUN XDP (Full Range)
           sed -i 's/dst_fmt, dst_bw, dst_bh/dst_fmt, 0, 0/g' drivers/media/platform/msm/sde/rotator/sde_rotator_trace.h
           sed -i 's/\.ndo_xdp/\/\/.ndo_xdp/g' drivers/net/tun.c
-          sed -i '1066,1076s/^/\/\//' drivers/net/tun.c
+          # Comentăm de la începutul funcției până la ultima acoladă
+          sed -i '1066,1078s/^/\/\//' drivers/net/tun.c
 
           # 6. Globale
           find arch/arm64/kernel/vdso -type f -name "Makefile*" -exec sed -i 's/-static//g' {} +
