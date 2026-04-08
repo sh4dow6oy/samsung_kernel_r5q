@@ -55,44 +55,47 @@ jobs:
           sed -i '40i #define ZRAM_WB_TYPE 4\n#define ZRAM_WB_HUGE_TYPE 5\n#define ZRAM_HUGE_TYPE 3\n#define ZRAM_SAME_TYPE 2' fs/proc/task_mmu.c
           sed -i 's/count_vm_events(SQZR_/\/\/&/g' drivers/block/zram/zram_drv.c
           sed -i 's/count_vm_event(SQZR_/\/\/&/g' drivers/block/zram/zram_drv.c
-
-          # 3. Fix GPU Adreno (IDR_INIT)
-          sed -i 's/IDR_INIT/{ 0 }/g' drivers/gpu/msm/kgsl_device.h
-
-          # 4. DISABLE KPERFMON (Fix perflog.h)
-          sed -i 's/CONFIG_KPERFMON=y/CONFIG_KPERFMON=n/g' arch/arm64/configs/r5q_eur_open_defconfig || true
-          sed -i 's/obj-$(CONFIG_KPERFMON)/# obj-$(CONFIG_KPERFMON)/g' drivers/Makefile || true
-
-          # 5. FIX SDE ROTATOR TRACE & TUN XDP (Full Range)
-          sed -i 's/dst_fmt, dst_bw, dst_bh/dst_fmt, 0, 0/g' drivers/media/platform/msm/sde/rotator/sde_rotator_trace.h
-          sed -i 's/\.ndo_xdp/\/\/.ndo_xdp/g' drivers/net/tun.c
-          # Comentăm de la începutul funcției până la ultima acoladă
-          sed -i '1066,1078s/^/\/\//' drivers/net/tun.c
-
-          # 6. Globale
-          find arch/arm64/kernel/vdso -type f -name "Makefile*" -exec sed -i 's/-static//g' {} +
-          find arch/arm64/boot/dts -name "Makefile" -exec sed -i 's/-Werror//g' {} +
-
-          # --- FIX LINKER ERRORS (Undefined Symbols) ---
-          
-          # 1. Fix _perflog (Eliminăm apelurile de logging din nucleu)
-          sed -i 's/_perflog(//g' drivers/cpufreq/cpufreq.c block/genhd.c mm/vmscan.c || true
-          # Notă: Dacă sed-ul de mai sus e prea simplu, folosim unul care comentează linia:
-          sed -i '/_perflog/d' drivers/cpufreq/cpufreq.c block/genhd.c mm/vmscan.c || true
-
-          # 2. Fix ZRAM Symbols în task_mmu.c (Incompatibilitate Sunmughan ZRAM vs Lumi MM)
-          # Comentăm liniile care apelează funcții de writeback/prefetch care nu există în driver
           sed -i '/zram_writeback_list/d' fs/proc/task_mmu.c
           sed -i '/flush_writeback_buffer/d' fs/proc/task_mmu.c
           sed -i '/zram_get_entry_type/d' fs/proc/task_mmu.c
           sed -i '/zram_add_to_writeback_list/d' fs/proc/task_mmu.c
           sed -i '/zram_prefetch_entry/d' fs/proc/task_mmu.c
 
-          # 3. Fix BPF Trace (SDE Rotator)
-          # Eroarea __CAST0 și bpf_trace_run0 apare din cauza macro-urilor de trace stricate
-          # Dezactivăm complet tracing-ul în rotator_base.c pentru a opri generarea bpf_probe
-          sed -i 's/CONFIG_BINARY_PRINTF/CONFIG_NO_BINARY_PRINTF/g' drivers/media/platform/msm/sde/rotator/Makefile || true
-          echo "" > drivers/media/platform/msm/sde/rotator/sde_rotator_trace.h
+          # 3. Fix GPU Adreno (IDR_INIT)
+          sed -i 's/IDR_INIT/{ 0 }/g' drivers/gpu/msm/kgsl_device.h
+
+          # 4. DISABLE KPERFMON & FIX _perflog
+          sed -i 's/CONFIG_KPERFMON=y/CONFIG_KPERFMON=n/g' arch/arm64/configs/r5q_eur_open_defconfig || true
+          sed -i 's/obj-$(CONFIG_KPERFMON)/# obj-$(CONFIG_KPERFMON)/g' drivers/Makefile || true
+          # Definim _perflog ca fiind nimic în kernel.h (cea mai sigură metodă)
+          echo "#define _perflog(...) do {} while (0)" >> include/linux/kernel.h
+
+          # 5. FIX TUN XDP
+          sed -i 's/\.ndo_xdp/\/\/.ndo_xdp/g' drivers/net/tun.c
+          sed -i '1066,1078s/^/\/\//' drivers/net/tun.c
+
+          # 6. NUCLEAR FIX SDE ROTATOR TRACE (Toate simbolurile undefined)
+          cat <<EOF > drivers/media/platform/msm/sde/rotator/sde_rotator_trace.h
+          #ifndef _SDE_ROTATOR_TRACE_H
+          #define _SDE_ROTATOR_TRACE_H
+          #include <linux/types.h>
+          #define trace_rot_perf_set_qos_luts(...) do {} while (0)
+          #define trace_rot_trace_counter(...) do {} while (0)
+          #define trace_rot_perf_set_ot(...) do {} while (0)
+          #define trace_rot_bw_ao_as_context(...) do {} while (0)
+          #define trace_rot_mark_write(...) do {} while (0)
+          #define trace_rot_entry_fence(...) do {} while (0)
+          #define trace_rot_entry_commit(...) do {} while (0)
+          #define trace_rot_entry_done(...) do {} while (0)
+          #define trace_sde_rot_bw_ao_as_context(...) do {} while (0)
+          #endif
+          EOF
+          # Dezactivăm BPF în rotator
+          find drivers/media/platform/msm/sde/rotator/ -name "*.c" -exec sed -i 's/include <trace\/bpf_probe.h>/\/\/&/g' {} +
+
+          # 7. Globale (VDSO & DTC)
+          find arch/arm64/kernel/vdso -type f -name "Makefile*" -exec sed -i 's/-static//g' {} +
+          find arch/arm64/boot/dts -name "Makefile" -exec sed -i 's/-Werror//g' {} +
 
       - name: Setup Toolchain
         run: |
