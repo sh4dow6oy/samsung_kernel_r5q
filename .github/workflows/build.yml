@@ -23,10 +23,10 @@ jobs:
 
       - name: Surgical Merge & Entry.S Restore
         run: |
-          # 1. Backup fișierele critice din Lumi pe care vrem să le păstrăm
+          # 1. Backup fișierele critice din Lumi
           mkdir -p lumi_backup
-          cp -r kernel/arch/arm64/net lumi_backup/     # JIT-ul tău BPF
-          cp kernel/arch/arm64/kernel/entry.S lumi_backup/  # Codul de entry original
+          cp -r kernel/arch/arm64/net lumi_backup/
+          cp kernel/arch/arm64/kernel/entry.S lumi_backup/
           
           # 2. Swap Hardware & Arch (Drivers, Techpack, Arch/arm64 din Roynas)
           rm -rf kernel/drivers kernel/techpack kernel/arch/arm64
@@ -34,17 +34,18 @@ jobs:
           cp -r r3q_source/techpack kernel/
           cp -r r3q_source/arch/arm64 kernel/arch/
           
-          # 3. RESTAURARE fișiere Lumi în arhitectura nouă
-          # Restaurăm JIT-ul BPF
+          # 3. RESTAURARE fișiere Lumi
           rm -rf kernel/arch/arm64/net/*
           cp -r lumi_backup/net/* kernel/arch/arm64/net/
-          
-          # Restaurăm entry.S original (pentru a evita erorile SMCCC/Workaround)
           cp lumi_backup/entry.S kernel/arch/arm64/kernel/entry.S
 
-      - name: Apply Hotfixes
+      - name: Apply Hotfixes & SMCCC Fix
         run: |
           cd kernel
+          # --- FIX SMCCC WORKAROUND 3 (Rezolvă eroarea cpu_errata.c) ---
+          sed -i '/#define ARM_SMCCC_ARCH_WORKAROUND_2/a #define ARM_SMCCC_ARCH_WORKAROUND_3\t\t\t0x80003f01' include/linux/arm-smccc.h
+          sed -i '/#define ARM_SMCCC_ARCH_WORKAROUND_2/a #define SMCCC_ARCH_WORKAROUND_RET_UNAFFECTED\t1' include/linux/arm-smccc.h
+
           # Fix UL macro global
           sed -i '/#define _LINUX_CONST_H/a #ifndef UL\n#define UL(x) _AC(x, UL)\n#endif' include/uapi/linux/const.h
           
@@ -83,6 +84,12 @@ jobs:
             O=out"
 
           make $MAKE_ARGS r5q_defconfig
+
+          # --- CONFIG PENTRU BOOT PE ONEUI 7 ---
+          printf "CONFIG_ANDROID_SAR_RAMDISK=n\n" >> out/.config
+          printf "CONFIG_BLK_DEV_DM=y\nCONFIG_DM_REMAPPER=y\nCONFIG_DM_UEVENT=y\n" >> out/.config
+          printf "CONFIG_ANDROID_BINDERFS=y\n" >> out/.config
+
           make $MAKE_ARGS olddefconfig
           
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-w -Wno-error -Wno-int-conversion" O=out Image.gz-dtb
@@ -99,11 +106,10 @@ jobs:
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
           sed -i 's|block=auto;|block=/dev/block/by-name/boot;|g' anykernel.sh
           sed -i 's/kernel.type=inline/kernel.type=gzip-dtb/g' anykernel.sh
-          zip -r9 ../Lumi-R5Q-Restore-Final.zip *
+          zip -r9 ../Lumi-R5Q-Restore-Fixed.zip *
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Lumi-Restore-Kernel
+          name: Lumi-Restore-Kernel-Fixed
           path: Lumi-R5Q-Restore-Final.zip
-          
