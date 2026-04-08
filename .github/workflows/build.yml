@@ -120,7 +120,7 @@ jobs:
           chmod +x tools/mkdtimg
           
           # Căutăm fișierele .dtbo generate în folderul out
-          DTBO_FILES=$(find out/arch/arm64/boot/dts/samsung -name "*.dtbo")
+          DTBO_FILES=$(find out/arch/arm64/boot -name "*.dtbo")
           
           if [ -n "$DTBO_FILES" ]; then
             ./tools/mkdtimg create out/arch/arm64/boot/dtbo.img $DTBO_FILES
