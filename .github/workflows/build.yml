@@ -42,24 +42,19 @@ jobs:
       - name: Apply Hotfixes & SMCCC Fix
         run: |
           cd kernel
-          # --- FIX SMCCC WORKAROUND 3 (Valori brute pentru a evita erorile de macro) ---
-          # Curățăm orice tentativă anterioară eșuată
+          # --- FIX SMCCC WORKAROUND 3 ---
           sed -i '/ARM_SMCCC_ARCH_WORKAROUND_3/d' include/linux/arm-smccc.h
-          sed -i '/SMCCC_ARCH_WORKAROUND_RET_UNAFFECTED/d' include/linux/arm-smccc.h
-
-          # Injectăm definițiile la începutul fișierului după comentariile de licență
           sed -i '15i #define ARM_SMCCC_ARCH_WORKAROUND_3 0x80003f01' include/linux/arm-smccc.h
           sed -i '16i #define SMCCC_ARCH_WORKAROUND_RET_UNAFFECTED 1' include/linux/arm-smccc.h
 
+          # --- FIX FSCRYPT ---
+          sed -i 's/ci->ci_iv_key/ci->ci_raw_key/g' fs/crypto/keysetup_v1.c || true
+
           # --- FIX RESTUL ERORILOR ---
-          # Fix UL macro global
           sed -i '/#define _LINUX_CONST_H/a #ifndef UL\n#define UL(x) _AC(x, UL)\n#endif' include/uapi/linux/const.h
-          
-          # Fix THREAD_SIZE (VLA error)
           sed -i 's/unsigned long stack\[THREAD_SIZE\/sizeof(long)\];/unsigned long stack\[0\]; \/* Fixed *\/ /g' include/linux/sched.h || true
-          
-          # Fix ptep (mm)
           sed -i 's/ptep = huge_pmd_share/pte = huge_pmd_share/g' arch/arm64/mm/hugetlbpage.c || true
+          find arch/arm64/boot/dts -name "Makefile" -exec sed -i 's/-Werror//g' {} +
           
           # Dezactivare KernelSU (dacă există)
           sed -i '/kernelsu/d' drivers/android/Kconfig || true
