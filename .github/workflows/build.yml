@@ -1,4 +1,4 @@
-name: Lumi R5Q - Roynas Arch & r5q_defconfig + Lumi Net
+name: Lumi R5Q - Ultimate Hybrid Build
 
 on:
   workflow_dispatch:
@@ -7,51 +7,56 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Lumi Base (BPF Source)
+      - name: Checkout Lumi Base (Your BPF Source)
         uses: actions/checkout@v4
         with:
           repository: LumiPlayground/android_kernel_samsung_sm8150
           ref: rawr-bpf
           path: kernel
 
-      - name: Checkout Roynas Source (HW & Config Source)
+      - name: Checkout Roynas Source (Hardware Provider)
         uses: actions/checkout@v4
         with:
           repository: Roynas-Android-Playground/kernel_samsung_r3q
           ref: master
           path: r3q_source
 
-      - name: Surgical Merge & KernelSU Disable
+      - name: Surgical Merge & Restore
         run: |
-          # 1. Backup JIT BPF din Lumi
+          # 1. Backup JIT BPF (Specific arhitecturii tale)
           mkdir -p net_arch_backup
           if [ -d kernel/arch/arm64/net ]; then
             cp -r kernel/arch/arm64/net/* net_arch_backup/
           fi
           
-          # 2. Înlocuire masivă: Drivers, Techpack și Arch/arm64 din Roynas
+          # 2. Swap Hardware & Arch (Drivers, Techpack, Arch/arm64 din Roynas)
           rm -rf kernel/drivers kernel/techpack kernel/arch/arm64
           cp -r r3q_source/drivers kernel/
           cp -r r3q_source/techpack kernel/
           cp -r r3q_source/arch/arm64 kernel/arch/
           
-          # 3. Restaurare arch/arm64/net (JIT-ul tău)
+          # 3. Restaurare JIT BPF în noua structură Roynas
           rm -rf kernel/arch/arm64/net/*
           mkdir -p kernel/arch/arm64/net
           cp -r net_arch_backup/* kernel/arch/arm64/net/
 
-          # 4. FIX: Dezactivare KernelSU (Eliminăm sursa din Kconfig)
-          # Ștergem linia care încearcă să încarce KernelSU
-          sed -i '/kernelsu/d' kernel/drivers/android/Kconfig
-
-      - name: Apply Hotfixes
+      - name: Apply Hotfixes (Compilation Fixes)
         run: |
           cd kernel
-          # Fix ptep vs pte
+          # Fix ptep vs pte (Eroare mm)
           sed -i 's/ptep = huge_pmd_share/pte = huge_pmd_share/g' arch/arm64/mm/hugetlbpage.c || true
-          # Fix taskstats
+          
+          # FIX CRITIC: THREAD_SIZE (VLA in structure) - Rezolvă eroarea de asm-offsets.c
+          # Schimbăm definiția stack-ului pentru a fi compatibilă cu Clang modern
+          sed -i 's/unsigned long stack\[THREAD_SIZE\/sizeof(long)\];/unsigned long stack\[0\]; \/* Lumi Fix *\/ /g' include/linux/sched.h || true
+          
+          # Fix taskstats (#elif error)
           sed -i 's/#elif/#else/g' kernel/taskstats.c || true
-          # Eliminăm Werror pentru DTS
+          
+          # Dezactivare KernelSU (Eliminare referință Kconfig)
+          sed -i '/kernelsu/d' drivers/android/Kconfig || true
+          
+          # Dezactivare Werror pentru DTS (Ignoră avertismentele la Device Tree)
           find arch/arm64/boot/dts -name "Makefile" -exec sed -i 's/-Werror//g' {} +
 
       - name: Setup Toolchain (NDK Clang)
@@ -76,16 +81,17 @@ jobs:
             LD=ld.lld \
             O=out"
 
-          # Utilizăm r5q_defconfig din Roynas
+          # Utilizăm r5q_defconfig care a venit odată cu folderul arch de la Roynas
           make $MAKE_ARGS r5q_defconfig
           
-          # Dezactivăm KernelSU și din config dacă este prezent
+          # Ne asigurăm că KSU este oprit în .config
           scripts/config --file out/.config -d CONFIG_KSU
           scripts/config --file out/.config -d CONFIG_KSU_DEBUG
           
           make $MAKE_ARGS olddefconfig
           
-          # Compilăm Image.gz-dtb
+          # Compilare Image.gz-dtb
+          # KCFLAGS="-w" ignoră avertismentele de tip casting/deprecare (OpenSSL etc.)
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-w -Wno-error -Wno-int-conversion" O=out Image.gz-dtb
 
       - name: AnyKernel3 Packaging
@@ -94,7 +100,7 @@ jobs:
           if [ -f kernel/out/arch/arm64/boot/Image.gz-dtb ]; then
             cp kernel/out/arch/arm64/boot/Image.gz-dtb AnyKernel3/Image.gz-dtb
           else
-            echo "EROARE: Compilarea a eșuat!" && exit 1
+            echo "EROARE: Kernel-ul nu s-a compilat! Verifică log-urile de CC." && exit 1
           fi
           
           cd AnyKernel3
@@ -102,10 +108,10 @@ jobs:
           sed -i 's|block=auto;|block=/dev/block/by-name/boot;|g' anykernel.sh
           sed -i 's/kernel.type=inline/kernel.type=gzip-dtb/g' anykernel.sh
           
-          zip -r9 ../Lumi-R5Q-NoKSU.zip *
+          zip -r9 ../Lumi-R5Q-Ultimate-Hybrid.zip *
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Lumi-NoKSU-Kernel
-          path: Lumi-R5Q-NoKSU.zip
+          name: Lumi-Hybrid-Kernel
+          path: Lumi-R5Q-Ultimate-Hybrid.zip
