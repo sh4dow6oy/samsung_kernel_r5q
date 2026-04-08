@@ -56,14 +56,16 @@ jobs:
           sed -i 's/count_vm_events(SQZR_/\/\/&/g' drivers/block/zram/zram_drv.c
           sed -i 's/count_vm_event(SQZR_/\/\/&/g' drivers/block/zram/zram_drv.c
 
-          # 3. Fix GPU Adreno (IDR_INIT)
-          sed -i '15i #ifndef IDR_INIT\n#define IDR_INIT { 0 }\n#endif' drivers/gpu/msm/kgsl_device.h
+          # 3. Fix GPU Adreno (IDR_INIT Hard Fix)
+          # Schimbăm toate instanțele de IDR_INIT cu inițializarea de structură { 0 }
+          sed -i 's/IDR_INIT/{ 0 }/g' drivers/gpu/msm/kgsl_device.h
 
           # 4. Fix Techpack dummy headers (perflog.h)
-          mkdir -p system/core/liblog/include/log/
-          mkdir -p system/logging/liblog/include/log/
-          touch system/core/liblog/include/log/perflog.h
-          touch system/logging/liblog/include/log/perflog.h
+          # Creăm ierarhia de foldere direct în rădăcina build-ului
+          mkdir -p ../system/core/liblog/include/log/
+          mkdir -p ../system/logging/liblog/include/log/
+          touch ../system/core/liblog/include/log/perflog.h
+          touch ../system/logging/liblog/include/log/perflog.h
 
           # 5. Fix-uri globale (VDSO, DTC, SELinux)
           find arch/arm64/kernel/vdso -type f -name "Makefile*" -exec sed -i 's/-static//g' {} +
