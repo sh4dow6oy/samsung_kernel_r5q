@@ -105,48 +105,57 @@ jobs:
             LD=ld.lld \
             O=out"
           
+          # 1. Configurare
           make $MAKE_ARGS r5q_eur_open_defconfig
-          
-          # Ajustări config...
           sed -i 's/CONFIG_MODVERSIONS=y/CONFIG_MODVERSIONS=n/g' out/.config
           make $MAKE_ARGS olddefconfig
 
-          # 1. Compilăm Kernel-ul și fișierele DTB/DTBO individuale
-          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-w -Wno-error -Wno-int-conversion" O=out Image.gz-dtb dtbs
+          # 2. Compilare Kernel + DTBS
+          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-w -Wno-error" O=out Image.gz-dtb dtbs
 
-          # 2. Creăm manual dtbo.img folosind scriptul din kernel
-          # Căutăm toate fișierele .dtbo generate în folderul out
-          find out/arch/arm64/boot/dts -name "*.dtbo" > dtbo_list
+          # 3. GENERARE dtbo.img folosind tool-ul din repo
+          echo "Împachetăm DTBO folosind tools/mkdtimg..."
           
-          # Împachetăm folosind mkdtimg (dacă există în toolchain) sau scriptul de suport
-          if [ -f out/scripts/dtc/mkdtimg ]; then
-            out/scripts/dtc/mkdtimg create out/arch/arm64/boot/dtbo.img $(cat dtbo_list)
+          # Ne asigurăm că utilitarul are permisiuni de execuție
+          chmod +x tools/mkdtimg
+          
+          # Căutăm fișierele .dtbo generate în folderul out
+          DTBO_FILES=$(find out/arch/arm64/boot/dts/samsung -name "*.dtbo")
+          
+          if [ -n "$DTBO_FILES" ]; then
+            ./tools/mkdtimg create out/arch/arm64/boot/dtbo.img $DTBO_FILES
+            echo "✅ dtbo.img a fost creat cu succes!"
           else
-            echo "Avertisment: mkdtimg nu a fost găsit, încercăm o metodă alternativă..."
-            # Unele kernel-uri pun dtbo.img direct în out/arch/arm64/boot/ după 'make dtbs'
+            echo "❌ EROARE: Nu am găsit fișiere .dtbo în out/arch/arm64/boot/dts/samsung"
+            exit 1
           fi
 
-      - name: AnyKernel3 Packaging        
-        run: |          
-          git clone https://github.com/osm0sis/AnyKernel3.git          
-          cp kernel/out/arch/arm64/boot/Image.gz-dtb AnyKernel3/                    
+      - name: AnyKernel3 Packaging
+        run: |
+          git clone https://github.com/osm0sis/AnyKernel3.git
+          cp kernel/out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
           
-          # Copiem DTBO-ul dacă a fost generat
+          # Copiem DTBO-ul
           if [ -f kernel/out/arch/arm64/boot/dtbo.img ]; then
             cp kernel/out/arch/arm64/boot/dtbo.img AnyKernel3/
-          fi                    
+            echo "DTBO inclus."
+          else
+            echo "❌ EROARE: dtbo.img lipsește la packaging!"
+            exit 1
+          fi
 
-          cd AnyKernel3          
-          sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh          
+          cd AnyKernel3
+          sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
           
-          # Injectăm scriptul de flash pentru DTBO în anykernel.sh
-          # Adăugăm variabila dtbo_block după device.name1
+          # Configurare blocuri pentru S10 Lite (r5q)
+          # Adăugăm variabila de block pentru DTBO după linia cu device.name1
           sed -i '/device.name1=r5q/a dtbo_block=/dev/block/by-name/dtbo;' anykernel.sh
           
-          # Adăugăm comanda de flash la finalul scriptului
-          echo 'if [ -f $home/dtbo.img ]; then flash_dtbo; fi;' >> anykernel.sh
+          # Adăugăm comanda de flash explicită
+          echo 'flash_dtbo;' >> anykernel.sh
           
-          zip -r9 ../Lumi-R5Q-Surgical-Final.zip * - name: Upload        
+          zip -r9 ../Lumi-R5Q-Final-With-DTBO.zip *   
+          
           uses: actions/upload-artifact@v4        
           with:          
           name: Lumi-Final-Kernel-With-DTBO
