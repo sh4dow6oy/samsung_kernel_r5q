@@ -56,18 +56,17 @@ jobs:
           sed -i 's/count_vm_events(SQZR_/\/\/&/g' drivers/block/zram/zram_drv.c
           sed -i 's/count_vm_event(SQZR_/\/\/&/g' drivers/block/zram/zram_drv.c
 
-          # 3. Fix GPU Adreno (IDR_INIT Hard Fix)
-          # Schimbăm toate instanțele de IDR_INIT cu inițializarea de structură { 0 }
+          # 3. Fix GPU Adreno (IDR_INIT)
           sed -i 's/IDR_INIT/{ 0 }/g' drivers/gpu/msm/kgsl_device.h
 
-          # 4. Fix Techpack dummy headers (perflog.h)
-          # Creăm ierarhia de foldere direct în rădăcina build-ului
-          mkdir -p ../system/core/liblog/include/log/
-          mkdir -p ../system/logging/liblog/include/log/
-          touch ../system/core/liblog/include/log/perflog.h
-          touch ../system/logging/liblog/include/log/perflog.h
+          # 4. DISABLE KPERFMON (Fix perflog.h)
+          sed -i 's/CONFIG_KPERFMON=y/CONFIG_KPERFMON=n/g' arch/arm64/configs/r5q_eur_open_defconfig || true
+          sed -i 's/obj-$(CONFIG_KPERFMON)/# obj-$(CONFIG_KPERFMON)/g' drivers/Makefile || true
 
-          # 5. Fix-uri globale (VDSO, DTC, SELinux)
+          # 5. FIX SDE ROTATOR TRACE (dst_bw error)
+          sed -i 's/dst_fmt, dst_bw, dst_bh/dst_fmt, 0, 0/g' drivers/media/platform/msm/sde/rotator/sde_rotator_trace.h
+
+          # 6. Globale
           find arch/arm64/kernel/vdso -type f -name "Makefile*" -exec sed -i 's/-static//g' {} +
           find arch/arm64/boot/dts -name "Makefile" -exec sed -i 's/-Werror//g' {} +
 
