@@ -134,7 +134,7 @@ jobs:
           echo 'if [ -f $home/dtbo.img ]; then flash_dtbo; fi;' >> anykernel.sh
           
           zip -r9 ../Lumi-R5Q-Surgical-Final.zip * - name: Upload        
-        uses: actions/upload-artifact@v4        
-        with:          
+          uses: actions/upload-artifact@v4        
+          with:          
           name: Lumi-Final-Kernel-With-DTBO
           path: Lumi-R5Q-Surgical-Final.zip
