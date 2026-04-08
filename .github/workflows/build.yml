@@ -42,24 +42,27 @@ jobs:
       - name: Apply Hotfixes & SMCCC Fix
         run: |
           cd kernel
-          # 1. FIX SMCCC WORKAROUND 3
+          # 1. FIX SMCCC WORKAROUND 3 (Spectre)
           sed -i '/ARM_SMCCC_ARCH_WORKAROUND_3/d' include/linux/arm-smccc.h
           sed -i '15i #define ARM_SMCCC_ARCH_WORKAROUND_3 0x80003f01' include/linux/arm-smccc.h
           sed -i '16i #define SMCCC_ARCH_WORKAROUND_RET_UNAFFECTED 1' include/linux/arm-smccc.h
 
-          # 2. FIX FSCRYPT
+          # 2. FIX FSCRYPT (Criptare)
           sed -i 's/ci->ci_iv_key/ci->ci_raw_key/g' fs/crypto/keysetup_v1.c || true
 
-          # 3. FIX BINDER
+          # 3. FIX BINDER (Android IPC)
           sed -i '/TF_ACCEPT_FDS/a #define TF_CLEAR_BUF 0x20' drivers/android/binder_internal.h || true
           sed -i '/TF_ACCEPT_FDS/a #define TF_CLEAR_BUF 0x20' include/uapi/linux/android/binder.h || true
 
-          # 4. FIX DRIVERS BASE CORE (IOMMU & MSI LOCK)
+          # 4. FIX DRIVERS BASE CORE (IOMMU)
           sed -i 's/raw_spin_lock_init(&dev->msi_lock);/\/\/&/g' drivers/base/core.c
           sed -i 's/INIT_LIST_HEAD(&dev->iommu_map_list);/\/\/&/g' drivers/base/core.c
           sed -i 's/mutex_init(&dev->iommu_map_lock);/\/\/&/g' drivers/base/core.c
 
-          # 5. FIX RESTUL ERORILOR GLOBALE
+          # 5. FIX BRD (RAM Disk Sector Shift)
+          sed -i '30i #ifndef SECTOR_SHIFT\n#define SECTOR_SHIFT 9\n#endif' drivers/block/brd.c
+
+          # 6. FIX RESTUL ERORILOR GLOBALE
           sed -i '/#define _LINUX_CONST_H/a #ifndef UL\n#define UL(x) _AC(x, UL)\n#endif' include/uapi/linux/const.h
           sed -i 's/unsigned long stack\[THREAD_SIZE\/sizeof(long)\];/unsigned long stack\[0\]; \/* Fixed *\/ /g' include/linux/sched.h || true
           sed -i 's/ptep = huge_pmd_share/pte = huge_pmd_share/g' arch/arm64/mm/hugetlbpage.c || true
