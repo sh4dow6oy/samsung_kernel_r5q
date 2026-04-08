@@ -24,6 +24,9 @@ jobs:
           cp -r royna_source/drivers kernel/
           cp -r royna_source/techpack kernel/
 
+          # 6. FIX KERNELSU & SCHEDULER
+          sed -i '/kernelsu/d' kernel/drivers/android/Kconfig
+
           # 2. Ștergem fișierul walt.c pentru a preveni redefinirile
           rm -f kernel/kernel/sched/walt.c
           
