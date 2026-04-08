@@ -1,4 +1,4 @@
-name: Lumi R5Q - Roynas Hybrid (Fixed UL & IAS)
+name: Lumi R5Q - Roynas Arch with Lumi Entry.S Restore
 
 on:
   workflow_dispatch:
@@ -21,46 +21,46 @@ jobs:
           ref: master
           path: r3q_source
 
-      - name: Surgical Merge & Restore
+      - name: Surgical Merge & Entry.S Restore
         run: |
-          mkdir -p net_arch_backup
-          if [ -d kernel/arch/arm64/net ]; then
-            cp -r kernel/arch/arm64/net/* net_arch_backup/
-          fi
+          # 1. Backup fișierele critice din Lumi pe care vrem să le păstrăm
+          mkdir -p lumi_backup
+          cp -r kernel/arch/arm64/net lumi_backup/     # JIT-ul tău BPF
+          cp kernel/arch/arm64/kernel/entry.S lumi_backup/  # Codul de entry original
           
+          # 2. Swap Hardware & Arch (Drivers, Techpack, Arch/arm64 din Roynas)
           rm -rf kernel/drivers kernel/techpack kernel/arch/arm64
           cp -r r3q_source/drivers kernel/
           cp -r r3q_source/techpack kernel/
           cp -r r3q_source/arch/arm64 kernel/arch/
           
+          # 3. RESTAURARE fișiere Lumi în arhitectura nouă
+          # Restaurăm JIT-ul BPF
           rm -rf kernel/arch/arm64/net/*
-          mkdir -p kernel/arch/arm64/net
-          cp -r net_arch_backup/* kernel/arch/arm64/net/
+          cp -r lumi_backup/net/* kernel/arch/arm64/net/
+          
+          # Restaurăm entry.S original (pentru a evita erorile SMCCC/Workaround)
+          cp lumi_backup/entry.S kernel/arch/arm64/kernel/entry.S
 
-      - name: Apply Compilation Fixes (UL, WORKAROUND_3, THREAD_SIZE)
+      - name: Apply Hotfixes
         run: |
           cd kernel
-          # 1. Fix UL macro definition globally in const.h if missing
-          # Adaugam definitia UL in headerul de baza pentru a repara mmu.c si proc.S
+          # Fix UL macro global
           sed -i '/#define _LINUX_CONST_H/a #ifndef UL\n#define UL(x) _AC(x, UL)\n#endif' include/uapi/linux/const.h
-
-          # 2. Fix THREAD_SIZE (VLA error)
+          
+          # Fix THREAD_SIZE (VLA)
           sed -i 's/unsigned long stack\[THREAD_SIZE\/sizeof(long)\];/unsigned long stack\[0\]; \/* Fixed *\/ /g' include/linux/sched.h || true
-
-          # 3. Fix ptep (mm fix)
+          
+          # Fix ptep (mm)
           sed -i 's/ptep = huge_pmd_share/pte = huge_pmd_share/g' arch/arm64/mm/hugetlbpage.c || true
-
-          # 4. Dummy definition for missing SMCCC WORKAROUND (Roynas leak)
-          # Prevenim eroarea din entry.S
-          echo "#define ARM_SMCCC_ARCH_WORKAROUND_3 0x80008002" >> arch/arm64/include/asm/cpucaps.h || true
-
-          # 5. Disable KernelSU from Kconfig
+          
+          # Dezactivare KernelSU
           sed -i '/kernelsu/d' drivers/android/Kconfig || true
           
-          # 6. DTC Fix
+          # Fix DTC
           find arch/arm64/boot/dts -name "Makefile" -exec sed -i 's/-Werror//g' {} +
 
-      - name: Setup Toolchain (NDK Clang)
+      - name: Setup Toolchain
         run: |
           sudo apt-get update
           sudo apt-get install -y bc build-essential flex bison lz4 libssl-dev libelf-dev \
@@ -75,7 +75,6 @@ jobs:
         run: |
           cd kernel
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
-          # NOTA: Folosim LLVM_IAS=0 pentru a folosi asamblatorul GCC (mai tolerant cu sintaxa Samsung)
           export MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=0 CC=clang \
             CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=aarch64-linux-gnu- \
@@ -84,10 +83,8 @@ jobs:
             O=out"
 
           make $MAKE_ARGS r5q_defconfig
-          scripts/config --file out/.config -d CONFIG_KSU
           make $MAKE_ARGS olddefconfig
           
-          # Compilare cu ignorare warning-uri
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-w -Wno-error -Wno-int-conversion" O=out Image.gz-dtb
 
       - name: AnyKernel3 Packaging
@@ -96,17 +93,17 @@ jobs:
           if [ -f kernel/out/arch/arm64/boot/Image.gz-dtb ]; then
             cp kernel/out/arch/arm64/boot/Image.gz-dtb AnyKernel3/Image.gz-dtb
           else
-            echo "EROARE: Kernel-ul nu s-a compilat!" && exit 1
+            echo "EROARE: Compilarea a eșuat!" && exit 1
           fi
-          
           cd AnyKernel3
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
           sed -i 's|block=auto;|block=/dev/block/by-name/boot;|g' anykernel.sh
           sed -i 's/kernel.type=inline/kernel.type=gzip-dtb/g' anykernel.sh
-          zip -r9 ../Lumi-R5Q-Hybrid-V2.zip *
+          zip -r9 ../Lumi-R5Q-Restore-Final.zip *
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Lumi-V2-Kernel
-          path: Lumi-R5Q-Hybrid-V2.zip
+          name: Lumi-Restore-Kernel
+          path: Lumi-R5Q-Restore-Final.zip
+          
