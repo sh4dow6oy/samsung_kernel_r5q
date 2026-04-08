@@ -17,31 +17,23 @@ jobs:
           repository: Roynas-Android-Playground/kernel_samsung_r3q
           path: royna_source
 
-      - name: Surgical Injection & WALT Fix
+      - name: Surgical Injection & Disable WALT
         run: |
           # 1. Înlocuim Driverele și Techpack
           rm -rf kernel/drivers kernel/techpack
           cp -r royna_source/drivers kernel/
           cp -r royna_source/techpack kernel/
 
-          # 2. FIX KERNELSU & SCHEDULER
-          sed -i '/kernelsu/d' kernel/drivers/android/Kconfig
+          # 2. Ștergem fișierul walt.c pentru a preveni redefinirile
+          rm -f kernel/kernel/sched/walt.c
           
-          # Dezactivăm funcțiile inline problematice din walt.h folosind comentarii C
-          # Căutăm funcțiile și le "încercuim" cu /* */
-          sed -i '/static inline void walt_inc_cumulative_runnable_avg/,/}/ s/^/\/\//' kernel/kernel/sched/walt.h
-          sed -i '/static inline void walt_dec_cumulative_runnable_avg/,/}/ s/^/\/\//' kernel/kernel/sched/walt.h
+          # 3. Modificăm Makefile-ul să NU mai încerce să compileze WALT
+          sed -i 's/obj-y += walt.o/obj-n += walt.o/g' kernel/kernel/sched/Makefile
           
-          # 3. Fix Scheduler Struct (Run Queue)
-          # Adăugăm variabilele necesare doar dacă lipsesc
-          if ! grep -q "cum_window_demand" kernel/kernel/sched/sched.h; then
-            sed -i '/s64 cum_window_start;/a \		s64 cum_window_demand;\n		s64 cumulative_runnable_avg;' kernel/kernel/sched/sched.h
-          fi
-          
-          # Redenumim task_load-ul din header
-          sed -i 's/unsigned int task_load(/unsigned int __unused_task_load(/g' kernel/kernel/sched/sched.h
+          # 4. Curățăm referințele din Kconfig-uri (pentru a nu-l activa din greșeală)
+          find kernel -name "Kconfig*" -exec sed -i 's/select SCHED_WALT//g' {} +
 
-          # 4. Header-e SOC și Config
+          # 5. Header-e SOC și Config Royna
           mkdir -p kernel/include/soc/samsung
           cp -r royna_source/include/soc/samsung/* kernel/include/soc/samsung/ || true
           cp royna_source/arch/arm64/configs/r5q_defconfig kernel/arch/arm64/configs/r5q_defconfig
@@ -81,6 +73,10 @@ jobs:
           
           # Olddefconfig pentru a seta restul opțiunilor la default fără intervenție manuală
           make $MAKE_ARGS olddefconfig
+
+          # DEZACTIVARE TOTALĂ WALT & ACTIVARE PELT
+          scripts/config --file out/.config --disable SCHED_WALT
+          scripts/config --file out/.config --enable SCHED_PELT
           
           # Compilare Image.gz-dtb și DTBs
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-w" O=out Image.gz-dtb dtbs
