@@ -47,19 +47,26 @@ jobs:
       - name: Apply Universal Hotfixes
         run: |
           cd kernel
-          # Fix RKP sintaxă în mmu.c
+          # 1. Fix RKP sintaxă în mmu.c
           sed -i '20i #define __page_aligned_rkp_bss __section(".bss..page_aligned")' arch/arm64/mm/mmu.c
           sed -i '21i #define __page_aligned_rkp_data __section(".data..page_aligned")' arch/arm64/mm/mmu.c
 
-          # Fix ZRAM & Task MMU
+          # 2. Fix ZRAM & Task MMU
           sed -i '40i #define ZRAM_WB_TYPE 4\n#define ZRAM_WB_HUGE_TYPE 5\n#define ZRAM_HUGE_TYPE 3\n#define ZRAM_SAME_TYPE 2' fs/proc/task_mmu.c
           sed -i 's/count_vm_events(SQZR_/\/\/&/g' drivers/block/zram/zram_drv.c
           sed -i 's/count_vm_event(SQZR_/\/\/&/g' drivers/block/zram/zram_drv.c
 
-          # Fix VDSO (Linker error fix)
+          # 3. Fix GPU Adreno (IDR_INIT)
+          sed -i '15i #ifndef IDR_INIT\n#define IDR_INIT { 0 }\n#endif' drivers/gpu/msm/kgsl_device.h
+
+          # 4. Fix Techpack dummy headers (perflog.h)
+          mkdir -p system/core/liblog/include/log/
+          mkdir -p system/logging/liblog/include/log/
+          touch system/core/liblog/include/log/perflog.h
+          touch system/logging/liblog/include/log/perflog.h
+
+          # 5. Fix-uri globale (VDSO, DTC, SELinux)
           find arch/arm64/kernel/vdso -type f -name "Makefile*" -exec sed -i 's/-static//g' {} +
-          
-          # Fix DTC (Ignore warnings)
           find arch/arm64/boot/dts -name "Makefile" -exec sed -i 's/-Werror//g' {} +
 
       - name: Setup Toolchain
