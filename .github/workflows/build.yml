@@ -1,4 +1,4 @@
-name: Lumi R5Q - Surgical Merge (Sunmughan Drivers)
+name: Lumi R5Q - Surgical Merge (Sunmughan Drivers + Lumi Config)
 
 on:
   workflow_dispatch:
@@ -21,39 +21,42 @@ jobs:
           ref: master
           path: sunmughan_source
 
-      - name: Surgical Merge & Entry.S Restore
+      - name: Surgical Merge & Restore
         run: |
-          # 1. Backup fișierele critice din Lumi (BPF JIT & Entry)
+          # 1. Backup fișierele critice din Lumi (BPF, Entry și CONFIG-ul dorit)
           mkdir -p lumi_backup
           cp -r kernel/arch/arm64/net lumi_backup/
           cp kernel/arch/arm64/kernel/entry.S lumi_backup/
+          cp kernel/arch/arm64/configs/r5q_eur_open_defconfig lumi_backup/
           
           # 2. Swap Hardware & Arch (Drivers, Techpack, Arch/arm64 din Sunmughan)
-          # Folosim Sunmughan pentru stabilitatea driverelor de S10 Lite
           rm -rf kernel/drivers kernel/techpack kernel/arch/arm64
           cp -r sunmughan_source/drivers kernel/
           cp -r sunmughan_source/techpack kernel/
           cp -r sunmughan_source/arch/arm64 kernel/arch/
           
-          # 3. RESTAURARE fișiere Lumi în arhitectura nouă
-          # Re-injectăm JIT-ul BPF și codul de entry original Lumi
+          # 3. RESTAURARE fișiere Lumi
           rm -rf kernel/arch/arm64/net/*
           cp -r lumi_backup/net/* kernel/arch/arm64/net/
           cp lumi_backup/entry.S kernel/arch/arm64/kernel/entry.S
+          
+          # Restaurăm Config-ul Lumi (Esențial pentru setările tale)
+          mkdir -p kernel/arch/arm64/configs/
+          cp lumi_backup/r5q_eur_open_defconfig kernel/arch/arm64/configs/r5q_eur_open_defconfig
 
       - name: Apply Universal Hotfixes
         run: |
           cd kernel
-          # Fix VDSO (elimină -static pentru link-uirea LLVM)
+          # Fix VDSO (Linker error fix)
           find arch/arm64/kernel/vdso -type f -name "Makefile*" -exec sed -i 's/-static//g' {} +
           
-          # Fix DTC (ignoră avertismentele tratate ca erori în Device Tree)
+          # Fix DTC (Ignore warnings)
           find arch/arm64/boot/dts -name "Makefile" -exec sed -i 's/-Werror//g' {} +
           
-          # Dezactivare forțată SELinux Enforcing
+          # Force Permissive
           sed -i 's/selinux_enforcing_boot = 1/selinux_enforcing_boot = 0/g' security/selinux/hooks.c || true
 
-      - name: Setup Toolchain (NDK Clang r29)
+      - name: Setup Toolchain
         run: |
           sudo apt-get update
           sudo apt-get install -y bc build-essential flex bison lz4 libssl-dev libelf-dev \
@@ -67,28 +70,26 @@ jobs:
         run: |
           cd kernel
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
-          export MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang \
+          export MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=0 CC=clang \
             CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             LD=ld.lld \
             O=out"
 
-          # Folosim defconfig-ul din baza de drivere (Sunmughan)
-          make $MAKE_ARGS r5q_defconfig
+          # Folosim config-ul restaurat din Lumi
+          make $MAKE_ARGS r5q_eur_open_defconfig
           
-          # --- CONFIGURARE ONEUI 7 & DYNAMIC PARTITIONS ---
-          printf "CONFIG_ANDROID_SAR_RAMDISK=n\n" >> out/.config
+          # --- AJUSTĂRI ONEUI 7 (OBLIGATORII) ---
+          # Ne asigurăm că aceste flag-uri sunt setate corect peste config-ul Lumi
+          sed -i 's/CONFIG_ANDROID_SAR_RAMDISK=y/CONFIG_ANDROID_SAR_RAMDISK=n/g' out/.config
           printf "CONFIG_BLK_DEV_DM=y\nCONFIG_DM_REMAPPER=y\nCONFIG_DM_UEVENT=y\n" >> out/.config
           printf "CONFIG_EROFS_FS=y\nCONFIG_EROFS_FS_ZIP=y\n" >> out/.config
           printf "CONFIG_ANDROID_BINDERFS=y\n" >> out/.config
-          
-          # Optimizări de performanță
-          printf "CONFIG_HZ_300=y\n" >> out/.config
 
           make $MAKE_ARGS olddefconfig
           
-          # Compilare cu ignorarea avertismentelor (KCFLAGS face build-ul mai permisiv)
+          # Build
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-w -Wno-error -Wno-int-conversion" O=out Image.gz-dtb
 
       - name: AnyKernel3 Packaging
@@ -103,10 +104,10 @@ jobs:
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
           sed -i 's|block=auto;|block=/dev/block/by-name/boot;|g' anykernel.sh
           sed -i 's/kernel.type=inline/kernel.type=gzip-dtb/g' anykernel.sh
-          zip -r9 ../Lumi-R5Q-Surgical-Sunmughan.zip *
+          zip -r9 ../Lumi-R5Q-Surgical-Final.zip *
 
-      - name: Upload Artifact
+      - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Lumi-Surgical-Kernel
-          path: Lumi-R5Q-Surgical-Sunmughan.zip
+          name: Lumi-Final-Kernel
+          path: Lumi-R5Q-Surgical-Final.zip
