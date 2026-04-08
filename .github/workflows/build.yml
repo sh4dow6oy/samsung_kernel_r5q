@@ -47,6 +47,10 @@ jobs:
       - name: Apply Universal Hotfixes
         run: |
           cd kernel
+          # Fix RKP sintaxă în mmu.c
+          sed -i '20i #define __page_aligned_rkp_bss __section(".bss..page_aligned")' arch/arm64/mm/mmu.c
+          sed -i '21i #define __page_aligned_rkp_data __section(".data..page_aligned")' arch/arm64/mm/mmu.c
+
           # Fix VDSO (Linker error fix)
           find arch/arm64/kernel/vdso -type f -name "Makefile*" -exec sed -i 's/-static//g' {} +
           
