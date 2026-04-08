@@ -1,4 +1,4 @@
-name: R5Q - Lineage Base + Samsung Drivers
+name: R5Q - Lineage Base + Royna Drivers
 on: workflow_dispatch
 
 jobs:
@@ -11,32 +11,38 @@ jobs:
           repository: LineageOS/android_kernel_google_msm-4.14
           path: kernel
 
-      - name: Checkout Samsung Drivers (Sunmughan)
+      - name: Checkout Royna Source (The Modern Drivers)
         uses: actions/checkout@v4
         with:
-          repository: sunmughan/samsung_kernel_r5q
-          path: sunmughan_source
+          repository: Roynas-Android-Playground/kernel_samsung_r3q
+          path: royna_source
 
-      - name: Surgical Injection
+      - name: Surgical Injection & WALT Fix
         run: |
-          # 1. Ștergem driverele generice și techpack-ul din Lineage
+          # 1. Înlocuim Driverele și Techpack (Folosim Royna)
           rm -rf kernel/drivers kernel/techpack
+          cp -r royna_source/drivers kernel/
+          cp -r royna_source/techpack kernel/
           
-          # 2. Injectăm driverele Samsung
-          cp -r sunmughan_source/drivers kernel/
-          cp -r sunmughan_source/techpack kernel/
+          # 2. Fix Scheduler (WALT) - Necesar chiar și cu Royna
+          # Adăugăm variabilele necesare în structura rq (Run Queue)
+          sed -i '/s64 cum_window_start;/a \		s64 cum_window_demand;\n		s64 cumulative_runnable_avg;' kernel/kernel/sched/sched.h
           
-          # 3. Descărcăm Config-ul Royna (R5Q)
-          mkdir -p kernel/arch/arm64/configs
-          wget -O kernel/arch/arm64/configs/r5q_defconfig https://raw.githubusercontent.com/Roynas-Android-Playground/kernel_samsung_r3q/master/arch/arm64/configs/r5q_defconfig
+          # Dezactivăm versiunea inline a task_load
+          sed -i 's/static inline unsigned int task_load/static unsigned int __unused_task_load/g' kernel/kernel/sched/sched.h
+          
+          # 3. Copiem header-ele SOC și Samsung (Royna are suport mai bun aici)
+          mkdir -p kernel/include/soc/samsung
+          cp -r royna_source/include/soc/samsung/* kernel/include/soc/samsung/ || true
+          cp -r royna_source/include/linux/sched/cpudata.h kernel/include/linux/sched/ || true
 
-      - name: Apply Fixes for Lineage Base
+      - name: Apply Universal Hotfixes
         run: |
           cd kernel
-          # Fix-uri obligatorii pentru drivere Samsung pe bază non-Samsung
+          # Fix KGSL (GPU)
           sed -i 's/IDR_INIT/{ 0 }/g' drivers/gpu/msm/kgsl_device.h
-          # Eliminăm logging-ul care va lipsi din baza Lineage
-          echo -e "\n#define _perflog(...) do {} while (0)" >> include/linux/kernel.h
+          # Macro protector pentru logging-ul Samsung
+          echo -e "\n#ifndef _PERFLOG_DUMMY\n#define _PERFLOG_DUMMY\n#define _perflog(...) do {} while (0)\n#endif" >> include/linux/kernel.h
           # Dezactivăm Werror pentru DTS
           find arch/arm64/boot/dts -name "Makefile" -exec sed -i 's/-Werror//g' {} +
 
@@ -47,6 +53,9 @@ jobs:
           mkdir -p clang
           wget -q https://github.com/Ylarod/setup-ndk-clang/releases/download/prebuilt/clang-linux-x86-ndk-r29-r563880c.tar.zst
           tar -I zstd -xf clang-linux-x86-ndk-r29-r563880c.tar.zst -C clang
+          # Luăm mkdtimg
+          wget -q https://raw.githubusercontent.com/LumiPlayground/android_kernel_samsung_sm8150/rawr-bpf/tools/mkdtimg -O mkdtimg
+          chmod +x mkdtimg
 
       - name: Build Kernel
         run: |
@@ -57,11 +66,45 @@ jobs:
             CROSS_COMPILE=aarch64-linux-gnu- \
             LD=ld.lld O=out"
           
+          # Folosim r5q_defconfig direct din sursa Royna
+          cp royna_source/arch/arm64/configs/r5q_defconfig arch/arm64/configs/r5q_defconfig
           make $MAKE_ARGS r5q_defconfig
           
-          # Activăm suportul de OneUI 7 pe config-ul Royna
-          printf "CONFIG_EROFS_FS=y\nCONFIG_EROFS_FS_ZIP=y\nCONFIG_ANDROID_BINDERFS=y\n" >> out/.config
+          # Ajustări pentru OneUI 7 (Android 15)
+          printf "CONFIG_EROFS_FS=y\nCONFIG_EROFS_FS_ZIP=y\nCONFIG_ANDROID_BINDERFS=y\nCONFIG_ANDROID_SAR_RAMDISK=n\n" >> out/.config
+          # Dezactivăm semnăturile Samsung care ar putea bloca baza Lineage
+          sed -i 's/CONFIG_SECTION_MISMATCH_WARN_ONLY=y/CONFIG_SECTION_MISMATCH_WARN_ONLY=y\nCONFIG_KNOX_KAP=n\nCONFIG_RKP=n/g' out/.config
+          
           make $MAKE_ARGS olddefconfig
           
-          # Compilare
+          # Build
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-w" O=out Image.gz-dtb dtbs
+
+      - name: Generate DTBO Image
+        run: |
+          DTBO_FILES=$(find kernel/out/arch/arm64/boot/dts -name "*.dtbo")
+          if [ -n "$DTBO_FILES" ]; then
+            ./mkdtimg create dtbo.img $DTBO_FILES
+            echo "✅ dtbo.img creat."
+          else
+            echo "❌ Eroare: Nu s-au găsit fișiere DTBO."
+            exit 1
+          fi
+
+      - name: AnyKernel3 Packaging
+        run: |
+          git clone https://github.com/osm0sis/AnyKernel3.git
+          cp kernel/out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
+          cp dtbo.img AnyKernel3/
+          
+          cd AnyKernel3
+          sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
+          sed -i '/device.name1=r5q/a dtbo_block=/dev/block/by-name/dtbo;' anykernel.sh
+          echo 'flash_dtbo;' >> anykernel.sh
+          zip -r9 ../Lumi-Royna-Base.zip *
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: Kernel-Royna-Lineage-R5Q
+          path: Lumi-Royna-Base.zip
