@@ -90,28 +90,37 @@ jobs:
           wget -q https://github.com/Ylarod/setup-ndk-clang/releases/download/prebuilt/clang-linux-x86-ndk-r29-r563880c.tar.zst          
           tar -I zstd -xf clang-linux-x86-ndk-r29-r563880c.tar.zst -C clang      
 
-      - name: Build Kernel        
-        run: |          
-          cd kernel          
-          sed -i 's/CONFIG_KPERFMON=y/CONFIG_KPERFMON=n/g' arch/arm64/configs/r5q_eur_open_defconfig          
-          export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"          
+      - name: Build Kernel
+        run: |
+          cd kernel
+          export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           export MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=0 CC=clang \
             CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             LD=ld.lld \
-            O=out"          
+            O=out"
           
-          make $MAKE_ARGS r5q_eur_open_defconfig                    
-          sed -i 's/CONFIG_ANDROID_SAR_RAMDISK=y/CONFIG_ANDROID_SAR_RAMDISK=n/g' out/.config          
-          printf "CONFIG_BLK_DEV_DM=y\nCONFIG_DM_REMAPPER=y\nCONFIG_DM_UEVENT=y\n" >> out/.config          
-          printf "CONFIG_EROFS_FS=y\nCONFIG_EROFS_FS_ZIP=y\n" >> out/.config          
-          printf "CONFIG_ANDROID_BINDERFS=y\n" >> out/.config                    
-          sed -i 's/CONFIG_MODVERSIONS=y/CONFIG_MODVERSIONS=n/g' out/.config          
-          make $MAKE_ARGS olddefconfig                    
+          make $MAKE_ARGS r5q_eur_open_defconfig
+          
+          # Ajustări config...
+          sed -i 's/CONFIG_MODVERSIONS=y/CONFIG_MODVERSIONS=n/g' out/.config
+          make $MAKE_ARGS olddefconfig
 
-          # Build Image + DTBO          
-          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-w -Wno-error -Wno-int-conversion" O=out Image.gz-dtb dtboimage
+          # 1. Compilăm Kernel-ul și fișierele DTB/DTBO individuale
+          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-w -Wno-error -Wno-int-conversion" O=out Image.gz-dtb dtbs
+
+          # 2. Creăm manual dtbo.img folosind scriptul din kernel
+          # Căutăm toate fișierele .dtbo generate în folderul out
+          find out/arch/arm64/boot/dts -name "*.dtbo" > dtbo_list
+          
+          # Împachetăm folosind mkdtimg (dacă există în toolchain) sau scriptul de suport
+          if [ -f out/scripts/dtc/mkdtimg ]; then
+            out/scripts/dtc/mkdtimg create out/arch/arm64/boot/dtbo.img $(cat dtbo_list)
+          else
+            echo "Avertisment: mkdtimg nu a fost găsit, încercăm o metodă alternativă..."
+            # Unele kernel-uri pun dtbo.img direct în out/arch/arm64/boot/ după 'make dtbs'
+          fi
 
       - name: AnyKernel3 Packaging        
         run: |          
