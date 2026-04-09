@@ -1,61 +1,57 @@
-name: R5Q - Mainey Base + Lineage 20 Upstream Final
+name: R5Q - BPF Upstream & Android 15 Prep
 on: workflow_dispatch
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Mainey Base (R5Q Stable Source)
+      - name: Checkout Mainey Base
         uses: actions/checkout@v4
         with:
           repository: mainey/android_kernel_samsung_r5q
           ref: lineage-19.0
           path: kernel
 
-      - name: Checkout LineageOS 20 (Upstream Source)
+      - name: Checkout LineageOS 20 (BPF Source)
         uses: actions/checkout@v4
         with:
           repository: LineageOS/android_kernel_qcom_sm8150
           ref: lineage-20
           path: upstream
 
-      - name: Surgical Upstream & Headers Synchronization
+      - name: Surgical BPF & Net Injection
         run: |
-          # 1. Înlocuim folderele logice (Adăugăm mm/ pentru a rezolva conflictul de filemap)
-          rm -rf kernel/fs kernel/net kernel/crypto kernel/security kernel/mm
-          cp -r upstream/fs kernel/
+          # 1. Înlocuim motorul BPF și Stack-ul de Networking
+          # Acestea sunt interdependente; nu poți avea BPF modern fără Net modern
+          rm -rf kernel/kernel/bpf kernel/net kernel/include/linux/bpf*
+          cp -r upstream/kernel/bpf kernel/kernel/
           cp -r upstream/net kernel/
-          cp -r upstream/crypto kernel/
-          cp -r upstream/security kernel/
-          cp -r upstream/mm kernel/
           
-          # 2. SINCRONIZARE HEADERS (Extindem lista pentru a acoperi mm)
-          cp upstream/include/linux/fs.h kernel/include/linux/
-          cp upstream/include/linux/mm.h kernel/include/linux/
+          # 2. Injectăm headerele BPF din Upstream
+          cp -r upstream/include/linux/bpf* kernel/include/linux/
+          cp -r upstream/include/uapi/linux/bpf* kernel/include/uapi/linux/
+          cp upstream/include/linux/filter.h kernel/include/linux/
+          
+          # 3. FIX-URI PENTRU COMPATIBILITATE (Evităm erorile anterioare)
+          # Sincronizăm syscall-urile necesare pentru pornirea sistemului
           cp upstream/include/linux/syscalls.h kernel/include/linux/
-          cp upstream/include/linux/compat.h kernel/include/linux/
-          cp upstream/include/uapi/linux/fs.h kernel/include/uapi/linux/
-          cp upstream/include/uapi/asm-generic/unistd.h kernel/include/uapi/asm-generic/
           
-          # 3. FIX TYPE-C (Păstrăm restul fix-urilor)
+          # Dezactivăm manual offset-urile Type-C care crapă build-ul
           sed -i 's/DEVID(typec_device_id);/\/\/DEVID(typec_device_id);/g' kernel/scripts/mod/devicetable-offsets.c
           sed -i 's/DEVID_FIELD(typec_device_id, svid);/\/\/DEVID_FIELD(typec_device_id, svid);/g' kernel/scripts/mod/devicetable-offsets.c
           sed -i 's/DEVID_FIELD(typec_device_id, mode);/\/\/DEVID_FIELD(typec_device_id, mode);/g' kernel/scripts/mod/devicetable-offsets.c
 
-          # 4. Patch forțat pentru ftruncate în fs/open.c (Just in case)
-          sed -i 's/SYSCALL_DEFINE2(ftruncate, unsigned int, fd, off_t, length)/SYSCALL_DEFINE2(ftruncate, unsigned int, fd, unsigned long, length)/g' kernel/fs/open.c 2>/dev/null || true
-      - name: Setup Toolchain (NDK Clang)
+      - name: Setup Toolchain
         run: |
           sudo apt-get update
           sudo apt-get install -y bc build-essential flex bison lz4 libssl-dev libelf-dev zstd zip gcc-aarch64-linux-gnu
           mkdir -p clang
           wget -q https://github.com/Ylarod/setup-ndk-clang/releases/download/prebuilt/clang-linux-x86-ndk-r29-r563880c.tar.zst
           tar -I zstd -xf clang-linux-x86-ndk-r29-r563880c.tar.zst -C clang
-          # Utilitar DTB
           wget -q https://raw.githubusercontent.com/LumiPlayground/android_kernel_samsung_sm8150/rawr-bpf/tools/mkdtimg -O mkdtimg
           chmod +x mkdtimg
 
-      - name: Build Kernel
+      - name: Build Kernel with Android 15 BPF Flags
         run: |
           cd kernel
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
@@ -64,48 +60,45 @@ jobs:
             CROSS_COMPILE=aarch64-linux-gnu- \
             LD=ld.lld O=out"
           
-          # Generăm config-ul stabil de R5Q
           make $MAKE_ARGS r5q_eur_open_defconfig
           
-          # Optimizări și curățare Securitate Samsung
-          scripts/config --file out/.config --disable CONFIG_SAMSUNG_PRODUCT_SHIP
-          scripts/config --file out/.config --disable CONFIG_KNOX_KAP
-          scripts/config --file out/.config --disable CONFIG_SECURITY_DEFEX
-          scripts/config --file out/.config --enable CONFIG_EROFS_FS
-          scripts/config --file out/.config --enable CONFIG_EROFS_FS_ZIP
+          # --- CONFIGURARE BPF PENTRU ANDROID 15 ---
+          scripts/config --file out/.config --enable CONFIG_BPF
+          scripts/config --file out/.config --enable CONFIG_BPF_SYSCALL
+          scripts/config --file out/.config --enable CONFIG_BPF_JIT
+          scripts/config --file out/.config --enable CONFIG_BPF_EVENTS
+          scripts/config --file out/.config --enable CONFIG_NETFILTER_XT_MATCH_BPF
+          scripts/config --file out/.config --enable CONFIG_NET_CLS_BPF
+          scripts/config --file out/.config --enable CONFIG_CGROUP_BPF
           
-          # Acceptăm automat noile opțiuni din Upstream
+          # --- FIX ANDROID 15 BOOT ---
+          scripts/config --file out/.config --disable CONFIG_SAMSUNG_PRODUCT_SHIP
+          scripts/config --file out/.config --enable CONFIG_ANDROID_BINDER_IPC
+          scripts/config --file out/.config --enable CONFIG_ANDROID_BINDERFS
+          
           yes "" | make $MAKE_ARGS olddefconfig
           
-          # Compilare propriu-zisă
+          # Compilăm
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-w" O=out Image.gz-dtb dtbs
 
-      - name: Generate DTBO Image
+      - name: Generate DTBO & Package
         run: |
           DTBO_FILES=$(find kernel/out/arch/arm64/boot/dts -name "*.dtbo")
-          if [ -n "$DTBO_FILES" ]; then
-            ./mkdtimg create dtbo.img $DTBO_FILES
-            echo "✅ dtbo.img creat cu succes."
-          else
-            echo "❌ Eroare: Fișierele DTBO nu au fost găsite."
-            exit 1
-          fi
-
-      - name: AnyKernel3 Packaging
-        run: |
+          ./mkdtimg create dtbo.img $DTBO_FILES
+          
           git clone https://github.com/osm0sis/AnyKernel3.git
           cp kernel/out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
           cp dtbo.img AnyKernel3/
           
           cd AnyKernel3
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-          # Mapare block DTBO pentru Samsung S10 Lite (r5q)
+          # Injectăm maparea DTBO pentru S10 Lite
           sed -i '/device.name1=r5q/a dtbo_block=/dev/block/by-name/dtbo;' anykernel.sh
           echo 'flash_dtbo;' >> anykernel.sh
-          zip -r9 ../Lumi-Upstream-R5Q.zip *
+          zip -r9 ../Lumi-R5Q-A15-BPF.zip *
 
-      - name: Upload Build
+      - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-S10Lite-Upstream
-          path: Lumi-Upstream-R5Q.zip
+          name: Kernel-A15-BPF
+          path: Lumi-R5Q-A15-BPF.zip
