@@ -1,11 +1,11 @@
-name: R5Q - Mainey Base + Lineage 20 Upstream
+name: R5Q - Mainey Base + Lineage 20 Upstream Final
 on: workflow_dispatch
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Mainey Base (R5Q Source)
+      - name: Checkout Mainey Base (R5Q Stable Source)
         uses: actions/checkout@v4
         with:
           repository: mainey/android_kernel_samsung_r5q
@@ -19,31 +19,40 @@ jobs:
           ref: lineage-20
           path: upstream
 
-      - name: Surgical Upstream & Fixes
+      - name: Surgical Upstream & Headers Synchronization
         run: |
-          # 1. Înlocuim părțile critice din Mainey cu cele din Lineage 20 (Upstream)
-          # Actualizăm sistemul de fișiere, rețeaua și securitatea
+          # 1. Înlocuim folderele logice cu versiuni de Upstream (L-20)
           rm -rf kernel/fs kernel/net kernel/crypto kernel/security
           cp -r upstream/fs kernel/
           cp -r upstream/net kernel/
           cp -r upstream/crypto kernel/
           cp -r upstream/security kernel/
           
-          # 2. Fix pentru eroarea de Type-C (sizeof) pe care am avut-o anterior
+          # 2. SINCRONIZARE HEADERS (Fix critic pentru syscalls / ftruncate)
+          # Copiem headerele care definesc noile structuri din Upstream
+          cp upstream/include/linux/fs.h kernel/include/linux/
+          cp upstream/include/linux/syscalls.h kernel/include/linux/
+          cp upstream/include/linux/compat.h kernel/include/linux/
+          cp upstream/include/uapi/linux/fs.h kernel/include/uapi/linux/
+          cp upstream/include/uapi/asm-generic/unistd.h kernel/include/uapi/asm-generic/
+          
+          # 3. FIX TYPE-C (Sizeof Incomplete Type)
           sed -i 's/DEVID(typec_device_id);/\/\/DEVID(typec_device_id);/g' kernel/scripts/mod/devicetable-offsets.c
           sed -i 's/DEVID_FIELD(typec_device_id, svid);/\/\/DEVID_FIELD(typec_device_id, svid);/g' kernel/scripts/mod/devicetable-offsets.c
           sed -i 's/DEVID_FIELD(typec_device_id, mode);/\/\/DEVID_FIELD(typec_device_id, mode);/g' kernel/scripts/mod/devicetable-offsets.c
 
-          # 3. Patch pentru compatibilitate Android 15 (Binder & Ashmem)
-          # Lineage 20 are deja aceste fix-uri, deci le păstrăm din upstream
+          # 4. Patch pentru conflictul ftruncate în fs/open.c (Dacă sincronizarea header-elor nu e suficientă)
+          sed -i 's/SYSCALL_DEFINE2(ftruncate, unsigned int, fd, off_t, length)/SYSCALL_DEFINE2(ftruncate, unsigned int, fd, unsigned long, length)/g' kernel/fs/open.c
+          sed -i 's/COMPAT_SYSCALL_DEFINE2(ftruncate, unsigned int, fd, compat_off_t, length)/COMPAT_SYSCALL_DEFINE2(ftruncate, unsigned int, fd, compat_ulong_t, length)/g' kernel/fs/open.c
 
-      - name: Setup Toolchain (Modern Clang)
+      - name: Setup Toolchain (NDK Clang)
         run: |
           sudo apt-get update
           sudo apt-get install -y bc build-essential flex bison lz4 libssl-dev libelf-dev zstd zip gcc-aarch64-linux-gnu
           mkdir -p clang
           wget -q https://github.com/Ylarod/setup-ndk-clang/releases/download/prebuilt/clang-linux-x86-ndk-r29-r563880c.tar.zst
           tar -I zstd -xf clang-linux-x86-ndk-r29-r563880c.tar.zst -C clang
+          # Utilitar DTB
           wget -q https://raw.githubusercontent.com/LumiPlayground/android_kernel_samsung_sm8150/rawr-bpf/tools/mkdtimg -O mkdtimg
           chmod +x mkdtimg
 
@@ -56,18 +65,20 @@ jobs:
             CROSS_COMPILE=aarch64-linux-gnu- \
             LD=ld.lld O=out"
           
-          # Folosim config-ul lui Mainey direct
+          # Generăm config-ul stabil de R5Q
           make $MAKE_ARGS r5q_eur_open_defconfig
           
-          # Dezactivăm mizeriile Samsung care blochează boot-ul pe OneUI Custom
+          # Optimizări și curățare Securitate Samsung
           scripts/config --file out/.config --disable CONFIG_SAMSUNG_PRODUCT_SHIP
           scripts/config --file out/.config --disable CONFIG_KNOX_KAP
+          scripts/config --file out/.config --disable CONFIG_SECURITY_DEFEX
           scripts/config --file out/.config --enable CONFIG_EROFS_FS
+          scripts/config --file out/.config --enable CONFIG_EROFS_FS_ZIP
           
-          # Acceptăm automat noile opțiuni din Lineage 20
+          # Acceptăm automat noile opțiuni din Upstream
           yes "" | make $MAKE_ARGS olddefconfig
           
-          # Build
+          # Compilare propriu-zisă
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-w" O=out Image.gz-dtb dtbs
 
       - name: Generate DTBO Image
@@ -75,9 +86,9 @@ jobs:
           DTBO_FILES=$(find kernel/out/arch/arm64/boot/dts -name "*.dtbo")
           if [ -n "$DTBO_FILES" ]; then
             ./mkdtimg create dtbo.img $DTBO_FILES
-            echo "✅ dtbo.img creat."
+            echo "✅ dtbo.img creat cu succes."
           else
-            echo "❌ Nu s-au găsit DTBO-uri."
+            echo "❌ Eroare: Fișierele DTBO nu au fost găsite."
             exit 1
           fi
 
@@ -86,15 +97,16 @@ jobs:
           git clone https://github.com/osm0sis/AnyKernel3.git
           cp kernel/out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
           cp dtbo.img AnyKernel3/
+          
           cd AnyKernel3
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-          # Patch bloc DTBO R5Q
+          # Mapare block DTBO pentru Samsung S10 Lite (r5q)
           sed -i '/device.name1=r5q/a dtbo_block=/dev/block/by-name/dtbo;' anykernel.sh
           echo 'flash_dtbo;' >> anykernel.sh
-          zip -r9 ../Lumi-Upstream-Final.zip *
+          zip -r9 ../Lumi-Upstream-R5Q.zip *
 
-      - name: Upload
+      - name: Upload Build
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-R5Q-Upstreamed
-          path: Lumi-Upstream-Final.zip
+          name: Kernel-S10Lite-Upstream
+          path: Lumi-Upstream-R5Q.zip
