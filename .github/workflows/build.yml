@@ -79,12 +79,9 @@ jobs:
           # 1. Generăm config-ul de bază
           make $MAKE_ARGS r5q_defconfig
           
-          # 2. Dezactivăm WALT și forțăm opțiunile de bandwidth (pentru a evita întrebările)
-          # Folosim sed direct pe .config pentru a fi siguri
-          sed -i 's/CONFIG_SCHED_WALT=y/# CONFIG_SCHED_WALT is not set/g' out/.config
-          echo "CONFIG_CFS_BANDWIDTH=y" >> out/.config
-          echo "CONFIG_FAIR_GROUP_SCHED=y" >> out/.config
-          echo "CONFIG_RT_GROUP_SCHED=y" >> out/.config
+          # Forțăm dezactivarea WALT să nu fie reactivată
+          scripts/config --file out/.config --disable SCHED_WALT
+          scripts/config --file out/.config --disable SCHED_CORE_CTL
           
           # 3. REPARAȚIA CRITICĂ: Folosim yes "" | make pentru a accepta orice întrebare nouă
           yes "" | make $MAKE_ARGS olddefconfig
