@@ -1,47 +1,43 @@
-name: R5Q - Lineage Base + Mainey Drivers & Config
+name: R5Q - Mainey Base + Lineage 20 Upstream
 on: workflow_dispatch
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout LineageOS Base
-        uses: actions/checkout@v4
-        with:
-          repository: LineageOS/android_kernel_google_msm-4.14
-          path: kernel
-
-      - name: Checkout Mainey Source
+      - name: Checkout Mainey Base (R5Q Source)
         uses: actions/checkout@v4
         with:
           repository: mainey/android_kernel_samsung_r5q
           ref: lineage-19.0
-          path: mainey_source
+          path: kernel
 
-      - name: Surgical Injection & Sched Repair
+      - name: Checkout LineageOS 20 (Upstream Source)
+        uses: actions/checkout@v4
+        with:
+          repository: LineageOS/android_kernel_qcom_sm8150
+          ref: lineage-20
+          path: upstream
+
+      - name: Surgical Upstream & Fixes
         run: |
-          # 1. Restaurăm folderul sched original
-          cd kernel && git checkout HEAD -- kernel/sched/ && cd ..
-
-          # 2. Injectăm driverele, techpack și INCLUDE de la Mainey
-          rm -rf kernel/drivers kernel/techpack kernel/include
-          cp -r mainey_source/drivers kernel/
-          cp -r mainey_source/techpack kernel/
-          cp -r mainey_source/include kernel/
+          # 1. Înlocuim părțile critice din Mainey cu cele din Lineage 20 (Upstream)
+          # Actualizăm sistemul de fișiere, rețeaua și securitatea
+          rm -rf kernel/fs kernel/net kernel/crypto kernel/security
+          cp -r upstream/fs kernel/
+          cp -r upstream/net kernel/
+          cp -r upstream/crypto kernel/
+          cp -r upstream/security kernel/
           
-          # 3. FIX TYPE-C (Eroarea de sizeof)
+          # 2. Fix pentru eroarea de Type-C (sizeof) pe care am avut-o anterior
           sed -i 's/DEVID(typec_device_id);/\/\/DEVID(typec_device_id);/g' kernel/scripts/mod/devicetable-offsets.c
           sed -i 's/DEVID_FIELD(typec_device_id, svid);/\/\/DEVID_FIELD(typec_device_id, svid);/g' kernel/scripts/mod/devicetable-offsets.c
           sed -i 's/DEVID_FIELD(typec_device_id, mode);/\/\/DEVID_FIELD(typec_device_id, mode);/g' kernel/scripts/mod/devicetable-offsets.c
 
-          # 4. FIX KERNELSU & SCHED
-          sed -i '/kernelsu/d' kernel/drivers/android/Kconfig
-          sed -i 's/unsigned long capacity_margin_freq/unsigned int capacity_margin_freq/g' kernel/kernel/sched/core.c 2>/dev/null || true
+          # 3. Patch pentru compatibilitate Android 15 (Binder & Ashmem)
+          # Lineage 20 are deja aceste fix-uri, deci le păstrăm din upstream
 
-          # 5. Config Mainey
-          cp mainey_source/arch/arm64/configs/r5q_eur_open_defconfig kernel/arch/arm64/configs/r5q_hybrid_defconfig
-
-      - name: Setup Toolchain
+      - name: Setup Toolchain (Modern Clang)
         run: |
           sudo apt-get update
           sudo apt-get install -y bc build-essential flex bison lz4 libssl-dev libelf-dev zstd zip gcc-aarch64-linux-gnu
@@ -60,24 +56,18 @@ jobs:
             CROSS_COMPILE=aarch64-linux-gnu- \
             LD=ld.lld O=out"
           
-          # 1. Aplicăm defconfig-ul lui Mainey
-          make $MAKE_ARGS r5q_hybrid_defconfig
+          # Folosim config-ul lui Mainey direct
+          make $MAKE_ARGS r5q_eur_open_defconfig
           
-          # 2. ADAPTĂRI PENTRU LINEAGE 4.14 (OneUI 7 / Android 15 Ready)
-          # Dezactivăm securitățile Samsung care fac conflict cu Lineage
+          # Dezactivăm mizeriile Samsung care blochează boot-ul pe OneUI Custom
           scripts/config --file out/.config --disable CONFIG_SAMSUNG_PRODUCT_SHIP
-          scripts/config --file out/.config --disable CONFIG_SEC_RESTRICT_FORK
           scripts/config --file out/.config --disable CONFIG_KNOX_KAP
-          scripts/config --file out/.config --disable CONFIG_SECURITY_DEFEX
-          
-          # Activăm suportul de storage modern (OneUI 7 folosește EROFS adesea)
           scripts/config --file out/.config --enable CONFIG_EROFS_FS
-          scripts/config --file out/.config --enable CONFIG_EROFS_FS_ZIP
           
-          # 3. Rezolvăm conflictele de tip "New Config Options"
+          # Acceptăm automat noile opțiuni din Lineage 20
           yes "" | make $MAKE_ARGS olddefconfig
           
-          # 4. Compilare cu ignorare warning-uri (KCFLAGS="-w")
+          # Build
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-w" O=out Image.gz-dtb dtbs
 
       - name: Generate DTBO Image
@@ -87,7 +77,7 @@ jobs:
             ./mkdtimg create dtbo.img $DTBO_FILES
             echo "✅ dtbo.img creat."
           else
-            echo "❌ Eroare: Nu s-au găsit fișiere DTBO."
+            echo "❌ Nu s-au găsit DTBO-uri."
             exit 1
           fi
 
@@ -96,16 +86,15 @@ jobs:
           git clone https://github.com/osm0sis/AnyKernel3.git
           cp kernel/out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
           cp dtbo.img AnyKernel3/
-          
           cd AnyKernel3
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-          # Mapare specifică R5Q (S10 Lite)
+          # Patch bloc DTBO R5Q
           sed -i '/device.name1=r5q/a dtbo_block=/dev/block/by-name/dtbo;' anykernel.sh
           echo 'flash_dtbo;' >> anykernel.sh
-          zip -r9 ../Lumi-Mainey-Hybrid.zip *
+          zip -r9 ../Lumi-Upstream-Final.zip *
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-R5Q-Hybrid
-          path: Lumi-Mainey-Hybrid.zip
+          name: Kernel-R5Q-Upstreamed
+          path: Lumi-Upstream-Final.zip
