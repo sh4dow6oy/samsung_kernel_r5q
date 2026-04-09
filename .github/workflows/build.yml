@@ -27,14 +27,17 @@ jobs:
           # 6. FIX KERNELSU & SCHEDULER
           sed -i '/kernelsu/d' kernel/drivers/android/Kconfig
 
-          # 2. Ștergem fișierul walt.c pentru a preveni redefinirile
+          # 1. Ștergem walt.c și core_ctl.c
           rm -f kernel/kernel/sched/walt.c
+          rm -f kernel/kernel/sched/core_ctl.c
           
-          # 3. Modificăm Makefile-ul să NU mai încerce să compileze WALT
+          # 2. Modificăm Makefile-ul să ignore ambele fișiere
           sed -i 's/obj-y += walt.o/obj-n += walt.o/g' kernel/kernel/sched/Makefile
+          sed -i 's/obj-y += core_ctl.o/obj-n += core_ctl.o/g' kernel/kernel/sched/Makefile
           
-          # 4. Curățăm referințele din Kconfig-uri (pentru a nu-l activa din greșeală)
+          # 3. Curățăm orice referință de 'select' din Kconfig-uri
           find kernel -name "Kconfig*" -exec sed -i 's/select SCHED_WALT//g' {} +
+          find kernel -name "Kconfig*" -exec sed -i 's/select SCHED_CORE_CTL//g' {} +
 
           # 5. Header-e SOC și Config Royna
           mkdir -p kernel/include/soc/samsung
