@@ -20,22 +20,25 @@ jobs:
 
       - name: Surgical Injection & Sched Repair
         run: |
-          # 1. Înlocuim Driverele, Techpack și INCLUDE
+          # 1. Restaurăm folderul sched original
+          cd kernel && git checkout HEAD -- kernel/sched/ && cd ..
+
+          # 2. Injectăm driverele, techpack și INCLUDE de la Mainey
           rm -rf kernel/drivers kernel/techpack kernel/include
           cp -r mainey_source/drivers kernel/
           cp -r mainey_source/techpack kernel/
           cp -r mainey_source/include kernel/
           
-          # 2. Restaurăm folderul kernel/sched original (stabilitate AOSP)
-          cd kernel && git checkout HEAD -- kernel/sched/ && cd ..
+          # 3. FIX TYPE-C (Eroarea de sizeof)
+          sed -i 's/DEVID(typec_device_id);/\/\/DEVID(typec_device_id);/g' kernel/scripts/mod/devicetable-offsets.c
+          sed -i 's/DEVID_FIELD(typec_device_id, svid);/\/\/DEVID_FIELD(typec_device_id, svid);/g' kernel/scripts/mod/devicetable-offsets.c
+          sed -i 's/DEVID_FIELD(typec_device_id, mode);/\/\/DEVID_FIELD(typec_device_id, mode);/g' kernel/scripts/mod/devicetable-offsets.c
 
-          # 3. FIX KERNELSU & DRIVERS KCONFIG
+          # 4. FIX KERNELSU & SCHED
           sed -i '/kernelsu/d' kernel/drivers/android/Kconfig
-          # Unele surse Mainey au referințe de display care trebuie linkate
-          mkdir -p kernel/techpack/display/include/uapi/display
-          
-          # 4. PREGĂTIRE DEFCONFIG (Hibridizare)
-          # Copiem defconfig-ul de Samsung (r5q_eur_open) în baza Lineage
+          sed -i 's/unsigned long capacity_margin_freq/unsigned int capacity_margin_freq/g' kernel/kernel/sched/core.c 2>/dev/null || true
+
+          # 5. Config Mainey
           cp mainey_source/arch/arm64/configs/r5q_eur_open_defconfig kernel/arch/arm64/configs/r5q_hybrid_defconfig
 
       - name: Setup Toolchain
