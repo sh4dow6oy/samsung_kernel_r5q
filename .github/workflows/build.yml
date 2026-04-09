@@ -1,4 +1,4 @@
-name: R5Q - Lineage Base + Royna Drivers (Clean Config)
+name: R5Q - Lineage Base + Mainey Drivers
 on: workflow_dispatch
 
 jobs:
@@ -11,49 +11,38 @@ jobs:
           repository: LineageOS/android_kernel_google_msm-4.14
           path: kernel
 
-      - name: Checkout Royna Source
+      - name: Checkout Mainey Source (The Specialized Drivers)
         uses: actions/checkout@v4
         with:
-          repository: Roynas-Android-Playground/kernel_samsung_r3q
-          path: royna_source
+          repository: mainey/android_kernel_samsung_r5q
+          ref: lineage-19.0
+          path: mainey_source
 
-      - name: Surgical Injection & Disable WALT
+      - name: Surgical Injection & Sched Repair
         run: |
-          # 1. Restaurăm folderul sched din Lineage pentru a scăpa de corupția sed
+          # 1. Înlocuim Driverele, Techpack și INCLUDE (Crucial)
+          # Sursa lui Mainey are headerele deja adaptate pentru Lineage
+          rm -rf kernel/drivers kernel/techpack kernel/include
+          cp -r mainey_source/drivers kernel/
+          cp -r mainey_source/techpack kernel/
+          cp -r mainey_source/include kernel/
+          
+          # 2. Restaurăm folderul kernel/sched din baza curată Lineage
+          # Vrem scheduler-ul stabil de Lineage, nu cel problematic de Samsung
           cd kernel && git checkout HEAD -- kernel/sched/ && cd ..
 
-          # 2. Injectăm driverele Royna
-          rm -rf kernel/drivers kernel/techpack
-          cp -r royna_source/drivers kernel/
-          cp -r royna_source/techpack kernel/
-
-          # 3. FIX CHIRURGICAL SCHED.H (Fără să stricăm acoladele)
-          # Adăugăm membrii în struct rq doar dacă nu există, folosind un punct de ancoră sigur
-          sed -i '/s64 cum_window_start;/a \		s64 cum_window_demand;\n		s64 cumulative_runnable_avg;' kernel/kernel/sched/sched.h
-          
-          # Fix conflict de tip pentru capacity_margin_freq (forțăm unsigned int peste tot)
-          sed -i 's/unsigned long capacity_margin_freq/unsigned int capacity_margin_freq/g' kernel/kernel/sched/core.c 2>/dev/null || true
-
-          # 4. DEZACTIVARE WALT DIN MAKEFILE (Fără să ștergem fișierele, doar le scoatem din build)
-          sed -i 's/obj-y += walt.o/obj-n += walt.o/g' kernel/kernel/sched/Makefile
-          sed -i 's/obj-y += core_ctl.o/obj-n += core_ctl.o/g' kernel/kernel/sched/Makefile
-
-          # 6. FIX KERNELSU & SCHEDULER
+          # 3. FIX PENTRU KERNELSU (Eliminăm referințele care crapă build-ul)
           sed -i '/kernelsu/d' kernel/drivers/android/Kconfig
-          
-          # 5. Header-e SOC și Config Royna
-          mkdir -p kernel/include/soc/samsung
-          cp -r royna_source/include/soc/samsung/* kernel/include/soc/samsung/ || true
-          cp royna_source/arch/arm64/configs/r5q_defconfig kernel/arch/arm64/configs/r5q_defconfig
+
+          # 4. Copiem Config-ul de R5Q de la Mainey
+          cp mainey_source/arch/arm64/configs/r5q_defconfig kernel/arch/arm64/configs/r5q_defconfig
 
       - name: Apply Universal Hotfixes
         run: |
           cd kernel
           # Fix KGSL (GPU)
           sed -i 's/IDR_INIT/{ 0 }/g' drivers/gpu/msm/kgsl_device.h
-          # Macro protector pentru ologk/perflog Samsung
-          echo -e "\n#ifndef _PERFLOG_DUMMY\n#define _PERFLOG_DUMMY\n#define _perflog(...) do {} while (0)\n#endif" >> include/linux/kernel.h
-          # Dezactivăm Werror pentru DTS (prevenire crash-uri minore)
+          # Dezactivăm Werror pentru DTS
           find arch/arm64/boot/dts -name "Makefile" -exec sed -i 's/-Werror//g' {} +
 
       - name: Setup Toolchain
@@ -63,7 +52,6 @@ jobs:
           mkdir -p clang
           wget -q https://github.com/Ylarod/setup-ndk-clang/releases/download/prebuilt/clang-linux-x86-ndk-r29-r563880c.tar.zst
           tar -I zstd -xf clang-linux-x86-ndk-r29-r563880c.tar.zst -C clang
-          # Luăm tool-ul mkdtimg pentru imaginea DTBO
           wget -q https://raw.githubusercontent.com/LumiPlayground/android_kernel_samsung_sm8150/rawr-bpf/tools/mkdtimg -O mkdtimg
           chmod +x mkdtimg
 
@@ -76,22 +64,17 @@ jobs:
             CROSS_COMPILE=aarch64-linux-gnu- \
             LD=ld.lld O=out"
           
-          # 1. Generăm config-ul de bază
+          # Generăm config-ul
           make $MAKE_ARGS r5q_defconfig
           
-          # Forțăm dezactivarea WALT să nu fie reactivată
-          scripts/config --file out/.config --disable SCHED_WALT
-          scripts/config --file out/.config --disable SCHED_CORE_CTL
-          
-          # 3. REPARAȚIA CRITICĂ: Folosim yes "" | make pentru a accepta orice întrebare nouă
+          # Acceptăm orice setări noi automat (olddefconfig)
           yes "" | make $MAKE_ARGS olddefconfig
           
-          # 4. Compilare
+          # Compilare proprie-zisă
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-w" O=out Image.gz-dtb dtbs
 
       - name: Generate DTBO Image
         run: |
-          # Colectăm toate dtbo-urile generate pentru a crea imaginea finală
           DTBO_FILES=$(find kernel/out/arch/arm64/boot/dts -name "*.dtbo")
           if [ -n "$DTBO_FILES" ]; then
             ./mkdtimg create dtbo.img $DTBO_FILES
@@ -109,14 +92,13 @@ jobs:
           
           cd AnyKernel3
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-          # Mapare partiție DTBO pentru S10 Lite (r5q)
+          # Mapare bloc DTBO pentru R5Q
           sed -i '/device.name1=r5q/a dtbo_block=/dev/block/by-name/dtbo;' anykernel.sh
           echo 'flash_dtbo;' >> anykernel.sh
-          
-          zip -r9 ../Kernel-Royna-Final.zip *
+          zip -r9 ../Lumi-Mainey-Base.zip *
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-R5Q-Royna-Clean
-          path: Kernel-Royna-Final.zip
+          name: Kernel-Mainey-R5Q
+          path: Lumi-Mainey-Base.zip
