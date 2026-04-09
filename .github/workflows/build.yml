@@ -21,30 +21,29 @@ jobs:
 
       - name: Surgical Upstream & Headers Synchronization
         run: |
-          # 1. Înlocuim folderele logice cu versiuni de Upstream (L-20)
-          rm -rf kernel/fs kernel/net kernel/crypto kernel/security
+          # 1. Înlocuim folderele logice (Adăugăm mm/ pentru a rezolva conflictul de filemap)
+          rm -rf kernel/fs kernel/net kernel/crypto kernel/security kernel/mm
           cp -r upstream/fs kernel/
           cp -r upstream/net kernel/
           cp -r upstream/crypto kernel/
           cp -r upstream/security kernel/
+          cp -r upstream/mm kernel/
           
-          # 2. SINCRONIZARE HEADERS (Fix critic pentru syscalls / ftruncate)
-          # Copiem headerele care definesc noile structuri din Upstream
+          # 2. SINCRONIZARE HEADERS (Extindem lista pentru a acoperi mm)
           cp upstream/include/linux/fs.h kernel/include/linux/
+          cp upstream/include/linux/mm.h kernel/include/linux/
           cp upstream/include/linux/syscalls.h kernel/include/linux/
           cp upstream/include/linux/compat.h kernel/include/linux/
           cp upstream/include/uapi/linux/fs.h kernel/include/uapi/linux/
           cp upstream/include/uapi/asm-generic/unistd.h kernel/include/uapi/asm-generic/
           
-          # 3. FIX TYPE-C (Sizeof Incomplete Type)
+          # 3. FIX TYPE-C (Păstrăm restul fix-urilor)
           sed -i 's/DEVID(typec_device_id);/\/\/DEVID(typec_device_id);/g' kernel/scripts/mod/devicetable-offsets.c
           sed -i 's/DEVID_FIELD(typec_device_id, svid);/\/\/DEVID_FIELD(typec_device_id, svid);/g' kernel/scripts/mod/devicetable-offsets.c
           sed -i 's/DEVID_FIELD(typec_device_id, mode);/\/\/DEVID_FIELD(typec_device_id, mode);/g' kernel/scripts/mod/devicetable-offsets.c
 
-          # 4. Patch pentru conflictul ftruncate în fs/open.c (Dacă sincronizarea header-elor nu e suficientă)
-          sed -i 's/SYSCALL_DEFINE2(ftruncate, unsigned int, fd, off_t, length)/SYSCALL_DEFINE2(ftruncate, unsigned int, fd, unsigned long, length)/g' kernel/fs/open.c
-          sed -i 's/COMPAT_SYSCALL_DEFINE2(ftruncate, unsigned int, fd, compat_off_t, length)/COMPAT_SYSCALL_DEFINE2(ftruncate, unsigned int, fd, compat_ulong_t, length)/g' kernel/fs/open.c
-
+          # 4. Patch forțat pentru ftruncate în fs/open.c (Just in case)
+          sed -i 's/SYSCALL_DEFINE2(ftruncate, unsigned int, fd, off_t, length)/SYSCALL_DEFINE2(ftruncate, unsigned int, fd, unsigned long, length)/g' kernel/fs/open.c 2>/dev/null || true
       - name: Setup Toolchain (NDK Clang)
         run: |
           sudo apt-get update
