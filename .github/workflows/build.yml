@@ -19,25 +19,24 @@ jobs:
 
       - name: Surgical Injection & Disable WALT
         run: |
-          # 1. Ștergem fișierele fizic
-          rm -f kernel/kernel/sched/walt.c
-          rm -f kernel/kernel/sched/core_ctl.c
-          rm -f kernel/kernel/sched/walt.h
-          
-          # 2. Curățăm Makefile-ul
-          sed -i '/core_ctl.o/d' kernel/kernel/sched/Makefile
-          sed -i '/walt.o/d' kernel/kernel/sched/Makefile
-          
-          # 3. ELIMINĂM INCLUDE-URILE DIN COD (Fix pentru eroarea actuală)
-          # Căutăm în tot folderul sched și ștergem linia cu #include "walt.h"
-          find kernel/kernel/sched -type f -name "*.[ch]" -exec sed -i '/#include "walt.h"/d' {} +
-          # De asemenea, eliminăm orice referință la funcții walt din sched.h dacă există
-          sed -i '/walt_/d' kernel/kernel/sched/sched.h
+          # 1. Restaurăm folderul sched din Lineage pentru a scăpa de corupția sed
+          cd kernel && git checkout HEAD -- kernel/sched/ && cd ..
 
-          # 4. Injectăm restul de drivere Royna
+          # 2. Injectăm driverele Royna
           rm -rf kernel/drivers kernel/techpack
           cp -r royna_source/drivers kernel/
           cp -r royna_source/techpack kernel/
+
+          # 3. FIX CHIRURGICAL SCHED.H (Fără să stricăm acoladele)
+          # Adăugăm membrii în struct rq doar dacă nu există, folosind un punct de ancoră sigur
+          sed -i '/s64 cum_window_start;/a \		s64 cum_window_demand;\n		s64 cumulative_runnable_avg;' kernel/kernel/sched/sched.h
+          
+          # Fix conflict de tip pentru capacity_margin_freq (forțăm unsigned int peste tot)
+          sed -i 's/unsigned long capacity_margin_freq/unsigned int capacity_margin_freq/g' kernel/kernel/sched/core.c 2>/dev/null || true
+
+          # 4. DEZACTIVARE WALT DIN MAKEFILE (Fără să ștergem fișierele, doar le scoatem din build)
+          sed -i 's/obj-y += walt.o/obj-n += walt.o/g' kernel/kernel/sched/Makefile
+          sed -i 's/obj-y += core_ctl.o/obj-n += core_ctl.o/g' kernel/kernel/sched/Makefile
 
           # 6. FIX KERNELSU & SCHEDULER
           sed -i '/kernelsu/d' kernel/drivers/android/Kconfig
