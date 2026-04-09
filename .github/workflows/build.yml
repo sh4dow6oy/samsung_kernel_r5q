@@ -19,24 +19,25 @@ jobs:
 
       - name: Surgical Injection & Disable WALT
         run: |
-          # 1. Ștergem fișierele fizic (WALT și Core Control)
+          # 1. Ștergem fișierele fizic
           rm -f kernel/kernel/sched/walt.c
           rm -f kernel/kernel/sched/core_ctl.c
           rm -f kernel/kernel/sched/walt.h
           
-          # 2. Curățăm Makefile-ul de orice urmă de core_ctl și walt
-          # Folosim sed pentru a șterge liniile întregi care conțin aceste nume
+          # 2. Curățăm Makefile-ul
           sed -i '/core_ctl.o/d' kernel/kernel/sched/Makefile
           sed -i '/walt.o/d' kernel/kernel/sched/Makefile
           
-          # 3. Injectăm driverele Royna (restul)
+          # 3. ELIMINĂM INCLUDE-URILE DIN COD (Fix pentru eroarea actuală)
+          # Căutăm în tot folderul sched și ștergem linia cu #include "walt.h"
+          find kernel/kernel/sched -type f -name "*.[ch]" -exec sed -i '/#include "walt.h"/d' {} +
+          # De asemenea, eliminăm orice referință la funcții walt din sched.h dacă există
+          sed -i '/walt_/d' kernel/kernel/sched/sched.h
+
+          # 4. Injectăm restul de drivere Royna
           rm -rf kernel/drivers kernel/techpack
           cp -r royna_source/drivers kernel/
           cp -r royna_source/techpack kernel/
-
-          # 4. Eliminăm referințele din Kconfig-uri pentru a nu fi reactivate de alte dependințe
-          find kernel -name "Kconfig*" -exec sed -i 's/select SCHED_WALT//g' {} +
-          find kernel -name "Kconfig*" -exec sed -i 's/select SCHED_CORE_CTL//g' {} +
 
           # 6. FIX KERNELSU & SCHEDULER
           sed -i '/kernelsu/d' kernel/drivers/android/Kconfig
