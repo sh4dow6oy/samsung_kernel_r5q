@@ -19,26 +19,28 @@ jobs:
 
       - name: Surgical Injection & Disable WALT
         run: |
-          # 1. Înlocuim Driverele și Techpack
+          # 1. Ștergem fișierele fizic (WALT și Core Control)
+          rm -f kernel/kernel/sched/walt.c
+          rm -f kernel/kernel/sched/core_ctl.c
+          rm -f kernel/kernel/sched/walt.h
+          
+          # 2. Curățăm Makefile-ul de orice urmă de core_ctl și walt
+          # Folosim sed pentru a șterge liniile întregi care conțin aceste nume
+          sed -i '/core_ctl.o/d' kernel/kernel/sched/Makefile
+          sed -i '/walt.o/d' kernel/kernel/sched/Makefile
+          
+          # 3. Injectăm driverele Royna (restul)
           rm -rf kernel/drivers kernel/techpack
           cp -r royna_source/drivers kernel/
           cp -r royna_source/techpack kernel/
 
-          # 6. FIX KERNELSU & SCHEDULER
-          sed -i '/kernelsu/d' kernel/drivers/android/Kconfig
-
-          # 1. Ștergem walt.c și core_ctl.c
-          rm -f kernel/kernel/sched/walt.c
-          rm -f kernel/kernel/sched/core_ctl.c
-          
-          # 2. Modificăm Makefile-ul să ignore ambele fișiere
-          sed -i 's/obj-y += walt.o/obj-n += walt.o/g' kernel/kernel/sched/Makefile
-          sed -i 's/obj-y += core_ctl.o/obj-n += core_ctl.o/g' kernel/kernel/sched/Makefile
-          
-          # 3. Curățăm orice referință de 'select' din Kconfig-uri
+          # 4. Eliminăm referințele din Kconfig-uri pentru a nu fi reactivate de alte dependințe
           find kernel -name "Kconfig*" -exec sed -i 's/select SCHED_WALT//g' {} +
           find kernel -name "Kconfig*" -exec sed -i 's/select SCHED_CORE_CTL//g' {} +
 
+          # 6. FIX KERNELSU & SCHEDULER
+          sed -i '/kernelsu/d' kernel/drivers/android/Kconfig
+          
           # 5. Header-e SOC și Config Royna
           mkdir -p kernel/include/soc/samsung
           cp -r royna_source/include/soc/samsung/* kernel/include/soc/samsung/ || true
