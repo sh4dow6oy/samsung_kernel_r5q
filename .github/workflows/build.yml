@@ -1,4 +1,4 @@
-name: R5Q - Lineage Base + Mainey Drivers
+name: R5Q - Lineage Base + Mainey Drivers & Config
 on: workflow_dispatch
 
 jobs:
@@ -11,7 +11,7 @@ jobs:
           repository: LineageOS/android_kernel_google_msm-4.14
           path: kernel
 
-      - name: Checkout Mainey Source (The Specialized Drivers)
+      - name: Checkout Mainey Source
         uses: actions/checkout@v4
         with:
           repository: mainey/android_kernel_samsung_r5q
@@ -20,30 +20,23 @@ jobs:
 
       - name: Surgical Injection & Sched Repair
         run: |
-          # 1. Înlocuim Driverele, Techpack și INCLUDE (Crucial)
-          # Sursa lui Mainey are headerele deja adaptate pentru Lineage
+          # 1. Înlocuim Driverele, Techpack și INCLUDE
           rm -rf kernel/drivers kernel/techpack kernel/include
           cp -r mainey_source/drivers kernel/
           cp -r mainey_source/techpack kernel/
           cp -r mainey_source/include kernel/
           
-          # 2. Restaurăm folderul kernel/sched din baza curată Lineage
-          # Vrem scheduler-ul stabil de Lineage, nu cel problematic de Samsung
+          # 2. Restaurăm folderul kernel/sched original (stabilitate AOSP)
           cd kernel && git checkout HEAD -- kernel/sched/ && cd ..
 
-          # 3. FIX PENTRU KERNELSU (Eliminăm referințele care crapă build-ul)
+          # 3. FIX KERNELSU & DRIVERS KCONFIG
           sed -i '/kernelsu/d' kernel/drivers/android/Kconfig
-
-          # 4. Copiem Config-ul de R5Q de la Mainey
-          cp mainey_source/arch/arm64/configs/r5q_defconfig kernel/arch/arm64/configs/r5q_defconfig
-
-      - name: Apply Universal Hotfixes
-        run: |
-          cd kernel
-          # Fix KGSL (GPU)
-          sed -i 's/IDR_INIT/{ 0 }/g' drivers/gpu/msm/kgsl_device.h
-          # Dezactivăm Werror pentru DTS
-          find arch/arm64/boot/dts -name "Makefile" -exec sed -i 's/-Werror//g' {} +
+          # Unele surse Mainey au referințe de display care trebuie linkate
+          mkdir -p kernel/techpack/display/include/uapi/display
+          
+          # 4. PREGĂTIRE DEFCONFIG (Hibridizare)
+          # Copiem defconfig-ul de Samsung (r5q_eur_open) în baza Lineage
+          cp mainey_source/arch/arm64/configs/r5q_eur_open_defconfig kernel/arch/arm64/configs/r5q_hybrid_defconfig
 
       - name: Setup Toolchain
         run: |
@@ -64,13 +57,24 @@ jobs:
             CROSS_COMPILE=aarch64-linux-gnu- \
             LD=ld.lld O=out"
           
-          # Generăm config-ul
-          make $MAKE_ARGS r5q_defconfig
+          # 1. Aplicăm defconfig-ul lui Mainey
+          make $MAKE_ARGS r5q_hybrid_defconfig
           
-          # Acceptăm orice setări noi automat (olddefconfig)
+          # 2. ADAPTĂRI PENTRU LINEAGE 4.14 (OneUI 7 / Android 15 Ready)
+          # Dezactivăm securitățile Samsung care fac conflict cu Lineage
+          scripts/config --file out/.config --disable CONFIG_SAMSUNG_PRODUCT_SHIP
+          scripts/config --file out/.config --disable CONFIG_SEC_RESTRICT_FORK
+          scripts/config --file out/.config --disable CONFIG_KNOX_KAP
+          scripts/config --file out/.config --disable CONFIG_SECURITY_DEFEX
+          
+          # Activăm suportul de storage modern (OneUI 7 folosește EROFS adesea)
+          scripts/config --file out/.config --enable CONFIG_EROFS_FS
+          scripts/config --file out/.config --enable CONFIG_EROFS_FS_ZIP
+          
+          # 3. Rezolvăm conflictele de tip "New Config Options"
           yes "" | make $MAKE_ARGS olddefconfig
           
-          # Compilare proprie-zisă
+          # 4. Compilare cu ignorare warning-uri (KCFLAGS="-w")
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-w" O=out Image.gz-dtb dtbs
 
       - name: Generate DTBO Image
@@ -92,13 +96,13 @@ jobs:
           
           cd AnyKernel3
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-          # Mapare bloc DTBO pentru R5Q
+          # Mapare specifică R5Q (S10 Lite)
           sed -i '/device.name1=r5q/a dtbo_block=/dev/block/by-name/dtbo;' anykernel.sh
           echo 'flash_dtbo;' >> anykernel.sh
-          zip -r9 ../Lumi-Mainey-Base.zip *
+          zip -r9 ../Lumi-Mainey-Hybrid.zip *
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-Mainey-R5Q
-          path: Lumi-Mainey-Base.zip
+          name: Kernel-R5Q-Hybrid
+          path: Lumi-Mainey-Hybrid.zip
