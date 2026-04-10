@@ -1,4 +1,4 @@
-name: R5Q - Android 15 (Final Audio & Sensor Fix)
+name: R5Q - Android 15 (Linker & Audio Duplicate Fix)
 on: workflow_dispatch
 
 jobs:
@@ -16,35 +16,35 @@ jobs:
         run: |
           cd kernel
           # 1. CONFIG HIBRID
-          cp arch/arm64/configs/sdmmagpie_defconfig arch/arm64/configs/r5q_hybrid_defconfig
+          cp arch/arm64/configs/vendor/sdmmagpie_defconfig arch/arm64/configs/r5q_hybrid_defconfig
           curl -s https://raw.githubusercontent.com/Roynas-Android-Playground/kernel_samsung_r3q/master/arch/arm64/configs/r5q_defconfig > roynas_r5q.config
           echo "" >> arch/arm64/configs/r5q_hybrid_defconfig
           cat roynas_r5q.config >> arch/arm64/configs/r5q_hybrid_defconfig
 
-          # 2. OPTIMIZARE CONFIG
+          # 2. ELIMINARE DUPLICATE AUDIO (SM6150 vs SM8150)
+          # Forțăm kernelul să ignore platforma SM6150/SM7150 pentru audio, deoarece R5Q este SM8150
           ./scripts/config --file arch/arm64/configs/r5q_hybrid_defconfig \
+            --disable CONFIG_SND_SOC_SM6150 \
+            --disable CONFIG_SND_SOC_SM7150 \
+            --enable CONFIG_SND_SOC_SM8150 \
             --disable CONFIG_SECURITY_SMACK \
             --enable CONFIG_SECURITY_SELINUX \
             --enable CONFIG_BPF \
             --enable CONFIG_BPF_SYSCALL \
-            --enable CONFIG_ANDROID_BINDERFS \
             --set-val CONFIG_NR_CPUS 8 \
             --enable CONFIG_MACH_SAMSUNG_R5Q \
-            --enable CONFIG_LWB \
-            --disable CONFIG_KVM \
-            --disable CONFIG_VIRTUALIZATION \
-            --disable CONFIG_MSM_GPU_CORESIGHT
+            --disable CONFIG_MSM_GPU_CORESIGHT \
+            --disable CONFIG_BPFILTER
 
-          # 3. FIX AUDIO (wcd-mbhc-adc.c)
-          # Eliminăm referințele la slow_insertion care nu mai există în structura wcd_mbhc
+          # 3. FIX DUPLICATE SYMBOLS ÎN COD (swrm_wcd_notify)
+          # Dacă simbolul este definit în două locuri, marcăm una dintre ele ca 'weak' pentru linker
+          sed -i 's/void swrm_wcd_notify/void __attribute__((weak)) swrm_wcd_notify/g' techpack/audio/soc/swr-wcd-ctrl.c 2>/dev/null || true
+
+          # 4. TOATE FIX-URILE ANTERIOARE (Audio, Sensors, System)
           sed -i 's/!mbhc->slow_insertion/1/g' techpack/audio/asoc/codecs/wcd-mbhc-adc.c
           sed -i 's/&& mbhc->slow_insertion//g' techpack/audio/asoc/codecs/wcd-mbhc-adc.c
-
-          # 4. FIX SENSOR SX9360 (PDIC vs CCIC)
           sed -i 's/PD_NOTI_ATTACH_TYPEDEF/CC_NOTI_ATTACH_TYPEDEF/g' drivers/sensors/sx9360.c
           sed -i 's/PDIC_NOTIFY_ID_ATTACH/CCIC_NOTIFY_ID_ATTACH/g' drivers/sensors/sx9360.c
-
-          # 5. TOATE FIX-URILE DE SISTEM ANTERIOARE
           sed -i 's/try_to_unmap(page, ttu_flags)/try_to_unmap(page, ttu_flags, NULL)/g' mm/huge_memory.c
           sed -i 's/split_huge_pmd(vma, addr, pmd);/__split_huge_pmd(vma, (pmd_t *)pmd, addr, false, NULL);/g' fs/proc/task_mmu.c
           sed -i 's/.proc_handler   = bpf_stats_handler,/\/\/ .proc_handler = bpf_stats_handler,/g' kernel/sysctl.c
@@ -52,7 +52,6 @@ jobs:
           sed -i '433d' kernel/trace/trace_event_perf.c
           sed -i 's/#error "Unsupported NR_CPUS for lb tracepoint."/\/\/ #error "Unsupported NR_CPUS for lb tracepoint."/g' include/trace/events/sched.h
           sed -i 's/current->pids\[PIDTYPE_PID\].pid/current->pid/g' virt/kvm/kvm_main.c 2>/dev/null || true
-          sed -i 's/ptep = huge_pmd_share/pte = huge_pmd_share/g' arch/arm64/mm/hugetlbpage.c
           echo "/* Golit */" > drivers/gpu/msm/adreno_coresight.c
 
       - name: Setup Toolchain
@@ -66,12 +65,13 @@ jobs:
         run: |
           cd kernel
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
-          # Adăugăm flag-uri pentru a ignora erorile de tip pointer și array assignation care mai pot apărea în Techpack
+          # Adăugăm LLVM=1 și LLVM_IAS=1 pentru a asigura folosirea linker-ului lld corect
           export MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu- O=out"
           
           make $MAKE_ARGS r5q_hybrid_defconfig
           make $MAKE_ARGS olddefconfig
-          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-w -Wno-error=array-bounds -Wno-error=pointer-bool-conversion" O=out Image.gz-dtb
+          # KCFLAGS="-w" și ignorarea bpfilter
+          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-w" CONFIG_BPFILTER=n O=out Image.gz-dtb
 
       - name: Package
         run: |
@@ -79,10 +79,10 @@ jobs:
           cp kernel/out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
           cd AnyKernel3
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-          zip -r9 ../Lumi-Kernel-R5Q-v3.zip *
+          zip -r9 ../Lumi-Kernel-R5Q-Final.zip *
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
           name: Lumi-Kernel
-          path: Lumi-Kernel-R5Q-v3.zip
+          path: Lumi-Kernel-R5Q-Final.zip
