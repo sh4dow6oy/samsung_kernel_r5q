@@ -35,22 +35,27 @@ jobs:
           sed -i 's/sec_pcie_l1ss_disable(L1SS_AUDIO);//g' techpack/audio/asoc/msm-pcm-q6-noirq.c
           sed -i 's/sec_pcie_l1ss_enable(L1SS_AUDIO);//g' techpack/audio/asoc/msm-pcm-q6-noirq.c
 
-      - name: Smart Config Merge (A70Q + A71 + R5Q)
+      - name: Smart Config Merge & Fixes
         run: |
           cd kernel
-          # Baza SM8150
+          # 1. RESETĂM fișierul de display la originalul Pascua
+          # Acesta este compatibil cu restul kernelului și nu va cere headere lipsă
+          git checkout drivers/gpu/drm/msm/sde/sde_crtc.c
+          
+          # 2. Creăm fișierul de config final
           cp arch/arm64/configs/vendor/sm8150_defconfig arch/arm64/configs/r5q_final_defconfig
           
-          # Aplicăm fragmentele de la Pascua (A71 și A70Q)
-          # A70Q aduce setările de senzori și baterie critice pentru SM7150/8150 Samsung
+          # 3. Concatenăm fragmentele de la Pascua (A71 + A70Q)
+          # A70Q este foarte important pentru arhitectura de senzori Samsung
+          echo "" >> arch/arm64/configs/r5q_final_defconfig
           cat arch/arm64/configs/a71.config >> arch/arm64/configs/r5q_final_defconfig
           cat arch/arm64/configs/a70q.config >> arch/arm64/configs/r5q_final_defconfig
           
-          # Identitate S10 Lite
+          # 4. Injectăm identitatea R5Q
           echo "CONFIG_MACH_SAMSUNG_R5Q=y" >> arch/arm64/configs/r5q_final_defconfig
           echo "CONFIG_LWB=y" >> arch/arm64/configs/r5q_final_defconfig
           
-          # Ajustări Android 15 și Curățenie
+          # 5. CONFIGURARE ANTI-EROARE (Aici rezolvăm erorile tale)
           ./scripts/config --file arch/arm64/configs/r5q_final_defconfig \
             --enable CONFIG_BPF \
             --enable CONFIG_BPF_SYSCALL \
@@ -63,6 +68,14 @@ jobs:
             --disable CONFIG_SAMSUNG_PRODUCT_SHIP \
             --disable CONFIG_SEC_RESTRICT_FORK \
             --set-str CONFIG_LSM "lockdown,yama,loadpin,safesetid,selinux,bpf"
+
+          # 6. FIX AUDIO (L1SS_AUDIO fix pentru transplantul Roynas)
+          sed -i '1i #define L1SS_AUDIO 0' techpack/audio/asoc/msm-pcm-q6-noirq.c
+          sed -i 's/sec_pcie_l1ss_disable(L1SS_AUDIO);//g' techpack/audio/asoc/msm-pcm-q6-noirq.c
+          sed -i 's/sec_pcie_l1ss_enable(L1SS_AUDIO);//g' techpack/audio/asoc/msm-pcm-q6-noirq.c
+
+          # 7. Fix-uri de mediu
+          [ -f "scripts/mod/devicetable-offsets.c" ] && sed -i 's/DEVID(typec_device_id);/\/\/DEVID(typec_device_id);/g' scripts/mod/devicetable-offsets.c || true
 
       - name: Setup Toolchain
         run: |
