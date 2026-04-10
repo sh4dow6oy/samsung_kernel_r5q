@@ -1,4 +1,4 @@
-name: R5Q - Android 15 (Magpie + Roynas Hardware)
+name: R5Q - Android 15 (Magpie + Roynas Hardware + Sensor Fix)
 on: workflow_dispatch
 
 jobs:
@@ -12,19 +12,16 @@ jobs:
           ref: sixteen
           path: kernel
 
-      - name: Hybrid Config & Security Fixes
+      - name: Hybrid Config & Hardware Fixes
         run: |
           cd kernel
-          # 1. PREGĂTIRE CONFIG HIBRID
+          # 1. CONFIG HIBRID
           cp arch/arm64/configs/sdmmagpie_defconfig arch/arm64/configs/r5q_hybrid_defconfig
           curl -s https://raw.githubusercontent.com/Roynas-Android-Playground/kernel_samsung_r3q/master/arch/arm64/configs/r5q_defconfig > roynas_r5q.config
-          
           echo "" >> arch/arm64/configs/r5q_hybrid_defconfig
-          echo "# --- R5Q HARDWARE INJECTION ---" >> arch/arm64/configs/r5q_hybrid_defconfig
           cat roynas_r5q.config >> arch/arm64/configs/r5q_hybrid_defconfig
 
-          # 2. DEZACTIVARE SMACK ȘI CONFIGURARE ANDROID 15
-          # Dezactivăm SMACK pentru a evita erorile de compilare din security/smack/
+          # 2. OPTIMIZARE CONFIG
           ./scripts/config --file arch/arm64/configs/r5q_hybrid_defconfig \
             --disable CONFIG_SECURITY_SMACK \
             --enable CONFIG_SECURITY_SELINUX \
@@ -38,7 +35,12 @@ jobs:
             --disable CONFIG_VIRTUALIZATION \
             --disable CONFIG_MSM_GPU_CORESIGHT
 
-          # 3. TOATE FIX-URILE DE COD (Sistem, Memorie, Trace)
+          # 3. FIX SENSOR SX9360 (Eroarea PDIC vs CCIC)
+          # Înlocuim numele vechi ale structurilor cu cele noi din baza Pascua
+          sed -i 's/PD_NOTI_ATTACH_TYPEDEF/CC_NOTI_ATTACH_TYPEDEF/g' drivers/sensors/sx9360.c
+          sed -i 's/PDIC_NOTIFY_ID_ATTACH/CCIC_NOTIFY_ID_ATTACH/g' drivers/sensors/sx9360.c
+
+          # 4. TOATE FIX-URILE DE SISTEM ANTERIOARE
           sed -i 's/try_to_unmap(page, ttu_flags)/try_to_unmap(page, ttu_flags, NULL)/g' mm/huge_memory.c
           sed -i 's/split_huge_pmd(vma, addr, pmd);/__split_huge_pmd(vma, (pmd_t *)pmd, addr, false, NULL);/g' fs/proc/task_mmu.c
           sed -i 's/.proc_handler   = bpf_stats_handler,/\/\/ .proc_handler = bpf_stats_handler,/g' kernel/sysctl.c
