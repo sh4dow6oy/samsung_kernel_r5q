@@ -1,4 +1,4 @@
-name: R5Q - Android 15 (Final Integration)
+name: R5Q - Android 15 (Trace Fix & Build)
 on: workflow_dispatch
 
 jobs:
@@ -12,16 +12,16 @@ jobs:
           ref: sixteen
           path: kernel
 
-      - name: Hybrid Config & Motor Driver Fix
+      - name: Hybrid Config & Trace Repair
         run: |
           cd kernel
-          # 1. CONFIG HIBRID (Magpie Base + Roynas R5Q Settings)
+          # 1. CONFIG HIBRID
           cp arch/arm64/configs/sdmmagpie_defconfig arch/arm64/configs/r5q_hybrid_defconfig
           curl -s https://raw.githubusercontent.com/Roynas-Android-Playground/kernel_samsung_r3q/master/arch/arm64/configs/r5q_defconfig > roynas_r5q.config
           echo "" >> arch/arm64/configs/r5q_hybrid_defconfig
           cat roynas_r5q.config >> arch/arm64/configs/r5q_hybrid_defconfig
 
-          # 2. OPTIMIZARE PENTRU BOOT PE ANDROID 15
+          # 2. OPTIMIZARE CONFIG
           ./scripts/config --file arch/arm64/configs/r5q_hybrid_defconfig \
             --disable CONFIG_SND_SOC_SM6150 \
             --disable CONFIG_SND_SOC_SM7150 \
@@ -31,35 +31,27 @@ jobs:
             --enable CONFIG_BPF \
             --enable CONFIG_BPF_SYSCALL \
             --set-val CONFIG_NR_CPUS 8 \
-            --enable CONFIG_MACH_SAMSUNG_R5Q \
-            --disable CONFIG_SAMSUNG_PRODUCT_SHIP
+            --enable CONFIG_MACH_SAMSUNG_R5Q
 
-          # 3. FIX-URI CHIRURGICALE (Detectate în log-urile anterioare)
-          
-          # Fix Vibrator (setSensorCallback undefined) - Căutăm în tot folderul motor
+          # 3. REPARAȚIE AGRESIVĂ TRACE (Redefinition Fix)
+          # Folosim un truc: eliminăm liniile identice consecutive care conțin 'struct perf_event *event;'
+          sed -i 'N;/^\(.*\)\n\1$/!P;D' kernel/trace/trace_event_perf.c || true
+          # Fix adițional pentru a fi siguri (șterge a doua declarație în blocul de cod specific)
+          sed -i '0,/struct perf_event \*event;/! { /struct perf_event \*event;/ s/struct perf_event \*event;// }' kernel/trace/trace_event_perf.c || true
+
+          # 4. ALTE REPARAȚII (Camera, Audio, Memory)
           find drivers/motor -name "*.c" -exec sed -i 's/setSensorCallback/ \/\/ /g' {} + || true
-          
-          # Fix Camera & Scheduler (Symbols missing in Sixteen base)
           find . -name "cam_actuator_core.c" -exec sed -i 's/rc = cam_actuator_do_soft_landing(a_ctrl);/rc = 0;/g' {} + || true
           find . -name "cam_ois_core.c" -exec sed -i 's/ois_reset_register(o_ctrl)/0/g' {} + || true
           find . -name "tune.c" -exec sed -i '/sysctl_sched_conservative_pl/d' {} + || true
           find . -name "tune.c" -exec sed -i '/sysctl_sched_many_wakeup_threshold/d' {} + || true
-          
-          # Fix Audio Duplicates & Incompatibilities
-          find . -name "sm8150.c" -exec sed -i 's/audio_register_wdsp_state_cb/ \/\/ /g' {} + || true
-          find . -name "sm8150.c" -exec sed -i 's/audio_register_mad_mic_state_cb/ \/\/ /g' {} + || true
           sed -i 's/void swrm_wcd_notify/__attribute__((weak)) void swrm_wcd_notify/g' techpack/audio/soc/swr-wcd-ctrl.c || true
           sed -i 's/!mbhc->slow_insertion/1/g' techpack/audio/asoc/codecs/wcd-mbhc-adc.c || true
-          
-          # Fix System & Memory (Clang 17 compatibility)
           sed -i 's/PD_NOTI_ATTACH_TYPEDEF/CC_NOTI_ATTACH_TYPEDEF/g' drivers/sensors/sx9360.c || true
           sed -i 's/PDIC_NOTIFY_ID_ATTACH/CCIC_NOTIFY_ID_ATTACH/g' drivers/sensors/sx9360.c || true
           sed -i 's/try_to_unmap(page, ttu_flags)/try_to_unmap(page, ttu_flags, NULL)/g' mm/huge_memory.c || true
           sed -i 's/split_huge_pmd(vma, addr, pmd);/__split_huge_pmd(vma, (pmd_t *)pmd, addr, false, NULL);/g' fs/proc/task_mmu.c || true
           sed -i 's/.proc_handler   = bpf_stats_handler,/\/\/ .proc_handler = bpf_stats_handler,/g' kernel/sysctl.c || true
-          
-          # Neutralize specific Qualcomm/Samsung bloat that causes LTO errors
-          find drivers/gpu/msm -name "adreno_coresight.c" -exec sh -c 'echo "/* empty */" > {}' \; || true
 
       - name: Setup Toolchain
         run: |
@@ -77,22 +69,21 @@ jobs:
           make $MAKE_ARGS r5q_hybrid_defconfig
           make $MAKE_ARGS olddefconfig
           
-          # LDFLAGS extra pentru a trece de orice alt simbol duplicat/lipsă din faza finală
           make -j$(nproc --all) $MAKE_ARGS \
             KCFLAGS="-w" \
-            LDFLAGS="--allow-multiple-definition --undefined-version" \
+            LDFLAGS="--allow-multiple-definition" \
             O=out Image.gz-dtb
 
-      - name: Package & Release
+      - name: Package
         run: |
           git clone https://github.com/osm0sis/AnyKernel3.git
           find kernel/out -name "Image.gz*" -exec cp {} AnyKernel3/ \;
           cd AnyKernel3
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-          zip -r9 ../Lumi-Kernel-R5Q-A15-vFinal.zip *
+          zip -r9 ../Lumi-Kernel-R5Q-v7.zip *
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Lumi-Kernel-R5Q
-          path: Lumi-Kernel-R5Q-A15-vFinal.zip
+          name: Lumi-Kernel
+          path: Lumi-Kernel-R5Q-v7.zip
