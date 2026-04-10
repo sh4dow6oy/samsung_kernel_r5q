@@ -16,7 +16,7 @@ jobs:
         run: |
           cd kernel
           # 1. PREGĂTIRE CONFIG HIBRID
-          cp arch/arm64/configs/vendor/sdmmagpie_defconfig arch/arm64/configs/r5q_hybrid_defconfig
+          cp arch/arm64/configs/sdmmagpie_defconfig arch/arm64/configs/r5q_hybrid_defconfig
           curl -s https://raw.githubusercontent.com/Roynas-Android-Playground/kernel_samsung_r3q/master/arch/arm64/configs/r5q_defconfig > roynas_r5q.config
           
           echo "" >> arch/arm64/configs/r5q_hybrid_defconfig
