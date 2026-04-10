@@ -1,4 +1,4 @@
-name: R5Q - Android 15 Final Merged
+name: R5Q - Android 15 (Image Only)
 on: workflow_dispatch
 
 jobs:
@@ -22,11 +22,10 @@ jobs:
       - name: Smart Config Merge & Fixes
         run: |
           cd kernel
-          # 1. Plecăm de la baza modernă sm8150 (BPF/A15 ready)
+          # 1. Baza modernă sm8150
           cp arch/arm64/configs/vendor/sm8150_defconfig arch/arm64/configs/r5q_final_defconfig
           
-          # 2. Injectăm driverele hardware Samsung de la Roynas (Display, Touch, Battery, Camera)
-          # Extragem tot ce ține de Samsung, Touchscreen și Senzori din config-ul lui Roynas
+          # 2. Injectăm driverele hardware Samsung (Display, Touch, Baterie)
           grep "CONFIG_SAMSUNG" ../roynas_source/arch/arm64/configs/r5q_defconfig >> arch/arm64/configs/r5q_final_defconfig
           grep "CONFIG_TOUCHSCREEN_SAMSUNG" ../roynas_source/arch/arm64/configs/r5q_defconfig >> arch/arm64/configs/r5q_final_defconfig
           grep "CONFIG_BATTERY_SAMSUNG" ../roynas_source/arch/arm64/configs/r5q_defconfig >> arch/arm64/configs/r5q_final_defconfig
@@ -37,26 +36,24 @@ jobs:
           echo "CONFIG_MACH_SAMSUNG_R5Q=y" >> arch/arm64/configs/r5q_final_defconfig
           echo "CONFIG_LWB=y" >> arch/arm64/configs/r5q_final_defconfig
           
-          # 4. Asigurăm BPF pentru Android 15
+          # 4. Configurare BPF & BinderFS pentru Android 15
           scripts/config --file arch/arm64/configs/r5q_final_defconfig --enable CONFIG_BPF
           scripts/config --file arch/arm64/configs/r5q_final_defconfig --enable CONFIG_BPF_SYSCALL
           scripts/config --file arch/arm64/configs/r5q_final_defconfig --enable CONFIG_BPF_JIT
           scripts/config --file arch/arm64/configs/r5q_final_defconfig --enable CONFIG_ANDROID_BINDERFS
           
-          # 5. Fix preventiv Type-C (sizeof)
+          # 5. Fix preventiv Type-C
           sed -i 's/DEVID(typec_device_id);/\/\/DEVID(typec_device_id);/g' scripts/mod/devicetable-offsets.c
 
-      - name: Setup Toolchain (NDK Clang)
+      - name: Setup Toolchain (Modern NDK Clang)
         run: |
           sudo apt-get update
           sudo apt-get install -y bc build-essential flex bison lz4 libssl-dev libelf-dev zstd zip gcc-aarch64-linux-gnu
           mkdir -p clang
           wget -q https://github.com/Ylarod/setup-ndk-clang/releases/download/prebuilt/clang-linux-x86-ndk-r29-r563880c.tar.zst
           tar -I zstd -xf clang-linux-x86-ndk-r29-r563880c.tar.zst -C clang
-          wget -q https://raw.githubusercontent.com/LumiPlayground/android_kernel_samsung_sm8150/rawr-bpf/tools/mkdtimg -O mkdtimg
-          chmod +x mkdtimg
 
-      - name: Build Kernel
+      - name: Build Kernel Image
         run: |
           cd kernel
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
@@ -67,32 +64,30 @@ jobs:
           
           make $MAKE_ARGS r5q_final_defconfig
           
-          # Curățăm conflictele dintre cele două config-uri
+          # Dezactivăm restricțiile Samsung care pot bloca boot-ul pe AOSP
           scripts/config --file out/.config --disable CONFIG_SAMSUNG_PRODUCT_SHIP
           scripts/config --file out/.config --disable CONFIG_SEC_RESTRICT_FORK
           
           yes "" | make $MAKE_ARGS olddefconfig
           
-          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-w" O=out Image.gz-dtb dtbs
+          # Compilăm doar imaginea cu DTB inclus
+          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-w" O=out Image.gz-dtb
 
-      - name: Package AnyKernel3
+      - name: Package with AnyKernel3
         run: |
-          DTBO_FILES=$(find kernel/out/arch/arm64/boot/dts -name "*.dtbo")
-          ./mkdtimg create dtbo.img $DTBO_FILES
-          
           git clone https://github.com/osm0sis/AnyKernel3.git
           cp kernel/out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
-          cp dtbo.img AnyKernel3/
           
           cd AnyKernel3
+          # Configurare minimală AnyKernel
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-          # Mapare block DTBO R5Q (S10 Lite)
-          sed -i '/device.name1=r5q/a dtbo_block=/dev/block/by-name/dtbo;' anykernel.sh
-          echo 'flash_dtbo;' >> anykernel.sh
-          zip -r9 ../Kernel-A15-R5Q-Final.zip *
+          # Ștergem orice referință la flash_dtbo pentru a evita erorile la instalare
+          sed -i '/flash_dtbo/d' anykernel.sh
+          
+          zip -r9 ../Kernel-R5Q-A15-OnlyImage.zip *
 
-      - name: Upload Build
+      - name: Upload Kernel
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-S10Lite-A15
-          path: Kernel-A15-R5Q-Final.zip
+          name: Kernel-Image-R5Q
+          path: Kernel-R5Q-A15-OnlyImage.zip
