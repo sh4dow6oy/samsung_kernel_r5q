@@ -47,20 +47,34 @@ jobs:
 
       - name: Build Kernel
         run: |
-          # Setup Clang (folosim Clang-ul NDK pentru compatibilitate)
-          sudo apt-get update && sudo apt-get install -y bc build-essential flex bison lz4 libssl-dev libelf-dev zstd zip
+          # Instalăm dependențele necesare
+          sudo apt-get update && sudo apt-get install -y bc build-essential flex bison lz4 libssl-dev libelf-dev zstd zip gcc-aarch64-linux-gnu
+
           mkdir -p clang
           wget -q https://github.com/Ylarod/setup-ndk-clang/releases/download/prebuilt/clang-linux-x86-ndk-r29-r563880c.tar.zst
           tar -I zstd -xf clang-linux-x86-ndk-r29-r563880c.tar.zst -C clang
           
           cd kernel
+          # Setăm calea către toolchain
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
-          export MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=0 CC=clang \
+          
+          # Definim argumentele de build. 
+          # CRUCIAL: LLVM_IAS=1 activează Integrated Assembler-ul Clang, evitând eroarea cu /usr/bin/as
+          export MAKE_ARGS="ARCH=arm64 \
+            LLVM=1 \
+            LLVM_IAS=1 \
+            CC=clang \
             CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=aarch64-linux-gnu- \
-            LD=ld.lld O=out"
+            O=out"
           
+          # 1. Generăm .config-ul
           make $MAKE_ARGS r5q_pure_defconfig
+          
+          # 2. Curățăm orice conflict în config (opțional dar recomandat)
+          make $MAKE_ARGS olddefconfig
+          
+          # 3. Compilăm
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-w" O=out Image.gz-dtb
 
       - name: Package
