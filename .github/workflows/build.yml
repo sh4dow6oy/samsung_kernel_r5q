@@ -19,24 +19,33 @@ jobs:
           ref: lineage-20
           path: upstream
 
-      - name: Surgical BPF & Net Injection
+      - name: Surgical BPF Backport & Fixes
         run: |
-          # 1. Înlocuim motorul BPF și Stack-ul de Networking
-          # Acestea sunt interdependente; nu poți avea BPF modern fără Net modern
-          rm -rf kernel/kernel/bpf kernel/net kernel/include/linux/bpf*
+          # 1. Înlocuim BPF și NET, dar aducem și BTF Header-ul lipsă
+          rm -rf kernel/kernel/bpf kernel/net
           cp -r upstream/kernel/bpf kernel/kernel/
           cp -r upstream/net kernel/
           
-          # 2. Injectăm headerele BPF din Upstream
+          # 2. FIX BTF (Eroarea: btf.h file not found)
+          mkdir -p kernel/include/uapi/linux/
+          cp upstream/include/uapi/linux/btf.h kernel/include/uapi/linux/
+          cp upstream/include/linux/btf.h kernel/include/linux/
+
+          # 3. FIX CGROUP API BREAK (Eroarea: too many arguments to function call)
+          # Modificăm cgroup.c din baza Mainey să se potrivească cu noul API BPF (3 argumente în loc de 4)
+          sed -i 's/__cgroup_bpf_detach(cgrp, prog, type, flags)/__cgroup_bpf_detach(cgrp, prog, type)/g' kernel/kernel/cgroup/cgroup.c
+
+          # 4. FIX SYSCALL FTRUNCATE (Eroarea: conflicting types)
+          # Forțăm consistența între header și definiție pentru Android 15
+          sed -i 's/off_t length/unsigned long length/g' kernel/include/linux/syscalls.h
+          sed -i 's/off_t length/unsigned long length/g' kernel/include/linux/compat.h
+
+          # 5. SINCRONIZARE HEADERS BPF
           cp -r upstream/include/linux/bpf* kernel/include/linux/
           cp -r upstream/include/uapi/linux/bpf* kernel/include/uapi/linux/
           cp upstream/include/linux/filter.h kernel/include/linux/
-          
-          # 3. FIX-URI PENTRU COMPATIBILITATE (Evităm erorile anterioare)
-          # Sincronizăm syscall-urile necesare pentru pornirea sistemului
-          cp upstream/include/linux/syscalls.h kernel/include/linux/
-          
-          # Dezactivăm manual offset-urile Type-C care crapă build-ul
+
+          # 6. FIX TYPE-C (Păstrăm restul fix-urilor)
           sed -i 's/DEVID(typec_device_id);/\/\/DEVID(typec_device_id);/g' kernel/scripts/mod/devicetable-offsets.c
           sed -i 's/DEVID_FIELD(typec_device_id, svid);/\/\/DEVID_FIELD(typec_device_id, svid);/g' kernel/scripts/mod/devicetable-offsets.c
           sed -i 's/DEVID_FIELD(typec_device_id, mode);/\/\/DEVID_FIELD(typec_device_id, mode);/g' kernel/scripts/mod/devicetable-offsets.c
