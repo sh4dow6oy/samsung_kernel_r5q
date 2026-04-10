@@ -1,4 +1,4 @@
-name: R5Q - Android 15 Hybrid Build (A70Q Optimized)
+name: R5Q - Android 15 Pure Build
 on: workflow_dispatch
 
 jobs:
@@ -12,84 +12,47 @@ jobs:
           ref: sixteen
           path: kernel
 
-      - name: Checkout Roynas (S10 Lite Drivers)
-        uses: actions/checkout@v4
-        with:
-          repository: Roynas-Android-Playground/kernel_samsung_r3q
-          ref: master
-          path: roynas_source
-
-      - name: Sync Drivers & Fixes
-        run: |
-          # 1. Transplant Audio (Roynas -> Pascua)
-          rm -rf kernel/techpack/audio
-          cp -r roynas_source/techpack/audio kernel/techpack/
-          
-          # 2. Resetăm fișierele de sistem care au dat erori
-          # Folosim originalele din Pascua care sunt compatibile cu ramura 'sixteen'
-          cd kernel
-          git checkout drivers/gpu/drm/msm/sde/sde_crtc.c
-          
-          # 3. Fix chirurgical Audio (L1SS_AUDIO fix)
-          sed -i '1i #define L1SS_AUDIO 0' techpack/audio/asoc/msm-pcm-q6-noirq.c
-          sed -i 's/sec_pcie_l1ss_disable(L1SS_AUDIO);//g' techpack/audio/asoc/msm-pcm-q6-noirq.c
-          sed -i 's/sec_pcie_l1ss_enable(L1SS_AUDIO);//g' techpack/audio/asoc/msm-pcm-q6-noirq.c
-
-      - name: Smart Config Merge & Hardware Fixes
+      - name: Smart Config Setup
         run: |
           cd kernel
+          # 1. Luăm defconfig-ul de bază pe care mi l-ai arătat
+          cp arch/arm64/configs/defconfig arch/arm64/configs/r5q_pure_defconfig
           
-          # 1. FIX GPU (Rezolvă eroarea adreno_coresight.c fără a strica Makefile-ul)
-          # Pur și simplu golim conținutul fișierului problematic. 
-          # Compilatorul îl va vedea ca un fișier valid, dar gol, și nu va genera erori.
-          echo "/* Golit pentru compatibilitate Android 15 */" > drivers/gpu/msm/adreno_coresight.c
-
-          # 2. FIX DISPLAY (Rezolvă eroarea ss_dsi_panel_common.h)
-          # Creăm un header gol pentru a satisface cerința #include
-          touch drivers/gpu/drm/msm/sde/ss_dsi_panel_common.h
-          # Comentăm linia de include în fișierul sursă ca măsură de siguranță
-          sed -i 's/#include "ss_dsi_panel_common.h"/\/\/ #include "ss_dsi_panel_common.h"/g' drivers/gpu/drm/msm/sde/sde_crtc.c
-
-          # 3. CONSTRUCȚIE CONFIG (Folosind defconfig-ul indicat de tine)
-          # Luăm baza curată
-          cp arch/arm64/configs/defconfig arch/arm64/configs/r5q_final_defconfig
+          # 2. Aplicăm fragmentele pentru A71 și A70Q (A70Q e cheia pentru R5Q)
+          echo "" >> arch/arm64/configs/r5q_pure_defconfig
+          cat arch/arm64/configs/a71.config >> arch/arm64/configs/r5q_pure_defconfig
+          cat arch/arm64/configs/a70q.config >> arch/arm64/configs/r5q_pure_defconfig
           
-          # Adăugăm fragmentele de la Pascua (A71 + A70Q) pentru suport Samsung
-          echo "" >> arch/arm64/configs/r5q_final_defconfig
-          cat arch/arm64/configs/a71.config >> arch/arm64/configs/r5q_final_defconfig
-          cat arch/arm64/configs/a70q.config >> arch/arm64/configs/r5q_final_defconfig
-          
-          # Injectăm identitatea S10 Lite (R5Q)
-          echo "CONFIG_MACH_SAMSUNG_R5Q=y" >> arch/arm64/configs/r5q_final_defconfig
-          echo "CONFIG_LWB=y" >> arch/arm64/configs/r5q_final_defconfig
-          
-          # 4. CONFIGURARE ANTI-EROARE
-          ./scripts/config --file arch/arm64/configs/r5q_final_defconfig \
+          # 3. Activăm manual suportul pentru hardware-ul S10 Lite (R5Q)
+          # Aceste flag-uri spun kernelului să folosească driverele deja existente în sursă
+          ./scripts/config --file arch/arm64/configs/r5q_pure_defconfig \
+            --enable CONFIG_MACH_SAMSUNG_R5Q \
+            --enable CONFIG_LWB \
+            --enable CONFIG_SEC_ABC \
+            --enable CONFIG_SAMSUNG_TUI \
             --enable CONFIG_BPF \
             --enable CONFIG_BPF_SYSCALL \
-            --enable CONFIG_BPF_JIT \
             --enable CONFIG_ANDROID_BINDERFS \
-            --enable CONFIG_TECHPACK_AUDIO \
-            --disable CONFIG_MSM_GPU_CORESIGHT \
-            --disable CONFIG_SECURITY_SMACK \
-            --disable CONFIG_SAMSUNG_PRODUCT_SHIP \
-            --disable CONFIG_SEC_RESTRICT_FORK \
-            --set-str CONFIG_LSM "lockdown,yama,loadpin,safesetid,selinux,bpf"
+            --disable CONFIG_KVM \
+            --disable CONFIG_VIRTUALIZATION \
+            --disable CONFIG_MSM_GPU_CORESIGHT
 
-          # 5. FIX AUDIO (Pentru a păstra transplantul de la Roynas)
-          sed -i '1i #define L1SS_AUDIO 0' techpack/audio/asoc/msm-pcm-q6-noirq.c
-          sed -i 's/sec_pcie_l1ss_disable(L1SS_AUDIO);//g' techpack/audio/asoc/msm-pcm-q6-noirq.c
-          sed -i 's/sec_pcie_l1ss_enable(L1SS_AUDIO);//g' techpack/audio/asoc/msm-pcm-q6-noirq.c
-      - name: Setup Toolchain
+      - name: Code Fixes (Rezolvăm doar erorile bazei)
         run: |
-          sudo apt-get update
-          sudo apt-get install -y bc build-essential flex bison lz4 libssl-dev libelf-dev zstd zip gcc-aarch64-linux-gnu
+          cd kernel
+          # Fix KVM/Sched error (pids)
+          sed -i 's/current->pids\[PIDTYPE_PID\].pid/current->pid/g' virt/kvm/kvm_main.c 2>/dev/null || true
+          # Fix Hugetlb Typo (ptep vs pte)
+          sed -i 's/ptep = huge_pmd_share/pte = huge_pmd_share/g' arch/arm64/mm/hugetlbpage.c
+
+      - name: Build Kernel
+        run: |
+          # Setup Clang (folosim Clang-ul NDK pentru compatibilitate)
+          sudo apt-get update && sudo apt-get install -y bc build-essential flex bison lz4 libssl-dev libelf-dev zstd zip
           mkdir -p clang
           wget -q https://github.com/Ylarod/setup-ndk-clang/releases/download/prebuilt/clang-linux-x86-ndk-r29-r563880c.tar.zst
           tar -I zstd -xf clang-linux-x86-ndk-r29-r563880c.tar.zst -C clang
-
-      - name: Build Kernel Image
-        run: |
+          
           cd kernel
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           export MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=0 CC=clang \
@@ -97,21 +60,13 @@ jobs:
             CROSS_COMPILE=aarch64-linux-gnu- \
             LD=ld.lld O=out"
           
-          make $MAKE_ARGS r5q_final_defconfig
-          yes "" | make $MAKE_ARGS olddefconfig
+          make $MAKE_ARGS r5q_pure_defconfig
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-w" O=out Image.gz-dtb
 
-      - name: Package with AnyKernel3
+      - name: Package
         run: |
           git clone https://github.com/osm0sis/AnyKernel3.git
           cp kernel/out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
           cd AnyKernel3
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-          sed -i '/flash_dtbo/d' anykernel.sh
-          zip -r9 ../Kernel-R5Q-A15-A70Q-Hybrid.zip *
-
-      - name: Upload
-        uses: actions/upload-artifact@v4
-        with:
-          name: Kernel-Image-R5Q
-          path: Kernel-R5Q-A15-A70Q-Hybrid.zip
+          zip -r9 ../Lumi-Kernel-Pure-A15.zip *
