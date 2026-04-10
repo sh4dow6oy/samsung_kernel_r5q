@@ -1,4 +1,4 @@
-name: R5Q - Android 15 (Final Symbol Sanitizer)
+name: R5Q - Android 15 (Final Code Correction)
 on: workflow_dispatch
 
 jobs:
@@ -21,7 +21,7 @@ jobs:
           echo "" >> arch/arm64/configs/r5q_hybrid_defconfig
           cat roynas_r5q.config >> arch/arm64/configs/r5q_hybrid_defconfig
 
-          # 2. DEZACTIVARE MODULE PROBLEMATICE
+          # 2. OPTIMIZARE CONFIG
           ./scripts/config --file arch/arm64/configs/r5q_hybrid_defconfig \
             --disable CONFIG_SND_SOC_SM6150 \
             --disable CONFIG_SND_SOC_SM7150 \
@@ -33,26 +33,25 @@ jobs:
             --set-val CONFIG_NR_CPUS 8 \
             --enable CONFIG_MACH_SAMSUNG_R5Q
 
-          # 3. ELIMINARE REFERINȚE SYMBOL "UNDEFINED" (Chirurgie pe cod)
+          # 3. REPARAȚII CHIRURGICALE (Corectate)
           
-          # Fix Scheduler missing symbols (sysctl)
+          # Fix Camera Actuator (Nu folosim void, folosim 0 pentru int)
+          sed -i 's/rc = cam_actuator_do_soft_landing(a_ctrl);/rc = 0; \/\/ cam_actuator_do_soft_landing/g' drivers/media/platform/msm/camera/cam_sensor_module/cam_actuator/cam_actuator_core.c
+          sed -i 's/cam_actuator_do_soft_landing(a_ctrl);/(void)0;/g' drivers/media/platform/msm/camera/cam_sensor_module/cam_actuator/cam_actuator_core.c
+          
+          # Fix OIS Reset
+          sed -i 's/ois_reset_register(o_ctrl)/0/g' drivers/media/platform/msm/camera/cam_sensor_module/cam_ois/cam_ois_core.c
+          
+          # Fix Scheduler missing symbols
           sed -i '/sysctl_sched_conservative_pl/d' kernel/sched/tune.c 2>/dev/null || true
           sed -i '/sysctl_sched_many_wakeup_threshold/d' kernel/sched/tune.c 2>/dev/null || true
           
-          # Fix Camera/OIS missing symbols
-          sed -i 's/cam_actuator_do_soft_landing/(void)/g' drivers/media/platform/msm/camera/cam_sensor_module/cam_actuator/cam_actuator_core.c 2>/dev/null || true
-          sed -i 's/ois_reset_register/(void)/g' drivers/media/platform/msm/camera/cam_sensor_module/cam_ois/cam_ois_core.c 2>/dev/null || true
-          
-          # Fix Audio Callback missing symbols
-          sed -i 's/audio_register_wdsp_state_cb/(void)/g' techpack/audio/asoc/sm8150.c 2>/dev/null || true
-          sed -i 's/audio_register_mad_mic_state_cb/(void)/g' techpack/audio/asoc/sm8150.c 2>/dev/null || true
-          
-          # Fix Factory/Sensors missing symbols
-          sed -i '/accel_factory_init_work/d' drivers/sensors/factory_test.c 2>/dev/null || true
-          sed -i '/prox_factory_init_work/d' drivers/sensors/factory_test.c 2>/dev/null || true
-          sed -i 's/setSensorCallback/(void)/g' drivers/motor/vibrator_zeus.c 2>/dev/null || true
+          # Fix Audio & Vibrator
+          sed -i 's/audio_register_wdsp_state_cb/ \/\/ /g' techpack/audio/asoc/sm8150.c
+          sed -i 's/audio_register_mad_mic_state_cb/ \/\/ /g' techpack/audio/asoc/sm8150.c
+          sed -i 's/setSensorCallback(NULL);/ \/\/ /g' drivers/motor/vibrator_zeus.c
 
-          # 4. FIX-URI ANTERIOARE (Stabilite)
+          # 4. FIX-URI STABILE ANTERIOARE
           sed -i 's/void swrm_wcd_notify/__attribute__((weak)) void swrm_wcd_notify/g' techpack/audio/soc/swr-wcd-ctrl.c
           sed -i 's/!mbhc->slow_insertion/1/g' techpack/audio/asoc/codecs/wcd-mbhc-adc.c
           sed -i 's/&& mbhc->slow_insertion//g' techpack/audio/asoc/codecs/wcd-mbhc-adc.c
@@ -62,7 +61,6 @@ jobs:
           sed -i 's/split_huge_pmd(vma, addr, pmd);/__split_huge_pmd(vma, (pmd_t *)pmd, addr, false, NULL);/g' fs/proc/task_mmu.c
           sed -i 's/.proc_handler   = bpf_stats_handler,/\/\/ .proc_handler = bpf_stats_handler,/g' kernel/sysctl.c
           sed -i 's/#elif$/#else/g' kernel/taskstats.c
-          sed -i '433d' kernel/trace/trace_event_perf.c
           echo "/* Golit */" > drivers/gpu/msm/adreno_coresight.c
 
       - name: Setup Toolchain
@@ -81,23 +79,21 @@ jobs:
           make $MAKE_ARGS r5q_hybrid_defconfig
           make $MAKE_ARGS olddefconfig
           
-          # Folosim LDFLAGS forțat pentru a ignora orice alt simbol lipsă minor
           make -j$(nproc --all) $MAKE_ARGS \
             KCFLAGS="-w" \
-            LDFLAGS="--allow-multiple-definition --undefined-version" \
+            LDFLAGS="--allow-multiple-definition" \
             O=out Image.gz-dtb
 
       - name: Package
         run: |
           git clone https://github.com/osm0sis/AnyKernel3.git
-          # Căutăm imaginea oriunde s-a generat
           find kernel/out -name "Image.gz*" -exec cp {} AnyKernel3/ \;
           cd AnyKernel3
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-          zip -r9 ../Lumi-Kernel-R5Q-A15.zip *
+          zip -r9 ../Lumi-Kernel-R5Q-v5.zip *
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
           name: Lumi-Kernel
-          path: Lumi-Kernel-R5Q-A15.zip
+          path: Lumi-Kernel-R5Q-v5.zip
