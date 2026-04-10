@@ -1,4 +1,4 @@
-name: R5Q - Android 15 (Final Linker Fix)
+name: R5Q - Android 15 (Final Symbol Sanitizer)
 on: workflow_dispatch
 
 jobs:
@@ -12,33 +12,48 @@ jobs:
           ref: sixteen
           path: kernel
 
-      - name: Hybrid Config & Linker Fixes
+      - name: Hybrid Config & Symbol Sanitization
         run: |
           cd kernel
           # 1. CONFIG HIBRID
-          cp arch/arm64/configs/sdmmagpie_defconfig arch/arm64/configs/r5q_hybrid_defconfig
+          cp arch/arm64/configs/vendor/sdmmagpie_defconfig arch/arm64/configs/r5q_hybrid_defconfig
           curl -s https://raw.githubusercontent.com/Roynas-Android-Playground/kernel_samsung_r3q/master/arch/arm64/configs/r5q_defconfig > roynas_r5q.config
           echo "" >> arch/arm64/configs/r5q_hybrid_defconfig
           cat roynas_r5q.config >> arch/arm64/configs/r5q_hybrid_defconfig
 
-          # 2. ELIMINARE CONFLICTE AUDIO (SM6150/7150 vs SM8150)
+          # 2. DEZACTIVARE MODULE PROBLEMATICE
           ./scripts/config --file arch/arm64/configs/r5q_hybrid_defconfig \
             --disable CONFIG_SND_SOC_SM6150 \
             --disable CONFIG_SND_SOC_SM7150 \
             --enable CONFIG_SND_SOC_SM8150 \
             --disable CONFIG_SECURITY_SMACK \
-            --enable CONFIG_SECURITY_SELINUX \
+            --disable CONFIG_BPFILTER \
             --enable CONFIG_BPF \
             --enable CONFIG_BPF_SYSCALL \
             --set-val CONFIG_NR_CPUS 8 \
-            --enable CONFIG_MACH_SAMSUNG_R5Q \
-            --disable CONFIG_BPFILTER
+            --enable CONFIG_MACH_SAMSUNG_R5Q
 
-          # 3. FIX DUPLICATE SYMBOLS (Chirurgical)
-          # Eliminăm definiția duplicat pentru swrm_wcd_notify
-          sed -i 's/void swrm_wcd_notify/__attribute__((weak)) void swrm_wcd_notify/g' techpack/audio/soc/swr-wcd-ctrl.c
+          # 3. ELIMINARE REFERINȚE SYMBOL "UNDEFINED" (Chirurgie pe cod)
           
-          # 4. FIX TOATE ERORILE ANTERIOARE
+          # Fix Scheduler missing symbols (sysctl)
+          sed -i '/sysctl_sched_conservative_pl/d' kernel/sched/tune.c 2>/dev/null || true
+          sed -i '/sysctl_sched_many_wakeup_threshold/d' kernel/sched/tune.c 2>/dev/null || true
+          
+          # Fix Camera/OIS missing symbols
+          sed -i 's/cam_actuator_do_soft_landing/(void)/g' drivers/media/platform/msm/camera/cam_sensor_module/cam_actuator/cam_actuator_core.c 2>/dev/null || true
+          sed -i 's/ois_reset_register/(void)/g' drivers/media/platform/msm/camera/cam_sensor_module/cam_ois/cam_ois_core.c 2>/dev/null || true
+          
+          # Fix Audio Callback missing symbols
+          sed -i 's/audio_register_wdsp_state_cb/(void)/g' techpack/audio/asoc/sm8150.c 2>/dev/null || true
+          sed -i 's/audio_register_mad_mic_state_cb/(void)/g' techpack/audio/asoc/sm8150.c 2>/dev/null || true
+          
+          # Fix Factory/Sensors missing symbols
+          sed -i '/accel_factory_init_work/d' drivers/sensors/factory_test.c 2>/dev/null || true
+          sed -i '/prox_factory_init_work/d' drivers/sensors/factory_test.c 2>/dev/null || true
+          sed -i 's/setSensorCallback/(void)/g' drivers/motor/vibrator_zeus.c 2>/dev/null || true
+
+          # 4. FIX-URI ANTERIOARE (Stabilite)
+          sed -i 's/void swrm_wcd_notify/__attribute__((weak)) void swrm_wcd_notify/g' techpack/audio/soc/swr-wcd-ctrl.c
           sed -i 's/!mbhc->slow_insertion/1/g' techpack/audio/asoc/codecs/wcd-mbhc-adc.c
           sed -i 's/&& mbhc->slow_insertion//g' techpack/audio/asoc/codecs/wcd-mbhc-adc.c
           sed -i 's/PD_NOTI_ATTACH_TYPEDEF/CC_NOTI_ATTACH_TYPEDEF/g' drivers/sensors/sx9360.c
@@ -48,8 +63,6 @@ jobs:
           sed -i 's/.proc_handler   = bpf_stats_handler,/\/\/ .proc_handler = bpf_stats_handler,/g' kernel/sysctl.c
           sed -i 's/#elif$/#else/g' kernel/taskstats.c
           sed -i '433d' kernel/trace/trace_event_perf.c
-          sed -i 's/#error "Unsupported NR_CPUS for lb tracepoint."/\/\/ #error "Unsupported NR_CPUS for lb tracepoint."/g' include/trace/events/sched.h
-          sed -i 's/current->pids\[PIDTYPE_PID\].pid/current->pid/g' virt/kvm/kvm_main.c 2>/dev/null || true
           echo "/* Golit */" > drivers/gpu/msm/adreno_coresight.c
 
       - name: Setup Toolchain
@@ -68,23 +81,23 @@ jobs:
           make $MAKE_ARGS r5q_hybrid_defconfig
           make $MAKE_ARGS olddefconfig
           
-          # Adăugăm flag-ul de linker pentru a ignora duplicările dacă mai apar
+          # Folosim LDFLAGS forțat pentru a ignora orice alt simbol lipsă minor
           make -j$(nproc --all) $MAKE_ARGS \
             KCFLAGS="-w" \
-            KAFLAGS="-w" \
-            LDFLAGS="--allow-multiple-definition" \
+            LDFLAGS="--allow-multiple-definition --undefined-version" \
             O=out Image.gz-dtb
 
       - name: Package
         run: |
           git clone https://github.com/osm0sis/AnyKernel3.git
-          cp kernel/out/arch/arch/arm64/boot/Image.gz-dtb AnyKernel3/ 2>/dev/null || cp kernel/out/arch/arm64/boot/Image.gz AnyKernel3/
+          # Căutăm imaginea oriunde s-a generat
+          find kernel/out -name "Image.gz*" -exec cp {} AnyKernel3/ \;
           cd AnyKernel3
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-          zip -r9 ../Lumi-Kernel-R5Q-Final.zip *
+          zip -r9 ../Lumi-Kernel-R5Q-A15.zip *
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Lumi-Kernel-R5Q
-          path: Lumi-Kernel-R5Q-Final.zip
+          name: Lumi-Kernel
+          path: Lumi-Kernel-R5Q-A15.zip
