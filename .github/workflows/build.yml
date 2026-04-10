@@ -1,4 +1,4 @@
-name: R5Q - Android 15 (Image Only)
+name: R5Q - Android 15 Full Hybrid Build
 on: workflow_dispatch
 
 jobs:
@@ -12,25 +12,41 @@ jobs:
           ref: sixteen
           path: kernel
 
-      - name: Checkout Roynas (Hardware Config)
+      - name: Checkout Roynas (Hardware Drivers)
         uses: actions/checkout@v4
         with:
           repository: Roynas-Android-Playground/kernel_samsung_r3q
           ref: master
           path: roynas_source
 
+      - name: Sync Hardware Drivers (Transplant Roynas -> Pascua)
+        run: |
+          # 1. AUDIO: Înlocuim techpack-ul de audio cu cel de la Roynas (fix slow_insertion)
+          rm -rf kernel/techpack/audio
+          cp -r roynas_source/techpack/audio kernel/techpack/
+          
+          # 2. DISPLAY: Copiem headerele de panel lipsă
+          cp roynas_source/drivers/gpu/drm/msm/sde/*.h kernel/drivers/gpu/drm/msm/sde/ 2>/dev/null || true
+          
+          # 3. TOUCHSCREEN: Înlocuim driverul de touch Samsung
+          rm -rf kernel/drivers/input/touchscreen/sec_ts
+          cp -r roynas_source/drivers/input/touchscreen/sec_ts kernel/drivers/input/touchscreen/
+          
+          # 4. UAPI: Sincronizăm headerele de display pentru utilizator
+          mkdir -p kernel/include/uapi/display
+          cp -r roynas_source/include/uapi/display/*.h kernel/include/uapi/display/ 2>/dev/null || true
+
       - name: Smart Config Merge & Fixes
         run: |
           cd kernel
-          # 1. Baza: Config-ul generic de SM8150 (BPF/A15 ready)
+          # 1. Baza: Config generic SM8150
           cp arch/arm64/configs/vendor/sm8150_defconfig arch/arm64/configs/r5q_final_defconfig
           
-          # 2. Aplicăm Fragmentul "sixteen" (A71 config) - Acesta conține fix-urile moderne de Samsung
-          # Folosim cat pentru a concatena opțiunile verificate de Pascua
+          # 2. Aplicăm fragmentul Sixteen (A71) pentru stabilitate Samsung modernă
           echo "" >> arch/arm64/configs/r5q_final_defconfig
           cat arch/arm64/configs/a71.config >> arch/arm64/configs/r5q_final_defconfig
           
-          # 3. Injectăm driverele hardware specifice R5Q din Roynas (doar cele critice)
+          # 3. Injectăm flag-urile hardware R5Q din Roynas
           if [ -f "../roynas_source/arch/arm64/configs/r5q_defconfig" ]; then
             grep "CONFIG_PANEL_SAMSUNG" ../roynas_source/arch/arm64/configs/r5q_defconfig >> arch/arm64/configs/r5q_final_defconfig || true
             grep "CONFIG_TOUCHSCREEN_SAMSUNG" ../roynas_source/arch/arm64/configs/r5q_defconfig >> arch/arm64/configs/r5q_final_defconfig || true
@@ -38,22 +54,28 @@ jobs:
             echo "CONFIG_LWB=y" >> arch/arm64/configs/r5q_final_defconfig
           fi
           
-          # 4. Curățenie generală (Rezolvă eroarea SMACK și conflictele de securitate)
+          # 4. AJUSTĂRI FINALE (BPF, Securitate, Fix Erori)
           ./scripts/config --file arch/arm64/configs/r5q_final_defconfig \
-            --disable CONFIG_SECURITY_SMACK \
-            --disable CONFIG_SECURITY_TOMOYO \
-            --disable CONFIG_SECURITY_APPARMOR \
-            --disable CONFIG_SAMSUNG_PRODUCT_SHIP \
-            --disable CONFIG_SEC_RESTRICT_FORK \
             --enable CONFIG_BPF \
             --enable CONFIG_BPF_SYSCALL \
             --enable CONFIG_BPF_JIT \
             --enable CONFIG_ANDROID_BINDERFS \
-            --set-str CONFIG_LSM "shim,lockdown,yama,loadpin,safesetid,selinux,bpf"
+            --enable CONFIG_TECHPACK_AUDIO \
+            --disable CONFIG_SECURITY_SMACK \
+            --disable CONFIG_SECURITY_SEL_FLASK_EXPORT \
+            --disable CONFIG_MSM_GPU_CORESIGHT \
+            --disable CONFIG_SAMSUNG_PRODUCT_SHIP \
+            --disable CONFIG_SEC_RESTRICT_FORK \
+            --disable CONFIG_KERNELSU \
+            --set-str CONFIG_LSM "lockdown,yama,loadpin,safesetid,selinux,bpf"
 
-          # 5. Fix preventiv Type-C
+          # 5. FIX-URI CHIRURGICALE ÎN COD
+          # Fix sec_class
+          sed -i 's/device_create(sec_class/device_create(NULL/g' drivers/input/touchscreen/sec_ts/y771/sec_ts_only_vendor.c 2>/dev/null || true
+          # Fix Type-C Modalias
           [ -f "scripts/mod/devicetable-offsets.c" ] && sed -i 's/DEVID(typec_device_id);/\/\/DEVID(typec_device_id);/g' scripts/mod/devicetable-offsets.c || true
-      - name: Setup Toolchain (Modern NDK Clang)
+
+      - name: Setup Toolchain (NDK Clang)
         run: |
           sudo apt-get update
           sudo apt-get install -y bc build-essential flex bison lz4 libssl-dev libelf-dev zstd zip gcc-aarch64-linux-gnu
@@ -71,14 +93,9 @@ jobs:
             LD=ld.lld O=out"
           
           make $MAKE_ARGS r5q_final_defconfig
-          
-          # Dezactivăm restricțiile Samsung care pot bloca boot-ul pe AOSP
-          scripts/config --file out/.config --disable CONFIG_SAMSUNG_PRODUCT_SHIP
-          scripts/config --file out/.config --disable CONFIG_SEC_RESTRICT_FORK
-          
           yes "" | make $MAKE_ARGS olddefconfig
           
-          # Compilăm doar imaginea cu DTB inclus
+          # Compilăm imaginea cu DTB concatenat
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-w" O=out Image.gz-dtb
 
       - name: Package with AnyKernel3
@@ -87,15 +104,15 @@ jobs:
           cp kernel/out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
           
           cd AnyKernel3
-          # Configurare minimală AnyKernel
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-          # Ștergem orice referință la flash_dtbo pentru a evita erorile la instalare
+          # S10 Lite specific block
+          sed -i 's/block=\/dev\/block\/td/block=\/dev\/block\/by-name\/boot/g' anykernel.sh
           sed -i '/flash_dtbo/d' anykernel.sh
           
-          zip -r9 ../Kernel-R5Q-A15-OnlyImage.zip *
+          zip -r9 ../Lumi-R5Q-A15-Hybrid.zip *
 
-      - name: Upload Kernel
+      - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-Image-R5Q
-          path: Kernel-R5Q-A15-OnlyImage.zip
+          name: Kernel-R5Q-A15
+          path: Lumi-R5Q-A15-Hybrid.zip
