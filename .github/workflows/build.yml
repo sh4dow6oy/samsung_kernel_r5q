@@ -25,25 +25,31 @@ jobs:
           # 1. Baza modernă sm8150
           cp arch/arm64/configs/vendor/sm8150_defconfig arch/arm64/configs/r5q_final_defconfig
           
-          # 2. Injectăm driverele hardware Samsung (Display, Touch, Baterie)
-          grep "CONFIG_SAMSUNG" ../roynas_source/arch/arm64/configs/r5q_defconfig >> arch/arm64/configs/r5q_final_defconfig
-          grep "CONFIG_TOUCHSCREEN_SAMSUNG" ../roynas_source/arch/arm64/configs/r5q_defconfig >> arch/arm64/configs/r5q_final_defconfig
-          grep "CONFIG_BATTERY_SAMSUNG" ../roynas_source/arch/arm64/configs/r5q_defconfig >> arch/arm64/configs/r5q_final_defconfig
-          grep "CONFIG_PANEL_SAMSUNG" ../roynas_source/arch/arm64/configs/r5q_defconfig >> arch/arm64/configs/r5q_final_defconfig
-          grep "CONFIG_SENSORS_SSC" ../roynas_source/arch/arm64/configs/r5q_defconfig >> arch/arm64/configs/r5q_final_defconfig
+          # 2. Injectăm driverele hardware Samsung (Folosim || true pentru a nu opri scriptul dacă grep eșuează)
+          # Verificăm dacă fișierul sursă există înainte de a rula grep
+          if [ -f "../roynas_source/arch/arm64/configs/r5q_defconfig" ]; then
+            grep "CONFIG_SAMSUNG" ../roynas_source/arch/arm64/configs/r5q_defconfig >> arch/arm64/configs/r5q_final_defconfig || true
+            grep "CONFIG_TOUCHSCREEN_SAMSUNG" ../roynas_source/arch/arm64/configs/r5q_defconfig >> arch/arm64/configs/r5q_final_defconfig || true
+            grep "CONFIG_BATTERY_SAMSUNG" ../roynas_source/arch/arm64/configs/r5q_defconfig >> arch/arm64/configs/r5q_final_defconfig || true
+            grep "CONFIG_PANEL_SAMSUNG" ../roynas_source/arch/arm64/configs/r5q_defconfig >> arch/arm64/configs/r5q_final_defconfig || true
+            grep "CONFIG_SENSORS_SSC" ../roynas_source/arch/arm64/configs/r5q_defconfig >> arch/arm64/configs/r5q_final_defconfig || true
+          else
+            echo "⚠️ ATENȚIE: Fișierul de config Roynas nu a fost găsit la cale!"
+          fi
           
-          # 3. Identificatori R5Q
+          # 3. Identificatori R5Q obligatorii
           echo "CONFIG_MACH_SAMSUNG_R5Q=y" >> arch/arm64/configs/r5q_final_defconfig
           echo "CONFIG_LWB=y" >> arch/arm64/configs/r5q_final_defconfig
           
           # 4. Configurare BPF & BinderFS pentru Android 15
-          scripts/config --file arch/arm64/configs/r5q_final_defconfig --enable CONFIG_BPF
-          scripts/config --file arch/arm64/configs/r5q_final_defconfig --enable CONFIG_BPF_SYSCALL
-          scripts/config --file arch/arm64/configs/r5q_final_defconfig --enable CONFIG_BPF_JIT
-          scripts/config --file arch/arm64/configs/r5q_final_defconfig --enable CONFIG_ANDROID_BINDERFS
+          ./scripts/config --file arch/arm64/configs/r5q_final_defconfig --enable CONFIG_BPF
+          ./scripts/config --file arch/arm64/configs/r5q_final_defconfig --enable CONFIG_BPF_SYSCALL
+          ./scripts/config --file arch/arm64/configs/r5q_final_defconfig --enable CONFIG_BPF_JIT
+          ./scripts/config --file arch/arm64/configs/r5q_final_defconfig --enable CONFIG_ANDROID_BINDERFS
           
           # 5. Fix preventiv Type-C
-          sed -i 's/DEVID(typec_device_id);/\/\/DEVID(typec_device_id);/g' scripts/mod/devicetable-offsets.c
+          # Folosim o cale mai sigură pentru sed
+          [ -f "scripts/mod/devicetable-offsets.c" ] && sed -i 's/DEVID(typec_device_id);/\/\/DEVID(typec_device_id);/g' scripts/mod/devicetable-offsets.c || true
 
       - name: Setup Toolchain (Modern NDK Clang)
         run: |
