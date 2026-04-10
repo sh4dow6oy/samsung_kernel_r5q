@@ -39,40 +39,47 @@ jobs:
       - name: Smart Config Merge & Fixes
         run: |
           cd kernel
-          # 1. Baza: Config generic SM8150
+          # 1. Baza: Config generic SM8150 + Fragment Sixteen
           cp arch/arm64/configs/vendor/sm8150_defconfig arch/arm64/configs/r5q_final_defconfig
-          
-          # 2. Aplicăm fragmentul Sixteen (A71) pentru stabilitate Samsung modernă
           echo "" >> arch/arm64/configs/r5q_final_defconfig
           cat arch/arm64/configs/a71.config >> arch/arm64/configs/r5q_final_defconfig
           
-          # 3. Injectăm flag-urile hardware R5Q din Roynas
+          # 2. Injectăm specificul R5Q
           if [ -f "../roynas_source/arch/arm64/configs/r5q_defconfig" ]; then
             grep "CONFIG_PANEL_SAMSUNG" ../roynas_source/arch/arm64/configs/r5q_defconfig >> arch/arm64/configs/r5q_final_defconfig || true
             grep "CONFIG_TOUCHSCREEN_SAMSUNG" ../roynas_source/arch/arm64/configs/r5q_defconfig >> arch/arm64/configs/r5q_final_defconfig || true
             echo "CONFIG_MACH_SAMSUNG_R5Q=y" >> arch/arm64/configs/r5q_final_defconfig
-            echo "CONFIG_LWB=y" >> arch/arm64/configs/r5q_final_defconfig
           fi
-          
-          # 4. AJUSTĂRI FINALE (BPF, Securitate, Fix Erori)
+
+          # 3. FIX CHIRURGICAL AUDIO (Rezolvă L1SS_AUDIO undeclared)
+          # Definim L1SS_AUDIO ca 0 dacă lipsește, pentru a permite compilarea
+          sed -i '1i #define L1SS_AUDIO 0' techpack/audio/asoc/msm-pcm-q6-noirq.c
+          # Ștergem apelurile către funcțiile PCIe Samsung care nu există în baza asta
+          sed -i 's/sec_pcie_l1ss_disable(L1SS_AUDIO);//g' techpack/audio/asoc/msm-pcm-q6-noirq.c
+          sed -i 's/sec_pcie_l1ss_enable(L1SS_AUDIO);//g' techpack/audio/asoc/msm-pcm-q6-noirq.c
+
+          # 4. FIX DISPLAY (Rezolvă fatal error: 'ss_dsi_panel_common.h' file not found)
+          # Dacă fișierul lipsește, creăm un header gol sau îl simulăm pentru a nu opri procesul
+          touch drivers/gpu/drm/msm/sde/ss_dsi_panel_common.h
+          # Sau, dacă îl avem în roynas, îl forțăm (calea sigură):
+          cp ../roynas_source/drivers/gpu/drm/msm/sde/ss_dsi_panel_common.h drivers/gpu/drm/msm/sde/ 2>/dev/null || true
+
+          # 5. CONFIGURARE FINALA (BPF & Dezactivare Coresight GPU)
           ./scripts/config --file arch/arm64/configs/r5q_final_defconfig \
             --enable CONFIG_BPF \
             --enable CONFIG_BPF_SYSCALL \
             --enable CONFIG_BPF_JIT \
             --enable CONFIG_ANDROID_BINDERFS \
             --enable CONFIG_TECHPACK_AUDIO \
+            --disable CONFIG_MSM_GPU_CORESIGHT \
             --disable CONFIG_SECURITY_SMACK \
             --disable CONFIG_SECURITY_SEL_FLASK_EXPORT \
-            --disable CONFIG_MSM_GPU_CORESIGHT \
             --disable CONFIG_SAMSUNG_PRODUCT_SHIP \
             --disable CONFIG_SEC_RESTRICT_FORK \
-            --disable CONFIG_KERNELSU \
             --set-str CONFIG_LSM "lockdown,yama,loadpin,safesetid,selinux,bpf"
 
-          # 5. FIX-URI CHIRURGICALE ÎN COD
-          # Fix sec_class
+          # 6. FIX SEC_CLASS & TYPE-C
           sed -i 's/device_create(sec_class/device_create(NULL/g' drivers/input/touchscreen/sec_ts/y771/sec_ts_only_vendor.c 2>/dev/null || true
-          # Fix Type-C Modalias
           [ -f "scripts/mod/devicetable-offsets.c" ] && sed -i 's/DEVID(typec_device_id);/\/\/DEVID(typec_device_id);/g' scripts/mod/devicetable-offsets.c || true
 
       - name: Setup Toolchain (NDK Clang)
