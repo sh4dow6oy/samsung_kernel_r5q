@@ -64,6 +64,27 @@ jobs:
           # Sau, dacă îl avem în roynas, îl forțăm (calea sigură):
           cp ../roynas_source/drivers/gpu/drm/msm/sde/ss_dsi_panel_common.h drivers/gpu/drm/msm/sde/ 2>/dev/null || true
 
+          # 1. FIX is_aosp (Definim variabila globală ca să nu mai dea eroare)
+          # O setăm pe 'true' pentru că instalezi un ROM de tip AOSP/Lineage
+          sed -i '110i bool is_aosp = true;' drivers/gpu/drm/msm/sde/sde_crtc.c
+
+          # 2. FIX early_wakeup_work (Comentăm logica de trezire rapidă care lipsește din structură)
+          sed -i 's/&sde_crtc->early_wakeup_work/\/\/&sde_crtc->early_wakeup_work/g' drivers/gpu/drm/msm/sde/sde_crtc.c
+          sed -i 's/kthread_init_work(&sde_crtc->early_wakeup_work/\/\/kthread_init_work/g' drivers/gpu/drm/msm/sde/sde_crtc.c
+          
+          # Eliminăm funcția sde_crtc_early_wakeup_work_handler dacă dă eroare la container_of
+          # Metoda sigură: ștergem corpul funcției problematice
+          sed -i '/sde_crtc_early_wakeup_work_handler/,/^}/ s/^/\/\//' drivers/gpu/drm/msm/sde/sde_crtc.c
+
+          # 3. FIX Fingerprint / panel_private
+          # Samsung a modificat structura dsi_panel, dar baza Pascua e standard QCOM.
+          # Comentăm funcțiile de FOD care folosesc "panel_private" (nu vei avea amprentă în primul build, dar va boota)
+          sed -i '/static void sde_crtc_opt_fps_work/,/^}/ s/^/\/\//' drivers/gpu/drm/msm/sde/sde_crtc.c
+          
+          # Fix pentru sde_crtc.c unde se folosește vdd (samsung_display_driver_data)
+          # Căutăm liniile cu vdd-> și le comentăm
+          sed -i 's/vdd->/\/\/vdd->/g' drivers/gpu/drm/msm/sde/sde_crtc.c
+
           # 5. CONFIGURARE FINALA (BPF & Dezactivare Coresight GPU)
           ./scripts/config --file arch/arm64/configs/r5q_final_defconfig \
             --enable CONFIG_BPF \
