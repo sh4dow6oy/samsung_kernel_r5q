@@ -21,34 +21,49 @@ jobs:
 
       - name: Surgical BPF Backport & Fixes
         run: |
-          # 1. Înlocuim BPF și NET, dar aducem și BTF Header-ul lipsă
+          # 1. Ștergem vechiul motor BPF și Stack-ul de Net
           rm -rf kernel/kernel/bpf kernel/net
+          
+          # 2. Injectăm BPF și Networking de pe LineageOS 20 (Upstream)
           cp -r upstream/kernel/bpf kernel/kernel/
           cp -r upstream/net kernel/
           
-          # 2. FIX BTF (Eroarea: btf.h file not found)
+          # 3. FIX HEADERS & BTF (Rezolvă eroarea 'btf.h file not found')
           mkdir -p kernel/include/uapi/linux/
-          cp upstream/include/uapi/linux/btf.h kernel/include/uapi/linux/
-          cp upstream/include/linux/btf.h kernel/include/linux/
-
-          # 3. FIX CGROUP API BREAK (Eroarea: too many arguments to function call)
-          # Modificăm cgroup.c din baza Mainey să se potrivească cu noul API BPF (3 argumente în loc de 4)
-          sed -i 's/__cgroup_bpf_detach(cgrp, prog, type, flags)/__cgroup_bpf_detach(cgrp, prog, type)/g' kernel/kernel/cgroup/cgroup.c
-
-          # 4. FIX SYSCALL FTRUNCATE (Eroarea: conflicting types)
-          # Forțăm consistența între header și definiție pentru Android 15
-          sed -i 's/off_t length/unsigned long length/g' kernel/include/linux/syscalls.h
-          sed -i 's/off_t length/unsigned long length/g' kernel/include/linux/compat.h
-
-          # 5. SINCRONIZARE HEADERS BPF
+          cp upstream/include/uapi/linux/btf.h kernel/include/uapi/linux/ 2>/dev/null || true
+          cp upstream/include/linux/btf.h kernel/include/linux/ 2>/dev/null || true
           cp -r upstream/include/linux/bpf* kernel/include/linux/
           cp -r upstream/include/uapi/linux/bpf* kernel/include/uapi/linux/
           cp upstream/include/linux/filter.h kernel/include/linux/
+          cp upstream/include/linux/syscalls.h kernel/include/linux/
+          cp upstream/include/linux/compat.h kernel/include/linux/
 
-          # 6. FIX TYPE-C (Păstrăm restul fix-urilor)
+          # 4. FIX CGROUP API (Rezolvă 'too many arguments' în cgroup.c)
+          # Aliniem apelul funcției __cgroup_bpf_detach la noul API de 3 argumente
+          sed -i 's/__cgroup_bpf_detach(cgrp, prog, type, flags)/__cgroup_bpf_detach(cgrp, prog, type)/g' kernel/kernel/cgroup/cgroup.c
+
+          # 5. FIX BPF CORE (Rezolvă erorile de Jump Table și Tracepoints)
+          # Definim macro-ul gol pentru a nu mai da eroare la Clang
+          sed -i '1i #define __annotate_jump_table' kernel/kernel/bpf/core.c
+          # Ștergem adnotarea din linie pentru siguranță
+          sed -i 's/__annotate_jump_table//g' kernel/kernel/bpf/core.c
+          # Eliminăm exportul tracepoint-ului xdp_bulk_tx care nu există în baza 4.14
+          sed -i '/EXPORT_TRACEPOINT_SYMBOL_GPL(xdp_bulk_tx);/d' kernel/kernel/bpf/core.c
+
+          # 6. FIX SYSCALLS FTRUNCATE (Rezolvă 'conflicting types for sys_ftruncate')
+          # Forțăm utilizarea tipului 'unsigned long' pentru a se potrivi cu restul kernelului
+          sed -i 's/off_t length/unsigned long length/g' kernel/include/linux/syscalls.h
+          sed -i 's/off_t length/unsigned long length/g' kernel/include/linux/compat.h
+          sed -i 's/SYSCALL_DEFINE2(ftruncate, unsigned int, fd, off_t, length)/SYSCALL_DEFINE2(ftruncate, unsigned int, fd, unsigned long, length)/g' kernel/fs/open.c 2>/dev/null || true
+          sed -i 's/COMPAT_SYSCALL_DEFINE2(ftruncate, unsigned int, fd, compat_off_t, length)/COMPAT_SYSCALL_DEFINE2(ftruncate, unsigned int, fd, compat_ulong_t, length)/g' kernel/fs/open.c 2>/dev/null || true
+
+          # 7. FIX MODALIAS (Rezolvă eroarea 'sizeof' incomplete type typec_device_id)
           sed -i 's/DEVID(typec_device_id);/\/\/DEVID(typec_device_id);/g' kernel/scripts/mod/devicetable-offsets.c
           sed -i 's/DEVID_FIELD(typec_device_id, svid);/\/\/DEVID_FIELD(typec_device_id, svid);/g' kernel/scripts/mod/devicetable-offsets.c
           sed -i 's/DEVID_FIELD(typec_device_id, mode);/\/\/DEVID_FIELD(typec_device_id, mode);/g' kernel/scripts/mod/devicetable-offsets.c
+
+          # 8. FIX KERNELSU
+          sed -i '/kernelsu/d' kernel/drivers/android/Kconfig
 
       - name: Setup Toolchain
         run: |
