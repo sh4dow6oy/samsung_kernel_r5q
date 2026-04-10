@@ -1,68 +1,62 @@
-name: R5Q - Android 15 Full Hybrid Build
+name: R5Q - Android 15 Hybrid Build (A70Q Optimized)
 on: workflow_dispatch
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Pascua28 Base (Source)
+      - name: Checkout Pascua28 Base
         uses: actions/checkout@v4
         with:
           repository: pascua28/android_kernel_samsung_sm7150
           ref: sixteen
           path: kernel
 
-      - name: Checkout Roynas (Hardware Drivers)
+      - name: Checkout Roynas (S10 Lite Drivers)
         uses: actions/checkout@v4
         with:
           repository: Roynas-Android-Playground/kernel_samsung_r3q
           ref: master
           path: roynas_source
 
-      - name: Sync Hardware Drivers (Transplant Roynas -> Pascua)
+      - name: Sync Drivers & Fixes
         run: |
-          # 1. AUDIO: Înlocuim techpack-ul de audio cu cel de la Roynas (fix slow_insertion)
+          # 1. Transplant Audio (Roynas -> Pascua)
           rm -rf kernel/techpack/audio
           cp -r roynas_source/techpack/audio kernel/techpack/
           
-          # 2. DISPLAY: Copiem headerele de panel lipsă
-          cp roynas_source/drivers/gpu/drm/msm/sde/*.h kernel/drivers/gpu/drm/msm/sde/ 2>/dev/null || true
-          
-          # 3. TOUCHSCREEN: Înlocuim driverul de touch Samsung
-          rm -rf kernel/drivers/input/touchscreen/sec_ts
-          cp -r roynas_source/drivers/input/touchscreen/sec_ts kernel/drivers/input/touchscreen/
-          
-          # 4. UAPI: Sincronizăm headerele de display pentru utilizator
-          mkdir -p kernel/include/uapi/display
-          cp -r roynas_source/include/uapi/display/*.h kernel/include/uapi/display/ 2>/dev/null || true
-
-      - name: Smart Config Merge & Fixes
-        run: |
+          # 2. Resetăm fișierele de sistem care au dat erori
+          # Folosim originalele din Pascua care sunt compatibile cu ramura 'sixteen'
           cd kernel
-          # 1. Revenim la fișierele originale ale bazei pentru componentele care crapă
-          # Acestea sunt garantate să se compileze pe ramura 'sixteen'
           git checkout drivers/gpu/drm/msm/sde/sde_crtc.c
           
-          # 2. Pregătim config-ul hibrid
-          cp arch/arm64/configs/vendor/sm8150_defconfig arch/arm64/configs/r5q_final_defconfig
-          echo "" >> arch/arm64/configs/r5q_final_defconfig
-          cat arch/arm64/configs/a71.config >> arch/arm64/configs/r5q_final_defconfig
-          
-          # 3. Injectăm doar identitatea hardware R5Q
-          echo "CONFIG_MACH_SAMSUNG_R5Q=y" >> arch/arm64/configs/r5q_final_defconfig
-          echo "CONFIG_LWB=y" >> arch/arm64/configs/r5q_final_defconfig
-
-          # 4. FIX CHIRURGICAL AUDIO (Păstrăm transplantul dar tăiem erorile PCIe)
+          # 3. Fix chirurgical Audio (L1SS_AUDIO fix)
           sed -i '1i #define L1SS_AUDIO 0' techpack/audio/asoc/msm-pcm-q6-noirq.c
           sed -i 's/sec_pcie_l1ss_disable(L1SS_AUDIO);//g' techpack/audio/asoc/msm-pcm-q6-noirq.c
           sed -i 's/sec_pcie_l1ss_enable(L1SS_AUDIO);//g' techpack/audio/asoc/msm-pcm-q6-noirq.c
 
-          # 5. CONFIGURARE ANTI-EROARE
+      - name: Smart Config Merge (A70Q + A71 + R5Q)
+        run: |
+          cd kernel
+          # Baza SM8150
+          cp arch/arm64/configs/vendor/sm8150_defconfig arch/arm64/configs/r5q_final_defconfig
+          
+          # Aplicăm fragmentele de la Pascua (A71 și A70Q)
+          # A70Q aduce setările de senzori și baterie critice pentru SM7150/8150 Samsung
+          cat arch/arm64/configs/a71.config >> arch/arm64/configs/r5q_final_defconfig
+          cat arch/arm64/configs/a70q.config >> arch/arm64/configs/r5q_final_defconfig
+          
+          # Identitate S10 Lite
+          echo "CONFIG_MACH_SAMSUNG_R5Q=y" >> arch/arm64/configs/r5q_final_defconfig
+          echo "CONFIG_LWB=y" >> arch/arm64/configs/r5q_final_defconfig
+          
+          # Ajustări Android 15 și Curățenie
           ./scripts/config --file arch/arm64/configs/r5q_final_defconfig \
             --enable CONFIG_BPF \
             --enable CONFIG_BPF_SYSCALL \
             --enable CONFIG_BPF_JIT \
             --enable CONFIG_ANDROID_BINDERFS \
+            --enable CONFIG_TECHPACK_AUDIO \
             --disable CONFIG_MSM_GPU_CORESIGHT \
             --disable CONFIG_SECURITY_SMACK \
             --disable CONFIG_SECURITY_SEL_FLASK_EXPORT \
@@ -70,9 +64,7 @@ jobs:
             --disable CONFIG_SEC_RESTRICT_FORK \
             --set-str CONFIG_LSM "lockdown,yama,loadpin,safesetid,selinux,bpf"
 
-          # 6. Fix-uri globale de mediu
-          [ -f "scripts/mod/devicetable-offsets.c" ] && sed -i 's/DEVID(typec_device_id);/\/\/DEVID(typec_device_id);/g' scripts/mod/devicetable-offsets.c || true
-      - name: Setup Toolchain (NDK Clang)
+      - name: Setup Toolchain
         run: |
           sudo apt-get update
           sudo apt-get install -y bc build-essential flex bison lz4 libssl-dev libelf-dev zstd zip gcc-aarch64-linux-gnu
@@ -91,25 +83,19 @@ jobs:
           
           make $MAKE_ARGS r5q_final_defconfig
           yes "" | make $MAKE_ARGS olddefconfig
-          
-          # Compilăm imaginea cu DTB concatenat
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-w" O=out Image.gz-dtb
 
       - name: Package with AnyKernel3
         run: |
           git clone https://github.com/osm0sis/AnyKernel3.git
           cp kernel/out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
-          
           cd AnyKernel3
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-          # S10 Lite specific block
-          sed -i 's/block=\/dev\/block\/td/block=\/dev\/block\/by-name\/boot/g' anykernel.sh
           sed -i '/flash_dtbo/d' anykernel.sh
-          
-          zip -r9 ../Lumi-R5Q-A15-Hybrid.zip *
+          zip -r9 ../Kernel-R5Q-A15-A70Q-Hybrid.zip *
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-R5Q-A15
-          path: Lumi-R5Q-A15-Hybrid.zip
+          name: Kernel-Image-R5Q
+          path: Kernel-R5Q-A15-A70Q-Hybrid.zip
