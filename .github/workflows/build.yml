@@ -1,71 +1,52 @@
-name: R5Q - BPF Upstream & Android 15 Prep
+name: R5Q - Android 15 Final Merged
 on: workflow_dispatch
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Mainey Base
+      - name: Checkout Pascua28 Base (Source)
         uses: actions/checkout@v4
         with:
-          repository: mainey/android_kernel_samsung_r5q
-          ref: lineage-19.0
+          repository: pascua28/android_kernel_samsung_sm7150
+          ref: sixteen
           path: kernel
 
-      - name: Checkout LineageOS 20 (BPF Source)
+      - name: Checkout Roynas (Hardware Config)
         uses: actions/checkout@v4
         with:
-          repository: LineageOS/android_kernel_qcom_sm8150
-          ref: lineage-20
-          path: upstream
+          repository: Roynas-Android-Playground/kernel_samsung_r3q
+          ref: master
+          path: roynas_source
 
-      - name: Surgical BPF Backport & Fixes
+      - name: Smart Config Merge & Fixes
         run: |
-          # 1. Curățare și Injectare Surse
-          rm -rf kernel/kernel/bpf kernel/net
-          cp -r upstream/kernel/bpf kernel/kernel/
-          cp -r upstream/net kernel/
+          cd kernel
+          # 1. Plecăm de la baza modernă sm8150 (BPF/A15 ready)
+          cp arch/arm64/configs/vendor/sm8150_defconfig arch/arm64/configs/r5q_final_defconfig
           
-          # 2. Fix Headers (BTF & BPF)
-          mkdir -p kernel/include/uapi/linux/
-          cp upstream/include/uapi/linux/btf.h kernel/include/uapi/linux/ 2>/dev/null || true
-          cp upstream/include/linux/btf.h kernel/include/linux/ 2>/dev/null || true
-          cp -r upstream/include/linux/bpf* kernel/include/linux/
-          cp -r upstream/include/uapi/linux/bpf* kernel/include/uapi/linux/
-          cp upstream/include/linux/filter.h kernel/include/linux/
-
-          # 3. FIX core.c (Jump Table & Empty Define)
-          # În loc de sed 1i, folosim o metodă care nu strică prima linie
-          sed -i '/#include/a #define __annotate_jump_table' kernel/kernel/bpf/core.c
-          sed -i 's/__annotate_jump_table//g' kernel/kernel/bpf/core.c
-          sed -i '/EXPORT_TRACEPOINT_SYMBOL_GPL(xdp_bulk_tx);/d' kernel/kernel/bpf/core.c
-
-          # 4. FIX syscall.c (Eliminăm apelurile PERF care nu există în 4.14)
-          sed -i '/perf_event_bpf_event/d' kernel/kernel/bpf/syscall.c
-          # Fix pentru struct bpf_raw_event_map și alte funcții lipsă în perf
-          sed -i '/bpf_get_raw_tracepoint/d' kernel/kernel/bpf/syscall.c
-          sed -i '/perf_get_event/d' kernel/kernel/bpf/syscall.c
-
-          # 5. FIX cgroup.c (API Adjustment)
-          sed -i 's/__cgroup_bpf_detach(cgrp, prog, type, flags)/__cgroup_bpf_detach(cgrp, prog, type)/g' kernel/kernel/cgroup/cgroup.c
-
-          # 6. REPARAȚIE FINALĂ SYSCALL FTRUNCATE (Conflict compat_sys)
-          # Revenim la tipurile originale din headere pentru a opri conflictul
-          # Dar modificăm open.c să se potrivească cu ceea ce așteaptă baza Samsung/Lineage
-          sed -i 's/unsigned long length/off_t length/g' kernel/include/linux/syscalls.h
-          sed -i 's/compat_ulong_t/compat_off_t/g' kernel/include/linux/compat.h
+          # 2. Injectăm driverele hardware Samsung de la Roynas (Display, Touch, Battery, Camera)
+          # Extragem tot ce ține de Samsung, Touchscreen și Senzori din config-ul lui Roynas
+          grep "CONFIG_SAMSUNG" ../roynas_source/arch/arm64/configs/r5q_defconfig >> arch/arm64/configs/r5q_final_defconfig
+          grep "CONFIG_TOUCHSCREEN_SAMSUNG" ../roynas_source/arch/arm64/configs/r5q_defconfig >> arch/arm64/configs/r5q_final_defconfig
+          grep "CONFIG_BATTERY_SAMSUNG" ../roynas_source/arch/arm64/configs/r5q_defconfig >> arch/arm64/configs/r5q_final_defconfig
+          grep "CONFIG_PANEL_SAMSUNG" ../roynas_source/arch/arm64/configs/r5q_defconfig >> arch/arm64/configs/r5q_final_defconfig
+          grep "CONFIG_SENSORS_SSC" ../roynas_source/arch/arm64/configs/r5q_defconfig >> arch/arm64/configs/r5q_final_defconfig
           
-          # Aliniem open.c la headerele de mai sus
-          sed -i 's/unsigned long, length/off_t, length/g' kernel/fs/open.c
-          sed -i 's/compat_ulong_t, length/compat_off_t, length/g' kernel/fs/open.c
+          # 3. Identificatori R5Q
+          echo "CONFIG_MACH_SAMSUNG_R5Q=y" >> arch/arm64/configs/r5q_final_defconfig
+          echo "CONFIG_LWB=y" >> arch/arm64/configs/r5q_final_defconfig
+          
+          # 4. Asigurăm BPF pentru Android 15
+          scripts/config --file arch/arm64/configs/r5q_final_defconfig --enable CONFIG_BPF
+          scripts/config --file arch/arm64/configs/r5q_final_defconfig --enable CONFIG_BPF_SYSCALL
+          scripts/config --file arch/arm64/configs/r5q_final_defconfig --enable CONFIG_BPF_JIT
+          scripts/config --file arch/arm64/configs/r5q_final_defconfig --enable CONFIG_ANDROID_BINDERFS
+          
+          # 5. Fix preventiv Type-C (sizeof)
+          sed -i 's/DEVID(typec_device_id);/\/\/DEVID(typec_device_id);/g' scripts/mod/devicetable-offsets.c
 
-          # 7. FIX MODALIAS & KERNELSU
-          sed -i 's/DEVID(typec_device_id);/\/\/DEVID(typec_device_id);/g' kernel/scripts/mod/devicetable-offsets.c
-          sed -i 's/DEVID_FIELD(typec_device_id, svid);/\/\/DEVID_FIELD(typec_device_id, svid);/g' kernel/scripts/mod/devicetable-offsets.c
-          sed -i 's/DEVID_FIELD(typec_device_id, mode);/\/\/DEVID_FIELD(typec_device_id, mode);/g' kernel/scripts/mod/devicetable-offsets.c
-          sed -i '/kernelsu/d' kernel/drivers/android/Kconfig
-
-      - name: Setup Toolchain
+      - name: Setup Toolchain (NDK Clang)
         run: |
           sudo apt-get update
           sudo apt-get install -y bc build-essential flex bison lz4 libssl-dev libelf-dev zstd zip gcc-aarch64-linux-gnu
@@ -75,7 +56,7 @@ jobs:
           wget -q https://raw.githubusercontent.com/LumiPlayground/android_kernel_samsung_sm8150/rawr-bpf/tools/mkdtimg -O mkdtimg
           chmod +x mkdtimg
 
-      - name: Build Kernel with Android 15 BPF Flags
+      - name: Build Kernel
         run: |
           cd kernel
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
@@ -84,28 +65,17 @@ jobs:
             CROSS_COMPILE=aarch64-linux-gnu- \
             LD=ld.lld O=out"
           
-          make $MAKE_ARGS r5q_eur_open_defconfig
+          make $MAKE_ARGS r5q_final_defconfig
           
-          # --- CONFIGURARE BPF PENTRU ANDROID 15 ---
-          scripts/config --file out/.config --enable CONFIG_BPF
-          scripts/config --file out/.config --enable CONFIG_BPF_SYSCALL
-          scripts/config --file out/.config --enable CONFIG_BPF_JIT
-          scripts/config --file out/.config --enable CONFIG_BPF_EVENTS
-          scripts/config --file out/.config --enable CONFIG_NETFILTER_XT_MATCH_BPF
-          scripts/config --file out/.config --enable CONFIG_NET_CLS_BPF
-          scripts/config --file out/.config --enable CONFIG_CGROUP_BPF
-          
-          # --- FIX ANDROID 15 BOOT ---
+          # Curățăm conflictele dintre cele două config-uri
           scripts/config --file out/.config --disable CONFIG_SAMSUNG_PRODUCT_SHIP
-          scripts/config --file out/.config --enable CONFIG_ANDROID_BINDER_IPC
-          scripts/config --file out/.config --enable CONFIG_ANDROID_BINDERFS
+          scripts/config --file out/.config --disable CONFIG_SEC_RESTRICT_FORK
           
           yes "" | make $MAKE_ARGS olddefconfig
           
-          # Compilăm
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-w" O=out Image.gz-dtb dtbs
 
-      - name: Generate DTBO & Package
+      - name: Package AnyKernel3
         run: |
           DTBO_FILES=$(find kernel/out/arch/arm64/boot/dts -name "*.dtbo")
           ./mkdtimg create dtbo.img $DTBO_FILES
@@ -116,13 +86,13 @@ jobs:
           
           cd AnyKernel3
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-          # Injectăm maparea DTBO pentru S10 Lite
+          # Mapare block DTBO R5Q (S10 Lite)
           sed -i '/device.name1=r5q/a dtbo_block=/dev/block/by-name/dtbo;' anykernel.sh
           echo 'flash_dtbo;' >> anykernel.sh
-          zip -r9 ../Lumi-R5Q-A15-BPF.zip *
+          zip -r9 ../Kernel-A15-R5Q-Final.zip *
 
-      - name: Upload
+      - name: Upload Build
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-A15-BPF
-          path: Lumi-R5Q-A15-BPF.zip
+          name: Kernel-S10Lite-A15
+          path: Kernel-A15-R5Q-Final.zip
