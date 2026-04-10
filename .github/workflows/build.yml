@@ -17,7 +17,7 @@ jobs:
           cd kernel
           # 1. PREGĂTIRE CONFIG HIBRID
           # Copiem baza stabilă pentru ramura Sixteen
-          cp arch/arm64/configs/vendor/sdmmagpie_defconfig arch/arm64/configs/r5q_hybrid_defconfig
+          cp arch/arm64/configs/sdmmagpie_defconfig arch/arm64/configs/r5q_hybrid_defconfig
           
           # Descărcăm setările specifice R5Q de la Roynas
           curl -s https://raw.githubusercontent.com/Roynas-Android-Playground/kernel_samsung_r3q/master/arch/arm64/configs/r5q_defconfig > roynas_r5q.config
