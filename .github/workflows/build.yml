@@ -41,18 +41,18 @@ jobs:
           cd kernel
           # 1. Revenim la fișierele originale ale bazei pentru componentele care crapă
           # Acestea sunt garantate să se compileze pe ramura 'sixteen'
-          git checkout arch/arm64/configs/vendor/sm8150_defconfig
           git checkout drivers/gpu/drm/msm/sde/sde_crtc.c
           
           # 2. Pregătim config-ul hibrid
           cp arch/arm64/configs/vendor/sm8150_defconfig arch/arm64/configs/r5q_final_defconfig
+          echo "" >> arch/arm64/configs/r5q_final_defconfig
           cat arch/arm64/configs/a71.config >> arch/arm64/configs/r5q_final_defconfig
           
-          # 3. Injectăm doar identitatea hardware, nu și codul problematic
+          # 3. Injectăm doar identitatea hardware R5Q
           echo "CONFIG_MACH_SAMSUNG_R5Q=y" >> arch/arm64/configs/r5q_final_defconfig
           echo "CONFIG_LWB=y" >> arch/arm64/configs/r5q_final_defconfig
 
-          # 4. FIX CHIRURGICAL AUDIO (Singurul transplant care merită păstrat)
+          # 4. FIX CHIRURGICAL AUDIO (Păstrăm transplantul dar tăiem erorile PCIe)
           sed -i '1i #define L1SS_AUDIO 0' techpack/audio/asoc/msm-pcm-q6-noirq.c
           sed -i 's/sec_pcie_l1ss_disable(L1SS_AUDIO);//g' techpack/audio/asoc/msm-pcm-q6-noirq.c
           sed -i 's/sec_pcie_l1ss_enable(L1SS_AUDIO);//g' techpack/audio/asoc/msm-pcm-q6-noirq.c
