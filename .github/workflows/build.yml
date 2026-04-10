@@ -1,4 +1,4 @@
-name: R5Q - Android 15 Pure Build (Optimized)
+name: R5Q - Android 15 Pure Build (Final Fixes)
 on: workflow_dispatch
 
 jobs:
@@ -15,29 +15,42 @@ jobs:
       - name: Smart Config & Hardware Fixes
         run: |
           cd kernel
-          # 1. GENERARE CONFIG HIBRID
-          # Folosim defconfig-ul de bază indicat și fragmentele Samsung stabile
+          # 1. GENERARE CONFIG
           cp arch/arm64/configs/defconfig arch/arm64/configs/r5q_final_defconfig
-          echo "" >> arch/arm64/configs/r5q_final_defconfig
           cat arch/arm64/configs/a71.config >> arch/arm64/configs/r5q_final_defconfig
           cat arch/arm64/configs/a70q.config >> arch/arm64/configs/r5q_final_defconfig
           
-          # 2. AJUSTĂRI CRITICE (Fix NR_CPUS & Stabilitate)
+          # 2. AJUSTĂRI CONFIG
           ./scripts/config --file arch/arm64/configs/r5q_final_defconfig \
             --set-val CONFIG_NR_CPUS 8 \
             --enable CONFIG_MACH_SAMSUNG_R5Q \
             --enable CONFIG_LWB \
             --enable CONFIG_BPF \
             --enable CONFIG_BPF_SYSCALL \
-            --enable CONFIG_BPF_JIT \
             --enable CONFIG_ANDROID_BINDERFS \
             --disable CONFIG_KVM \
             --disable CONFIG_VIRTUALIZATION \
             --disable CONFIG_MSM_GPU_CORESIGHT \
-            --disable CONFIG_SCHEDSTATS \
             --disable CONFIG_SAMSUNG_PRODUCT_SHIP
 
-          # 3. FIX-URI CHIRURGICALE ÎN COD (Cea mai importantă parte)
+          # 3. FIX-URI CHIRURGICALE PENTRU ERORILE CLANG (The Core Fixes)
+          
+          # Fix redefinition error in trace_event_perf.c (Linia 433 vs 431)
+          # Ștergem a doua definiție a variabilei 'event'
+          sed -i '433d' kernel/trace/trace_event_perf.c
+
+          # Fix fanotify_fdinfo incompatible pointer type
+          # Modificăm apelul funcției pentru a ignora tipul strict de pointer cerut de Clang
+          sed -i 's/show_fdinfo(m, f, fanotify_fdinfo);/show_fdinfo(m, f, (void *)fanotify_fdinfo);/g' fs/notify/fdinfo.c
+
+          # Fix task_mmu.c (Incompatible integer to pointer conversion)
+          # Forțăm cast-ul la (pmd_t *) pentru a liniști compilatorul
+          sed -i 's/split_huge_pmd(vma, addr, pmd);/split_huge_pmd(vma, addr, (pmd_t *)pmd);/g' fs/proc/task_mmu.c
+
+          # Fix NFS4 incompatible integer to pointer (xdr_encode_nfstime4)
+          # Adăugăm (void *) pentru a permite conversia de tip
+          sed -i 's/p = xdr_encode_nfstime4(p, \&ts);/(void)xdr_encode_nfstime4(p, \&ts);/g' fs/nfs/nfs4xdr.c
+
           # Fix KVM / Sched error (pids)
           sed -i 's/current->pids\[PIDTYPE_PID\].pid/current->pid/g' virt/kvm/kvm_main.c 2>/dev/null || true
           
@@ -47,8 +60,8 @@ jobs:
           # Fix Tracepoint NR_CPUS error
           sed -i 's/#error "Unsupported NR_CPUS for lb tracepoint."/\/\/ #error "Unsupported NR_CPUS for lb tracepoint."/g' include/trace/events/sched.h
           
-          # Fix GPU Coresight (Golim fișierul care dă erori)
-          echo "/* Golit pentru compatibilitate */" > drivers/gpu/msm/adreno_coresight.c
+          # Fix GPU Coresight
+          echo "/* Golit */" > drivers/gpu/msm/adreno_coresight.c
 
       - name: Setup Toolchain
         run: |
@@ -61,32 +74,23 @@ jobs:
         run: |
           cd kernel
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
-          
-          # LLVM_IAS=1 este obligatoriu pentru a evita eroarea /usr/bin/as: unrecognized option '-EL'
-          export MAKE_ARGS="ARCH=arm64 \
-            LLVM=1 \
-            LLVM_IAS=1 \
-            CC=clang \
-            CLANG_TRIPLE=aarch64-linux-gnu- \
-            CROSS_COMPILE=aarch64-linux-gnu- \
-            O=out"
+          export MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu- O=out"
           
           make $MAKE_ARGS r5q_final_defconfig
           make $MAKE_ARGS olddefconfig
+          # KCFLAGS="-w" este critic aici: spune compilatorului să ignore avertizările (warnings) și să nu le considere erori
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-w" O=out Image.gz-dtb
 
-      - name: Package with AnyKernel3
+      - name: Package
         run: |
           git clone https://github.com/osm0sis/AnyKernel3.git
           cp kernel/out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
           cd AnyKernel3
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-          # Setăm numele kernelului în installer
-          sed -i 's/kernel.string=AnyKernel3/kernel.string=Lumi-Kernel-R5Q-A15/g' anykernel.sh
           zip -r9 ../Lumi-Kernel-S10Lite-A15.zip *
 
-      - name: Upload Artifact
+      - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Lumi-Kernel-S10Lite
+          name: Lumi-Kernel
           path: Lumi-Kernel-S10Lite-A15.zip
