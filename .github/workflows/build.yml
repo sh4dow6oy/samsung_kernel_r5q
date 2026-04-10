@@ -38,28 +38,32 @@ jobs:
       - name: Smart Config Merge & Hardware Fixes
         run: |
           cd kernel
-          # 1. RESETĂM fișierul de display la cel original (Esențial pentru a scăpa de fatal error)
-          # Fișierul original din Pascua Sixteen e deja configurat pentru ramura asta
-          git checkout drivers/gpu/drm/msm/sde/sde_crtc.c
+          
+          # 1. FIX GPU (Rezolvă eroarea adreno_coresight.c fără a strica Makefile-ul)
+          # Pur și simplu golim conținutul fișierului problematic. 
+          # Compilatorul îl va vedea ca un fișier valid, dar gol, și nu va genera erori.
+          echo "/* Golit pentru compatibilitate Android 15 */" > drivers/gpu/msm/adreno_coresight.c
 
-          # 2. Ștergem fizic fișierul de coresight GPU dacă tot insistă să fie compilat
-          # Asta e metoda "nucleară" dacă dezactivarea din config nu e ascultată de Makefile
-          echo "obj-y -= adreno_coresight.o" >> drivers/gpu/msm/Makefile
+          # 2. FIX DISPLAY (Rezolvă eroarea ss_dsi_panel_common.h)
+          # Creăm un header gol pentru a satisface cerința #include
+          touch drivers/gpu/drm/msm/sde/ss_dsi_panel_common.h
+          # Comentăm linia de include în fișierul sursă ca măsură de siguranță
+          sed -i 's/#include "ss_dsi_panel_common.h"/\/\/ #include "ss_dsi_panel_common.h"/g' drivers/gpu/drm/msm/sde/sde_crtc.c
+
+          # 3. CONSTRUCȚIE CONFIG (Folosind defconfig-ul indicat de tine)
+          # Luăm baza curată
+          cp arch/arm64/configs/defconfig arch/arm64/configs/r5q_final_defconfig
           
-          # 3. Pregătim config-ul hibrid
-          cp arch/arm64/configs/vendor/sm8150_defconfig arch/arm64/configs/r5q_final_defconfig
-          
-          # 4. Concatenăm fragmentele de la Pascua (A71 + A70Q)
-          # A70Q este crucial pentru arhitectura de senzori și PMIC pe Samsung SM8150/7150
+          # Adăugăm fragmentele de la Pascua (A71 + A70Q) pentru suport Samsung
           echo "" >> arch/arm64/configs/r5q_final_defconfig
           cat arch/arm64/configs/a71.config >> arch/arm64/configs/r5q_final_defconfig
           cat arch/arm64/configs/a70q.config >> arch/arm64/configs/r5q_final_defconfig
           
-          # 5. Injectăm identitatea R5Q
+          # Injectăm identitatea S10 Lite (R5Q)
           echo "CONFIG_MACH_SAMSUNG_R5Q=y" >> arch/arm64/configs/r5q_final_defconfig
           echo "CONFIG_LWB=y" >> arch/arm64/configs/r5q_final_defconfig
           
-          # 6. CONFIGURARE ANTI-EROARE
+          # 4. CONFIGURARE ANTI-EROARE
           ./scripts/config --file arch/arm64/configs/r5q_final_defconfig \
             --enable CONFIG_BPF \
             --enable CONFIG_BPF_SYSCALL \
@@ -68,18 +72,14 @@ jobs:
             --enable CONFIG_TECHPACK_AUDIO \
             --disable CONFIG_MSM_GPU_CORESIGHT \
             --disable CONFIG_SECURITY_SMACK \
-            --disable CONFIG_SECURITY_SEL_FLASK_EXPORT \
             --disable CONFIG_SAMSUNG_PRODUCT_SHIP \
             --disable CONFIG_SEC_RESTRICT_FORK \
             --set-str CONFIG_LSM "lockdown,yama,loadpin,safesetid,selinux,bpf"
 
-          # 7. FIX AUDIO (Pentru a păstra funcțional transplantul de la Roynas)
+          # 5. FIX AUDIO (Pentru a păstra transplantul de la Roynas)
           sed -i '1i #define L1SS_AUDIO 0' techpack/audio/asoc/msm-pcm-q6-noirq.c
           sed -i 's/sec_pcie_l1ss_disable(L1SS_AUDIO);//g' techpack/audio/asoc/msm-pcm-q6-noirq.c
           sed -i 's/sec_pcie_l1ss_enable(L1SS_AUDIO);//g' techpack/audio/asoc/msm-pcm-q6-noirq.c
-
-          # 8. Fix preventiv Type-C
-          [ -f "scripts/mod/devicetable-offsets.c" ] && sed -i 's/DEVID(typec_device_id);/\/\/DEVID(typec_device_id);/g' scripts/mod/devicetable-offsets.c || true
       - name: Setup Toolchain
         run: |
           sudo apt-get update
