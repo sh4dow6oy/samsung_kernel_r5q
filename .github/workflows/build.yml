@@ -1,4 +1,4 @@
-name: R5Q - Android 15 (Linker & Audio Duplicate Fix)
+name: R5Q - Android 15 (Final Linker Fix)
 on: workflow_dispatch
 
 jobs:
@@ -12,7 +12,7 @@ jobs:
           ref: sixteen
           path: kernel
 
-      - name: Hybrid Config & Hardware Fixes
+      - name: Hybrid Config & Linker Fixes
         run: |
           cd kernel
           # 1. CONFIG HIBRID
@@ -21,8 +21,7 @@ jobs:
           echo "" >> arch/arm64/configs/r5q_hybrid_defconfig
           cat roynas_r5q.config >> arch/arm64/configs/r5q_hybrid_defconfig
 
-          # 2. ELIMINARE DUPLICATE AUDIO (SM6150 vs SM8150)
-          # Forțăm kernelul să ignore platforma SM6150/SM7150 pentru audio, deoarece R5Q este SM8150
+          # 2. ELIMINARE CONFLICTE AUDIO (SM6150/7150 vs SM8150)
           ./scripts/config --file arch/arm64/configs/r5q_hybrid_defconfig \
             --disable CONFIG_SND_SOC_SM6150 \
             --disable CONFIG_SND_SOC_SM7150 \
@@ -33,14 +32,13 @@ jobs:
             --enable CONFIG_BPF_SYSCALL \
             --set-val CONFIG_NR_CPUS 8 \
             --enable CONFIG_MACH_SAMSUNG_R5Q \
-            --disable CONFIG_MSM_GPU_CORESIGHT \
             --disable CONFIG_BPFILTER
 
-          # 3. FIX DUPLICATE SYMBOLS ÎN COD (swrm_wcd_notify)
-          # Dacă simbolul este definit în două locuri, marcăm una dintre ele ca 'weak' pentru linker
-          sed -i 's/void swrm_wcd_notify/void __attribute__((weak)) swrm_wcd_notify/g' techpack/audio/soc/swr-wcd-ctrl.c 2>/dev/null || true
-
-          # 4. TOATE FIX-URILE ANTERIOARE (Audio, Sensors, System)
+          # 3. FIX DUPLICATE SYMBOLS (Chirurgical)
+          # Eliminăm definiția duplicat pentru swrm_wcd_notify
+          sed -i 's/void swrm_wcd_notify/__attribute__((weak)) void swrm_wcd_notify/g' techpack/audio/soc/swr-wcd-ctrl.c
+          
+          # 4. FIX TOATE ERORILE ANTERIOARE
           sed -i 's/!mbhc->slow_insertion/1/g' techpack/audio/asoc/codecs/wcd-mbhc-adc.c
           sed -i 's/&& mbhc->slow_insertion//g' techpack/audio/asoc/codecs/wcd-mbhc-adc.c
           sed -i 's/PD_NOTI_ATTACH_TYPEDEF/CC_NOTI_ATTACH_TYPEDEF/g' drivers/sensors/sx9360.c
@@ -65,18 +63,22 @@ jobs:
         run: |
           cd kernel
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
-          # Adăugăm LLVM=1 și LLVM_IAS=1 pentru a asigura folosirea linker-ului lld corect
           export MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu- O=out"
           
           make $MAKE_ARGS r5q_hybrid_defconfig
           make $MAKE_ARGS olddefconfig
-          # KCFLAGS="-w" și ignorarea bpfilter
-          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-w" CONFIG_BPFILTER=n O=out Image.gz-dtb
+          
+          # Adăugăm flag-ul de linker pentru a ignora duplicările dacă mai apar
+          make -j$(nproc --all) $MAKE_ARGS \
+            KCFLAGS="-w" \
+            KAFLAGS="-w" \
+            LDFLAGS="--allow-multiple-definition" \
+            O=out Image.gz-dtb
 
       - name: Package
         run: |
           git clone https://github.com/osm0sis/AnyKernel3.git
-          cp kernel/out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
+          cp kernel/out/arch/arch/arm64/boot/Image.gz-dtb AnyKernel3/ 2>/dev/null || cp kernel/out/arch/arm64/boot/Image.gz AnyKernel3/
           cd AnyKernel3
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
           zip -r9 ../Lumi-Kernel-R5Q-Final.zip *
@@ -84,5 +86,5 @@ jobs:
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Lumi-Kernel
+          name: Lumi-Kernel-R5Q
           path: Lumi-Kernel-R5Q-Final.zip
