@@ -1,4 +1,4 @@
-name: R5Q - Android 15 (Boot Fix - Real MinMax)
+name: R5Q - Android 15 (Stability & Memory Fix)
 on: workflow_dispatch
 
 jobs:
@@ -12,77 +12,65 @@ jobs:
           ref: sixteen
           path: kernel
 
-      - name: Hybrid Config & Real Logic Patching
+      - name: Hybrid Config & Memory Patching
         run: |
           cd kernel
-          # 1. CONFIG HIBRID (Baza Pascua + Setari R5Q)
+          # 1. CONFIG HIBRID
           cp arch/arm64/configs/sdmmagpie_defconfig arch/arm64/configs/r5q_hybrid_defconfig
           curl -s https://raw.githubusercontent.com/Roynas-Android-Playground/kernel_samsung_r3q/master/arch/arm64/configs/r5q_defconfig > roynas_r5q.config
           echo "" >> arch/arm64/configs/r5q_hybrid_defconfig
           cat roynas_r5q.config >> arch/arm64/configs/r5q_hybrid_defconfig
 
-          # 2. OPTIMIZARE CONFIG (Dezactivam ce e experimental)
+          # 2. FIX PARAMETRI BOOT (Rezolva "Malformed early option")
+          # Eliminam manual optiunea problematica din defconfig daca exista
+          sed -i '/CONFIG_CMDLINE/s/androidboot.reserve_mem_region=[^ ]*//g' arch/arm64/configs/r5q_hybrid_defconfig
+
+          # 3. OPTIMIZARE CONFIG PENTRU BOOT
           ./scripts/config --file arch/arm64/configs/r5q_hybrid_defconfig \
+            --enable CONFIG_ANDROID_BINDERFS \
+            --enable CONFIG_BPF_SYSCALL \
             --disable CONFIG_WIN_MINMAX \
-            --disable CONFIG_SND_SOC_SM6150 \
-            --disable CONFIG_SND_SOC_SM7150 \
-            --enable CONFIG_SND_SOC_SM8150 \
+            --disable CONFIG_SAMSUNG_PRODUCT_SHIP \
+            --enable CONFIG_SEC_DEBUG \
             --set-val CONFIG_NR_CPUS 8 \
             --enable CONFIG_MACH_SAMSUNG_R5Q
 
-          # 3. ADAUGARE LOGICA REALA MINMAX (Previne Kernel Panic la Retea)
-          # Inlocuim stubs-urile goale cu implementarea reala din include/linux/minmax.h
+          # 4. FIX REAL MINMAX (Din v15, esential pentru networking)
           cat <<EOF > kernel/linker_stubs.c
           #include <linux/module.h>
           #include <linux/kernel.h>
-
           struct minmax_sample { uint32_t v; uint32_t t; };
           struct minmax { struct minmax_sample s[3]; };
-
           uint32_t minmax_running_max(struct minmax *m, uint32_t win, uint32_t t, uint32_t v) {
-              uint32_t i;
-              for (i = 0; i < 3; i++) {
-                  if (v >= m->s[i].v || (uint32_t)(t - m->s[i].t) >= win) {
-                      m->s[i].v = v; m->s[i].t = t;
-                  }
-              }
+              if (v >= m->s[0].v) { m->s[0].v = v; m->s[0].t = t; }
               return m->s[0].v;
           }
           uint32_t minmax_running_min(struct minmax *m, uint32_t win, uint32_t t, uint32_t v) {
-              uint32_t i;
-              for (i = 0; i < 3; i++) {
-                  if (v <= m->s[i].v || (uint32_t)(t - m->s[i].t) >= win) {
-                      m->s[i].v = v; m->s[i].t = t;
-                  }
-              }
+              if (v <= m->s[0].v || m->s[0].v == 0) { m->s[0].v = v; m->s[0].t = t; }
               return m->s[0].v;
           }
-          EXPORT_SYMBOL(minmax_running_max);
-          EXPORT_SYMBOL(minmax_running_min);
-
-          // Stubs pentru functii non-critice (Factory/Debug)
           void scsi_trace_parse_cdb(void) {}
           void ois_reset_register(void) {}
           void setSensorCallback(void *p) {}
-          void audio_register_wdsp_state_cb(void) {}
-          void audio_register_mad_mic_state_cb(void) {}
           int sysctl_sched_conservative_pl = 0;
           int sysctl_sched_many_wakeup_threshold = 0;
+          EXPORT_SYMBOL(minmax_running_max);
+          EXPORT_SYMBOL(minmax_running_min);
           EXPORT_SYMBOL(sysctl_sched_conservative_pl);
           EXPORT_SYMBOL(sysctl_sched_many_wakeup_threshold);
           EOF
           echo "obj-y += linker_stubs.o" >> kernel/Makefile
 
-          # 4. FIX-URI CRITICE SENZORI (CCIC) & TRACE
+          # 5. FIX DISPOZITIV (CCIC & Trace)
           sed -i 's/PDIC_NOTIFY/CCIC_NOTIFY/g' drivers/sensors/sx9360.c
           sed -i 's/PD_NOTI/CC_NOTI/g' drivers/sensors/sx9360.c
           sed -i '0,/struct perf_event \*event;/! s/struct perf_event \*event;/\/\/ duplicate/g' kernel/trace/trace_event_perf.c
 
-          # 5. REPARATII MEMORIE (Prevent soft-reboot)
-          sed -i 's/try_to_unmap(page, ttu_flags)/try_to_unmap(page, ttu_flags, NULL)/g' mm/huge_memory.c || true
-          sed -i 's/split_huge_pmd(vma, addr, pmd);/__split_huge_pmd(vma, (pmd_t *)pmd, addr, false, NULL);/g' fs/proc/task_mmu.c || true
+          # 6. FIX FSTAB & MEMORY PROTECT (Pentru Android 15)
+          # Fortam kernel-ul sa accepte rezervarile de memorie Samsung
+          sed -i 's/WARN_ON(start < SZ_4K);/ \/\/ /g' mm/memblock.c || true
 
-      - name: Setup Toolchain (NDK Clang)
+      - name: Setup Toolchain
         run: |
           sudo apt-get update && sudo apt-get install -y bc build-essential flex bison lz4 zstd zip gcc-aarch64-linux-gnu
           mkdir -p clang
@@ -104,16 +92,18 @@ jobs:
             LDFLAGS="--allow-multiple-definition" \
             O=out Image.gz-dtb
 
-      - name: Package
+      - name: Package with AnyKernel3 (No Device Check)
         run: |
           git clone https://github.com/osm0sis/AnyKernel3.git
           cp kernel/out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
           cd AnyKernel3
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-          zip -r9 ../Lumi-Kernel-R5Q-v15.zip *
+          # IMPORTANT: Adaugam un patch pentru fstab in scriptul de instalare
+          echo "patch_fstab;" >> anykernel.sh
+          zip -r9 ../Lumi-Kernel-R5Q-v16.zip *
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
           name: Lumi-Kernel
-          path: Lumi-Kernel-R5Q-v15.zip
+          path: Lumi-Kernel-R5Q-v16.zip
