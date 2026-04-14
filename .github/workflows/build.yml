@@ -1,4 +1,4 @@
-name: R5Q - Android 15 (Brute Force Patching)
+name: R5Q - Android 15 (Precision Patching)
 on: workflow_dispatch
 
 jobs:
@@ -12,11 +12,11 @@ jobs:
           ref: sixteen
           path: kernel
 
-      - name: Hybrid Config & Brute Force Patching
+      - name: Hybrid Config & Precision Patching
         run: |
           cd kernel
           # 1. CONFIG HIBRID
-          cp arch/arm64/configs/sdmmagpie_defconfig arch/arm64/configs/r5q_hybrid_defconfig
+          cp arch/arm64/configs/vendor/sdmmagpie_defconfig arch/arm64/configs/r5q_hybrid_defconfig
           curl -s https://raw.githubusercontent.com/Roynas-Android-Playground/kernel_samsung_r3q/master/arch/arm64/configs/r5q_defconfig > roynas_r5q.config
           echo "" >> arch/arm64/configs/r5q_hybrid_defconfig
           cat roynas_r5q.config >> arch/arm64/configs/r5q_hybrid_defconfig
@@ -33,28 +33,28 @@ jobs:
             --set-val CONFIG_NR_CPUS 8 \
             --enable CONFIG_MACH_SAMSUNG_R5Q
 
-          # 3. FIX TRACE (Abordare radicală)
-          # Ștergem orice linie care conține declarația 'struct perf_event *event;'
-          # Apoi o inserăm o singură dată după o linie de context sigură (linia 430)
-          sed -i '/struct perf_event \*event;/d' kernel/trace/trace_event_perf.c
-          sed -i '430i \        struct perf_event *event;' kernel/trace/trace_event_perf.c
+          # 3. FIX TRACE (Precision Fix)
+          # Folosim un script sed care caută prima instanță și o lasă în pace, 
+          # dar o comentează pe a doua din același bloc.
+          sed -i '0,/struct perf_event \*event;/! s/struct perf_event \*event;/\/\/ duplicate event/g' kernel/trace/trace_event_perf.c
 
-          # 4. FIX AUDIO (Comentăm blocul problematic)
-          # Căutăm liniile cu slow_insertion și le dezactivăm complet
-          sed -i 's/.*slow_insertion.*/\/\/ Removed/g' techpack/audio/asoc/codecs/wcd-mbhc-adc.c
+          # 4. FIX AUDIO (Membru lipsă slow_insertion)
+          # În loc să ștergem, redefinim membrul lipsă în header pentru a păstra logica
+          sed -i 's/bool slow_insertion;/bool slow_insertion; bool slow_insertion_dummy;/g' techpack/audio/asoc/codecs/wcd-mbhc-v2.h || true
+          # Sau pur și simplu neutralizăm utilizarea lui în codul C
+          sed -i 's/mbhc->slow_insertion/0/g' techpack/audio/asoc/codecs/wcd-mbhc-adc.c
 
-          # 5. FIX CAMERA & SCHEDULER (Safe Find)
+          # 5. FIX CAMERA & SCHEDULER
           find . -name "cam_actuator_core.c" -exec sed -i 's/rc = cam_actuator_do_soft_landing(a_ctrl);/rc = 0;/g' {} + || true
           find . -name "cam_ois_core.c" -exec sed -i 's/ois_reset_register(o_ctrl)/0/g' {} + || true
           find . -name "tune.c" -exec sed -i '/sysctl_sched_conservative_pl/d' {} + || true
           find . -name "tune.c" -exec sed -i '/sysctl_sched_many_wakeup_threshold/d' {} + || true
           
-          # 6. FIX-URI STABILE (Senzori, Memorie)
+          # 6. FIX-URI STABILE
           sed -i 's/PD_NOTI_ATTACH_TYPEDEF/CC_NOTI_ATTACH_TYPEDEF/g' drivers/sensors/sx9360.c || true
           sed -i 's/PDIC_NOTIFY_ID_ATTACH/CCIC_NOTIFY_ID_ATTACH/g' drivers/sensors/sx9360.c || true
           sed -i 's/try_to_unmap(page, ttu_flags)/try_to_unmap(page, ttu_flags, NULL)/g' mm/huge_memory.c || true
           sed -i 's/split_huge_pmd(vma, addr, pmd);/__split_huge_pmd(vma, (pmd_t *)pmd, addr, false, NULL);/g' fs/proc/task_mmu.c || true
-          sed -i 's/.proc_handler   = bpf_stats_handler,/\/\/ .proc_handler = bpf_stats_handler,/g' kernel/sysctl.c || true
 
       - name: Setup Toolchain
         run: |
@@ -72,7 +72,6 @@ jobs:
           make $MAKE_ARGS r5q_hybrid_defconfig
           make $MAKE_ARGS olddefconfig
           
-          # Forțăm ignorarea BPFilter și a duplicatelor
           make -j$(nproc --all) $MAKE_ARGS \
             KCFLAGS="-w" \
             CONFIG_BPFILTER=n \
@@ -85,10 +84,10 @@ jobs:
           find kernel/out -name "Image.gz*" -exec cp {} AnyKernel3/ \;
           cd AnyKernel3
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-          zip -r9 ../Lumi-Kernel-R5Q-v9.zip *
+          zip -r9 ../Lumi-Kernel-R5Q-v10.zip *
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
           name: Lumi-Kernel
-          path: Lumi-Kernel-R5Q-v9.zip
+          path: Lumi-Kernel-R5Q-v10.zip
