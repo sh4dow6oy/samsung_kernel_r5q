@@ -1,4 +1,4 @@
-name: R5Q - Android 15 (FP & Crypto Fix)
+name: R5Q - Android 15 (Input & Secure Fix)
 on: workflow_dispatch
 
 jobs:
@@ -28,15 +28,18 @@ jobs:
           cd ..
           rm -rf roynas_tmp
 
-      - name: Prep and Fixes (Crypto + Fingerprint)
+      - name: Prep and Source Fixes
         run: |
           cd kernel
           # FIX 1: Crypto 'ci_iv_key' -> 'ci_raw_key'
           sed -i 's/ci->ci_iv_key/ci->ci_raw_key/g' fs/crypto/keysetup_v1.c
           
-          # FIX 2: Fingerprint DVFS_FINGER_ID
-          # Adăugăm definiția manual în header-ul driverului pentru a evita "undeclared identifier"
+          # FIX 2: Fingerprint DVFS_FINGER_ID (Define ID for SM8150 context)
           sed -i '16i #define DVFS_FINGER_ID 1' drivers/fingerprint/et7xx-spi.c
+          
+          # FIX 3: Secure Touch of_match_ptr fix (Clang 17 compatibility)
+          # Înlocuim .of_match_table = of_match_ptr(nume) cu .of_match_table = nume
+          sed -i 's/of_match_ptr(sec_secure_touch_dt_match)/sec_secure_touch_dt_match/g' drivers/input/sec_secure_touch.c
 
       - name: Setup Toolchain (NDK Clang)
         run: |
@@ -45,7 +48,7 @@ jobs:
           wget -q https://github.com/Ylarod/setup-ndk-clang/releases/download/prebuilt/clang-linux-x86-ndk-r29-r563880c.tar.zst
           tar -I zstd -xf clang-linux-x86-ndk-r29-r563880c.tar.zst -C clang
 
-      - name: Build Kernel (FP, Crypto & VDSO Fix)
+      - name: Build Kernel (The "No-Error" Run)
         run: |
           cd kernel
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
@@ -53,6 +56,7 @@ jobs:
           
           make $MAKE_ARGS vendor/r5q_stock_defconfig
           
+          # Menținem j2 pentru a evita crash-ul de memorie (OOM)
           make -j2 $MAKE_ARGS \
             KCFLAGS="-w" \
             LDFLAGS="--allow-multiple-definition" \
@@ -70,10 +74,10 @@ jobs:
           fi
           cd AnyKernel3
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-          zip -r9 ../Lumi-Kernel-R5Q-v28.zip *
+          zip -r9 ../Lumi-Kernel-R5Q-v29.zip *
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Lumi-Kernel-v28
-          path: Lumi-Kernel-R5Q-v28.zip
+          name: Lumi-Kernel-v29
+          path: Lumi-Kernel-R5Q-v29.zip
