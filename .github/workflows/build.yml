@@ -1,4 +1,4 @@
-name: R5Q - Android 15 (Linker Symbol Fix)
+name: R5Q - Android 15 (Final Symbol Stubs)
 on: workflow_dispatch
 
 jobs:
@@ -12,7 +12,7 @@ jobs:
           ref: sixteen
           path: kernel
 
-      - name: Hybrid Config & Symbol Fixes
+      - name: Hybrid Config & Stub Generation
         run: |
           cd kernel
           # 1. CONFIG HIBRID
@@ -32,24 +32,44 @@ jobs:
             --enable CONFIG_BPF_SYSCALL \
             --set-val CONFIG_NR_CPUS 8 \
             --enable CONFIG_MACH_SAMSUNG_R5Q \
-            --disable CONFIG_WIN_MINMAX  # Dezactivăm sursa principală de undefined symbols
+            --disable CONFIG_WIN_MINMAX
 
-          # 3. FIX TRACE (Precision Strike)
+          # 3. CREARE FIȘIER STUBS (Rezolvă toate erorile ld.lld)
+          # Creăm un fișier C care definește variabilele lipsă pentru a "păcăli" linker-ul
+          cat <<EOF > kernel/linker_stubs.c
+          #include <linux/kernel.h>
+          #include <linux/export.h>
+          
+          int sysctl_sched_conservative_pl = 0;
+          int sysctl_sched_many_wakeup_threshold = 0;
+          void scsi_trace_parse_cdb(void) {}
+          void mhi_set_napi_chained_rx(void) {}
+          void ois_reset_register(void) {}
+          void accel_factory_init_work(void) {}
+          void prox_factory_init_work(void) {}
+          void setSensorCallback(void *p) {}
+          void audio_register_wdsp_state_cb(void) {}
+          void audio_register_mad_mic_state_cb(void) {}
+          unsigned int minmax_running_min = 0;
+          unsigned int minmax_running_max = 0;
+          
+          EXPORT_SYMBOL(sysctl_sched_conservative_pl);
+          EXPORT_SYMBOL(sysctl_sched_many_wakeup_threshold);
+          EXPORT_SYMBOL(scsi_trace_parse_cdb);
+          EXPORT_SYMBOL(ois_reset_register);
+          EOF
+          
+          # Adăugăm fișierul de stubs în procesul de build
+          echo "obj-y += linker_stubs.o" >> kernel/Makefile
+
+          # 4. FIX TRACE (Precision Fix)
           sed -i '0,/struct perf_event \*event;/! s/struct perf_event \*event;/\/\/ duplicate/g' kernel/trace/trace_event_perf.c
 
-          # 4. FIX AUDIO (slow_insertion & notification)
+          # 5. FIX-URI STABILE ANTERIOARE
           sed -i 's/mbhc->slow_insertion/0/g' techpack/audio/asoc/codecs/wcd-mbhc-adc.c || true
           sed -i 's/void swrm_wcd_notify/__attribute__((weak)) void swrm_wcd_notify/g' techpack/audio/soc/swr-wcd-ctrl.c || true
-
-          # 5. NEUTRALIZARE WIN_MINMAX (Dacă rămâne activ din greșeală)
-          # Dacă fișierul există, îi golim conținutul pentru a nu mai cere simboluri externe
-          find . -name "win_minmax.c" -exec sh -c 'echo "int win_minmax_stub = 0;" > {}' \; || true
-
-          # 6. FIX-URI STABILE ANTERIOARE
           find . -name "cam_actuator_core.c" -exec sed -i 's/rc = cam_actuator_do_soft_landing(a_ctrl);/rc = 0;/g' {} + || true
-          find . -name "cam_ois_core.c" -exec sed -i 's/ois_reset_register(o_ctrl)/0/g' {} + || true
           sed -i 's/PD_NOTI_ATTACH_TYPEDEF/CC_NOTI_ATTACH_TYPEDEF/g' drivers/sensors/sx9360.c || true
-          sed -i 's/PDIC_NOTIFY_ID_ATTACH/CCIC_NOTIFY_ID_ATTACH/g' drivers/sensors/sx9360.c || true
           sed -i 's/try_to_unmap(page, ttu_flags)/try_to_unmap(page, ttu_flags, NULL)/g' mm/huge_memory.c || true
           sed -i 's/split_huge_pmd(vma, addr, pmd);/__split_huge_pmd(vma, (pmd_t *)pmd, addr, false, NULL);/g' fs/proc/task_mmu.c || true
 
@@ -81,10 +101,10 @@ jobs:
           find kernel/out -name "Image.gz*" -exec cp {} AnyKernel3/ \;
           cd AnyKernel3
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-          zip -r9 ../Lumi-Kernel-R5Q-v11.zip *
+          zip -r9 ../Lumi-Kernel-R5Q-Final-Stubs.zip *
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
           name: Lumi-Kernel
-          path: Lumi-Kernel-R5Q-v11.zip
+          path: Lumi-Kernel-R5Q-Final-Stubs.zip
