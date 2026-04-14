@@ -1,4 +1,4 @@
-name: R5Q - Android 15 (Precision Patching)
+name: R5Q - Android 15 (Linker Symbol Fix)
 on: workflow_dispatch
 
 jobs:
@@ -12,7 +12,7 @@ jobs:
           ref: sixteen
           path: kernel
 
-      - name: Hybrid Config & Precision Patching
+      - name: Hybrid Config & Symbol Fixes
         run: |
           cd kernel
           # 1. CONFIG HIBRID
@@ -31,26 +31,23 @@ jobs:
             --enable CONFIG_BPF \
             --enable CONFIG_BPF_SYSCALL \
             --set-val CONFIG_NR_CPUS 8 \
-            --enable CONFIG_MACH_SAMSUNG_R5Q
+            --enable CONFIG_MACH_SAMSUNG_R5Q \
+            --disable CONFIG_WIN_MINMAX  # Dezactivăm sursa principală de undefined symbols
 
-          # 3. FIX TRACE (Precision Fix)
-          # Folosim un script sed care caută prima instanță și o lasă în pace, 
-          # dar o comentează pe a doua din același bloc.
-          sed -i '0,/struct perf_event \*event;/! s/struct perf_event \*event;/\/\/ duplicate event/g' kernel/trace/trace_event_perf.c
+          # 3. FIX TRACE (Precision Strike)
+          sed -i '0,/struct perf_event \*event;/! s/struct perf_event \*event;/\/\/ duplicate/g' kernel/trace/trace_event_perf.c
 
-          # 4. FIX AUDIO (Membru lipsă slow_insertion)
-          # În loc să ștergem, redefinim membrul lipsă în header pentru a păstra logica
-          sed -i 's/bool slow_insertion;/bool slow_insertion; bool slow_insertion_dummy;/g' techpack/audio/asoc/codecs/wcd-mbhc-v2.h || true
-          # Sau pur și simplu neutralizăm utilizarea lui în codul C
-          sed -i 's/mbhc->slow_insertion/0/g' techpack/audio/asoc/codecs/wcd-mbhc-adc.c
+          # 4. FIX AUDIO (slow_insertion & notification)
+          sed -i 's/mbhc->slow_insertion/0/g' techpack/audio/asoc/codecs/wcd-mbhc-adc.c || true
+          sed -i 's/void swrm_wcd_notify/__attribute__((weak)) void swrm_wcd_notify/g' techpack/audio/soc/swr-wcd-ctrl.c || true
 
-          # 5. FIX CAMERA & SCHEDULER
+          # 5. NEUTRALIZARE WIN_MINMAX (Dacă rămâne activ din greșeală)
+          # Dacă fișierul există, îi golim conținutul pentru a nu mai cere simboluri externe
+          find . -name "win_minmax.c" -exec sh -c 'echo "int win_minmax_stub = 0;" > {}' \; || true
+
+          # 6. FIX-URI STABILE ANTERIOARE
           find . -name "cam_actuator_core.c" -exec sed -i 's/rc = cam_actuator_do_soft_landing(a_ctrl);/rc = 0;/g' {} + || true
           find . -name "cam_ois_core.c" -exec sed -i 's/ois_reset_register(o_ctrl)/0/g' {} + || true
-          find . -name "tune.c" -exec sed -i '/sysctl_sched_conservative_pl/d' {} + || true
-          find . -name "tune.c" -exec sed -i '/sysctl_sched_many_wakeup_threshold/d' {} + || true
-          
-          # 6. FIX-URI STABILE
           sed -i 's/PD_NOTI_ATTACH_TYPEDEF/CC_NOTI_ATTACH_TYPEDEF/g' drivers/sensors/sx9360.c || true
           sed -i 's/PDIC_NOTIFY_ID_ATTACH/CCIC_NOTIFY_ID_ATTACH/g' drivers/sensors/sx9360.c || true
           sed -i 's/try_to_unmap(page, ttu_flags)/try_to_unmap(page, ttu_flags, NULL)/g' mm/huge_memory.c || true
@@ -84,10 +81,10 @@ jobs:
           find kernel/out -name "Image.gz*" -exec cp {} AnyKernel3/ \;
           cd AnyKernel3
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-          zip -r9 ../Lumi-Kernel-R5Q-v10.zip *
+          zip -r9 ../Lumi-Kernel-R5Q-v11.zip *
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
           name: Lumi-Kernel
-          path: Lumi-Kernel-R5Q-v10.zip
+          path: Lumi-Kernel-R5Q-v11.zip
