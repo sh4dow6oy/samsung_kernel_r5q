@@ -1,4 +1,4 @@
-name: R5Q - Android 15 (Andy Base + Sparse Fix)
+name: R5Q - Android 15 (Safe Build - No Crash)
 on: workflow_dispatch
 
 jobs:
@@ -14,18 +14,15 @@ jobs:
 
       - name: Sparse Checkout Roynas Renovation
         run: |
-          # 1. Extragem doar folderul de DTS și Config-ul din Roynas
           git clone --filter=blob:none --no-checkout https://github.com/Roynas-Android-Playground/kernel_samsung_r3q.git roynas_tmp
           cd roynas_tmp
           git sparse-checkout init --cone
           git sparse-checkout set arch/arm64/boot/dts/samsung/renovation arch/arm64/configs/r5q_defconfig
           git checkout master
           
-          # 2. Pregătim structura de directoare în baza Andy
           mkdir -p ../kernel/arch/arm64/boot/dts/samsung/renovation
           mkdir -p ../kernel/arch/arm64/configs/vendor
           
-          # 3. Copiem fișierele
           cp -r arch/arm64/boot/dts/samsung/renovation/* ../kernel/arch/arm64/boot/dts/samsung/renovation/
           cp arch/arm64/configs/r5q_defconfig ../kernel/arch/arm64/configs/vendor/r5q_stock_defconfig
           cd ..
@@ -38,18 +35,19 @@ jobs:
           wget -q https://github.com/Ylarod/setup-ndk-clang/releases/download/prebuilt/clang-linux-x86-ndk-r29-r563880c.tar.zst
           tar -I zstd -xf clang-linux-x86-ndk-r29-r563880c.tar.zst -C clang
 
-      - name: Build Kernel (Stock)
+      - name: Build Kernel (Safe Mode)
         run: |
           cd kernel
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           export MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu- O=out"
           
-          # Configurăm kernel-ul folosind noul defconfig importat
           make $MAKE_ARGS vendor/r5q_stock_defconfig
           
-          # Compilăm
-          # Notă: Dacă build-ul crapă aici, înseamnă că sursa Andy necesită fix-urile de Clang (v17-v18)
-          make -j$(nproc --all) $MAKE_ARGS \
+          # Folosim -j2 (nu nproc) pentru a preveni crash-ul din lipsa de RAM
+          # Adaugam LDFLAGS pentru multiple definitions
+          make -j2 $MAKE_ARGS \
+            KCFLAGS="-w" \
+            LDFLAGS="--allow-multiple-definition" \
             CONFIG_BPFILTER=n \
             O=out Image.gz-dtb
 
@@ -59,15 +57,15 @@ jobs:
           if [ -f kernel/out/arch/arm64/boot/Image.gz-dtb ]; then
             cp kernel/out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
           else
-            echo "EROARE: Image.gz-dtb nu a fost generat!"
+            echo "Build failed - Image not found"
             exit 1
           fi
           cd AnyKernel3
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-          zip -r9 ../Lumi-Kernel-R5Q-v23.zip *
+          zip -r9 ../Lumi-Kernel-R5Q-v25.zip *
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Lumi-Kernel-v23
-          path: Lumi-Kernel-R5Q-v23.zip
+          name: Lumi-Kernel-v25
+          path: Lumi-Kernel-R5Q-v25.zip
