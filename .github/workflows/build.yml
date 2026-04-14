@@ -1,4 +1,4 @@
-name: R5Q - Android 15 (TS & Complete Fixes)
+name: R5Q - Android 15 (USB & Final Fixes)
 on: workflow_dispatch
 
 jobs:
@@ -43,10 +43,13 @@ jobs:
           # FIX 4: Input Booster DVFS_TOUCH_ID
           sed -i '20i #define DVFS_TOUCH_ID 2' drivers/input/input_booster_qc.c
           
-          # FIX 5: Touchscreen Proc Create Fix (Clang 17 pointer conversion)
-          # Adăugăm (void *) pentru a forța conversia corectă
+          # FIX 5: Touchscreen Proc Create Fix
           sed -i 's/entry_cmoffset_all = proc_create/entry_cmoffset_all = (void *)proc_create/g' drivers/input/touchscreen/sec_ts/y771_R5/sec_ts.c
           sed -i 's/entry_fail_hist_all = proc_create/entry_fail_hist_all = (void *)proc_create/g' drivers/input/touchscreen/sec_ts/y771_R5/sec_ts.c
+
+          # FIX 6: USB Notify Fix (Namespace Conflict & Missing Decls)
+          # Declaram variabilele locale la inceputul functiei usb_notifier_event pentru a satisface Clang
+          sed -i '1415i \        int usb_notify = 0, usb_notify_state = 0;' drivers/usb/notify/usb_notify.c
 
       - name: Setup Toolchain (NDK Clang)
         run: |
@@ -80,10 +83,10 @@ jobs:
           fi
           cd AnyKernel3
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-          zip -r9 ../Lumi-Kernel-R5Q-v31.zip *
+          zip -r9 ../Lumi-Kernel-R5Q-v32.zip *
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Lumi-Kernel-v31
-          path: Lumi-Kernel-R5Q-v31.zip
+          name: Lumi-Kernel-v32
+          path: Lumi-Kernel-R5Q-v32.zip
