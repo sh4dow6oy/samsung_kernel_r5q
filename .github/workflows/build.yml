@@ -1,4 +1,4 @@
-name: R5Q - Android 15 (Final VDSO Fix)
+name: R5Q - Android 15 (FS Crypto Fix)
 on: workflow_dispatch
 
 jobs:
@@ -28,6 +28,12 @@ jobs:
           cd ..
           rm -rf roynas_tmp
 
+      - name: Prep and Crypto Fix
+        run: |
+          cd kernel
+          # FIX: Corectăm eroarea 'ci_iv_key' -> 'ci_raw_key' sugerată de compilator
+          sed -i 's/ci->ci_iv_key/ci->ci_raw_key/g' fs/crypto/keysetup_v1.c
+
       - name: Setup Toolchain (NDK Clang)
         run: |
           sudo apt-get update && sudo apt-get install -y bc build-essential flex bison lz4 zstd zip gcc-aarch64-linux-gnu
@@ -35,16 +41,14 @@ jobs:
           wget -q https://github.com/Ylarod/setup-ndk-clang/releases/download/prebuilt/clang-linux-x86-ndk-r29-r563880c.tar.zst
           tar -I zstd -xf clang-linux-x86-ndk-r29-r563880c.tar.zst -C clang
 
-      - name: Build Kernel (Fix VDSO)
+      - name: Build Kernel (Crypto & VDSO Fix)
         run: |
           cd kernel
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
-          # Adaugam LD=ld.lld pentru a forta linker-ul corect si a evita eroarea "fatal error: -shared and -static are incompatible"
           export MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 LD=ld.lld CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu- O=out"
           
           make $MAKE_ARGS vendor/r5q_stock_defconfig
           
-          # Folosim -j2 pentru stabilitate RAM si LDFLAGS pentru duplicate
           make -j2 $MAKE_ARGS \
             KCFLAGS="-w" \
             LDFLAGS="--allow-multiple-definition" \
@@ -62,10 +66,10 @@ jobs:
           fi
           cd AnyKernel3
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-          zip -r9 ../Lumi-Kernel-R5Q-v26.zip *
+          zip -r9 ../Lumi-Kernel-R5Q-v27.zip *
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Lumi-Kernel-v26
-          path: Lumi-Kernel-R5Q-v26.zip
+          name: Lumi-Kernel-v27
+          path: Lumi-Kernel-R5Q-v27.zip
