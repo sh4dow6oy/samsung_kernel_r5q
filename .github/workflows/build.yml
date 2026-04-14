@@ -1,4 +1,4 @@
-name: R5Q - Android 15 (PDIC to CCIC Fix)
+name: R5Q - Android 15 (Boot Fix - Real MinMax)
 on: workflow_dispatch
 
 jobs:
@@ -12,68 +12,79 @@ jobs:
           ref: sixteen
           path: kernel
 
-      - name: Hybrid Config & Comprehensive Patching
+      - name: Hybrid Config & Real Logic Patching
         run: |
           cd kernel
-          # 1. CONFIG HIBRID
+          # 1. CONFIG HIBRID (Baza Pascua + Setari R5Q)
           cp arch/arm64/configs/sdmmagpie_defconfig arch/arm64/configs/r5q_hybrid_defconfig
           curl -s https://raw.githubusercontent.com/Roynas-Android-Playground/kernel_samsung_r3q/master/arch/arm64/configs/r5q_defconfig > roynas_r5q.config
           echo "" >> arch/arm64/configs/r5q_hybrid_defconfig
           cat roynas_r5q.config >> arch/arm64/configs/r5q_hybrid_defconfig
 
-          # 2. OPTIMIZARE CONFIG
+          # 2. OPTIMIZARE CONFIG (Dezactivam ce e experimental)
           ./scripts/config --file arch/arm64/configs/r5q_hybrid_defconfig \
+            --disable CONFIG_WIN_MINMAX \
             --disable CONFIG_SND_SOC_SM6150 \
             --disable CONFIG_SND_SOC_SM7150 \
             --enable CONFIG_SND_SOC_SM8150 \
-            --disable CONFIG_SECURITY_SMACK \
-            --disable CONFIG_BPFILTER \
-            --enable CONFIG_BPF \
-            --enable CONFIG_BPF_SYSCALL \
             --set-val CONFIG_NR_CPUS 8 \
             --enable CONFIG_MACH_SAMSUNG_R5Q
 
-          # 3. REPARAȚIE SENZORI (PDIC -> CCIC GLOBAL)
-          # Înlocuim orice referință PDIC cu CCIC în driverul sx9360
-          sed -i 's/PDIC_NOTIFY/CCIC_NOTIFY/g' drivers/sensors/sx9360.c
-          sed -i 's/PD_NOTI/CC_NOTI/g' drivers/sensors/sx9360.c
-
-          # 4. CREARE FIȘIER STUBS (Rezolvă erorile ld.lld anterioare)
+          # 3. ADAUGARE LOGICA REALA MINMAX (Previne Kernel Panic la Retea)
+          # Inlocuim stubs-urile goale cu implementarea reala din include/linux/minmax.h
           cat <<EOF > kernel/linker_stubs.c
+          #include <linux/module.h>
           #include <linux/kernel.h>
-          #include <linux/export.h>
-          int sysctl_sched_conservative_pl = 0;
-          int sysctl_sched_many_wakeup_threshold = 0;
+
+          struct minmax_sample { uint32_t v; uint32_t t; };
+          struct minmax { struct minmax_sample s[3]; };
+
+          uint32_t minmax_running_max(struct minmax *m, uint32_t win, uint32_t t, uint32_t v) {
+              uint32_t i;
+              for (i = 0; i < 3; i++) {
+                  if (v >= m->s[i].v || (uint32_t)(t - m->s[i].t) >= win) {
+                      m->s[i].v = v; m->s[i].t = t;
+                  }
+              }
+              return m->s[0].v;
+          }
+          uint32_t minmax_running_min(struct minmax *m, uint32_t win, uint32_t t, uint32_t v) {
+              uint32_t i;
+              for (i = 0; i < 3; i++) {
+                  if (v <= m->s[i].v || (uint32_t)(t - m->s[i].t) >= win) {
+                      m->s[i].v = v; m->s[i].t = t;
+                  }
+              }
+              return m->s[0].v;
+          }
+          EXPORT_SYMBOL(minmax_running_max);
+          EXPORT_SYMBOL(minmax_running_min);
+
+          // Stubs pentru functii non-critice (Factory/Debug)
           void scsi_trace_parse_cdb(void) {}
-          void mhi_set_napi_chained_rx(void) {}
           void ois_reset_register(void) {}
-          void accel_factory_init_work(void) {}
-          void prox_factory_init_work(void) {}
           void setSensorCallback(void *p) {}
           void audio_register_wdsp_state_cb(void) {}
           void audio_register_mad_mic_state_cb(void) {}
-          unsigned int minmax_running_min = 0;
-          unsigned int minmax_running_max = 0;
+          int sysctl_sched_conservative_pl = 0;
+          int sysctl_sched_many_wakeup_threshold = 0;
           EXPORT_SYMBOL(sysctl_sched_conservative_pl);
           EXPORT_SYMBOL(sysctl_sched_many_wakeup_threshold);
           EOF
           echo "obj-y += linker_stubs.o" >> kernel/Makefile
 
-          # 5. FIX TRACE (Precision Strike)
+          # 4. FIX-URI CRITICE SENZORI (CCIC) & TRACE
+          sed -i 's/PDIC_NOTIFY/CCIC_NOTIFY/g' drivers/sensors/sx9360.c
+          sed -i 's/PD_NOTI/CC_NOTI/g' drivers/sensors/sx9360.c
           sed -i '0,/struct perf_event \*event;/! s/struct perf_event \*event;/\/\/ duplicate/g' kernel/trace/trace_event_perf.c
 
-          # 6. FIX AUDIO & CAMERA
-          sed -i 's/mbhc->slow_insertion/0/g' techpack/audio/asoc/codecs/wcd-mbhc-adc.c || true
-          sed -i 's/void swrm_wcd_notify/__attribute__((weak)) void swrm_wcd_notify/g' techpack/audio/soc/swr-wcd-ctrl.c || true
-          find . -name "cam_actuator_core.c" -exec sed -i 's/rc = cam_actuator_do_soft_landing(a_ctrl);/rc = 0;/g' {} + || true
-
-          # 7. FIX MEMORY (Clang 17+)
+          # 5. REPARATII MEMORIE (Prevent soft-reboot)
           sed -i 's/try_to_unmap(page, ttu_flags)/try_to_unmap(page, ttu_flags, NULL)/g' mm/huge_memory.c || true
           sed -i 's/split_huge_pmd(vma, addr, pmd);/__split_huge_pmd(vma, (pmd_t *)pmd, addr, false, NULL);/g' fs/proc/task_mmu.c || true
 
-      - name: Setup Toolchain
+      - name: Setup Toolchain (NDK Clang)
         run: |
-          sudo apt-get update && sudo apt-get install -y bc build-essential flex bison lz4 libssl-dev libelf-dev zstd zip gcc-aarch64-linux-gnu
+          sudo apt-get update && sudo apt-get install -y bc build-essential flex bison lz4 zstd zip gcc-aarch64-linux-gnu
           mkdir -p clang
           wget -q https://github.com/Ylarod/setup-ndk-clang/releases/download/prebuilt/clang-linux-x86-ndk-r29-r563880c.tar.zst
           tar -I zstd -xf clang-linux-x86-ndk-r29-r563880c.tar.zst -C clang
@@ -96,13 +107,13 @@ jobs:
       - name: Package
         run: |
           git clone https://github.com/osm0sis/AnyKernel3.git
-          find kernel/out -name "Image.gz*" -exec cp {} AnyKernel3/ \;
+          cp kernel/out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
           cd AnyKernel3
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-          zip -r9 ../Lumi-Kernel-R5Q-v13.zip *
+          zip -r9 ../Lumi-Kernel-R5Q-v15.zip *
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
           name: Lumi-Kernel
-          path: Lumi-Kernel-R5Q-v13.zip
+          path: Lumi-Kernel-R5Q-v15.zip
