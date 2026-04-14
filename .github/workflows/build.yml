@@ -1,4 +1,4 @@
-name: R5Q - Android 15 (FS Crypto Fix)
+name: R5Q - Android 15 (FP & Crypto Fix)
 on: workflow_dispatch
 
 jobs:
@@ -28,11 +28,15 @@ jobs:
           cd ..
           rm -rf roynas_tmp
 
-      - name: Prep and Crypto Fix
+      - name: Prep and Fixes (Crypto + Fingerprint)
         run: |
           cd kernel
-          # FIX: Corectăm eroarea 'ci_iv_key' -> 'ci_raw_key' sugerată de compilator
+          # FIX 1: Crypto 'ci_iv_key' -> 'ci_raw_key'
           sed -i 's/ci->ci_iv_key/ci->ci_raw_key/g' fs/crypto/keysetup_v1.c
+          
+          # FIX 2: Fingerprint DVFS_FINGER_ID
+          # Adăugăm definiția manual în header-ul driverului pentru a evita "undeclared identifier"
+          sed -i '16i #define DVFS_FINGER_ID 1' drivers/fingerprint/et7xx-spi.c
 
       - name: Setup Toolchain (NDK Clang)
         run: |
@@ -41,7 +45,7 @@ jobs:
           wget -q https://github.com/Ylarod/setup-ndk-clang/releases/download/prebuilt/clang-linux-x86-ndk-r29-r563880c.tar.zst
           tar -I zstd -xf clang-linux-x86-ndk-r29-r563880c.tar.zst -C clang
 
-      - name: Build Kernel (Crypto & VDSO Fix)
+      - name: Build Kernel (FP, Crypto & VDSO Fix)
         run: |
           cd kernel
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
@@ -66,10 +70,10 @@ jobs:
           fi
           cd AnyKernel3
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-          zip -r9 ../Lumi-Kernel-R5Q-v27.zip *
+          zip -r9 ../Lumi-Kernel-R5Q-v28.zip *
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Lumi-Kernel-v27
-          path: Lumi-Kernel-R5Q-v27.zip
+          name: Lumi-Kernel-v28
+          path: Lumi-Kernel-R5Q-v28.zip
