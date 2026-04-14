@@ -1,108 +1,59 @@
-name: R5Q - Android 15 (Smack Disable & Final Boot Fix)
+name: R5Q - Android 15 (Andy Base + Roynas DTS - NO FIXES)
 on: workflow_dispatch
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Pascua28 Base
+      - name: Checkout Andy2660 Base (4.14.283)
         uses: actions/checkout@v4
         with:
-          repository: pascua28/android_kernel_samsung_sm7150
-          ref: sixteen
+          repository: Andy2660/android_kernel_samsung_a82xq
+          ref: linux-4.14.283
           path: kernel
 
-      - name: Hybrid Config & Security Patching
+      - name: Copy Renovation Folder & Config
         run: |
           cd kernel
-          # 1. CONFIG HIBRID
-          cp arch/arm64/configs/sdmmagpie_defconfig arch/arm64/configs/r5q_hybrid_defconfig
-          curl -s https://raw.githubusercontent.com/Roynas-Android-Playground/kernel_samsung_r3q/master/arch/arm64/configs/r5q_defconfig > roynas_r5q.config
-          echo "" >> arch/arm64/configs/r5q_hybrid_defconfig
-          cat roynas_r5q.config >> arch/arm64/configs/r5q_hybrid_defconfig
+          # 1. DESCĂRCARE FOLDER RENOVATION (Complet, fără modificări)
+          sudo apt-get install -y subversion
+          svn export https://github.com/Roynas-Android-Playground/kernel_samsung_r3q/trunk/arch/arm64/boot/dts/samsung/renovation arch/arm64/boot/dts/samsung/renovation
 
-          # 2. DEZACTIVARE SMACK ȘI OPTIMIZARE BOOT (Elimină erorile smack_lsm.c)
-          ./scripts/config --file arch/arm64/configs/r5q_hybrid_defconfig \
-            --disable CONFIG_SECURITY_SMACK \
-            --disable CONFIG_SECURITY_SMACK_BRINGUP \
-            --disable CONFIG_SECURITY_SMACK_NETFILTER \
-            --disable CONFIG_WIN_MINMAX \
-            --enable CONFIG_SECURITY_SELINUX \
-            --enable CONFIG_ANDROID_BINDERFS \
-            --disable CONFIG_CMDLINE_FORCE \
-            --set-val CONFIG_NR_CPUS 8 \
-            --enable CONFIG_MACH_SAMSUNG_R5Q
+          # 2. IMPORT CONFIG ROYNAS
+          curl -s https://raw.githubusercontent.com/Roynas-Android-Playground/kernel_samsung_r3q/master/arch/arm64/configs/r5q_defconfig > arch/arm64/configs/vendor/r5q_stock_defconfig
 
-          # 3. FIX PARAMETRI BOOT (Rezolvă Malformed early option)
-          sed -i 's/androidboot.reserve_mem_region=[^ ]*//g' arch/arm64/configs/r5q_hybrid_defconfig
-
-          # 4. REPARAȚIE MINMAX ȘI STUBS (Logică reală pentru stabilitate)
-          cat <<EOF > kernel/linker_stubs.c
-          #include <linux/module.h>
-          #include <linux/kernel.h>
-          struct minmax_sample { uint32_t v; uint32_t t; };
-          struct minmax { struct minmax_sample s[3]; };
-          uint32_t minmax_running_max(struct minmax *m, uint32_t win, uint32_t t, uint32_t v) {
-              if (v >= m->s[0].v) { m->s[0].v = v; m->s[0].t = t; }
-              return m->s[0].v;
-          }
-          uint32_t minmax_running_min(struct minmax *m, uint32_t win, uint32_t t, uint32_t v) {
-              if (v <= m->s[0].v || m->s[0].v == 0) { m->s[0].v = v; m->s[0].t = t; }
-              return m->s[0].v;
-          }
-          void scsi_trace_parse_cdb(void) {}
-          void ois_reset_register(void) {}
-          void setSensorCallback(void *p) {}
-          void audio_register_wdsp_state_cb(void) {}
-          void audio_register_mad_mic_state_cb(void) {}
-          void mhi_set_napi_chained_rx(void) {}
-          int sysctl_sched_conservative_pl = 0;
-          int sysctl_sched_many_wakeup_threshold = 0;
-          EXPORT_SYMBOL(minmax_running_max);
-          EXPORT_SYMBOL(minmax_running_min);
-          EXPORT_SYMBOL(sysctl_sched_conservative_pl);
-          EXPORT_SYMBOL(sysctl_sched_many_wakeup_threshold);
-          EOF
-          echo "obj-y += linker_stubs.o" >> kernel/Makefile
-
-          # 5. FIX-URI DISPOZITIV (Senzori, Trace, Memorie)
-          sed -i 's/PDIC_NOTIFY/CCIC_NOTIFY/g' drivers/sensors/sx9360.c
-          sed -i 's/PD_NOTI/CC_NOTI/g' drivers/sensors/sx9360.c
-          sed -i '0,/struct perf_event \*event;/! s/struct perf_event \*event;/\/\/ duplicate/g' kernel/trace/trace_event_perf.c
-          sed -i 's/WARN_ON(start < SZ_4K);/ \/\/ /g' mm/memblock.c || true
-
-      - name: Setup Toolchain
+      - name: Setup Toolchain (NDK Clang)
         run: |
           sudo apt-get update && sudo apt-get install -y bc build-essential flex bison lz4 zstd zip gcc-aarch64-linux-gnu
           mkdir -p clang
           wget -q https://github.com/Ylarod/setup-ndk-clang/releases/download/prebuilt/clang-linux-x86-ndk-r29-r563880c.tar.zst
           tar -I zstd -xf clang-linux-x86-ndk-r29-r563880c.tar.zst -C clang
 
-      - name: Build Kernel Image
+      - name: Build Kernel
         run: |
           cd kernel
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           export MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu- O=out"
           
-          make $MAKE_ARGS r5q_hybrid_defconfig
-          make $MAKE_ARGS olddefconfig
+          # Generăm config-ul stock r5q
+          make $MAKE_ARGS r5q_stock_defconfig
           
+          # Build fără KCFLAGS="-w" (va opri build-ul la orice warning/eroare stock)
           make -j$(nproc --all) $MAKE_ARGS \
-            KCFLAGS="-w" \
             CONFIG_BPFILTER=n \
-            LDFLAGS="--allow-multiple-definition" \
             O=out Image.gz-dtb
 
       - name: Package
         run: |
           git clone https://github.com/osm0sis/AnyKernel3.git
-          cp kernel/out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
+          # Încercăm să copiem rezultatul. Dacă build-ul a eșuat, acest pas va raporta eroare.
+          cp kernel/out/arch/arm64/boot/Image.gz-dtb AnyKernel3/ || echo "Build failed, no image to copy"
           cd AnyKernel3
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-          zip -r9 ../Lumi-Kernel-R5Q-v17.zip *
+          zip -r9 ../Lumi-Kernel-R5Q-v21.zip *
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Lumi-Kernel
-          path: Lumi-Kernel-R5Q-v17.zip
+          name: Lumi-Kernel-v21-Stock
+          path: Lumi-Kernel-R5Q-v21.zip
