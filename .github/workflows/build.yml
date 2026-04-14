@@ -1,4 +1,4 @@
-name: R5Q - Android 15 (Andy Base + Roynas DTS - NO FIXES)
+name: R5Q - Android 15 (Andy Base + Sparse Roynas DTS)
 on: workflow_dispatch
 
 jobs:
@@ -12,15 +12,20 @@ jobs:
           ref: linux-4.14.283
           path: kernel
 
-      - name: Copy Renovation Folder & Config
+      - name: Sparse Checkout Roynas Renovation
         run: |
-          cd kernel
-          # 1. DESCĂRCARE FOLDER RENOVATION (Complet, fără modificări)
-          sudo apt-get install -y subversion
-          svn export https://github.com/Roynas-Android-Playground/kernel_samsung_r3q/trunk/arch/arm64/boot/dts/samsung/renovation arch/arm64/boot/dts/samsung/renovation
-
-          # 2. IMPORT CONFIG ROYNAS
-          curl -s https://raw.githubusercontent.com/Roynas-Android-Playground/kernel_samsung_r3q/master/arch/arm64/configs/r5q_defconfig > arch/arm64/configs/vendor/r5q_stock_defconfig
+          # Creăm un folder temporar pentru a extrage doar ce avem nevoie din Roynas
+          git clone --filter=blob:none --no-checkout https://github.com/Roynas-Android-Playground/kernel_samsung_r3q.git roynas_tmp
+          cd roynas_tmp
+          git sparse-checkout set arch/arm64/boot/dts/samsung/renovation arch/arm64/configs/r5q_defconfig
+          git checkout master
+          
+          # Copiem folderul renovation în baza Andy
+          cp -r arch/arm64/boot/dts/samsung/renovation ../kernel/arch/arm64/boot/dts/samsung/
+          # Copiem config-ul ca stock_defconfig
+          cp arch/arm64/configs/r5q_defconfig ../kernel/arch/arm64/configs/vendor/r5q_stock_defconfig
+          cd ..
+          rm -rf roynas_tmp
 
       - name: Setup Toolchain (NDK Clang)
         run: |
@@ -29,16 +34,17 @@ jobs:
           wget -q https://github.com/Ylarod/setup-ndk-clang/releases/download/prebuilt/clang-linux-x86-ndk-r29-r563880c.tar.zst
           tar -I zstd -xf clang-linux-x86-ndk-r29-r563880c.tar.zst -C clang
 
-      - name: Build Kernel
+      - name: Build Kernel (NO FIXES)
         run: |
           cd kernel
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           export MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu- O=out"
           
-          # Generăm config-ul stock r5q
+          # Generăm config-ul stock
           make $MAKE_ARGS r5q_stock_defconfig
           
-          # Build fără KCFLAGS="-w" (va opri build-ul la orice warning/eroare stock)
+          # Build-ul propriu-zis
+          # Notă: Dacă acesta eșuează, e din cauza incompatibilității între codul Samsung și Clang modern
           make -j$(nproc --all) $MAKE_ARGS \
             CONFIG_BPFILTER=n \
             O=out Image.gz-dtb
@@ -46,14 +52,19 @@ jobs:
       - name: Package
         run: |
           git clone https://github.com/osm0sis/AnyKernel3.git
-          # Încercăm să copiem rezultatul. Dacă build-ul a eșuat, acest pas va raporta eroare.
-          cp kernel/out/arch/arm64/boot/Image.gz-dtb AnyKernel3/ || echo "Build failed, no image to copy"
+          # Încercăm să copiem imaginea rezultată
+          if [ -f kernel/out/arch/arm64/boot/Image.gz-dtb ]; then
+            cp kernel/out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
+          else
+            echo "EROARE: Compilarea a eșuat. Verifică log-ul de mai sus."
+            exit 1
+          fi
           cd AnyKernel3
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-          zip -r9 ../Lumi-Kernel-R5Q-v21.zip *
+          zip -r9 ../Lumi-Kernel-R5Q-v22.zip *
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Lumi-Kernel-v21-Stock
-          path: Lumi-Kernel-R5Q-v21.zip
+          name: Lumi-Kernel-v22-Sparse
+          path: Lumi-Kernel-R5Q-v22.zip
