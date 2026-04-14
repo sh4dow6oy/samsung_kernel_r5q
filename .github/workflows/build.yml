@@ -1,4 +1,4 @@
-name: R5Q - Android 15 (Stability & Memory Fix)
+name: R5Q - Android 15 (Smack Disable & Final Boot Fix)
 on: workflow_dispatch
 
 jobs:
@@ -12,7 +12,7 @@ jobs:
           ref: sixteen
           path: kernel
 
-      - name: Hybrid Config & Memory Patching
+      - name: Hybrid Config & Security Patching
         run: |
           cd kernel
           # 1. CONFIG HIBRID
@@ -21,21 +21,22 @@ jobs:
           echo "" >> arch/arm64/configs/r5q_hybrid_defconfig
           cat roynas_r5q.config >> arch/arm64/configs/r5q_hybrid_defconfig
 
-          # 2. FIX PARAMETRI BOOT (Rezolva "Malformed early option")
-          # Eliminam manual optiunea problematica din defconfig daca exista
-          sed -i '/CONFIG_CMDLINE/s/androidboot.reserve_mem_region=[^ ]*//g' arch/arm64/configs/r5q_hybrid_defconfig
-
-          # 3. OPTIMIZARE CONFIG PENTRU BOOT
+          # 2. DEZACTIVARE SMACK ȘI OPTIMIZARE BOOT (Elimină erorile smack_lsm.c)
           ./scripts/config --file arch/arm64/configs/r5q_hybrid_defconfig \
-            --enable CONFIG_ANDROID_BINDERFS \
-            --enable CONFIG_BPF_SYSCALL \
+            --disable CONFIG_SECURITY_SMACK \
+            --disable CONFIG_SECURITY_SMACK_BRINGUP \
+            --disable CONFIG_SECURITY_SMACK_NETFILTER \
             --disable CONFIG_WIN_MINMAX \
-            --disable CONFIG_SAMSUNG_PRODUCT_SHIP \
-            --enable CONFIG_SEC_DEBUG \
+            --enable CONFIG_SECURITY_SELINUX \
+            --enable CONFIG_ANDROID_BINDERFS \
+            --disable CONFIG_CMDLINE_FORCE \
             --set-val CONFIG_NR_CPUS 8 \
             --enable CONFIG_MACH_SAMSUNG_R5Q
 
-          # 4. FIX REAL MINMAX (Din v15, esential pentru networking)
+          # 3. FIX PARAMETRI BOOT (Rezolvă Malformed early option)
+          sed -i 's/androidboot.reserve_mem_region=[^ ]*//g' arch/arm64/configs/r5q_hybrid_defconfig
+
+          # 4. REPARAȚIE MINMAX ȘI STUBS (Logică reală pentru stabilitate)
           cat <<EOF > kernel/linker_stubs.c
           #include <linux/module.h>
           #include <linux/kernel.h>
@@ -52,6 +53,9 @@ jobs:
           void scsi_trace_parse_cdb(void) {}
           void ois_reset_register(void) {}
           void setSensorCallback(void *p) {}
+          void audio_register_wdsp_state_cb(void) {}
+          void audio_register_mad_mic_state_cb(void) {}
+          void mhi_set_napi_chained_rx(void) {}
           int sysctl_sched_conservative_pl = 0;
           int sysctl_sched_many_wakeup_threshold = 0;
           EXPORT_SYMBOL(minmax_running_max);
@@ -61,13 +65,10 @@ jobs:
           EOF
           echo "obj-y += linker_stubs.o" >> kernel/Makefile
 
-          # 5. FIX DISPOZITIV (CCIC & Trace)
+          # 5. FIX-URI DISPOZITIV (Senzori, Trace, Memorie)
           sed -i 's/PDIC_NOTIFY/CCIC_NOTIFY/g' drivers/sensors/sx9360.c
           sed -i 's/PD_NOTI/CC_NOTI/g' drivers/sensors/sx9360.c
           sed -i '0,/struct perf_event \*event;/! s/struct perf_event \*event;/\/\/ duplicate/g' kernel/trace/trace_event_perf.c
-
-          # 6. FIX FSTAB & MEMORY PROTECT (Pentru Android 15)
-          # Fortam kernel-ul sa accepte rezervarile de memorie Samsung
           sed -i 's/WARN_ON(start < SZ_4K);/ \/\/ /g' mm/memblock.c || true
 
       - name: Setup Toolchain
@@ -92,18 +93,16 @@ jobs:
             LDFLAGS="--allow-multiple-definition" \
             O=out Image.gz-dtb
 
-      - name: Package with AnyKernel3 (No Device Check)
+      - name: Package
         run: |
           git clone https://github.com/osm0sis/AnyKernel3.git
           cp kernel/out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
           cd AnyKernel3
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-          # IMPORTANT: Adaugam un patch pentru fstab in scriptul de instalare
-          echo "patch_fstab;" >> anykernel.sh
-          zip -r9 ../Lumi-Kernel-R5Q-v16.zip *
+          zip -r9 ../Lumi-Kernel-R5Q-v17.zip *
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
           name: Lumi-Kernel
-          path: Lumi-Kernel-R5Q-v16.zip
+          path: Lumi-Kernel-R5Q-v17.zip
