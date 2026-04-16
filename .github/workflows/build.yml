@@ -38,13 +38,22 @@ jobs:
         last_include=$(grep -n "#include" drivers/clk/clk.c | tail -n 1 | cut -d: -f1)
         sed -i "${last_include}a #include <linux/msm-bus.h>\nstatic uint32_t clk_debugfs_bus_cl_id;" drivers/clk/clk.c
 
-        # 3. FIX NOU: Eroarea de sintaxă în perf_mgr.c (Schimbăm <> cu "")
+        # 3. Fix sintaxă include perf_mgr.c
         if [ -f drivers/perf_mgr/perf_mgr.c ]; then
           sed -i 's|<../gpu/drm/msm/samsung_lego/ss_panel_notify.h>|"../gpu/drm/msm/samsung_lego/ss_panel_notify.h"|g' drivers/perf_mgr/perf_mgr.c
         fi
 
-        # 4. FIX PENTRU HID & CAMERA & DISPLAY
-        # Adăugăm căile de incluziune pentru a evita alte erori "file not found"
+        # 4. FIX AGRESIV PENTRU IPA (Internet Protocol Accelerator)
+        # Injectăm calea ipa_v3 în toate Makefile-urile din interiorul IPA
+        IPA_V3_DIR="drivers/platform/msm/ipa/ipa_v3"
+        if [ -d "$IPA_V3_DIR" ]; then
+          find "$IPA_V3_DIR" -name "Makefile" | while read -r mkfile; do
+            echo -e "\nccflags-y += -I\$(srctree)/$IPA_V3_DIR" >> "$mkfile"
+            echo -e "ccflags-y += -I\$(srctree)/$IPA_V3_DIR/dump" >> "$mkfile"
+          done
+        fi
+
+        # 5. FIX PENTRU CAMERA & DISPLAY & HID
         CAM_PATH="drivers/media/platform/msm/camera"
         DISPLAY_PATH="drivers/gpu/drm/msm"
         EXTRA_INCLUDES="-I\$(srctree)/$CAM_PATH/cam_core \
@@ -62,7 +71,6 @@ jobs:
                         -I\$(srctree)/$DISPLAY_PATH \
                         -I\$(srctree)/$DISPLAY_PATH/samsung_lego"
         
-        # Injectăm în Makefile-urile relevante
         find $CAM_PATH -name "Makefile" | while read -r mkfile; do
           echo -e "\nccflags-y += $EXTRA_INCLUDES" >> "$mkfile"
         done
@@ -70,12 +78,12 @@ jobs:
         echo -e "\nccflags-y += -I\$(srctree)/\$(src)" >> drivers/hid/Makefile
         echo -e "\nccflags-y += $EXTRA_INCLUDES" >> drivers/perf_mgr/Makefile
 
-        # 5. Dezactivăm TOTAL localversion git (Curățăm erorile fatal: ambiguous)
+        # 6. Dezactivăm localversion git
         echo "#!/bin/bash" > scripts/setlocalversion
         echo "echo \"\"" >> scripts/setlocalversion
         chmod +x scripts/setlocalversion
 
-        # 6. Fix pentru kperfmon & perflog
+        # 7. Fix pentru kperfmon & perflog
         mkdir -p ../system/core/liblog/include/log/
         mkdir -p ../../system/core/liblog/include/log/
         mkdir -p ../../system/logging/liblog/include/log/
@@ -85,7 +93,7 @@ jobs:
           cp include/linux/perflog.h ../../system/logging/liblog/include/log/perflog.h
         fi
         
-        # 7. Bypass secgetspf
+        # 8. Bypass secgetspf
         echo -e "#!/bin/bash\nexit 0" > scripts/secgetspf
         chmod +x scripts/secgetspf
         sudo cp scripts/secgetspf /usr/local/bin/secgetspf
