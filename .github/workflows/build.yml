@@ -49,10 +49,6 @@ jobs:
           # 2. Aplicăm noul defconfig creat
           make O=out ARCH=arm64 HOSTCC=$HOSTCC HOSTCXX=$HOSTCXX temp_defconfig
           
-          # 3. FIX pentru Wi-Fi Qualcomm (curățăm ghilimelele reziduale)
-          # Asta previne eroarea: No such file or directory "default"_defconfig
-          sed -i 's/CONFIG_WLAN_SUB_VARIANT=.*/CONFIG_WLAN_SUB_VARIANT=/' out/.config
-          
           # Sincronizăm configurația finală
           make O=out ARCH=arm64 HOSTCC=$HOSTCC HOSTCXX=$HOSTCXX olddefconfig
 
