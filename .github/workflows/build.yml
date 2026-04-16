@@ -24,7 +24,7 @@ jobs:
           cd clang
           wget https://github.com/kdrag0n/proton-clang/archive/refs/heads/master.tar.gz
           tar -xf master.tar.gz
-          # Eliminăm linker-ul problematic pentru compatibilitate cu Ubuntu 22.04+
+          # Eliminăm linker-ul vechi pentru a folosi ld-ul de sistem (evită eroarea .relr.dyn)
           rm -f proton-clang-master/bin/ld
           echo "$(pwd)/proton-clang-master/bin" >> $GITHUB_PATH
 
@@ -32,7 +32,7 @@ jobs:
         run: |
           cd source
           
-          # Setup variabile mediu
+          # Variabile de mediu
           export ARCH=arm64
           export SUBARCH=arm64
           export CC=clang
@@ -42,17 +42,25 @@ jobs:
           export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
           
           mkdir -p out
-          
-          # 1. Creăm configurația combinată folosind metoda ta (cat)
+
+          # 1. Creăm configurația combinată
           cat arch/arm64/configs/sm8150_sec_defconfig arch/arm64/configs/sm8150_sec_r5q_eur_open.config > arch/arm64/configs/temp_defconfig
           
-          # 2. Aplicăm noul defconfig creat
+          # 2. Generăm config-ul inițial
           make O=out ARCH=arm64 HOSTCC=$HOSTCC HOSTCXX=$HOSTCXX temp_defconfig
           
-          # Sincronizăm configurația finală
+          # --- FIX CRITIC PENTRU QCACLD WI-FI ---
+          # Eliminăm ghilimelele din CONFIG_WLAN_SUB_VARIANT direct în .config-ul generat
+          # De la CONFIG_WLAN_SUB_VARIANT="default" la CONFIG_WLAN_SUB_VARIANT=default
+          sed -i 's/CONFIG_WLAN_SUB_VARIANT="default"/CONFIG_WLAN_SUB_VARIANT=default/g' out/.config
+          # Dacă variabila e goală sau are altă formă, o forțăm să fie simplă:
+          sed -i 's/CONFIG_WLAN_SUB_VARIANT=.*/CONFIG_WLAN_SUB_VARIANT=default/g' out/.config
+          
+          # 3. Aplicăm modificările
           make O=out ARCH=arm64 HOSTCC=$HOSTCC HOSTCXX=$HOSTCXX olddefconfig
 
           # 4. Compilarea finală
+          # Folosim LD=ld.lld pentru kernel, dar am curățat deja calea pentru uneltele HOST
           make -j$(nproc --all) O=out \
                       ARCH=arm64 \
                       CC=clang \
