@@ -29,17 +29,22 @@ jobs:
 
     - name: Surgical Source Patching
       run: |
-        # 1. Eliminăm wrapper-ele de Python ale Samsung
+        # 1. Eliminăm wrapper-ele de Python ale Samsung (Nuclear Fix)
         find . -name "Makefile*" -o -name "*.mak" -o -name "*.include" | xargs sed -i 's/python $(srctree)\/scripts\/gcc-wrapper.py//g'
         find . -name "Makefile*" -o -name "*.mak" -o -name "*.include" | xargs sed -i 's/$(srctree)\/scripts\/gcc-wrapper.py//g'
         sed -i 's/python / /g' Makefile scripts/Makefile.*
 
-        # 2. Patch pentru drivers/clk/clk.c - METODA SIGURĂ
-        # În loc să inserăm la linia 40 (unde rupem macro-uri), inserăm după ultimul #include
+        # 2. Fix pentru drivers/clk/clk.c
         last_include=$(grep -n "#include" drivers/clk/clk.c | tail -n 1 | cut -d: -f1)
         sed -i "${last_include}a #include <linux/msm-bus.h>\nstatic uint32_t clk_debugfs_bus_cl_id;" drivers/clk/clk.c
 
-        # 3. Rezolvăm dependințele de fișiere lipsă (perflog.h)
+        # 3. FIX NOU: Eroarea drivers/hid/hid-trace.h not found
+        # Forțăm Makefile-ul din HID să includă directorul curent în căutare
+        if [ -f drivers/hid/Makefile ]; then
+          echo "ccflags-y += -I\$(srctree)/\$(src)" >> drivers/hid/Makefile
+        fi
+
+        # 4. Rezolvăm dependințele de fișiere lipsă (perflog.h)
         mkdir -p ../system/core/liblog/include/log/
         mkdir -p ../../system/core/liblog/include/log/
         mkdir -p ../../system/logging/liblog/include/log/
@@ -47,7 +52,7 @@ jobs:
         echo "" > ../../system/core/liblog/include/log/perflog.h
         echo "" > ../../system/logging/liblog/include/log/perflog.h
         
-        # 4. Bypass utilitare securitate Samsung
+        # 5. Bypass utilitare securitate Samsung
         echo -e "#!/bin/bash\nexit 0" > scripts/secgetspf
         chmod +x scripts/secgetspf
         sudo cp scripts/secgetspf /usr/local/bin/secgetspf
@@ -60,7 +65,7 @@ jobs:
         export CROSS_COMPILE=aarch64-linux-gnu-
         export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
         
-        # Unelte LLVM
+        # Toolchain config
         export CC=clang
         export LD=ld.lld
         export AR=llvm-ar
@@ -73,7 +78,7 @@ jobs:
         make mrproper
         make r5q_eur_open_defconfig
         
-        # Compilare cu ignorare warning-uri și forțare LLVM
+        # Build cu V=1 pentru a vedea erorile clar dacă mai apar
         make -j$(nproc --all) \
                       ARCH=arm64 \
                       CC=clang \
