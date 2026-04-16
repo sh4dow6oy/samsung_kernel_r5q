@@ -24,7 +24,8 @@ jobs:
           cd clang
           wget https://github.com/kdrag0n/proton-clang/archive/refs/heads/master.tar.gz
           tar -xf master.tar.gz
-          # Eliminăm linker-ul vechi pentru a folosi ld-ul de sistem (evită eroarea .relr.dyn)
+          # Ștergem linker-ul din toolchain pentru a forța utilizarea celui de sistem
+          # Asta previne eroarea de relocare (libc) pe Ubuntu 22.04+
           rm -f proton-clang-master/bin/ld
           echo "$(pwd)/proton-clang-master/bin" >> $GITHUB_PATH
 
@@ -32,7 +33,7 @@ jobs:
         run: |
           cd source
           
-          # Variabile de mediu
+          # Exportăm variabilele de compilare
           export ARCH=arm64
           export SUBARCH=arm64
           export CC=clang
@@ -43,24 +44,23 @@ jobs:
           
           mkdir -p out
 
-          # 1. Creăm configurația combinată
+          # 1. Creăm configurația combinată (Metoda CAT)
+          # Îmbinăm defconfig-ul de bază cu fragmentul specific proiectului R5Q
           cat arch/arm64/configs/sm8150_sec_defconfig arch/arm64/configs/sm8150_sec_r5q_eur_open.config > arch/arm64/configs/temp_defconfig
           
-          # 2. Generăm config-ul inițial
+          # 2. Generăm fișierul .config inițial
           make O=out ARCH=arm64 HOSTCC=$HOSTCC HOSTCXX=$HOSTCXX temp_defconfig
           
-          # --- FIX CRITIC PENTRU QCACLD WI-FI ---
-          # Eliminăm ghilimelele din CONFIG_WLAN_SUB_VARIANT direct în .config-ul generat
-          # De la CONFIG_WLAN_SUB_VARIANT="default" la CONFIG_WLAN_SUB_VARIANT=default
-          sed -i 's/CONFIG_WLAN_SUB_VARIANT="default"/CONFIG_WLAN_SUB_VARIANT=default/g' out/.config
-          # Dacă variabila e goală sau are altă formă, o forțăm să fie simplă:
-          sed -i 's/CONFIG_WLAN_SUB_VARIANT=.*/CONFIG_WLAN_SUB_VARIANT=default/g' out/.config
+          # 3. FIX CRITIC: Eliminarea ghilimelelor pentru Wi-Fi QCACLD
+          # Makefile-ul driverului eșuează când vede "default" cu ghilimele.
+          # Îl transformăm în default simplu pentru a permite 'include' în Kbuild.
+          sed -i 's/CONFIG_WLAN_SUB_VARIANT="\(.*\)"/CONFIG_WLAN_SUB_VARIANT=\1/' out/.config
           
-          # 3. Aplicăm modificările
+          # Sincronizăm configurația pentru a aplica modificarea de mai sus
           make O=out ARCH=arm64 HOSTCC=$HOSTCC HOSTCXX=$HOSTCXX olddefconfig
 
           # 4. Compilarea finală
-          # Folosim LD=ld.lld pentru kernel, dar am curățat deja calea pentru uneltele HOST
+          # Folosim nproc pentru a utiliza toate nucleele disponibile pe runner
           make -j$(nproc --all) O=out \
                       ARCH=arm64 \
                       CC=clang \
@@ -75,7 +75,7 @@ jobs:
                       LD=ld.lld \
                       AR=llvm-ar
 
-      - name: Check and Upload
+      - name: Check and Upload Artifacts
         if: success()
         uses: actions/upload-artifact@v4
         with:
