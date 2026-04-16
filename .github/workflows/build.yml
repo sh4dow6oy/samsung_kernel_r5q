@@ -29,23 +29,24 @@ jobs:
 
     - name: Surgical Source Patching
       run: |
-        # 1. Eliminăm wrapper-ele de Python Samsung (Evităm erori de tip null bytes)
+        # 1. Eliminăm wrapper-ele de Python Samsung
         find . -name "Makefile*" -o -name "*.mak" -o -name "*.include" | xargs sed -i 's/python $(srctree)\/scripts\/gcc-wrapper.py//g'
         find . -name "Makefile*" -o -name "*.mak" -o -name "*.include" | xargs sed -i 's/$(srctree)\/scripts\/gcc-wrapper.py//g'
         sed -i 's/python / /g' Makefile scripts/Makefile.*
 
-        # 2. Fix pentru drivers/clk/clk.c (Rezolvăm clk_debugfs_bus_cl_id)
+        # 2. Fix pentru drivers/clk/clk.c
         last_include=$(grep -n "#include" drivers/clk/clk.c | tail -n 1 | cut -d: -f1)
         sed -i "${last_include}a #include <linux/msm-bus.h>\nstatic uint32_t clk_debugfs_bus_cl_id;" drivers/clk/clk.c
 
-        # 3. FIX PENTRU HID (Rezolvăm hid-trace.h not found)
-        find drivers/hid -name "Makefile" | while read -r mkfile; do
-          echo "" >> "$mkfile"
-          echo "ccflags-y += -I\$(srctree)/\$(src)" >> "$mkfile"
-        done
+        # 3. FIX NOU: Eroarea de sintaxă în perf_mgr.c (Schimbăm <> cu "")
+        if [ -f drivers/perf_mgr/perf_mgr.c ]; then
+          sed -i 's|<../gpu/drm/msm/samsung_lego/ss_panel_notify.h>|"../gpu/drm/msm/samsung_lego/ss_panel_notify.h"|g' drivers/perf_mgr/perf_mgr.c
+        fi
 
-        # 4. FIX AGRESIV PENTRU CAMERA (Core, Utils, ISP, Sensor, CCI, IO)
+        # 4. FIX PENTRU HID & CAMERA & DISPLAY
+        # Adăugăm căile de incluziune pentru a evita alte erori "file not found"
         CAM_PATH="drivers/media/platform/msm/camera"
+        DISPLAY_PATH="drivers/gpu/drm/msm"
         EXTRA_INCLUDES="-I\$(srctree)/$CAM_PATH/cam_core \
                         -I\$(srctree)/$CAM_PATH/cam_utils \
                         -I\$(srctree)/$CAM_PATH/cam_req_mgr \
@@ -57,19 +58,24 @@ jobs:
                         -I\$(srctree)/$CAM_PATH/cam_isp/isp_hw_mgr/hw_utils/include \
                         -I\$(srctree)/$CAM_PATH/cam_isp/isp_hw_mgr/isp_hw/include \
                         -I\$(srctree)/$CAM_PATH/cam_sync \
-                        -I\$(srctree)/$CAM_PATH/cam_cpas"
+                        -I\$(srctree)/$CAM_PATH/cam_cpas \
+                        -I\$(srctree)/$DISPLAY_PATH \
+                        -I\$(srctree)/$DISPLAY_PATH/samsung_lego"
         
+        # Injectăm în Makefile-urile relevante
         find $CAM_PATH -name "Makefile" | while read -r mkfile; do
-          echo "" >> "$mkfile"
-          echo "ccflags-y += $EXTRA_INCLUDES" >> "$mkfile"
+          echo -e "\nccflags-y += $EXTRA_INCLUDES" >> "$mkfile"
         done
 
-        # 5. Dezactivăm localversion git (Elimină fatal: ambiguous argument)
-        if [ -f scripts/setlocalversion ]; then
-          echo -e "#!/bin/bash\necho \"\"" > scripts/setlocalversion
-        fi
+        echo -e "\nccflags-y += -I\$(srctree)/\$(src)" >> drivers/hid/Makefile
+        echo -e "\nccflags-y += $EXTRA_INCLUDES" >> drivers/perf_mgr/Makefile
 
-        # 6. Fix pentru kperfmon & perflog (Path-uri externe Samsung)
+        # 5. Dezactivăm TOTAL localversion git (Curățăm erorile fatal: ambiguous)
+        echo "#!/bin/bash" > scripts/setlocalversion
+        echo "echo \"\"" >> scripts/setlocalversion
+        chmod +x scripts/setlocalversion
+
+        # 6. Fix pentru kperfmon & perflog
         mkdir -p ../system/core/liblog/include/log/
         mkdir -p ../../system/core/liblog/include/log/
         mkdir -p ../../system/logging/liblog/include/log/
@@ -79,7 +85,7 @@ jobs:
           cp include/linux/perflog.h ../../system/logging/liblog/include/log/perflog.h
         fi
         
-        # 7. Bypass secgetspf (Utilitar securitate Samsung)
+        # 7. Bypass secgetspf
         echo -e "#!/bin/bash\nexit 0" > scripts/secgetspf
         chmod +x scripts/secgetspf
         sudo cp scripts/secgetspf /usr/local/bin/secgetspf
@@ -92,7 +98,6 @@ jobs:
         export CROSS_COMPILE=aarch64-linux-gnu-
         export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
         
-        # Unelte Neutron (LLVM)
         export CC=clang
         export LD=ld.lld
         export AR=llvm-ar
@@ -105,7 +110,6 @@ jobs:
         make mrproper
         make r5q_eur_open_defconfig
         
-        # Compilare cu ignorare warning-uri (-w)
         make -j$(nproc --all) \
                       ARCH=arm64 \
                       CC=clang \
