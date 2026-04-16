@@ -24,13 +24,15 @@ jobs:
           cd clang
           wget https://github.com/kdrag0n/proton-clang/archive/refs/heads/master.tar.gz
           tar -xf master.tar.gz
-          # Ștergem linker-ul buclucaș pentru a evita eroarea .relr.dyn
+          # Eliminăm linker-ul problematic pentru compatibilitate cu Ubuntu 22.04+
           rm -f proton-clang-master/bin/ld
           echo "$(pwd)/proton-clang-master/bin" >> $GITHUB_PATH
 
       - name: Build Kernel
         run: |
           cd source
+          
+          # Setup variabile mediu
           export ARCH=arm64
           export SUBARCH=arm64
           export CC=clang
@@ -41,17 +43,17 @@ jobs:
           
           mkdir -p out
           
-          # 1. Generăm config-ul de bază
-          make O=out ARCH=arm64 HOSTCC=$HOSTCC HOSTCXX=$HOSTCXX sm8150_sec_defconfig
+          # 1. Creăm configurația combinată folosind metoda ta (cat)
+          cat arch/arm64/configs/sm8150_sec_defconfig arch/arm64/configs/sm8150_sec_r5q_eur_open.config > arch/arm64/configs/temp_defconfig
           
-          # 2. Aplicăm overlay-ul R5Q
-          scripts/kconfig/merge_config.sh -O out/ out/.config arch/arm64/configs/sm8150_sec_r5q_eur_open.config
+          # 2. Aplicăm noul defconfig creat
+          make O=out ARCH=arm64 HOSTCC=$HOSTCC HOSTCXX=$HOSTCXX temp_defconfig
           
-          # 3. FIX pentru eroarea QCACLD Wi-Fi (Scoaterea ghilimelelor problematice)
-          # Această comandă curăță variabilele care fac driverul Wi-Fi să caute fișiere inexistente
+          # 3. FIX pentru Wi-Fi Qualcomm (curățăm ghilimelele reziduale)
+          # Asta previne eroarea: No such file or directory "default"_defconfig
           sed -i 's/CONFIG_WLAN_SUB_VARIANT=.*/CONFIG_WLAN_SUB_VARIANT=/' out/.config
           
-          # Re-rulăm vechiul "oldconfig" pentru a valida modificările manuale
+          # Sincronizăm configurația finală
           make O=out ARCH=arm64 HOSTCC=$HOSTCC HOSTCXX=$HOSTCXX olddefconfig
 
           # 4. Compilarea finală
@@ -73,7 +75,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-Auriana-SM8150
+          name: Kernel-SM8150-Auriana-R5Q
           path: |
             source/out/arch/arm64/boot/Image.gz
             source/out/arch/arm64/boot/Image.gz-dtb
