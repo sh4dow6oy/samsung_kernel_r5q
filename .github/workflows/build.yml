@@ -24,8 +24,7 @@ jobs:
           cd clang
           wget https://github.com/kdrag0n/proton-clang/archive/refs/heads/master.tar.gz
           tar -xf master.tar.gz
-          # FIX RADICAL: Ștergem linker-ul care cauzează eroarea .relr.dyn
-          # Asta forțează sistemul să folosească linker-ul nativ pentru uneltele HOST
+          # Ștergem linker-ul buclucaș pentru a evita eroarea .relr.dyn
           rm -f proton-clang-master/bin/ld
           echo "$(pwd)/proton-clang-master/bin" >> $GITHUB_PATH
 
@@ -42,15 +41,20 @@ jobs:
           
           mkdir -p out
           
-          # 1. Config de bază
+          # 1. Generăm config-ul de bază
           make O=out ARCH=arm64 HOSTCC=$HOSTCC HOSTCXX=$HOSTCXX sm8150_sec_defconfig
           
-          # 2. Merge config pentru R5Q
+          # 2. Aplicăm overlay-ul R5Q
           scripts/kconfig/merge_config.sh -O out/ out/.config arch/arm64/configs/sm8150_sec_r5q_eur_open.config
+          
+          # 3. FIX pentru eroarea QCACLD Wi-Fi (Scoaterea ghilimelelor problematice)
+          # Această comandă curăță variabilele care fac driverul Wi-Fi să caute fișiere inexistente
+          sed -i 's/CONFIG_WLAN_SUB_VARIANT=.*/CONFIG_WLAN_SUB_VARIANT=/' out/.config
+          
+          # Re-rulăm vechiul "oldconfig" pentru a valida modificările manuale
+          make O=out ARCH=arm64 HOSTCC=$HOSTCC HOSTCXX=$HOSTCXX olddefconfig
 
-          # 3. Compilare finală
-          # Specificăm LD=ld.lld pentru kernel (care e compatibil) 
-          # în timp ce uneltele host vor folosi ld-ul de sistem automat
+          # 4. Compilarea finală
           make -j$(nproc --all) O=out \
                       ARCH=arm64 \
                       CC=clang \
