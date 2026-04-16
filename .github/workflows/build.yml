@@ -32,14 +32,14 @@ jobs:
       run: |
         # Stergem wrapper-ul original care cauta cai inexistente si folosim unul simplu de Python 3
         cat <<EOF > scripts/gcc-wrapper.py
-#!/usr/bin/env python3
-import sys, subprocess
-def run_gcc():
-    args = sys.argv[1:]
-    return subprocess.call(args)
-if __name__ == "__main__":
-    sys.exit(run_gcc())
-EOF
+        #!/usr/bin/env python3
+        import sys, subprocess
+        def run_gcc():
+        args = sys.argv[1:]
+        return subprocess.call(args)
+        if __name__ == "__main__":
+        sys.exit(run_gcc())
+        EOF
         chmod +x scripts/gcc-wrapper.py
 
     - name: Build Kernel
