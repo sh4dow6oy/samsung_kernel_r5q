@@ -1,92 +1,63 @@
-name: R5Q - Android 15 (USB & Final Fixes)
-on: workflow_dispatch
+name: Build Samsung A82xq Kernel
+
+on:
+  workflow_dispatch: # Permite pornirea manuală a compilării
 
 jobs:
   build:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout Andy2660 Base (4.14.283)
-        uses: actions/checkout@v4
-        with:
-          repository: Andy2660/android_kernel_samsung_a82xq
-          ref: linux-4.14.283
-          path: kernel
+    - name: Checkout Kernel Source
+      uses: actions/checkout@v4
+      with:
+        repository: Andy2660/android_kernel_samsung_a82xq
+        ref: linux-4.14.285
+        fetch-depth: 1
 
-      - name: Sparse Checkout Roynas Renovation
-        run: |
-          git clone --filter=blob:none --no-checkout https://github.com/Roynas-Android-Playground/kernel_samsung_r3q.git roynas_tmp
-          cd roynas_tmp
-          git sparse-checkout init --cone
-          git sparse-checkout set arch/arm64/boot/dts/samsung/renovation arch/arm64/configs/r5q_defconfig
-          git checkout master
-          
-          mkdir -p ../kernel/arch/arm64/boot/dts/samsung/renovation
-          mkdir -p ../kernel/arch/arm64/configs/vendor
-          
-          cp -r arch/arm64/boot/dts/samsung/renovation/* ../kernel/arch/arm64/boot/dts/samsung/renovation/
-          cp arch/arm64/configs/r5q_defconfig ../kernel/arch/arm64/configs/vendor/r5q_stock_defconfig
-          cd ..
-          rm -rf roynas_tmp
+    - name: Install Dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y bc build-essential bison flex libssl-dev libelf-dev xz-utils wget git gcc-aarch64-linux-gnu
 
-      - name: Prep and Source Fixes
-        run: |
-          cd kernel
-          # FIX 1: Crypto 'ci_iv_key' -> 'ci_raw_key'
-          sed -i 's/ci->ci_iv_key/ci->ci_raw_key/g' fs/crypto/keysetup_v1.c
-          
-          # FIX 2: Fingerprint DVFS_FINGER_ID
-          sed -i '16i #define DVFS_FINGER_ID 1' drivers/fingerprint/et7xx-spi.c
-          
-          # FIX 3: Secure Touch of_match_ptr fix
-          sed -i 's/of_match_ptr(sec_secure_touch_dt_match)/sec_secure_touch_dt_match/g' drivers/input/sec_secure_touch.c
-          
-          # FIX 4: Input Booster DVFS_TOUCH_ID
-          sed -i '20i #define DVFS_TOUCH_ID 2' drivers/input/input_booster_qc.c
-          
-          # FIX 5: Touchscreen Proc Create Fix
-          sed -i 's/entry_cmoffset_all = proc_create/entry_cmoffset_all = (void *)proc_create/g' drivers/input/touchscreen/sec_ts/y771_R5/sec_ts.c
-          sed -i 's/entry_fail_hist_all = proc_create/entry_fail_hist_all = (void *)proc_create/g' drivers/input/touchscreen/sec_ts/y771_R5/sec_ts.c
+    - name: Download Toolchain (Clang/GCC)
+      run: |
+        mkdir clang
+        cd clang
+        # Descărcăm un toolchain stabil (AOSP Clang este recomandat pentru kernel-uri noi)
+        wget https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/master/clang-r416183b.tar.gz
+        tar -xf clang-r416183b.tar.gz
+        cd ..
 
-          # FIX 6: USB Notify Fix (Namespace Conflict & Missing Decls)
-          # Declaram variabilele locale la inceputul functiei usb_notifier_event pentru a satisface Clang
-          sed -i '1415i \        int usb_notify = 0, usb_notify_state = 0;' drivers/usb/notify/usb_notify.c
+    - name: Build Kernel
+      run: |
+        # Setăm variabilele de mediu
+        export PATH=$(pwd)/clang/bin:$PATH
+        export ARCH=arm64
+        export SUBARCH=arm64
+        export CROSS_COMPILE=aarch64-linux-gnu-
+        export CC=clang
+        export CLANG_TRIPLE=aarch64-linux-gnu-
+        
+        # Configurare și Compilare
+        make O=out r5q_eur_open_defconfig
+        make -j$(nproc --all) O=out \
+                      ARCH=arm64 \
+                      CC=clang \
+                      CROSS_COMPILE=aarch64-linux-gnu- \
+                      CLANG_TRIPLE=aarch64-linux-gnu-
 
-      - name: Setup Toolchain (NDK Clang)
-        run: |
-          sudo apt-get update && sudo apt-get install -y bc build-essential flex bison lz4 zstd zip gcc-aarch64-linux-gnu
-          mkdir -p clang
-          wget -q https://github.com/Ylarod/setup-ndk-clang/releases/download/prebuilt/clang-linux-x86-ndk-r29-r563880c.tar.zst
-          tar -I zstd -xf clang-linux-x86-ndk-r29-r563880c.tar.zst -C clang
-
-      - name: Build Kernel (Safe Mode)
-        run: |
-          cd kernel
-          export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
-          export MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 LD=ld.lld CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu- O=out"
-          
-          make $MAKE_ARGS vendor/r5q_stock_defconfig
-          
-          make -j2 $MAKE_ARGS \
-            KCFLAGS="-w" \
-            LDFLAGS="--allow-multiple-definition" \
-            CONFIG_BPFILTER=n \
-            O=out Image.gz-dtb
-
-      - name: Package
-        run: |
-          git clone https://github.com/osm0sis/AnyKernel3.git
-          if [ -f kernel/out/arch/arm64/boot/Image.gz-dtb ]; then
-            cp kernel/out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
-          else
-            echo "Build failed - Image not found"
+    - name: Check for Image.gz
+      run: |
+        if [ -f out/arch/arm64/boot/Image.gz-dtb ]; then
+            echo "Kernel compiled successfully!"
+        else
+            echo "Kernel build failed!"
             exit 1
-          fi
-          cd AnyKernel3
-          sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-          zip -r9 ../Lumi-Kernel-R5Q-v32.zip *
+        fi
 
-      - name: Upload
-        uses: actions/upload-artifact@v4
-        with:
-          name: Lumi-Kernel-v32
-          path: Lumi-Kernel-R5Q-v32.zip
+    - name: Upload Kernel Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: Kernel-S10Lite-r5q
+        path: out/arch/arm64/boot/Image.gz-dtb
