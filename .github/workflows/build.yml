@@ -29,18 +29,24 @@ jobs:
 
     - name: Surgical Source Patching
       run: |
-        # 1. Eliminăm wrapper-ele de Python Samsung
+        # 1. Eliminăm wrapper-ele de Python Samsung (Prevenim SyntaxError: null bytes)
         find . -name "Makefile*" -o -name "*.mak" -o -name "*.include" | xargs sed -i 's/python $(srctree)\/scripts\/gcc-wrapper.py//g'
         find . -name "Makefile*" -o -name "*.mak" -o -name "*.include" | xargs sed -i 's/$(srctree)\/scripts\/gcc-wrapper.py//g'
         sed -i 's/python / /g' Makefile scripts/Makefile.*
 
-        # 2. Fix pentru drivers/clk/clk.c
+        # 2. Fix pentru drivers/clk/clk.c (Identifier nedeclarat)
         last_include=$(grep -n "#include" drivers/clk/clk.c | tail -n 1 | cut -d: -f1)
         sed -i "${last_include}a #include <linux/msm-bus.h>\nstatic uint32_t clk_debugfs_bus_cl_id;" drivers/clk/clk.c
 
-        # 3. FIX AGRESIV PENTRU ISP & CAMERA (Multiple Sub-directories)
+        # 3. FIX PENTRU HID & CAMERA (Path-uri de incluziune)
+        # Patch HID (Rezolvă hid-trace.h not found)
+        find drivers/hid -name "Makefile" | while read -r mkfile; do
+          echo "" >> "$mkfile"
+          echo "ccflags-y += -I\$(srctree)/\$(src)" >> "$mkfile"
+        done
+
+        # Patch CAMERA MSM (Rezolvă cam_context.h, cam_ife_hw_mgr.h, etc.)
         CAM_PATH="drivers/media/platform/msm/camera"
-        # Mapăm TOATE folderele interne ale ISP unde se ascund headerele
         EXTRA_INCLUDES="-I\$(srctree)/$CAM_PATH/cam_core \
                         -I\$(srctree)/$CAM_PATH/cam_utils \
                         -I\$(srctree)/$CAM_PATH/cam_req_mgr \
@@ -51,7 +57,6 @@ jobs:
                         -I\$(srctree)/$CAM_PATH/cam_sync \
                         -I\$(srctree)/$CAM_PATH/cam_cpas"
         
-        # Injectăm căile în toate Makefile-urile din camera
         find $CAM_PATH -name "Makefile" | while read -r mkfile; do
           echo "" >> "$mkfile"
           echo "ccflags-y += $EXTRA_INCLUDES" >> "$mkfile"
@@ -62,7 +67,7 @@ jobs:
           echo -e "#!/bin/bash\necho \"\"" > scripts/setlocalversion
         fi
 
-        # 5. Fix pentru kperfmon & perflog
+        # 5. Fix pentru kperfmon & perflog (Path-uri externe Samsung)
         mkdir -p ../system/core/liblog/include/log/
         mkdir -p ../../system/core/liblog/include/log/
         mkdir -p ../../system/logging/liblog/include/log/
@@ -72,7 +77,7 @@ jobs:
           cp include/linux/perflog.h ../../system/logging/liblog/include/log/perflog.h
         fi
         
-        # 6. Bypass utilitare securitate Samsung
+        # 6. Bypass utilitare securitate Samsung (secgetspf)
         echo -e "#!/bin/bash\nexit 0" > scripts/secgetspf
         chmod +x scripts/secgetspf
         sudo cp scripts/secgetspf /usr/local/bin/secgetspf
@@ -85,7 +90,7 @@ jobs:
         export CROSS_COMPILE=aarch64-linux-gnu-
         export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
         
-        # Setăm uneltele LLVM explicit
+        # Unelte Neutron Clang
         export CC=clang
         export LD=ld.lld
         export AR=llvm-ar
@@ -98,7 +103,7 @@ jobs:
         make mrproper
         make r5q_eur_open_defconfig
         
-        # Build cu forțare LLVM și dezactivare warning-uri
+        # Compilare finală
         make -j$(nproc --all) \
                       ARCH=arm64 \
                       CC=clang \
