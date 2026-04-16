@@ -1,7 +1,7 @@
-name: Build Samsung A82xq Kernel
+name: Build Samsung A82xq Kernel (NDK Clang)
 
 on:
-  workflow_dispatch: # Permite pornirea manuală a compilării
+  workflow_dispatch:
 
 jobs:
   build:
@@ -18,46 +18,61 @@ jobs:
     - name: Install Dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y bc build-essential bison flex libssl-dev libelf-dev xz-utils wget git gcc-aarch64-linux-gnu
+        sudo apt-get install -y bc build-essential bison flex libssl-dev libelf-dev xz-utils wget git gcc-aarch64-linux-gnu zstd
 
-    - name: Download Toolchain (Clang/GCC)
+    - name: Download and Setup NDK Clang
       run: |
         mkdir clang
-        cd clang
-        # Descărcăm un toolchain stabil (AOSP Clang este recomandat pentru kernel-uri noi)
-        wget https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/master/clang-r416183b.tar.gz
-        tar -xf clang-r416183b.tar.gz
-        cd ..
+        wget https://github.com/Ylarod/setup-ndk-clang/releases/download/prebuilt/clang-linux-x86-ndk-r29-r563880c.tar.zst
+        # Decompresie zstd urmată de tar
+        tar -I zstd -xf clang-linux-x86-ndk-r29-r563880c.tar.zst -C clang
+        # Verificăm unde sunt binarele (uneori sunt într-un subfolder 'bin')
+        echo "CLANG_PATH=$(pwd)/clang/bin" >> $GITHUB_ENV
 
     - name: Build Kernel
       run: |
-        # Setăm variabilele de mediu
-        export PATH=$(pwd)/clang/bin:$PATH
+        export PATH=${{ env.CLANG_PATH }}:$PATH
         export ARCH=arm64
         export SUBARCH=arm64
         export CROSS_COMPILE=aarch64-linux-gnu-
         export CC=clang
         export CLANG_TRIPLE=aarch64-linux-gnu-
         
-        # Configurare și Compilare
+        # Curățare și Configurare
+        make O=out clean
+        make O=out mrproper
         make O=out r5q_eur_open_defconfig
+        
+        # Compilare propriu-zisă
+        # Folosim LLVM=1 pentru a utiliza uneltele de build din setul Clang (ar, nm, objcopy)
         make -j$(nproc --all) O=out \
                       ARCH=arm64 \
                       CC=clang \
+                      CLANG_TRIPLE=aarch64-linux-gnu- \
                       CROSS_COMPILE=aarch64-linux-gnu- \
-                      CLANG_TRIPLE=aarch64-linux-gnu-
+                      LD=ld.lld \
+                      AR=llvm-ar \
+                      NM=llvm-nm \
+                      OBJCOPY=llvm-objcopy \
+                      OBJDUMP=llvm-objdump \
+                      STRIP=llvm-strip
 
-    - name: Check for Image.gz
+    - name: Check Output
       run: |
         if [ -f out/arch/arm64/boot/Image.gz-dtb ]; then
-            echo "Kernel compiled successfully!"
+            echo "Success!"
+        elif [ -f out/arch/arm64/boot/Image.gz ]; then
+            echo "Success (Image.gz found)!"
         else
-            echo "Kernel build failed!"
+            echo "Build failed - checking 'out' directory:"
+            ls -R out/arch/arm64/boot/
             exit 1
         fi
 
     - name: Upload Kernel Artifact
       uses: actions/upload-artifact@v4
       with:
-        name: Kernel-S10Lite-r5q
-        path: out/arch/arm64/boot/Image.gz-dtb
+        name: Kernel-S10Lite-r5q-ClangR29
+        path: |
+          out/arch/arm64/boot/Image.gz*
+          out/arch/arm64/boot/dtbo.img
