@@ -1,4 +1,4 @@
-name: Build Samsung S10 Lite (r5q) - Neutron Clang Final
+name: Build Samsung SM8150 (Auriana)
 
 on:
   workflow_dispatch:
@@ -6,140 +6,63 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-
+    
     steps:
-    - name: Checkout Kernel Source
-      uses: actions/checkout@v4
-      with:
-        repository: sh4dow6oy/android_kernel_samsung_a82xq
-        ref: linux-4.14.336
-        fetch-depth: 1
+      - name: Cleanup Environment
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc "/usr/local/share/boost" "$AGENT_TOOLSDIRECTORY"
+          sudo apt-get update
+          sudo apt-get install -y bc build-essential flex bison ncurses-dev libssl-dev libelf-dev xz-utils libfl-dev python3 git-core ccache
 
-    - name: Install Dependencies
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y bc build-essential bison flex libssl-dev libelf-dev xz-utils wget git gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi zstd python3
+      - name: Clone Kernel Source
+        run: |
+          git clone --depth=1 -b auriana https://github.com/sh4dow6oy/android_kernel_samsung_sm8150.git source
+          
+      - name: Setup Proton Clang
+        run: |
+          mkdir clang
+          cd clang
+          wget https://github.com/kdrag0n/proton-clang/archive/refs/heads/master.tar.gz
+          tar -xf master.tar.gz
+          echo "$(pwd)/proton-clang-master/bin" >> $GITHUB_PATH
 
-    - name: Download and Setup Neutron Clang
-      run: |
-        mkdir -p neutron
-        wget https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
-        tar -I zstd -xf neutron-clang-10032024.tar.zst -C neutron
-        echo "NEUTRON_BIN=$(pwd)/neutron/bin" >> $GITHUB_ENV
+      - name: Build Kernel
+        run: |
+          cd source
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export CC=clang
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
+          export PATH=$(pwd)/../clang/proton-clang-master/bin:$PATH
+          
+          mkdir -p out
+          
+          # PASUL CRITIC: Combinarea configuratiilor
+          # Samsung foloseste adesea scriptul merge_config.sh pentru a aplica overlay-ul de regiune
+          make O=out ARCH=arm64 sm8150_sec_defconfig
+          scripts/kconfig/merge_config.sh -O out/ .config arch/arm64/configs/sm8150_sec_r5q_eur_open.config
 
-    - name: Surgical Source Patching
-      run: |
-        # 1. Eliminăm wrapper-ele de Python Samsung
-        find . -name "Makefile*" -o -name "*.mak" -o -name "*.include" | xargs sed -i 's/python $(srctree)\/scripts\/gcc-wrapper.py//g'
-        find . -name "Makefile*" -o -name "*.mak" -o -name "*.include" | xargs sed -i 's/$(srctree)\/scripts\/gcc-wrapper.py//g'
-        sed -i 's/python / /g' Makefile scripts/Makefile.*
-
-        # 2. Fix pentru drivers/clk/clk.c
-        last_include=$(grep -n "#include" drivers/clk/clk.c | tail -n 1 | cut -d: -f1)
-        sed -i "${last_include}a #include <linux/msm-bus.h>\nstatic uint32_t clk_debugfs_bus_cl_id;" drivers/clk/clk.c
-
-        # 3. Fix sintaxă include perf_mgr.c
-        if [ -f drivers/perf_mgr/perf_mgr.c ]; then
-          sed -i 's|<../gpu/drm/msm/samsung_lego/ss_panel_notify.h>|"../gpu/drm/msm/samsung_lego/ss_panel_notify.h"|g' drivers/perf_mgr/perf_mgr.c
-        fi
-
-        # 4. FIX AGRESIV PENTRU IPA (Internet Protocol Accelerator)
-        # Injectăm calea ipa_v3 în toate Makefile-urile din interiorul IPA
-        IPA_V3_DIR="drivers/platform/msm/ipa/ipa_v3"
-        if [ -d "$IPA_V3_DIR" ]; then
-          find "$IPA_V3_DIR" -name "Makefile" | while read -r mkfile; do
-            echo -e "\nccflags-y += -I\$(srctree)/$IPA_V3_DIR" >> "$mkfile"
-            echo -e "ccflags-y += -I\$(srctree)/$IPA_V3_DIR/dump" >> "$mkfile"
-          done
-        fi
-
-        # 5. FIX PENTRU CAMERA & DISPLAY & HID
-        CAM_PATH="drivers/media/platform/msm/camera"
-        DISPLAY_PATH="drivers/gpu/drm/msm"
-        EXTRA_INCLUDES="-I\$(srctree)/$CAM_PATH/cam_core \
-                        -I\$(srctree)/$CAM_PATH/cam_utils \
-                        -I\$(srctree)/$CAM_PATH/cam_req_mgr \
-                        -I\$(srctree)/$CAM_PATH/cam_sensor_module/cam_cci \
-                        -I\$(srctree)/$CAM_PATH/cam_sensor_module/cam_sensor_io \
-                        -I\$(srctree)/$CAM_PATH/cam_sensor_module/cam_sensor_utils \
-                        -I\$(srctree)/$CAM_PATH/cam_sensor_module/cam_sensor \
-                        -I\$(srctree)/$CAM_PATH/cam_isp/isp_hw_mgr \
-                        -I\$(srctree)/$CAM_PATH/cam_isp/isp_hw_mgr/hw_utils/include \
-                        -I\$(srctree)/$CAM_PATH/cam_isp/isp_hw_mgr/isp_hw/include \
-                        -I\$(srctree)/$CAM_PATH/cam_sync \
-                        -I\$(srctree)/$CAM_PATH/cam_cpas \
-                        -I\$(srctree)/$DISPLAY_PATH \
-                        -I\$(srctree)/$DISPLAY_PATH/samsung_lego"
-        
-        find $CAM_PATH -name "Makefile" | while read -r mkfile; do
-          echo -e "\nccflags-y += $EXTRA_INCLUDES" >> "$mkfile"
-        done
-
-        echo -e "\nccflags-y += -I\$(srctree)/\$(src)" >> drivers/hid/Makefile
-        echo -e "\nccflags-y += $EXTRA_INCLUDES" >> drivers/perf_mgr/Makefile
-
-        # 6. Dezactivăm localversion git
-        echo "#!/bin/bash" > scripts/setlocalversion
-        echo "echo \"\"" >> scripts/setlocalversion
-        chmod +x scripts/setlocalversion
-
-        # 7. Fix pentru kperfmon & perflog
-        mkdir -p ../system/core/liblog/include/log/
-        mkdir -p ../../system/core/liblog/include/log/
-        mkdir -p ../../system/logging/liblog/include/log/
-        if [ -f include/linux/perflog.h ]; then
-          cp include/linux/perflog.h ../system/core/liblog/include/log/perflog.h
-          cp include/linux/perflog.h ../../system/core/liblog/include/log/perflog.h
-          cp include/linux/perflog.h ../../system/logging/liblog/include/log/perflog.h
-        fi
-        
-        # 8. Bypass secgetspf
-        echo -e "#!/bin/bash\nexit 0" > scripts/secgetspf
-        chmod +x scripts/secgetspf
-        sudo cp scripts/secgetspf /usr/local/bin/secgetspf
-
-    - name: Build Kernel
-      run: |
-        export PATH="${{ env.NEUTRON_BIN }}:$PATH"
-        export ARCH=arm64
-        export SUBARCH=arm64
-        export CROSS_COMPILE=aarch64-linux-gnu-
-        export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
-        
-        export CC=clang
-        export LD=ld.lld
-        export AR=llvm-ar
-        export NM=llvm-nm
-        export OBJCOPY=llvm-objcopy
-        export OBJDUMP=llvm-objdump
-        export STRIP=llvm-strip
-
-        make clean
-        make mrproper
-        make r5q_eur_open_defconfig
-        
-        make -j$(nproc --all) \
+          # Compilare efectiva
+          make -j$(nproc --all) O=out \
                       ARCH=arm64 \
                       CC=clang \
+                      CROSS_COMPILE=aarch64-linux-gnu- \
+                      CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
                       LD=ld.lld \
                       AR=llvm-ar \
                       NM=llvm-nm \
                       OBJCOPY=llvm-objcopy \
                       OBJDUMP=llvm-objdump \
-                      STRIP=llvm-strip \
-                      CLANG_TRIPLE=aarch64-linux-gnu- \
-                      CROSS_COMPILE=aarch64-linux-gnu- \
-                      CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-                      LLVM=1 \
-                      LLVM_IAS=1 \
-                      KCFLAGS="-w" \
-                      DTC_EXT=dtc \
-                      LOCALVERSION=""
+                      STRIP=llvm-strip
 
-    - name: Upload Artifacts
-      uses: actions/upload-artifact@v4
-      with:
-        name: Kernel-S10Lite-Neutron-r5q
-        path: |
-          arch/arm64/boot/Image.gz*
-          arch/arm64/boot/dtbo.img
+      - name: Upload Results
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Kernel-Auriana-R5Q
+          path: |
+            source/out/arch/arm64/boot/Image.gz
+            source/out/arch/arm64/boot/Image.gz-dtb
+            source/out/arch/arm64/boot/dtbo.img
+            source/out/.config
