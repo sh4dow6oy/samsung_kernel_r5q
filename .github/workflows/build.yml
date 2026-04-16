@@ -12,7 +12,7 @@ jobs:
         run: |
           sudo rm -rf /usr/share/dotnet /opt/ghc "/usr/local/share/boost" "$AGENT_TOOLSDIRECTORY"
           sudo apt-get update
-          sudo apt-get install -y bc build-essential flex bison ncurses-dev libssl-dev libelf-dev xz-utils libfl-dev python3 git-core ccache
+          sudo apt-get install -y bc build-essential flex bison ncurses-dev libssl-dev libelf-dev xz-utils libfl-dev python3 git-core ccache gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi
 
       - name: Clone Kernel Source
         run: |
@@ -24,43 +24,52 @@ jobs:
           cd clang
           wget https://github.com/kdrag0n/proton-clang/archive/refs/heads/master.tar.gz
           tar -xf master.tar.gz
+          # Adăugăm toolchain-ul în PATH-ul GitHub Actions
           echo "$(pwd)/proton-clang-master/bin" >> $GITHUB_PATH
 
       - name: Build Kernel
         run: |
           cd source
+          
+          # Exportăm variabilele de mediu necesare
           export ARCH=arm64
           export SUBARCH=arm64
           export CC=clang
+          export HOSTCC=gcc
+          export HOSTCXX=g++
           export CROSS_COMPILE=aarch64-linux-gnu-
           export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
-          export PATH=$(pwd)/../clang/proton-clang-master/bin:$PATH
           
+          # Pregătim folderul de output
           mkdir -p out
           
-          # PASUL CRITIC: Combinarea configuratiilor
-          # Samsung foloseste adesea scriptul merge_config.sh pentru a aplica overlay-ul de regiune
+          # 1. Generăm config-ul de bază
           make O=out ARCH=arm64 sm8150_sec_defconfig
-          scripts/kconfig/merge_config.sh -O out/ .config arch/arm64/configs/sm8150_sec_r5q_eur_open.config
+          
+          # 2. Aplicăm overlay-ul pentru regiune/model (R5Q EUR)
+          # Folosim calea directă către fișierul de config adițional
+          scripts/kconfig/merge_config.sh -O out/ out/.config arch/arm64/configs/sm8150_sec_r5q_eur_open.config
 
-          # Compilare efectiva
+          # 3. Compilarea propriu-zisă
+          # Folosim LLVM binutils din Proton Clang pentru a asigura compatibilitatea
           make -j$(nproc --all) O=out \
                       ARCH=arm64 \
                       CC=clang \
+                      HOSTCC=$HOSTCC \
+                      HOSTCXX=$HOSTCXX \
                       CROSS_COMPILE=aarch64-linux-gnu- \
                       CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-                      LD=ld.lld \
-                      AR=llvm-ar \
                       NM=llvm-nm \
                       OBJCOPY=llvm-objcopy \
                       OBJDUMP=llvm-objdump \
-                      STRIP=llvm-strip
+                      STRIP=llvm-strip \
+                      LD=ld.lld
 
-      - name: Upload Results
+      - name: Check and Upload Artifacts
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-Auriana-R5Q
+          name: Kernel-Auriana-SM8150
           path: |
             source/out/arch/arm64/boot/Image.gz
             source/out/arch/arm64/boot/Image.gz-dtb
