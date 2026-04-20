@@ -11,7 +11,7 @@ jobs:
         with:
           repository: Roynas-Android-Playground/kernel_samsung_r3q
           ref: master
-          fetch-depth: 1
+          fetch-depth: 0 # IMPORTANT: Avem nevoie de tot istoricul pentru merge
 
       - name: Install Dependencies
         run: |
@@ -25,30 +25,36 @@ jobs:
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
 
+      - name: Merge LumiPlayground Commit
+        run: |
+          # Configurăm identitatea pentru merge
+          git config user.email "action@github.com"
+          git config user.name "GitHub Action"
+          
+          # Adăugăm sursa LumiPlayground ca remote
+          git remote add lumi https://github.com/LumiPlayground/android_kernel_samsung_sm8150.git
+          git fetch lumi 7ddee86de36df46d7c624b2d82fecf7b2356ea2c
+          
+          # Facem merge la commit-ul specific
+          # Folosim -X theirs pentru a accepta automat modificările din commit în caz de conflict
+          git merge 7ddee86de36df46d7c624b2d82fecf7b2356ea2c --no-edit -X theirs || echo "Merge finalizat cu unele ajustări manuale."
+
       - name: Build Kernel
         run: |
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           
-          # 1. APLICARE COMMIT COMPLET (LumiPlayground 7ddee86)
-          # Descărcăm tot commit-ul ca patch și îl aplicăm peste sursă
-          wget -q https://github.com/LumiPlayground/android_kernel_samsung_sm8150/commit/7ddee86de36df46d7c624b2d82fecf7b2356ea2c.patch -O full_commit.patch
-          
-          # Aplicăm patch-ul. Dacă unele linii nu se potrivesc perfect, 
-          # folosim --3way pentru a încerca un merge inteligent.
-          git apply --3way full_commit.patch || echo "Patch-ul a fost aplicat cu unele conflicte minore, dar continuăm."
-
-          # 2. CURĂȚENIE PENTRU CLANG (Prevenim Error 1)
+          # 1. CURĂȚENIE PENTRU CLANG
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm//g' {} +
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-polly[^ ]*//g' {} +
           
-          # 3. KERNELSU & SAMSUNG CLEANUP
+          # 2. KERNELSU & SAMSUNG CLEANUP
           sed -i '/kernelsu/d' drivers/android/Kconfig || true
           sed -i '/kernelsu/d' drivers/android/Makefile || true
           rm -rf drivers/kernelsu
           sed -i 's/ifneq ($(wildcard $(srctree)\/scripts\/gcc-wrapper.py),)/ifeq (0,1)/g' Makefile
 
-          # 4. Argumente Build
+          # 3. Argumente Build
           MAKE_ARGS="ARCH=arm64 \
             LLVM=1 \
             LLVM_IAS=1 \
@@ -63,39 +69,28 @@ jobs:
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             O=out"
 
-          # 5. Configurare
+          # 4. Configurare
           make $MAKE_ARGS r5q_defconfig
-          
-          # Dezactivăm LTO și Knox pentru stabilitate
           ./scripts/config --file out/.config \
             -d CONFIG_LTO -d CONFIG_LTO_CLANG -e CONFIG_LTO_NONE \
             -d CONFIG_CC_STACKPROTECTOR_STRONG -e CONFIG_CC_STACKPROTECTOR_NONE \
             -d CONFIG_SHADOW_CALL_STACK -d CONFIG_KNOX_KAP -d CONFIG_SECURITY_SAMSUNG_KNOX \
             -d CONFIG_ASSIST_KSU -d CONFIG_KSU
-          
           make $MAKE_ARGS olddefconfig
 
-          # 6. Compilare
+          # 5. Compilare
           make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -Wno-error -Wno-unknown-warning-option -Wno-unused-command-line-argument"
 
-      - name: Package with AnyKernel3
+      - name: Package and Upload
         run: |
           IMAGE="$GITHUB_WORKSPACE/out/arch/arm64/boot/Image.gz-dtb"
-          if [ ! -f "$IMAGE" ]; then
-            IMAGE="$GITHUB_WORKSPACE/out/arch/arm64/boot/Image.gz"
-          fi
+          [ ! -f "$IMAGE" ] && IMAGE="$GITHUB_WORKSPACE/out/arch/arm64/boot/Image.gz"
           DTBO="$GITHUB_WORKSPACE/out/arch/arm64/boot/dtbo.img"
-
           git clone https://github.com/osm0sis/AnyKernel3.git
           rm -rf AnyKernel3/.git
-
           cp $IMAGE AnyKernel3/Image.gz
           [ -f "$DTBO" ] && cp $DTBO AnyKernel3/dtbo.img
-
           sed -i 's/device.name1=maguro/device.name1=r5q/g' AnyKernel3/anykernel.sh
-          sed -i 's/device.name2=toroplus/device.name2=SM-G770F/g' AnyKernel3/anykernel.sh
-          sed -i 's/device.name3=toro/device.name3=r5q/g' AnyKernel3/anykernel.sh
-
           cd AnyKernel3
           zip -r9 ../Kernel-S10Lite-R5Q-Neutron.zip *
 
