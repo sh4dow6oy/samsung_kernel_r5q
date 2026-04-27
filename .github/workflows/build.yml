@@ -9,7 +9,7 @@ jobs:
       - name: Checkout Source
         uses: actions/checkout@v4
         with:
-          repository: github.com/sh4dow6oy/kernel_samsung_r5q
+          repository: sh4dow6oy/kernel_samsung_r5q
           ref: master
           fetch-depth: 1
 
