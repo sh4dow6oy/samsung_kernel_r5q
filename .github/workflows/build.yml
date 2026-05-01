@@ -44,14 +44,22 @@ jobs:
           # Adăugăm DTC-ul custom în PATH
           export PATH="$DTC_PATH:$PATH"
           
-          # 1. NUCLEAR CLEANUP (Prevenim Error 1 cauzată de flag-uri LLVM incompatibile)
+          # 1. FIX KERNELSU (Rezolvă eroarea "can't open file"):
+          # Eliminăm liniile care caută KernelSU în Kconfig și Makefile din android
+          sed -i '/kernelsu/d' drivers/android/Kconfig || true
+          sed -i '/kernelsu/d' drivers/android/Makefile || true
+          # Ștergem folderul dacă există (pentru siguranță)
+          rm -rf drivers/kernelsu
+          rm -rf drivers/android/kernelsu
+
+          # 2. NUCLEAR CLEANUP (Prevenim Error 1 cauzată de flag-uri LLVM incompatibile)
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm//g' {} +
           
-          # 2. FIX: Samsung gcc-wrapper workaround
+          # 3. FIX: Samsung gcc-wrapper workaround
           sed -i 's/ifneq ($(wildcard $(srctree)\/scripts\/gcc-wrapper.py),)/ifeq (0,1)/g' Makefile
           
-          # 3. Argumente Build
+          # 4. Argumente Build
           MAKE_ARGS="ARCH=arm64 \
             LLVM=1 \
             LLVM_IAS=1 \
@@ -67,19 +75,22 @@ jobs:
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             O=out"
 
-          # 4. Configurare
+          # 5. Configurare
+          # Creăm directorul de output înainte
+          mkdir -p out
           make $MAKE_ARGS r5q_defconfig
           
-          # Dezactivăm opțiunile care cauzează crash-uri la compilare pe Clang-ul Google
+          # Ajustăm configurația pentru succesul compilării
           ./scripts/config --file out/.config \
             -e CONFIG_THINLTO \
             -d CONFIG_CC_STACKPROTECTOR_STRONG -e CONFIG_CC_STACKPROTECTOR_NONE \
-            -d CONFIG_KSU
+            -d CONFIG_KSU \
+            -d CONFIG_ASSIST_KSU
           
           make $MAKE_ARGS olddefconfig
 
-          # 5. Compilare
-          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -Wno-error -Wno-unused-command-line-argument"
+          # 6. Compilare
+          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -Wno-error -Wno-unused-command-line-argument -Wno-implicit-function-declaration"
 
       - name: Package with AnyKernel3
         run: |
