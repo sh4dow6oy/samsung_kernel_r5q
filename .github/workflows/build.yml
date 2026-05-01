@@ -1,4 +1,4 @@
-name: Build Roynas R5Q - Neutron Clang Final
+name: Build Kernel R5Q
 on:
   workflow_dispatch:
 
@@ -57,11 +57,11 @@ jobs:
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             O=out"
           # 5. Configurare
-          make $MAKE_ARGS r5q_eur_open_defconfig
+          make $MAKE_ARGS r5q_defconfig
           ./scripts/config --file out/.config \
-            -d CONFIG_LTO -d CONFIG_LTO_CLANG -e CONFIG_LTO_NONE \
+            -e CONFIG_THINLTO \
             -d CONFIG_CC_STACKPROTECTOR_STRONG -e CONFIG_CC_STACKPROTECTOR_NONE \
-            -d CONFIG_SHADOW_CALL_STACK -d CONFIG_KNOX_KAP -d CONFIG_SECURITY_SAMSUNG_KNOX \
+            -d CONFIG_SHADOW_CALL_STACK \
             -d CONFIG_ASSIST_KSU -d CONFIG_KSU
           make $MAKE_ARGS olddefconfig
           
