@@ -1,6 +1,5 @@
 name: Build Kernel R5Q
-on:
-  workflow_dispatch:
+on: workflow_dispatch
 
 jobs:
   build:
@@ -18,31 +17,41 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y bc build-essential flex bison lz4 libssl-dev libelf-dev \
           ccache python3 python-is-python3 libarchive-tools wget zstd libtinfo6 zip
-      - name: Setup Neutron Clang
+
+      - name: Build Custom DTC
         run: |
-          mkdir clang
-          wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
-          tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
+          echo "--- Building Upstream DTC ---"
+          git clone --depth=1 https://git.kernel.org/pub/scm/utils/dtc/dtc.git
+          cd dtc && make -j$(nproc)
+          echo "DTC_PATH=$(pwd)/dtc" >> $GITHUB_ENV
+
+      - name: Setup Google Clang r428724
+        run: |
+          echo "--- Setup Google Clang r428724 ---"
+          mkdir -p toolchain/clang-r428724
+          wget -q https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/6e4168587705b4a80f58adaa288a8bb75f13da68/clang-r428724.tar.gz -O clang.tar.gz
+          tar -xf clang.tar.gz -C toolchain/clang-r428724
+          rm clang.tar.gz
+          
+          # FIX: Symlink pentru readelf cerut de scripturile Samsung
+          ln -sf $(pwd)/toolchain/clang-r428724/bin/llvm-readelf $(pwd)/toolchain/clang-r428724/bin/aarch64-linux-gnu-readelf
+          
+          # Adăugăm toolchain-ul în variabila PATH pentru pașii următori
+          echo "$(pwd)/toolchain/clang-r428724/bin" >> $GITHUB_PATH
+
       - name: Build Kernel
         run: |
-          export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
+          # Adăugăm DTC-ul custom în PATH
+          export PATH="$DTC_PATH:$PATH"
           
-          # 1. NUCLEAR CLEANUP (Prevenim Error 1)
+          # 1. NUCLEAR CLEANUP (Prevenim Error 1 cauzată de flag-uri LLVM incompatibile)
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm//g' {} +
-          find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-polly[^ ]*//g' {} +
           
-          # 2. VDSO FIX (Anti -static)
-          if [ -f arch/arm64/kernel/vdso/Makefile ]; then
-            sed -i 's/-static//g' arch/arm64/kernel/vdso/Makefile
-            sed -i 's/$(LDFLAGS)/$(filter-out -static,$(LDFLAGS))/g' arch/arm64/kernel/vdso/Makefile
-          fi
-          # 3. KERNELSU & SAMSUNG CLEANUP
-          sed -i '/kernelsu/d' drivers/android/Kconfig || true
-          sed -i '/kernelsu/d' drivers/android/Makefile || true
-          rm -rf drivers/kernelsu
+          # 2. FIX: Samsung gcc-wrapper workaround
           sed -i 's/ifneq ($(wildcard $(srctree)\/scripts\/gcc-wrapper.py),)/ifeq (0,1)/g' Makefile
-          # 4. Argumente Build
+          
+          # 3. Argumente Build
           MAKE_ARGS="ARCH=arm64 \
             LLVM=1 \
             LLVM_IAS=1 \
@@ -53,45 +62,44 @@ jobs:
             OBJCOPY=llvm-objcopy \
             OBJDUMP=llvm-objdump \
             STRIP=llvm-strip \
+            DTC=dtc \
             CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             O=out"
-          # 5. Configurare
+
+          # 4. Configurare
           make $MAKE_ARGS r5q_defconfig
+          
+          # Dezactivăm opțiunile care cauzează crash-uri la compilare pe Clang-ul Google
           ./scripts/config --file out/.config \
             -e CONFIG_THINLTO \
             -d CONFIG_CC_STACKPROTECTOR_STRONG -e CONFIG_CC_STACKPROTECTOR_NONE \
-            -d CONFIG_SHADOW_CALL_STACK \
-            -d CONFIG_ASSIST_KSU -d CONFIG_KSU
-          make $MAKE_ARGS olddefconfig
+            -d CONFIG_KSU
           
-          # 6. Compilare
-          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -Wno-error -Wno-unknown-warning-option -Wno-unused-command-line-argument"
+          make $MAKE_ARGS olddefconfig
+
+          # 5. Compilare
+          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -Wno-error -Wno-unused-command-line-argument"
+
       - name: Package with AnyKernel3
         run: |
-          # Identificăm fișierele generate
           IMAGE="$GITHUB_WORKSPACE/out/arch/arm64/boot/Image.gz-dtb"
-          if [ ! -f "$IMAGE" ]; then
-            IMAGE="$GITHUB_WORKSPACE/out/arch/arm64/boot/Image.gz"
-          fi
+          if [ ! -f "$IMAGE" ]; then IMAGE="$GITHUB_WORKSPACE/out/arch/arm64/boot/Image.gz"; fi
           DTBO="$GITHUB_WORKSPACE/out/arch/arm64/boot/dtbo.img"
-          # Clonăm AnyKernel3 pentru ambalare
+          
           git clone https://github.com/osm0sis/AnyKernel3.git
           rm -rf AnyKernel3/.git
-          
-          # Copiem kernelul și DTBO în folderul AnyKernel
           cp $IMAGE AnyKernel3/Image.gz
           [ -f "$DTBO" ] && cp $DTBO AnyKernel3/dtbo.img
-          # Configurăm anykernel.sh pentru S10 Lite (r5q)
+          
           sed -i 's/device.name1=maguro/device.name1=r5q/g' AnyKernel3/anykernel.sh
           sed -i 's/device.name2=toroplus/device.name2=SM-G770F/g' AnyKernel3/anykernel.sh
-          sed -i 's/device.name3=toro/device.name3=r5q/g' AnyKernel3/anykernel.sh
           
-          # Creăm arhiva ZIP finală
           cd AnyKernel3
-          zip -r9 ../Kernel-S10Lite-R5Q-Neutron.zip *
+          zip -r9 ../Kernel-S10Lite-R5Q-GoogleClang.zip *
+
       - name: Upload Flashable Kernel
         uses: actions/upload-artifact@v4
         with:
           name: Kernel-S10Lite-R5Q
-          path: Kernel-S10Lite-R5Q-Neutron.zip
+          path: Kernel-S10Lite-R5Q-GoogleClang.zip
