@@ -26,9 +26,19 @@ jobs:
           # Adăugăm GCC/Binutils pentru a furniza aarch64-linux-gnu-ld și altele
           git clone --depth=1 https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9 gcc-arm64
           git clone --depth=1 https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9 gcc-arm
+       
+      - name: Build Custom DTC
+        run: |
+          echo "--- Building Upstream DTC ---"
+          git clone --depth=1 https://git.kernel.org/pub/scm/utils/dtc/dtc.git dtc-src
+          cd dtc-src && make -j$(nproc)
+          echo "$(pwd)" >> $GITHUB_PATH
+          echo "CUSTOM_DTC_PATH=$(pwd)/dtc" >> $GITHUB_ENV
 
       - name: Merge Config and Build
         run: |
+          # Adăugăm DTC-ul custom în PATH
+          export PATH="$DTC_PATH:$PATH"
           cd kernel
           export ARCH=arm64
           export CROSS_COMPILE=aarch64-linux-android-
@@ -56,6 +66,7 @@ jobs:
               LD=ld.lld \
               AR=llvm-ar \
               NM=llvm-nm \
+              DTC=dtc \
               OBJCOPY=llvm-objcopy \
               OBJDUMP=llvm-objdump \
               STRIP=llvm-strip
