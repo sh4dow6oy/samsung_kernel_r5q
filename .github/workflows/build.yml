@@ -6,6 +6,7 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout Kernel Source
         uses: actions/checkout@v5
@@ -17,61 +18,61 @@ jobs:
       - name: Install Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y bc build-essential bison flex libssl-dev libelf-dev xz-utils libncurses5-dev
+          sudo apt-get install -y bc build-essential bison flex libssl-dev libelf-dev xz-utils libncurses5-dev python3 python3-pip wget
 
       - name: Download Toolchains
         run: |
-          # Clang-ul cerut de tine
+          # Clang r416183b
           git clone --depth=1 https://github.com/LineageOS/android_prebuilts_clang_kernel_linux-x86_clang-r416183b clang
-          # Adăugăm GCC/Binutils pentru a furniza aarch64-linux-gnu-ld și altele
+          # GCC 64-bit (AArch64)
           git clone --depth=1 https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9 gcc-arm64
+          # GCC 32-bit (ARM)
           git clone --depth=1 https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9 gcc-arm
-       
+
       - name: Build Custom DTC
         run: |
           echo "--- Building Upstream DTC ---"
           git clone --depth=1 https://git.kernel.org/pub/scm/utils/dtc/dtc.git dtc-src
-          cd dtc-src && make -j$(nproc)
-          echo "$(pwd)" >> $GITHUB_PATH
+          cd dtc-src
+          make -j$(nproc)
+          # Setăm variabila de mediu către BINARUL dtc, nu către folder
           echo "CUSTOM_DTC_PATH=$(pwd)/dtc" >> $GITHUB_ENV
 
       - name: Fix Camera and Float Errors
         run: |
           cd kernel
-          # 1. Fix Undefined OIS Symbols (Redirecționăm rear3 către rear pentru a satisface linkerul)
-          # Adăugăm definițiile lipsă în cam_sysfs_init.c
-          echo "int ois_gain_rear3_result = 0;" >> drivers/media/platform/msm/camera/cam_sensor_module/cam_sensor_utils/cam_sysfs_init.c
-          echo "int ois_sr_rear3_result = 0;" >> drivers/media/platform/msm/camera/cam_sensor_module/cam_sensor_utils/cam_sysfs_init.c
+          # 1. Fix Undefined OIS Symbols
+          # Adăugăm definițiile în fișierul de inițializare cam sysfs pentru a preveni erorile de linkare
+          FILE_PATH="drivers/media/platform/msm/camera/cam_sensor_module/cam_sensor_utils/cam_sysfs_init.c"
+          if [ -f "$FILE_PATH" ]; then
+            echo "int ois_gain_rear3_result = 0;" >> $FILE_PATH
+            echo "int ois_sr_rear3_result = 0;" >> $FILE_PATH
+          fi
 
-          # 2. Fix Floating Point errors in OIS driver
-          # Adăugăm flag-ul -mgeneral-regs-only pentru a preveni utilizarea instrucțiunilor de floating point
-          # Sau forțăm compilatorul să ignore erorile matematice prin KCFLAGS (vezi pasul următor)
-          
-          # 3. Patch pentru icnss buffer overflow (cel de data trecută, să fie inclus)
+          # 2. Patch pentru icnss buffer overflow
           sed -i 's/char antbuffer\[2\]/char antbuffer[5]/g' drivers/soc/qcom/icnss.c || true
 
-      - name: Merge Config and Build
+      - name: Build Kernel
         run: |
           cd kernel
-          export ARCH=arm64
           
-          # Setup Toolchain Paths
+          # Setup Path pentru Toolchains
           CLANG_BIN=$(pwd)/../clang/bin
           GCC64_BIN=$(pwd)/../gcc-arm64/bin
           GCC32_BIN=$(pwd)/../gcc-arm/bin
           export PATH="$CLANG_BIN:$GCC64_BIN:$GCC32_BIN:$PATH"
           
-          # 1. Manual Merge (Brute Force)
+          export ARCH=arm64
           mkdir -p out
-          cat arch/arm64/configs/sm8150_sec_defconfig > out/.config
-          echo "" >> out/.config
-          cat arch/arm64/configs/sm8150_sec_r5q_eur_open.config >> out/.config
 
-          # 2. Validare Config
+          # 1. Creare Config (Merge defconfig + variant config)
+          cat arch/arm64/configs/sm8150_sec_defconfig arch/arm64/configs/sm8150_sec_r5q_eur_open.config > out/.config
+          
+          # 2. Aplicare Config
           make O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-android- olddefconfig
 
-          # 3. Compilare Finală (Kernel + DTBO)
-          # Adăugăm țintele 'dtbo' sau 'dtbs' pentru a genera fișierele overlay
+          # 3. Compilare (Kernel + DTB + DTBO)
+          # KCFLAGS="-mgeneral-regs-only" previne folosirea registrelor Floating Point în codul kernelului
           make -j$(nproc --all) O=out \
               ARCH=arm64 \
               CC=clang \
@@ -85,30 +86,28 @@ jobs:
               OBJDUMP=llvm-objdump \
               STRIP=llvm-strip \
               DTC=$CUSTOM_DTC_PATH \
+              KCFLAGS="-mgeneral-regs-only" \
               Image.gz-dtb dtbs
 
       - name: Build DTBO Image
         run: |
           echo "--- Packing DTBO Image ---"
-          # Descarcă scriptul
           wget https://raw.githubusercontent.com/K-Blaaaack/mkdtboimg/master/mkdtboimg.py -O mkdtboimg.py
           
-          # Găsește toate fișierele .dtbo generate în directorul de output (kernel/out)
-          # Folosim -path pentru a ne asigura că luăm doar ce e în arch/arm64/boot/dts
+          # Căutăm fișierele dtbo în directorul de output
           DTBO_FILES=$(find kernel/out/arch/arm64/boot/dts/ -name "*.dtbo")
           
           if [ -z "$DTBO_FILES" ]; then
-            echo "EROARE: Nu am găsit niciun fișier .dtbo! Verifică dacă 'make dtbs' a rulat corect."
+            echo "EROARE: Nu s-au găsit fișiere .dtbo!"
             exit 1
           fi
           
-          # Crează imaginea finală
           python3 mkdtboimg.py create dtbo.img $DTBO_FILES
-          
+
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-Bundle-r5q
+          name: Kernel-SM8150-r5q
           path: |
             kernel/out/arch/arm64/boot/Image.gz-dtb
             dtbo.img
