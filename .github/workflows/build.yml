@@ -8,7 +8,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Kernel Source
-        uses: actions/checkout@v3
+        uses: actions/checkout@v5
         with:
           repository: LumiPlayground/android_kernel_samsung_sm8150
           ref: auriana
@@ -49,7 +49,7 @@ jobs:
           make -j$(nproc --all) O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu-
 
       - name: Upload Kernel Image
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v5
         with:
           name: Image.gz-dtb
           path: kernel/out/arch/arm64/boot/Image.gz-dtb
