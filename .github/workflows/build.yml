@@ -35,7 +35,7 @@ jobs:
           echo "$(pwd)" >> $GITHUB_PATH
           echo "CUSTOM_DTC_PATH=$(pwd)/dtc" >> $GITHUB_ENV
 
-       - name: Fix Camera and Float Errors
+      - name: Fix Camera and Float Errors
         run: |
           cd kernel
           # 1. Fix Undefined OIS Symbols (Redirecționăm rear3 către rear pentru a satisface linkerul)
