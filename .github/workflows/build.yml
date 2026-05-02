@@ -78,5 +78,4 @@ jobs:
           name: Kernel-DTBO-r5q
           path: |
             kernel/out/arch/arm64/boot/Image.gz-dtb
-            kernel/out/arch/arm64/boot/dtbo.img
             kernel/out/arch/arm64/boot/dts/samsung/*.dtbo
