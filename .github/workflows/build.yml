@@ -37,26 +37,26 @@ jobs:
 
       - name: Merge Config and Build
         run: |
-          # Adăugăm DTC-ul custom în PATH
-          export PATH="$DTC_PATH:$PATH"
           cd kernel
           export ARCH=arm64
-          export CROSS_COMPILE=aarch64-linux-android-
           
+          # Setup Toolchain Paths
+          CLANG_BIN=$(pwd)/../clang/bin
+          GCC64_BIN=$(pwd)/../gcc-arm64/bin
+          GCC32_BIN=$(pwd)/../gcc-arm/bin
+          export PATH="$CLANG_BIN:$GCC64_BIN:$GCC32_BIN:$PATH"
+          
+          # 1. Manual Merge (Brute Force)
           mkdir -p out
-
-          # 1. Combinăm fișierele manual într-un singur fișier temporar
           cat arch/arm64/configs/sm8150_sec_defconfig > out/.config
           echo "" >> out/.config
           cat arch/arm64/configs/sm8150_sec_r5q_eur_open.config >> out/.config
 
-          # 2. Rulăm 'olddefconfig' pentru a valida mixul și a activa dependențele implicite
-          # Folosim PATH-ul către toolchain-ul descărcat anterior
-          export PATH="$(pwd)/../clang/bin:$(pwd)/../gcc-arm64/bin:$(pwd)/../gcc-arm/bin:$PATH"
-          
+          # 2. Validare Config
           make O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-android- olddefconfig
 
-          # 3. Build cu toate flag-urile necesare (inclusiv fix-ul pentru WLAN)
+          # 3. Compilare Finală (Kernel + DTBO)
+          # Adăugăm țintele 'dtbo' sau 'dtbs' pentru a genera fișierele overlay
           make -j$(nproc --all) O=out \
               ARCH=arm64 \
               CC=clang \
@@ -66,25 +66,17 @@ jobs:
               LD=ld.lld \
               AR=llvm-ar \
               NM=llvm-nm \
-              DTC=$CUSTOM_DTC_PATH \
               OBJCOPY=llvm-objcopy \
               OBJDUMP=llvm-objdump \
-              STRIP=llvm-strip
-          )
+              STRIP=llvm-strip \
+              DTC=$CUSTOM_DTC_PATH \
+              Image.gz-dtb dtbo
 
-          # 1. Creare director
-          mkdir -p out
-          
-          # 2. Merge Config
-          bash scripts/kconfig/merge_config.sh -O out \
-              arch/arm64/configs/sm8150_sec_defconfig \
-              arch/arm64/configs/sm8150_sec_r5q_eur_open.config
-          
-          # 3. Build propriu-zis
-          make -j$(nproc --all) "${MAKE_FLAGS[@]}"
-
-      - name: Upload Kernel Image
+      - name: Upload Artifacts
         uses: actions/upload-artifact@v5
         with:
-          name: Image.gz-dtb
-          path: kernel/out/arch/arm64/boot/Image.gz-dtb
+          name: Kernel-DTBO-r5q
+          path: |
+            kernel/out/arch/arm64/boot/Image.gz-dtb
+            kernel/out/arch/arm64/boot/dtbo.img
+            kernel/out/arch/arm64/boot/dts/samsung/*.dtbo
