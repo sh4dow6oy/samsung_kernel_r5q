@@ -36,13 +36,6 @@ jobs:
       - name: Fix Camera and Float Errors
         run: |
           cd kernel
-          # 1. Fix Undefined OIS Symbols (Redirecționăm rear3 către rear pentru a satisface linkerul)
-          # Adăugăm definițiile lipsă în cam_sysfs_init.c
-          echo "int ois_gain_rear3_result = 0;" >> drivers/media/platform/msm/camera/cam_sensor_module/cam_sensor_utils/cam_sysfs_init.c
-          echo "int ois_sr_rear3_result = 0;" >> drivers/media/platform/msm/camera/cam_sensor_module/cam_sensor_utils/cam_sysfs_init.c
-          # 2. Fix Floating Point errors in OIS driver
-          # Adăugăm flag-ul -mgeneral-regs-only pentru a preveni utilizarea instrucțiunilor de floating point
-          # Sau forțăm compilatorul să ignore erorile matematice prin KCFLAGS (vezi pasul următor)
           
           # 3. Patch pentru icnss buffer overflow (cel de data trecută, să fie inclus)
           sed -i 's/char antbuffer\[2\]/char antbuffer[5]/g' drivers/soc/qcom/icnss.c || true
