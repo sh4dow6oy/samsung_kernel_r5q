@@ -70,7 +70,7 @@ jobs:
               OBJDUMP=llvm-objdump \
               STRIP=llvm-strip \
               DTC=$CUSTOM_DTC_PATH \
-              Image.gz-dtb dtbo
+              Image.gz-dtb dtbs
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v5
