@@ -41,13 +41,6 @@ jobs:
       - name: Fix Camera and Float Errors
         run: |
           cd kernel
-          # 1. Fix Undefined OIS Symbols
-          # Adăugăm definițiile în fișierul de inițializare cam sysfs pentru a preveni erorile de linkare
-          FILE_PATH="drivers/media/platform/msm/camera/cam_sensor_module/cam_sensor_utils/cam_sysfs_init.c"
-          if [ -f "$FILE_PATH" ]; then
-            echo "int ois_gain_rear3_result = 0;" >> $FILE_PATH
-            echo "int ois_sr_rear3_result = 0;" >> $FILE_PATH
-          fi
 
           # 2. Patch pentru icnss buffer overflow
           sed -i 's/char antbuffer\[2\]/char antbuffer[5]/g' drivers/soc/qcom/icnss.c || true
@@ -85,6 +78,7 @@ jobs:
               OBJCOPY=llvm-objcopy \
               OBJDUMP=llvm-objdump \
               STRIP=llvm-strip \
+              KBUILD_VMLINUX_LIBS=$LIBGCC_PATH \
               DTC=$CUSTOM_DTC_PATH \
               KCFLAGS="-mgeneral-regs-only" \
               Image.gz-dtb dtbs
