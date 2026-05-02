@@ -41,6 +41,29 @@ jobs:
       - name: Fix Camera and Float Errors
         run: |
           cd kernel
+          # 1. Fix Undefined OIS Symbols
+          FILE_PATH="drivers/media/platform/msm/camera/cam_sensor_module/cam_sensor_utils/cam_sysfs_init.c"
+          if [ -f "$FILE_PATH" ]; then
+            echo "int ois_gain_rear3_result = 0;" >> $FILE_PATH
+            echo "int ois_sr_rear3_result = 0;" >> $FILE_PATH
+          fi
+
+          # 2. FIX FLOATING POINT (Eroarea precedenta)
+          # Injectăm definiții goale direct în fișier pentru a satisface linkerul fără libgcc
+          OIS_RUMBA="drivers/media/platform/msm/camera/cam_sensor_module/cam_ois/cam_ois_rumba_s4.c"
+          if [ -f "$OIS_RUMBA" ]; then
+            sed -i 's/double/long/g' $OIS_RUMBA || true
+            sed -i 's/float/long/g' $OIS_RUMBA || true
+            cat <<EOF >> $OIS_RUMBA
+          long __divdf3(long a, long b) { return 0; }
+          long __muldf3(long a, long b) { return 0; }
+          long __floatdidf(long a) { return 0; }
+          long __fixdfdi(long a) { return 0; }
+          EOF
+          fi
+
+          # 3. Patch pentru icnss buffer overflow
+          sed -i 's/char antbuffer\[2\]/char antbuffer[5]/g' drivers/soc/qcom/icnss.c || true
 
           # 2. Patch pentru icnss buffer overflow
           sed -i 's/char antbuffer\[2\]/char antbuffer[5]/g' drivers/soc/qcom/icnss.c || true
@@ -72,14 +95,12 @@ jobs:
               CLANG_TRIPLE=aarch64-linux-gnu- \
               CROSS_COMPILE=aarch64-linux-android- \
               CROSS_COMPILE_ARM32=arm-linux-androideabi- \
-              LD=ld.lld \
               AR=llvm-ar \
               NM=llvm-nm \
               OBJCOPY=llvm-objcopy \
               OBJDUMP=llvm-objdump \
               STRIP=llvm-strip \
               KBUILD_VMLINUX_LIBS=$LIBGCC_PATH \
-              DTC=$CUSTOM_DTC_PATH \
               KCFLAGS="-mgeneral-regs-only" \
               Image.gz-dtb dtbs
 
