@@ -58,9 +58,7 @@ jobs:
               NM=llvm-nm \
               OBJCOPY=llvm-objcopy \
               OBJDUMP=llvm-objdump \
-              STRIP=llvm-strip \
-              WLAN_CFG_OVERRIDE=y \
-              CONFIG_QUALCOMM_WCN39XX=y
+              STRIP=llvm-strip
           )
 
           # 1. Creare director
