@@ -10,7 +10,7 @@ jobs:
       - name: Checkout Kernel Source
         uses: actions/checkout@v5
         with:
-          repository: LumiPlayground/android_kernel_samsung_sm8150
+          repository: sh4dow6oy/android_kernel_samsung_sm8150
           ref: auriana
           path: kernel
 
