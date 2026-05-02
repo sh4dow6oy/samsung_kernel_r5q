@@ -72,10 +72,28 @@ jobs:
               DTC=$CUSTOM_DTC_PATH \
               Image.gz-dtb dtbs
 
+      - name: Build DTBO Image
+        run: |
+          echo "--- Packing DTBO Image ---"
+          # Descarcă scriptul
+          wget https://raw.githubusercontent.com/K-Blaaaack/mkdtboimg/master/mkdtboimg.py -O mkdtboimg.py
+          
+          # Găsește toate fișierele .dtbo generate în directorul de output (kernel/out)
+          # Folosim -path pentru a ne asigura că luăm doar ce e în arch/arm64/boot/dts
+          DTBO_FILES=$(find kernel/out/arch/arm64/boot/dts/ -name "*.dtbo")
+          
+          if [ -z "$DTBO_FILES" ]; then
+            echo "EROARE: Nu am găsit niciun fișier .dtbo! Verifică dacă 'make dtbs' a rulat corect."
+            exit 1
+          fi
+          
+          # Crează imaginea finală
+          python3 mkdtboimg.py create dtbo.img $DTBO_FILES
+          
       - name: Upload Artifacts
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v4
         with:
-          name: Kernel-DTBO-r5q
+          name: Kernel-Bundle-r5q
           path: |
             kernel/out/arch/arm64/boot/Image.gz-dtb
-            kernel/out/arch/arm64/boot/dts/samsung/*.dtbo
+            dtbo.img
