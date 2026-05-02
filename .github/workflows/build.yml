@@ -31,30 +31,36 @@ jobs:
         run: |
           cd kernel
           export ARCH=arm64
-          export SUBARCH=arm64
+          export CROSS_COMPILE=aarch64-linux-android-
           
-          # Setăm căile către toolchain-uri
-          CLANG_BIN=$(pwd)/../clang/bin
-          GCC64_BIN=$(pwd)/../gcc-arm64/bin
-          GCC32_BIN=$(pwd)/../gcc-arm/bin
+          mkdir -p out
+
+          # 1. Combinăm fișierele manual într-un singur fișier temporar
+          cat arch/arm64/configs/sm8150_sec_defconfig > out/.config
+          echo "" >> out/.config
+          cat arch/arm64/configs/sm8150_sec_r5q_eur_open.config >> out/.config
+
+          # 2. Rulăm 'olddefconfig' pentru a valida mixul și a activa dependențele implicite
+          # Folosim PATH-ul către toolchain-ul descărcat anterior
+          export PATH="$(pwd)/../clang/bin:$(pwd)/../gcc-arm64/bin:$(pwd)/../gcc-arm/bin:$PATH"
           
-          # Adăugăm totul în PATH
-          export PATH="$CLANG_BIN:$GCC64_BIN:$GCC32_BIN:$PATH"
-          
-          # Definirea flag-urilor pentru compilare
-          MAKE_FLAGS=(
-              ARCH=arm64
-              O=out
-              CC=clang
-              CLANG_TRIPLE=aarch64-linux-gnu-
-              CROSS_COMPILE=aarch64-linux-android-
-              CROSS_COMPILE_ARM32=arm-linux-androideabi-
-              LD=ld.lld
-              AR=llvm-ar
-              NM=llvm-nm
-              OBJCOPY=llvm-objcopy
-              OBJDUMP=llvm-objdump
-              STRIP=llvm-strip
+          make O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-android- olddefconfig
+
+          # 3. Build cu toate flag-urile necesare (inclusiv fix-ul pentru WLAN)
+          make -j$(nproc --all) O=out \
+              ARCH=arm64 \
+              CC=clang \
+              CLANG_TRIPLE=aarch64-linux-gnu- \
+              CROSS_COMPILE=aarch64-linux-android- \
+              CROSS_COMPILE_ARM32=arm-linux-androideabi- \
+              LD=ld.lld \
+              AR=llvm-ar \
+              NM=llvm-nm \
+              OBJCOPY=llvm-objcopy \
+              OBJDUMP=llvm-objdump \
+              STRIP=llvm-strip \
+              WLAN_CFG_OVERRIDE=y \
+              CONFIG_QUALCOMM_WCN39XX=y
           )
 
           # 1. Creare director
