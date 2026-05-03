@@ -50,15 +50,13 @@ jobs:
           GCC32_BIN=$(pwd)/../gcc-arm/bin
           export PATH="$CLANG_BIN:$GCC64_BIN:$GCC32_BIN:$PATH"
           
-          # 1. Manual Merge (Brute Force)
           mkdir -p out
-          cat arch/arm64/configs/sm8150_sec_defconfig > out/.config
-          echo "" >> out/.config
-          cat arch/arm64/configs/sm8150_sec_r5q_eur_open.config >> out/.config
-          # 2. Validare Config
-          make O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-android- olddefconfig
-          # 3. Compilare Finală (Kernel + DTBO)
-          # Adăugăm țintele 'dtbo' sau 'dtbs' pentru a genera fișierele overlay
+
+          # 1. Aplică direct r5q_defconfig
+          # Aceasta va genera fișierul .config folosind template-ul deconfigului tău
+          make O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-android- r5q_defconfig
+
+          # 2. Compilare Finală
           make -j$(nproc --all) O=out \
               ARCH=arm64 \
               CC=clang \
