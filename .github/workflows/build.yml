@@ -36,7 +36,9 @@ jobs:
       - name: Fix Camera and Float Errors
         run: |
           cd kernel
-          
+
+          # Comentează apelul funcției care dă eroare în kernel/power/main.c
+          sed -i 's/wakeup_sources_stats_active();/\/\/wakeup_sources_stats_active();/g' kernel/kernel/power/main.c || true
           # 3. Patch pentru icnss buffer overflow (cel de data trecută, să fie inclus)
           sed -i 's/char antbuffer\[2\]/char antbuffer[5]/g' drivers/soc/qcom/icnss.c || true
       - name: Merge Config and Build
