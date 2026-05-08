@@ -20,9 +20,7 @@ jobs:
 
       - name: Download Toolchains
         run: |
-          # Clang r416183b
           git clone --depth=1 https://github.com/LineageOS/android_prebuilts_clang_kernel_linux-x86_clang-r416183b clang
-          # GCC 4.9 pentru restul binarelor
           git clone --depth=1 https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9 gcc-arm64
           git clone --depth=1 https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9 gcc-arm
 
@@ -33,41 +31,39 @@ jobs:
           echo "$(pwd)" >> $GITHUB_PATH
           echo "CUSTOM_DTC_PATH=$(pwd)/dtc" >> $GITHUB_ENV
 
-      - name: Import CCIC and USB from A82xq
+      - name: Import Drivers from A82xq
         run: |
-          # Clonăm sursa A82xq pentru a extrage driverele noi
           git clone --depth=1 -b openela-4.14.356 https://github.com/Andy2660/android_kernel_samsung_a82xq a82_source
           
-          # 1. Înlocuim CCIC (Interface Controller)
+          # 1. Înlocuire integrală CCIC
           rm -rf kernel/drivers/ccic
           cp -r a82_source/drivers/ccic kernel/drivers/
           
-          # 2. Înlocuim USB Stack
+          # 2. Înlocuire integrală USB
           rm -rf kernel/drivers/usb
           cp -r a82_source/drivers/usb kernel/drivers/
           
-          # 3. Import Power/Battery (esențial pentru CCIC)
-          rm -rf kernel/drivers/power/supply/samsung
-          mkdir -p kernel/drivers/power/supply/samsung
-          cp -r a82_source/drivers/power/supply/samsung/* kernel/drivers/power/supply/samsung/
+          # 3. Înlocuire integrală POWER SUPPLY
+          rm -rf kernel/drivers/power/supply
+          mkdir -p kernel/drivers/power/supply
+          cp -r a82_source/drivers/power/supply/* kernel/drivers/power/supply/
           
-          # Curățenie sursă temporară
           rm -rf a82_source
 
-      - name: Fix Source Errors (Camera, Float, Buffer)
+      - name: Patch and Link Folders
         run: |
           cd kernel
-          # Fix ICNSS Buffer Overflow
+          # Fix ICNSS Buffer
           sed -i 's/char antbuffer\[2\]/char antbuffer[5]/g' drivers/soc/qcom/icnss.c || true
           
-          # Fix Camera Undefined Symbols (rear3)
+          # Fix Camera Symbols
           echo "int ois_gain_rear3_result = 0;" >> drivers/media/platform/msm/camera/cam_sensor_module/cam_sensor_utils/cam_sysfs_init.c
           echo "int ois_sr_rear3_result = 0;" >> drivers/media/platform/msm/camera/cam_sensor_module/cam_sensor_utils/cam_sysfs_init.c
 
-          # Fix Float Errors in OIS (Rumba)
+          # Fix Float Errors (OIS)
           sed -i 's/double/int/g' drivers/media/platform/msm/camera/cam_sensor_module/cam_ois/cam_ois_rumba_s4.c || true
           
-          # Asigurăm că noul folder ccic este inclus în build
+          # Forțăm includerea CCIC în build dacă lipsește din Makefile-ul părinte
           if ! grep -q "obj-y += ccic/" drivers/Makefile; then
             echo 'obj-y += ccic/' >> drivers/Makefile
           fi
@@ -77,33 +73,32 @@ jobs:
           cd kernel
           export ARCH=arm64
           
-          # Setup Toolchain Paths
           CLANG_BIN=$(pwd)/../clang/bin
           GCC64_BIN=$(pwd)/../gcc-arm64/bin
           GCC32_BIN=$(pwd)/../gcc-arm/bin
           export PATH="$CLANG_BIN:$GCC64_BIN:$GCC32_BIN:$PATH"
           
-          # Flags pentru stabilitate și forțare reguli
+          # Flag-uri critice pentru linkare corectă
           export KCFLAGS="-mgeneral-regs-only -Wno-error -fno-builtin"
 
           mkdir -p out
-          # Merge defconfigs
           cat arch/arm64/configs/sm8150_sec_defconfig > out/.config
           cat arch/arm64/configs/sm8150_sec_r5q_eur_open.config >> out/.config
           
-          # Forțăm activarea noilor drivere și DTBO
+          # Configurații pentru noile subsisteme
           {
             echo "CONFIG_BUILD_ARM64_DTB_OVERLAY=y"
             echo "CONFIG_CCIC_S2MU004=y"
             echo "CONFIG_CCIC_NOTIFIER=y"
             echo "CONFIG_BATTERY_SAMSUNG=y"
+            echo "CONFIG_POWER_SUPPLY=y"
             echo "CONFIG_USB_G_ANDROID=y"
+            echo "CONFIG_USB_DWC3=y"
+            echo "CONFIG_USB_DWC3_MSM=y"
           } >> out/.config
 
-          # Validare config
           make O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-android- olddefconfig
 
-          # Build Final
           make -j$(nproc --all) O=out \
               ARCH=arm64 \
               CC=clang \
@@ -124,10 +119,9 @@ jobs:
       - name: Build DTBO Image
         run: |
           wget https://raw.githubusercontent.com/K-Blaaaack/mkdtboimg/master/mkdtboimg.py -O mkdtboimg.py
-          # Căutăm fișierele .dtbo în folderul out
           DTBO_FILES=$(find kernel/out/arch/arm64/boot/dts/ -name "*.dtbo")
           if [ -z "$DTBO_FILES" ]; then
-            echo "EROARE: Nu au fost generate fișiere DTBO!"
+            echo "EROARE: Nu s-au generat fișiere DTBO!"
             exit 1
           fi
           python3 mkdtboimg.py create dtbo.img $DTBO_FILES
@@ -135,7 +129,7 @@ jobs:
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-SM8150-r5q-Custom
+          name: Kernel-r5q-A82-USB-Power
           path: |
             kernel/out/arch/arm64/boot/Image.gz-dtb
             dtbo.img
