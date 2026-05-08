@@ -35,38 +35,43 @@ jobs:
         run: |
           git clone --depth=1 -b openela-4.14.356 https://github.com/Andy2660/android_kernel_samsung_a82xq a82_source
           
-          # 1. Înlocuire integrală CCIC
+          # 1. Înlocuire CCIC
           rm -rf kernel/drivers/ccic
           cp -r a82_source/drivers/ccic kernel/drivers/
           
-          # 2. Înlocuire integrală USB
+          # 2. Înlocuire USB (Stack complet)
           rm -rf kernel/drivers/usb
           cp -r a82_source/drivers/usb kernel/drivers/
           
-          # 3. Înlocuire integrală POWER SUPPLY
+          # 3. Înlocuire POWER SUPPLY (Integral)
           rm -rf kernel/drivers/power/supply
-          mkdir -p kernel/drivers/power/supply
-          cp -r a82_source/drivers/power/supply/* kernel/drivers/power/supply/
+          cp -r a82_source/drivers/power/supply kernel/drivers/
           
           rm -rf a82_source
 
-      - name: Patch and Link Folders
+      - name: Patch and Fix Source Errors
         run: |
           cd kernel
-          # Fix ICNSS Buffer
+          # Fix ICNSS Buffer Overflow
           sed -i 's/char antbuffer\[2\]/char antbuffer[5]/g' drivers/soc/qcom/icnss.c || true
           
-          # Fix Camera Symbols
+          # FIX USB TIMESPEC64 ERROR (Conflict între kernel base și codul A82)
+          sed -i 's/struct timespec ts = current_time/struct timespec64 ts = current_time/g' drivers/usb/gadget/function/f_fs.c || true
+          
+          # Fix Camera Undefined Symbols
           echo "int ois_gain_rear3_result = 0;" >> drivers/media/platform/msm/camera/cam_sensor_module/cam_sensor_utils/cam_sysfs_init.c
           echo "int ois_sr_rear3_result = 0;" >> drivers/media/platform/msm/camera/cam_sensor_module/cam_sensor_utils/cam_sysfs_init.c
 
-          # Fix Float Errors (OIS)
+          # Fix Float Errors în driverul OIS
           sed -i 's/double/int/g' drivers/media/platform/msm/camera/cam_sensor_module/cam_ois/cam_ois_rumba_s4.c || true
           
-          # Forțăm includerea CCIC în build dacă lipsește din Makefile-ul părinte
+          # Link CCIC în sistemul de build
           if ! grep -q "obj-y += ccic/" drivers/Makefile; then
             echo 'obj-y += ccic/' >> drivers/Makefile
           fi
+
+          # Ștergem fișierul WLAN override dacă există pentru a preveni "missing separator"
+          rm -f drivers/net/wireless/qualcomm/wcn39xx/qcacld-3.0/.wlan_cfg_override || true
 
       - name: Merge Config and Build
         run: |
@@ -78,14 +83,14 @@ jobs:
           GCC32_BIN=$(pwd)/../gcc-arm/bin
           export PATH="$CLANG_BIN:$GCC64_BIN:$GCC32_BIN:$PATH"
           
+          # Flag-uri pentru a ignora erorile non-critice și a forța integer math
           export KCFLAGS="-mgeneral-regs-only -Wno-error -fno-builtin"
 
           mkdir -p out
           cat arch/arm64/configs/sm8150_sec_defconfig > out/.config
           cat arch/arm64/configs/sm8150_sec_r5q_eur_open.config >> out/.config
           
-          # Forțăm configurația WLAN și restul de drivere direct în .config
-          # Eliminăm necesitatea parametrului WLAN_CFG_OVERRIDE din comanda make
+          # Injectăm manual flag-urile pentru noile componente
           {
             echo "CONFIG_BUILD_ARM64_DTB_OVERLAY=y"
             echo "CONFIG_CCIC_S2MU004=y"
@@ -95,14 +100,12 @@ jobs:
             echo "CONFIG_USB_G_ANDROID=y"
             echo "CONFIG_USB_DWC3=y"
             echo "CONFIG_USB_DWC3_MSM=y"
-            echo "CONFIG_PRIMA_WLAN_OKC=y"
-            echo "CONFIG_WLAN_FEATURE_FILS=y"
           } >> out/.config
 
-          # Sincronizare config
+          # Sincronizare .config
           make O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-android- olddefconfig
 
-          # Build Final - ATENȚIE: Am scos WLAN_CFG_OVERRIDE=y care cauza eroarea
+          # Build Final (Am eliminat WLAN_CFG_OVERRIDE pentru a evita eroarea de separator)
           make -j$(nproc --all) O=out \
               ARCH=arm64 \
               CC=clang \
@@ -124,15 +127,15 @@ jobs:
           wget https://raw.githubusercontent.com/K-Blaaaack/mkdtboimg/master/mkdtboimg.py -O mkdtboimg.py
           DTBO_FILES=$(find kernel/out/arch/arm64/boot/dts/ -name "*.dtbo")
           if [ -z "$DTBO_FILES" ]; then
-            echo "EROARE: Nu s-au generat fișiere DTBO!"
+            echo "EROARE: Fișierele DTBO nu au fost găsite!"
             exit 1
           fi
           python3 mkdtboimg.py create dtbo.img $DTBO_FILES
 
       - name: Upload Artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
-          name: Kernel-r5q-A82-USB-Power
+          name: Kernel-SM8150-r5q-A82Drivers
           path: |
             kernel/out/arch/arm64/boot/Image.gz-dtb
             dtbo.img
