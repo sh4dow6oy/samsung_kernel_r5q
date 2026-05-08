@@ -35,7 +35,7 @@ jobs:
         run: |
           git clone --depth=1 -b openela-4.14.356 https://github.com/Andy2660/android_kernel_samsung_a82xq a82_source
           
-          # Curățare pentru a evita eroarea "already registered" din last_kmsg
+          # Curățare pentru a evita eroarea "already registered"
           rm -rf kernel/drivers/ccic
           rm -rf kernel/drivers/usb/notify
           rm -rf kernel/drivers/usb/manager
@@ -52,15 +52,14 @@ jobs:
       - name: Patch and Fix Source Errors
         run: |
           cd kernel
-          # 1. Fix usbpd_manager.c (Includem headers necesare și folosim 0 în loc de NULL pentru siguranță)
-          # Inserăm la linia 1 pentru a fi siguri că sunt primele
+          # 1. Fix usbpd_manager.c
+          # În loc de stub-uri manuale, includem headerele care deja EXISTĂ în kernel-ul tău
+          # msleep are nevoie de delay.h
           sed -i '1i #include <linux/delay.h>' drivers/ccic/usbpd_manager.c
-          sed -i '2i #include <linux/types.h>' drivers/ccic/usbpd_manager.c
-          sed -i '3i struct otg_notify { int dummy; };' drivers/ccic/usbpd_manager.c
-          sed -i '4i static inline void *get_otg_notify(void) { return (void *)0; }' drivers/ccic/usbpd_manager.c
-          sed -i '5i static inline void inc_hw_param(void *a, int b) { }' drivers/ccic/usbpd_manager.c
-          sed -i '6i #define USB_CCIC_VR_USE_COUNT 0' drivers/ccic/usbpd_manager.c
-          sed -i '7i #define USB_CCIC_DEX_USE_COUNT 0' drivers/ccic/usbpd_manager.c
+          # Ne asigurăm că usb_notify.h este inclus (el conține otg_notify și restul)
+          if ! grep -q "#include <linux/usb_notify.h>" drivers/ccic/usbpd_manager.c; then
+            sed -i '2i #include <linux/usb_notify.h>' drivers/ccic/usbpd_manager.c
+          fi
 
           # 2. Fix ICNSS Buffer
           sed -i 's/char antbuffer\[2\]/char antbuffer[5]/g' drivers/soc/qcom/icnss.c || true
@@ -101,7 +100,8 @@ jobs:
             echo "CONFIG_USB_G_ANDROID=y"
             echo "CONFIG_USB_DWC3=y"
             echo "CONFIG_USB_DWC3_MSM=y"
-            echo "# CONFIG_USB_NOTIFY is not set"
+            # Activăm notificatorul USB pentru a avea definițiile din usb_notify.h
+            echo "CONFIG_USB_NOTIFY=y"
           } >> out/.config
 
           make O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-android- olddefconfig
@@ -119,14 +119,12 @@ jobs:
           DTBO_FILES=$(find kernel/out/arch/arm64/boot/dts/ -name "*.dtbo")
           if [ -n "$DTBO_FILES" ]; then
             python3 mkdtboimg.py create dtbo.img $DTBO_FILES
-          else
-            echo "No DTBO files found, skipping dtbo.img creation"
           fi
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-SM8150-Final-v3
+          name: Kernel-SM8150-Final-v4
           path: |
             kernel/out/arch/arm64/boot/Image.gz-dtb
             dtbo.img
