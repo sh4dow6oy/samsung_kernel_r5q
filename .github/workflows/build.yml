@@ -35,22 +35,21 @@ jobs:
         run: |
           git clone --depth=1 -b openela-4.14.356 https://github.com/Andy2660/android_kernel_samsung_a82xq a82_source
           
-          # --- CURĂȚARE DUBLURI (Eliminăm codul vechi care provoacă "already registered") ---
+          # 1. Curățare agresivă a vechilor drivere care cauzează dublarea în last_kmsg
           rm -rf kernel/drivers/ccic
           rm -rf kernel/drivers/usb/notify
           rm -rf kernel/drivers/usb/manager
-          rm -rf kernel/drivers/usb/host/notify # Unele surse Samsung au și aici dubluri
           
-          # --- IMPORT COD NOU ---
-          # 1. Import CCIC
-          cp -r a82_source/drivers/ccic kernel/drivers/
-          
-          # 2. Import USB Stack (complet)
+          # 2. Înlocuire USB
           rm -rf kernel/drivers/usb
-          cp -r a82_source/drivers/usb kernel/drivers/
+          cp -a a82_source/drivers/usb kernel/drivers/
           
-          # 3. Import POWER SUPPLY (complet)
+          # 3. Înlocuire CCIC
+          cp -a a82_source/drivers/ccic kernel/drivers/
+          
+          # 4. Înlocuire POWER SUPPLY
           rm -rf kernel/drivers/power/supply
+          mkdir -p kernel/drivers/power/supply
           cp -a a82_source/drivers/power/supply/. kernel/drivers/power/supply/
           
           rm -rf a82_source
@@ -58,26 +57,29 @@ jobs:
       - name: Patch and Fix Source Errors
         run: |
           cd kernel
-          # Fix ICNSS Buffer Overflow
+          # Fix ICNSS Buffer
           sed -i 's/char antbuffer\[2\]/char antbuffer[5]/g' drivers/soc/qcom/icnss.c || true
           
-          # FIX USB TIMESPEC64 ERROR (Conflict tipuri de date f_fs.c)
+          # Fix USB timespec64
           sed -i 's/struct timespec ts = current_time/struct timespec64 ts = current_time/g' drivers/usb/gadget/function/f_fs.c || true
           
-          # Fix Camera Undefined Symbols
+          # --- FIX-URI CONTEXTUALE PENTRU DRIVERS/CCIC/USBPD_MANAGER.C ---
+          # 1. Includem delay.h pentru a repara eroarea cu msleep()
+          sed -i '1s/^/#include <linux\/delay.h>\n/' drivers/ccic/usbpd_manager.c
+
+          # 2. Definim dummy-stubs pentru get_otg_notify și inc_hw_param ca să treacă compilarea rapid
+          # Adăugăm definiții temporare chiar la începutul fișierului usbpd_manager.c
+          sed -i '1s/^/struct otg_notify {int dummy;};\nstatic inline struct otg_notify *get_otg_notify(void) { return NULL; }\nstatic inline void inc_hw_param(struct otg_notify *n, int param) { }\n#define USB_CCIC_VR_USE_COUNT 0\n#define USB_CCIC_DEX_USE_COUNT 1\n/' drivers/ccic/usbpd_manager.c
+          
+          # Fix Camera Symbols
           echo "int ois_gain_rear3_result = 0;" >> drivers/media/platform/msm/camera/cam_sensor_module/cam_sensor_utils/cam_sysfs_init.c
           echo "int ois_sr_rear3_result = 0;" >> drivers/media/platform/msm/camera/cam_sensor_module/cam_sensor_utils/cam_sysfs_init.c
-
-          # Fix Float Errors în driverul OIS
           sed -i 's/double/int/g' drivers/media/platform/msm/camera/cam_sensor_module/cam_ois/cam_ois_rumba_s4.c || true
           
-          # Link CCIC în sistemul de build (drivers/Makefile)
+          # Link CCIC în Makefile-ul principal
           if ! grep -q "obj-y += ccic/" drivers/Makefile; then
             echo 'obj-y += ccic/' >> drivers/Makefile
           fi
-
-          # Ștergere fișier rezidual WLAN care dă erori de separator
-          rm -f drivers/net/wireless/qualcomm/wcn39xx/qcacld-3.0/.wlan_cfg_override || true
 
       - name: Merge Config and Build
         run: |
@@ -89,14 +91,13 @@ jobs:
           GCC32_BIN=$(pwd)/../gcc-arm/bin
           export PATH="$CLANG_BIN:$GCC64_BIN:$GCC32_BIN:$PATH"
           
-          # Flag-uri pentru stabilitate
           export KCFLAGS="-mgeneral-regs-only -Wno-error -fno-builtin -fno-pic"
 
           mkdir -p out
           cat arch/arm64/configs/sm8150_sec_defconfig > out/.config
           cat arch/arm64/configs/sm8150_sec_r5q_eur_open.config >> out/.config
           
-          # FIX RELOCARE ABS32 & DUBLARE NOTIFIER
+          # Configurații critice pentru a evita duplicarea notificatorilor
           {
             echo "CONFIG_MODVERSIONS=n"
             echo "CONFIG_ASM_MODVERSIONS=n"
@@ -109,15 +110,18 @@ jobs:
             echo "CONFIG_USB_G_ANDROID=y"
             echo "CONFIG_USB_DWC3=y"
             echo "CONFIG_USB_DWC3_MSM=y"
-            # Dezactivăm vechile notificări Qualcomm/Standard care se bat cu cele de Samsung
             echo "# CONFIG_USB_NOTIFY is not set"
             echo "# CONFIG_USB_HOST_NOTIFY is not set"
           } >> out/.config
 
-          # Sincronizare .config
+          # Verificăm dacă fișierul Kconfig există înainte de a rula olddefconfig
+          if [ ! -f drivers/power/supply/Kconfig ]; then
+            echo "EROARE: drivers/power/supply/Kconfig lipsește!"
+            exit 1
+          fi
+
           make O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-android- olddefconfig
 
-          # Build Final
           make -j$(nproc --all) O=out \
               ARCH=arm64 \
               CC=clang \
@@ -140,7 +144,7 @@ jobs:
           wget https://raw.githubusercontent.com/K-Blaaaack/mkdtboimg/master/mkdtboimg.py -O mkdtboimg.py
           DTBO_FILES=$(find kernel/out/arch/arm64/boot/dts/ -name "*.dtbo")
           if [ -z "$DTBO_FILES" ]; then
-            echo "EROARE: Fișierele DTBO nu au fost găsite! Kernel-ul nu va boota corect."
+            echo "EROARE: DTBO nu a fost generat!"
             exit 1
           fi
           python3 mkdtboimg.py create dtbo.img $DTBO_FILES
@@ -148,7 +152,7 @@ jobs:
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-SM8150-r5q-A82-Fixed
+          name: Kernel-SM8150-r5q-A82-v3
           path: |
             kernel/out/arch/arm64/boot/Image.gz-dtb
             dtbo.img
