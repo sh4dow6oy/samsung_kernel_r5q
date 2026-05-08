@@ -42,28 +42,29 @@ jobs:
           rm -rf kernel/drivers/power/supply && cp -a a82_source/drivers/power/supply kernel/drivers/power/
           rm -rf a82_source
 
-      - name: Hard Patch to Bypass Kernel Panic
+      - name: Hard Patch to Bypass Kernel Panic & Fix Errors
         run: |
           cd kernel
           # 1. FIX: usbpd_manager msleep & headers
           sed -i '1i #include <linux/delay.h>\n#include <linux/usb_notify.h>' drivers/ccic/usbpd_manager.c
 
-          # 2. FIX: Căutăm usb_typec_manager.c și aplicăm return 0 preventiv pentru crash
-          # În unele versiuni de Samsung, fișierul e în drivers/usb/manager/ sau drivers/usb/typec/manager/
+          # 2. FIX: Timespec64 error in f_fs.c (Eroarea pe care ai trimis-o)
+          # Înlocuim struct timespec cu struct timespec64
+          sed -i 's/struct timespec ts = current_time/struct timespec64 ts = current_time/g' drivers/usb/gadget/function/f_fs.c
+
+          # 3. FIX: Căutăm usb_typec_manager.c și aplicăm return 0 preventiv pentru crash
           MANAGER_FILE=$(find drivers/usb/ -name "usb_typec_manager.c" | head -n 1)
           if [ -n "$MANAGER_FILE" ]; then
             echo "Patching $MANAGER_FILE"
+            # Adăugăm return 0 imediat după declarația funcției
             sed -i '/int manager_set_alternate_mode(int mode)/!b;n;a return 0;' "$MANAGER_FILE"
-            # Dezactivăm notificările care duc la saltul de memorie invalid (0x500000000)
             sed -i 's/blocking_notifier_call_chain(&manager_notifier_list/ \/\/ blocking_notifier_call_chain/g' "$MANAGER_FILE"
-          else
-            echo "WARNING: usb_typec_manager.c not found, skipping patch"
           fi
 
-          # 3. FIX: Protecție NULL în usbpd_manager
+          # 4. FIX: Protecție NULL în usbpd_manager
           sed -i 's/msleep(20);/if (!get_otg_notify()) return; msleep(20);/g' drivers/ccic/usbpd_manager.c
 
-          # 4. FIX: Eliminăm Camera din Makefile (cauza secundară de crash)
+          # 5. FIX: Eliminăm Camera din Makefile (cauza secundară de crash)
           sed -i 's/obj-$(CONFIG_MSM_CAMERA)/# obj-$(CONFIG_MSM_CAMERA)/g' drivers/media/platform/msm/camera/Makefile || true
 
       - name: Build and Force Signature DTBO
@@ -72,7 +73,6 @@ jobs:
           export PATH="$(pwd)/../clang/bin:$(pwd)/../gcc-arm64/bin:$(pwd)/../gcc-arm/bin:$PATH"
           export KCFLAGS="-mgeneral-regs-only -Wno-error -fno-builtin -fno-pic"
           
-          # Regenerăm config-ul
           mkdir -p out
           cat arch/arm64/configs/sm8150_sec_defconfig arch/arm64/configs/sm8150_sec_r5q_eur_open.config > out/.config
           {
@@ -87,7 +87,6 @@ jobs:
           make O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-android- olddefconfig
           make -j$(nproc --all) O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-android- CROSS_COMPILE_ARM32=arm-linux-androideabi- LD=ld.lld DTC=$CUSTOM_DTC_PATH KCFLAGS="$KCFLAGS" CONFIG_SAMSUNG_PRODUCT_SHIP=y Image.gz-dtb dtbs
           
-          # DTBO cu versiune compatibilă S10 Lite
           wget https://raw.githubusercontent.com/K-Blaaaack/mkdtboimg/master/mkdtboimg.py -O mkdtboimg.py
           DTBO_FILES=$(find out/arch/arm64/boot/dts/ -name "*.dtbo")
           python3 mkdtboimg.py create ../dtbo.img --version=2 --page_size=4096 $DTBO_FILES
@@ -95,7 +94,7 @@ jobs:
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-S10Lite-Survivor-v8
+          name: Kernel-S10Lite-Survivor-v9
           path: |
             kernel/out/arch/arm64/boot/Image.gz-dtb
             dtbo.img
