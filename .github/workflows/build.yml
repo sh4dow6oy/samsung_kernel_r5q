@@ -1,5 +1,4 @@
 name: Build Samsung SM8150 Kernel
-
 on:
   workflow_dispatch:
 
@@ -17,30 +16,62 @@ jobs:
       - name: Install Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y bc build-essential bison flex libssl-dev libelf-dev xz-utils libncurses5-dev
+          sudo apt-get install -y bc build-essential bison flex libssl-dev libelf-dev xz-utils libncurses5-dev python3
+
       - name: Download Toolchains
         run: |
-          # Clang-ul cerut de tine
+          # Clang r416183b
           git clone --depth=1 https://github.com/LineageOS/android_prebuilts_clang_kernel_linux-x86_clang-r416183b clang
-          # Adăugăm GCC/Binutils pentru a furniza aarch64-linux-gnu-ld și altele
+          # GCC 4.9 pentru restul binarelor
           git clone --depth=1 https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9 gcc-arm64
           git clone --depth=1 https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9 gcc-arm
-       
+
       - name: Build Custom DTC
         run: |
-          echo "--- Building Upstream DTC ---"
           git clone --depth=1 https://git.kernel.org/pub/scm/utils/dtc/dtc.git dtc-src
           cd dtc-src && make -j$(nproc)
           echo "$(pwd)" >> $GITHUB_PATH
           echo "CUSTOM_DTC_PATH=$(pwd)/dtc" >> $GITHUB_ENV
-      - name: Fix Camera and Float Errors
+
+      - name: Import CCIC and USB from A82xq
+        run: |
+          # Clonăm sursa A82xq pentru a extrage driverele noi
+          git clone --depth=1 -b openela-4.14.356 https://github.com/Andy2660/android_kernel_samsung_a82xq a82_source
+          
+          # 1. Înlocuim CCIC (Interface Controller)
+          rm -rf kernel/drivers/ccic
+          cp -r a82_source/drivers/ccic kernel/drivers/
+          
+          # 2. Înlocuim USB Stack
+          rm -rf kernel/drivers/usb
+          cp -r a82_source/drivers/usb kernel/drivers/
+          
+          # 3. Import Power/Battery (esențial pentru CCIC)
+          rm -rf kernel/drivers/power/supply/samsung
+          mkdir -p kernel/drivers/power/supply/samsung
+          cp -r a82_source/drivers/power/supply/samsung/* kernel/drivers/power/supply/samsung/
+          
+          # Curățenie sursă temporară
+          rm -rf a82_source
+
+      - name: Fix Source Errors (Camera, Float, Buffer)
         run: |
           cd kernel
-
-          # Comentează apelul funcției care dă eroare în kernel/power/main.c
-          sed -i 's/wakeup_sources_stats_active();/\/\/wakeup_sources_stats_active();/g' kernel/kernel/power/main.c || true
-          # 3. Patch pentru icnss buffer overflow (cel de data trecută, să fie inclus)
+          # Fix ICNSS Buffer Overflow
           sed -i 's/char antbuffer\[2\]/char antbuffer[5]/g' drivers/soc/qcom/icnss.c || true
+          
+          # Fix Camera Undefined Symbols (rear3)
+          echo "int ois_gain_rear3_result = 0;" >> drivers/media/platform/msm/camera/cam_sensor_module/cam_sensor_utils/cam_sysfs_init.c
+          echo "int ois_sr_rear3_result = 0;" >> drivers/media/platform/msm/camera/cam_sensor_module/cam_sensor_utils/cam_sysfs_init.c
+
+          # Fix Float Errors in OIS (Rumba)
+          sed -i 's/double/int/g' drivers/media/platform/msm/camera/cam_sensor_module/cam_ois/cam_ois_rumba_s4.c || true
+          
+          # Asigurăm că noul folder ccic este inclus în build
+          if ! grep -q "obj-y += ccic/" drivers/Makefile; then
+            echo 'obj-y += ccic/' >> drivers/Makefile
+          fi
+
       - name: Merge Config and Build
         run: |
           cd kernel
@@ -52,13 +83,27 @@ jobs:
           GCC32_BIN=$(pwd)/../gcc-arm/bin
           export PATH="$CLANG_BIN:$GCC64_BIN:$GCC32_BIN:$PATH"
           
+          # Flags pentru stabilitate și forțare reguli
+          export KCFLAGS="-mgeneral-regs-only -Wno-error -fno-builtin"
+
           mkdir -p out
+          # Merge defconfigs
+          cat arch/arm64/configs/sm8150_sec_defconfig > out/.config
+          cat arch/arm64/configs/sm8150_sec_r5q_eur_open.config >> out/.config
+          
+          # Forțăm activarea noilor drivere și DTBO
+          {
+            echo "CONFIG_BUILD_ARM64_DTB_OVERLAY=y"
+            echo "CONFIG_CCIC_S2MU004=y"
+            echo "CONFIG_CCIC_NOTIFIER=y"
+            echo "CONFIG_BATTERY_SAMSUNG=y"
+            echo "CONFIG_USB_G_ANDROID=y"
+          } >> out/.config
 
-          # 1. Aplică direct r5q_defconfig
-          # Aceasta va genera fișierul .config folosind template-ul deconfigului tău
-          make O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-android- r5q_defconfig
+          # Validare config
+          make O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-android- olddefconfig
 
-          # 2. Compilare Finală
+          # Build Final
           make -j$(nproc --all) O=out \
               ARCH=arm64 \
               CC=clang \
@@ -69,32 +114,28 @@ jobs:
               AR=llvm-ar \
               NM=llvm-nm \
               OBJCOPY=llvm-objcopy \
-              OBJDUMP=llvm-objdump \
-              STRIP=llvm-strip \
+              OBJDUMP=llvm-strip \
               DTC=$CUSTOM_DTC_PATH \
+              KCFLAGS="$KCFLAGS" \
+              CONFIG_SAMSUNG_PRODUCT_SHIP=y \
+              WLAN_CFG_OVERRIDE=y \
               Image.gz-dtb dtbs
+
       - name: Build DTBO Image
         run: |
-          echo "--- Packing DTBO Image ---"
-          # Descarcă scriptul
           wget https://raw.githubusercontent.com/K-Blaaaack/mkdtboimg/master/mkdtboimg.py -O mkdtboimg.py
-          
-          # Găsește toate fișierele .dtbo generate în directorul de output (kernel/out)
-          # Folosim -path pentru a ne asigura că luăm doar ce e în arch/arm64/boot/dts
+          # Căutăm fișierele .dtbo în folderul out
           DTBO_FILES=$(find kernel/out/arch/arm64/boot/dts/ -name "*.dtbo")
-          
           if [ -z "$DTBO_FILES" ]; then
-            echo "EROARE: Nu am găsit niciun fișier .dtbo! Verifică dacă 'make dtbs' a rulat corect."
+            echo "EROARE: Nu au fost generate fișiere DTBO!"
             exit 1
           fi
-          
-          # Crează imaginea finală
           python3 mkdtboimg.py create dtbo.img $DTBO_FILES
-          
+
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-Bundle-r5q
+          name: Kernel-SM8150-r5q-Custom
           path: |
             kernel/out/arch/arm64/boot/Image.gz-dtb
             dtbo.img
