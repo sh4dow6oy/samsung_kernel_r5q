@@ -42,50 +42,36 @@ jobs:
           rm -rf kernel/drivers/power/supply && cp -a a82_source/drivers/power/supply kernel/drivers/power/
           rm -rf a82_source
 
-      - name: Hard Patch for Kernel Panic
+      - name: Hard Patch to Bypass Kernel Panic
         run: |
           cd kernel
-          # 1. Fix usbpd_manager msleep & headers
-          sed -i '1i #include <linux/delay.h>\n#include <linux/usb_notify.h>' drivers/ccic/usbpd_manager.c
-          
-          # 2. CRITICAL: Patch manager_set_alternate_mode pentru a opri Kernel Panic (Oops: 86000005)
-          # Căutăm funcția care dă crash și îi punem un "return" preventiv dacă datele sunt invalide
-          sed -i '/manager_set_alternate_mode(int mode)/a if (mode > 100) return;' drivers/usb/manager/usb_typec_manager.c || true
+          # 1. FIX: Dezactivăm funcția care provoacă crash-ul (manager_set_alternate_mode)
+          # O facem să nu mai facă nimic (return imediat)
+          sed -i '/int manager_set_alternate_mode(int mode)/!b;n;a return 0;' drivers/usb/manager/usb_typec_manager.c
 
-          # 3. Fix Camera & OIS crash
+          # 2. FIX: Dezactivăm apelurile de notificare care duc la crash
+          sed -i 's/blocking_notifier_call_chain(&manager_notifier_list/ \/\/ blocking_notifier_call_chain/g' drivers/usb/manager/usb_typec_manager.c
+
+          # 3. FIX: Protecție NULL în usbpd_manager
+          sed -i 's/msleep(20);/if (!get_otg_notify()) return; msleep(20);/g' drivers/ccic/usbpd_manager.c
+
+          # 4. FIX: Eliminăm orice referință la Camera în boot (pentru a evita alte Panic-uri)
           sed -i 's/obj-$(CONFIG_MSM_CAMERA)/# obj-$(CONFIG_MSM_CAMERA)/g' drivers/media/platform/msm/camera/Makefile || true
-          
-          # 4. Fix USB Timespec64
-          find drivers/usb/ -name "*.c" -exec sed -i 's/struct timespec ts = current_time/struct timespec64 ts = current_time/g' {} + || true
-          
-          # 5. Link CCIC
-          if ! grep -q "obj-y += ccic/" drivers/Makefile; then echo 'obj-y += ccic/' >> drivers/Makefile; fi
 
-      - name: Config & Build
+      - name: Build and Force Signature DTBO
         run: |
           cd kernel
+          # Compilăm kernel-ul ca înainte
           export PATH="$(pwd)/../clang/bin:$(pwd)/../gcc-arm64/bin:$(pwd)/../gcc-arm/bin:$PATH"
           export KCFLAGS="-mgeneral-regs-only -Wno-error -fno-builtin -fno-pic"
-          mkdir -p out
-          cat arch/arm64/configs/sm8150_sec_defconfig arch/arm64/configs/sm8150_sec_r5q_eur_open.config > out/.config
-          {
-            echo "CONFIG_BLK_DEV_LOOP=y"
-            echo "CONFIG_BLK_DEV_LOOP_MIN_COUNT=16"
-            echo "CONFIG_USB_NOTIFY=y"
-            echo "CONFIG_CCIC_S2MU004=y"
-            echo "CONFIG_BATTERY_SAMSUNG=y"
-            echo "CONFIG_BUILD_ARM64_DTB_OVERLAY=y"
-          } >> out/.config
           make O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-android- olddefconfig
-          make -j$(nproc --all) O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-android- CROSS_COMPILE_ARM32=arm-linux-androideabi- LD=ld.lld DTC=$CUSTOM_DTC_PATH KCFLAGS="$KCFLAGS" CONFIG_SAMSUNG_PRODUCT_SHIP=y Image.gz-dtb dtbs
-
-      - name: Build and Sign DTBO (S10 Lite Specific)
-        run: |
+          make -j$(nproc --all) O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-android- CROSS_COMPILE_ARM32=arm-linux-androideabi- DTC=$CUSTOM_DTC_PATH KCFLAGS="$KCFLAGS" CONFIG_SAMSUNG_PRODUCT_SHIP=y Image.gz-dtb dtbs
+          
+          # Creăm DTBO cu setări ultra-compatibile
           wget https://raw.githubusercontent.com/K-Blaaaack/mkdtboimg/master/mkdtboimg.py -O mkdtboimg.py
-          DTBO_FILES=$(find kernel/out/arch/arm64/boot/dts/ -name "*.dtbo")
-          # Forțăm versiunea 1 și paginarea de 4096 (standard Samsung SM8150)
-          python3 mkdtboimg.py create dtbo.img --version=1 --page_size=4096 $DTBO_FILES
-
+          DTBO_FILES=$(find out/arch/arm64/boot/dts/ -name "*.dtbo")
+          # Folosim version 2, care e standard pe SM8150 după Android 11
+          python3 mkdtboimg.py create ../dtbo.img --version=2 --page_size=4096 $DTBO_FILES
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
