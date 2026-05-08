@@ -45,37 +45,57 @@ jobs:
       - name: Hard Patch to Bypass Kernel Panic
         run: |
           cd kernel
-          # 1. FIX: Dezactivăm funcția care provoacă crash-ul (manager_set_alternate_mode)
-          # O facem să nu mai facă nimic (return imediat)
-          sed -i '/int manager_set_alternate_mode(int mode)/!b;n;a return 0;' drivers/usb/manager/usb_typec_manager.c
+          # 1. FIX: usbpd_manager msleep & headers
+          sed -i '1i #include <linux/delay.h>\n#include <linux/usb_notify.h>' drivers/ccic/usbpd_manager.c
 
-          # 2. FIX: Dezactivăm apelurile de notificare care duc la crash
-          sed -i 's/blocking_notifier_call_chain(&manager_notifier_list/ \/\/ blocking_notifier_call_chain/g' drivers/usb/manager/usb_typec_manager.c
+          # 2. FIX: Căutăm usb_typec_manager.c și aplicăm return 0 preventiv pentru crash
+          # În unele versiuni de Samsung, fișierul e în drivers/usb/manager/ sau drivers/usb/typec/manager/
+          MANAGER_FILE=$(find drivers/usb/ -name "usb_typec_manager.c" | head -n 1)
+          if [ -n "$MANAGER_FILE" ]; then
+            echo "Patching $MANAGER_FILE"
+            sed -i '/int manager_set_alternate_mode(int mode)/!b;n;a return 0;' "$MANAGER_FILE"
+            # Dezactivăm notificările care duc la saltul de memorie invalid (0x500000000)
+            sed -i 's/blocking_notifier_call_chain(&manager_notifier_list/ \/\/ blocking_notifier_call_chain/g' "$MANAGER_FILE"
+          else
+            echo "WARNING: usb_typec_manager.c not found, skipping patch"
+          fi
 
           # 3. FIX: Protecție NULL în usbpd_manager
           sed -i 's/msleep(20);/if (!get_otg_notify()) return; msleep(20);/g' drivers/ccic/usbpd_manager.c
 
-          # 4. FIX: Eliminăm orice referință la Camera în boot (pentru a evita alte Panic-uri)
+          # 4. FIX: Eliminăm Camera din Makefile (cauza secundară de crash)
           sed -i 's/obj-$(CONFIG_MSM_CAMERA)/# obj-$(CONFIG_MSM_CAMERA)/g' drivers/media/platform/msm/camera/Makefile || true
 
       - name: Build and Force Signature DTBO
         run: |
           cd kernel
-          # Compilăm kernel-ul ca înainte
           export PATH="$(pwd)/../clang/bin:$(pwd)/../gcc-arm64/bin:$(pwd)/../gcc-arm/bin:$PATH"
           export KCFLAGS="-mgeneral-regs-only -Wno-error -fno-builtin -fno-pic"
-          make O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-android- olddefconfig
-          make -j$(nproc --all) O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-android- CROSS_COMPILE_ARM32=arm-linux-androideabi- DTC=$CUSTOM_DTC_PATH KCFLAGS="$KCFLAGS" CONFIG_SAMSUNG_PRODUCT_SHIP=y Image.gz-dtb dtbs
           
-          # Creăm DTBO cu setări ultra-compatibile
+          # Regenerăm config-ul
+          mkdir -p out
+          cat arch/arm64/configs/sm8150_sec_defconfig arch/arm64/configs/sm8150_sec_r5q_eur_open.config > out/.config
+          {
+            echo "CONFIG_BLK_DEV_LOOP=y"
+            echo "CONFIG_BLK_DEV_LOOP_MIN_COUNT=16"
+            echo "CONFIG_USB_NOTIFY=y"
+            echo "CONFIG_CCIC_S2MU004=y"
+            echo "CONFIG_BATTERY_SAMSUNG=y"
+            echo "CONFIG_BUILD_ARM64_DTB_OVERLAY=y"
+          } >> out/.config
+          
+          make O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-android- olddefconfig
+          make -j$(nproc --all) O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-android- CROSS_COMPILE_ARM32=arm-linux-androideabi- LD=ld.lld DTC=$CUSTOM_DTC_PATH KCFLAGS="$KCFLAGS" CONFIG_SAMSUNG_PRODUCT_SHIP=y Image.gz-dtb dtbs
+          
+          # DTBO cu versiune compatibilă S10 Lite
           wget https://raw.githubusercontent.com/K-Blaaaack/mkdtboimg/master/mkdtboimg.py -O mkdtboimg.py
           DTBO_FILES=$(find out/arch/arm64/boot/dts/ -name "*.dtbo")
-          # Folosim version 2, care e standard pe SM8150 după Android 11
           python3 mkdtboimg.py create ../dtbo.img --version=2 --page_size=4096 $DTBO_FILES
+
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-S10Lite-Survivor
+          name: Kernel-S10Lite-Survivor-v8
           path: |
             kernel/out/arch/arm64/boot/Image.gz-dtb
             dtbo.img
