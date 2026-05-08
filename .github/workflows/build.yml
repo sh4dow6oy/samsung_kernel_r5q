@@ -43,9 +43,10 @@ jobs:
           rm -rf kernel/drivers/usb
           cp -r a82_source/drivers/usb kernel/drivers/
           
-          # 3. Înlocuire POWER SUPPLY (Integral)
+          # 3. Înlocuire integrală POWER SUPPLY
           rm -rf kernel/drivers/power/supply
-          cp -r a82_source/drivers/power/supply kernel/drivers/
+          mkdir -p kernel/drivers/power/supply
+          cp -r a82_source/drivers/power/supply/* kernel/drivers/power/supply/
           
           rm -rf a82_source
 
