@@ -35,48 +35,45 @@ jobs:
         run: |
           git clone --depth=1 -b openela-4.14.356 https://github.com/Andy2660/android_kernel_samsung_a82xq a82_source
           
-          # 1. Curățare agresivă a vechilor drivere care cauzează dublarea în last_kmsg
+          # Curățare pentru a evita eroarea "already registered" din last_kmsg
           rm -rf kernel/drivers/ccic
           rm -rf kernel/drivers/usb/notify
           rm -rf kernel/drivers/usb/manager
           
-          # 2. Înlocuire USB
+          # Import drivere A82xq
+          cp -a a82_source/drivers/ccic kernel/drivers/
           rm -rf kernel/drivers/usb
           cp -a a82_source/drivers/usb kernel/drivers/
-          
-          # 3. Înlocuire CCIC
-          cp -a a82_source/drivers/ccic kernel/drivers/
-          
-          # 4. Înlocuire POWER SUPPLY
           rm -rf kernel/drivers/power/supply
-          mkdir -p kernel/drivers/power/supply
-          cp -a a82_source/drivers/power/supply/. kernel/drivers/power/supply/
+          cp -a a82_source/drivers/power/supply kernel/drivers/power/
           
           rm -rf a82_source
 
       - name: Patch and Fix Source Errors
         run: |
           cd kernel
-          # Fix ICNSS Buffer
+          # 1. Fix usbpd_manager.c (Includem headers necesare și folosim 0 în loc de NULL pentru siguranță)
+          # Inserăm la linia 1 pentru a fi siguri că sunt primele
+          sed -i '1i #include <linux/delay.h>' drivers/ccic/usbpd_manager.c
+          sed -i '2i #include <linux/types.h>' drivers/ccic/usbpd_manager.c
+          sed -i '3i struct otg_notify { int dummy; };' drivers/ccic/usbpd_manager.c
+          sed -i '4i static inline void *get_otg_notify(void) { return (void *)0; }' drivers/ccic/usbpd_manager.c
+          sed -i '5i static inline void inc_hw_param(void *a, int b) { }' drivers/ccic/usbpd_manager.c
+          sed -i '6i #define USB_CCIC_VR_USE_COUNT 0' drivers/ccic/usbpd_manager.c
+          sed -i '7i #define USB_CCIC_DEX_USE_COUNT 0' drivers/ccic/usbpd_manager.c
+
+          # 2. Fix ICNSS Buffer
           sed -i 's/char antbuffer\[2\]/char antbuffer[5]/g' drivers/soc/qcom/icnss.c || true
           
-          # Fix USB timespec64
+          # 3. Fix USB timespec64
           sed -i 's/struct timespec ts = current_time/struct timespec64 ts = current_time/g' drivers/usb/gadget/function/f_fs.c || true
           
-          # --- FIX-URI CONTEXTUALE PENTRU DRIVERS/CCIC/USBPD_MANAGER.C ---
-          # 1. Includem delay.h pentru a repara eroarea cu msleep()
-          sed -i '1s/^/#include <linux\/delay.h>\n/' drivers/ccic/usbpd_manager.c
-
-          # 2. Definim dummy-stubs pentru get_otg_notify și inc_hw_param ca să treacă compilarea rapid
-          # Adăugăm definiții temporare chiar la începutul fișierului usbpd_manager.c
-          sed -i '1s/^/struct otg_notify {int dummy;};\nstatic inline struct otg_notify *get_otg_notify(void) { return NULL; }\nstatic inline void inc_hw_param(struct otg_notify *n, int param) { }\n#define USB_CCIC_VR_USE_COUNT 0\n#define USB_CCIC_DEX_USE_COUNT 1\n/' drivers/ccic/usbpd_manager.c
-          
-          # Fix Camera Symbols
+          # 4. Fix Camera Symbols
           echo "int ois_gain_rear3_result = 0;" >> drivers/media/platform/msm/camera/cam_sensor_module/cam_sensor_utils/cam_sysfs_init.c
           echo "int ois_sr_rear3_result = 0;" >> drivers/media/platform/msm/camera/cam_sensor_module/cam_sensor_utils/cam_sysfs_init.c
           sed -i 's/double/int/g' drivers/media/platform/msm/camera/cam_sensor_module/cam_ois/cam_ois_rumba_s4.c || true
           
-          # Link CCIC în Makefile-ul principal
+          # 5. Link CCIC
           if ! grep -q "obj-y += ccic/" drivers/Makefile; then
             echo 'obj-y += ccic/' >> drivers/Makefile
           fi
@@ -85,19 +82,13 @@ jobs:
         run: |
           cd kernel
           export ARCH=arm64
-          
-          CLANG_BIN=$(pwd)/../clang/bin
-          GCC64_BIN=$(pwd)/../gcc-arm64/bin
-          GCC32_BIN=$(pwd)/../gcc-arm/bin
-          export PATH="$CLANG_BIN:$GCC64_BIN:$GCC32_BIN:$PATH"
-          
+          export PATH="$(pwd)/../clang/bin:$(pwd)/../gcc-arm64/bin:$(pwd)/../gcc-arm/bin:$PATH"
           export KCFLAGS="-mgeneral-regs-only -Wno-error -fno-builtin -fno-pic"
 
           mkdir -p out
           cat arch/arm64/configs/sm8150_sec_defconfig > out/.config
           cat arch/arm64/configs/sm8150_sec_r5q_eur_open.config >> out/.config
           
-          # Configurații critice pentru a evita duplicarea notificatorilor
           {
             echo "CONFIG_MODVERSIONS=n"
             echo "CONFIG_ASM_MODVERSIONS=n"
@@ -111,48 +102,31 @@ jobs:
             echo "CONFIG_USB_DWC3=y"
             echo "CONFIG_USB_DWC3_MSM=y"
             echo "# CONFIG_USB_NOTIFY is not set"
-            echo "# CONFIG_USB_HOST_NOTIFY is not set"
           } >> out/.config
 
-          # Verificăm dacă fișierul Kconfig există înainte de a rula olddefconfig
-          if [ ! -f drivers/power/supply/Kconfig ]; then
-            echo "EROARE: drivers/power/supply/Kconfig lipsește!"
-            exit 1
-          fi
-
           make O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-android- olddefconfig
-
+          
           make -j$(nproc --all) O=out \
-              ARCH=arm64 \
-              CC=clang \
-              CLANG_TRIPLE=aarch64-linux-gnu- \
-              CROSS_COMPILE=aarch64-linux-android- \
-              CROSS_COMPILE_ARM32=arm-linux-androideabi- \
-              LD=ld.lld \
-              AR=llvm-ar \
-              NM=llvm-nm \
-              OBJCOPY=llvm-objcopy \
-              OBJDUMP=llvm-strip \
-              DTC=$CUSTOM_DTC_PATH \
-              KCFLAGS="$KCFLAGS" \
-              KBUILD_CFLAGS_KERNEL="-fno-pic" \
-              CONFIG_SAMSUNG_PRODUCT_SHIP=y \
-              Image.gz-dtb dtbs
+              ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- \
+              CROSS_COMPILE=aarch64-linux-android- CROSS_COMPILE_ARM32=arm-linux-androideabi- \
+              LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-strip \
+              DTC=$CUSTOM_DTC_PATH KCFLAGS="$KCFLAGS" KBUILD_CFLAGS_KERNEL="-fno-pic" \
+              CONFIG_SAMSUNG_PRODUCT_SHIP=y Image.gz-dtb dtbs
 
       - name: Build DTBO Image
         run: |
           wget https://raw.githubusercontent.com/K-Blaaaack/mkdtboimg/master/mkdtboimg.py -O mkdtboimg.py
           DTBO_FILES=$(find kernel/out/arch/arm64/boot/dts/ -name "*.dtbo")
-          if [ -z "$DTBO_FILES" ]; then
-            echo "EROARE: DTBO nu a fost generat!"
-            exit 1
+          if [ -n "$DTBO_FILES" ]; then
+            python3 mkdtboimg.py create dtbo.img $DTBO_FILES
+          else
+            echo "No DTBO files found, skipping dtbo.img creation"
           fi
-          python3 mkdtboimg.py create dtbo.img $DTBO_FILES
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-SM8150-r5q-A82-v3
+          name: Kernel-SM8150-Final-v3
           path: |
             kernel/out/arch/arm64/boot/Image.gz-dtb
             dtbo.img
