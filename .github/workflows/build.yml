@@ -1,4 +1,4 @@
-name: Build Samsung SM8150 Kernel
+name: Build Samsung SM8150 Kernel Final
 on:
   workflow_dispatch:
 
@@ -31,46 +31,38 @@ jobs:
           echo "$(pwd)" >> $GITHUB_PATH
           echo "CUSTOM_DTC_PATH=$(pwd)/dtc" >> $GITHUB_ENV
 
-      - name: Import Drivers and Hard Clean
+      - name: Import Drivers and Hard Purge
         run: |
           git clone --depth=1 -b openela-4.14.356 https://github.com/Andy2660/android_kernel_samsung_a82xq a82_source
           
-          # --- CURĂȚARE EXTREMĂ (Pentru a evita "already registered") ---
-          # Ștergem folderele de bază care conțin notificatori vechi
+          # Ștergem absolut tot ce ține de USB și CCIC din sursa originală
           rm -rf kernel/drivers/ccic
           rm -rf kernel/drivers/usb/notify
           rm -rf kernel/drivers/usb/manager
-          rm -rf kernel/drivers/usb/host/notify
+          rm -rf kernel/drivers/usb/core
+          rm -rf kernel/drivers/usb/gadget
           
-          # --- IMPORT COD NOU ---
-          # Import CCIC (noul stack)
+          # Importăm stack-ul USB și CCIC din A82
           cp -a a82_source/drivers/ccic kernel/drivers/
-          
-          # Înlocuim complet USB Stack
-          rm -rf kernel/drivers/usb
           cp -a a82_source/drivers/usb kernel/drivers/
           
-          # Înlocuim complet Power Supply
+          # Înlocuim driverele de baterie/încărcare (S2MU)
           rm -rf kernel/drivers/power/supply
           cp -a a82_source/drivers/power/supply kernel/drivers/power/
           
           rm -rf a82_source
 
-      - name: Patch and Fix Source Errors
+      - name: Patch Source & Fix Crashes
         run: |
           cd kernel
-          # Fix USB & CCIC (Delay și Headers)
-          sed -i '1i #include <linux/delay.h>' drivers/ccic/usbpd_manager.c
-          sed -i '2i #include <linux/usb_notify.h>' drivers/ccic/usbpd_manager.c
+          # Fix usbpd_manager msleep
+          sed -i '1i #include <linux/delay.h>\n#include <linux/usb_notify.h>' drivers/ccic/usbpd_manager.c
           
-          # Fix ICNSS & USB Timespec64
-          sed -i 's/char antbuffer\[2\]/char antbuffer[5]/g' drivers/soc/qcom/icnss.c || true
-          sed -i 's/struct timespec ts = current_time/struct timespec64 ts = current_time/g' drivers/usb/gadget/function/f_fs.c || true
+          # Fix Camera Crash (Dezactivăm OIS-ul care dă panic în log)
+          sed -i 's/obj-$(CONFIG_MSM_CAMERA)/# obj-$(CONFIG_MSM_CAMERA)/g' drivers/media/platform/msm/camera/Makefile || true
           
-          # Fix Camera & OIS
-          echo "int ois_gain_rear3_result = 0;" >> drivers/media/platform/msm/camera/cam_sensor_module/cam_sensor_utils/cam_sysfs_init.c
-          echo "int ois_sr_rear3_result = 0;" >> drivers/media/platform/msm/camera/cam_sensor_module/cam_sensor_utils/cam_sysfs_init.c
-          sed -i 's/double/int/g' drivers/media/platform/msm/camera/cam_sensor_module/cam_ois/cam_ois_rumba_s4.c || true
+          # Fix USB Timespec64
+          find drivers/usb/ -name "*.c" -exec sed -i 's/struct timespec ts = current_time/struct timespec64 ts = current_time/g' {} + || true
           
           # Link CCIC
           if ! grep -q "obj-y += ccic/" drivers/Makefile; then echo 'obj-y += ccic/' >> drivers/Makefile; fi
@@ -89,40 +81,30 @@ jobs:
           {
             echo "CONFIG_MODVERSIONS=n"
             echo "CONFIG_ASM_MODVERSIONS=n"
-            echo "CONFIG_BUILD_ARM64_DTB_OVERLAY=y"
-            # FIX PENTRU APEXD (Loop devices)
+            # FIX APEX / BOOTLOOP
             echo "CONFIG_BLK_DEV_LOOP=y"
             echo "CONFIG_BLK_DEV_LOOP_MIN_COUNT=16"
-            # FIX PENTRU POWER & USB
-            echo "CONFIG_CCIC_S2MU004=y"
-            echo "CONFIG_CCIC_NOTIFIER=y"
-            echo "CONFIG_USB_TYPEC_MANAGER_NOTIFIER=y"
-            echo "CONFIG_BATTERY_SAMSUNG=y"
-            echo "CONFIG_POWER_SUPPLY=y"
+            # FIX USB/POWER
             echo "CONFIG_USB_NOTIFY=y"
+            echo "CONFIG_CCIC_S2MU004=y"
+            echo "CONFIG_BATTERY_SAMSUNG=y"
+            echo "CONFIG_BUILD_ARM64_DTB_OVERLAY=y"
           } >> out/.config
 
           make O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-android- olddefconfig
-          
-          make -j$(nproc --all) O=out \
-              ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- \
-              CROSS_COMPILE=aarch64-linux-android- CROSS_COMPILE_ARM32=arm-linux-androideabi- \
-              LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-strip \
-              DTC=$CUSTOM_DTC_PATH KCFLAGS="$KCFLAGS" KBUILD_CFLAGS_KERNEL="-fno-pic" \
-              CONFIG_SAMSUNG_PRODUCT_SHIP=y Image.gz-dtb dtbs
+          make -j$(nproc --all) O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-android- CROSS_COMPILE_ARM32=arm-linux-androideabi- LD=ld.lld DTC=$CUSTOM_DTC_PATH KCFLAGS="$KCFLAGS" CONFIG_SAMSUNG_PRODUCT_SHIP=y Image.gz-dtb dtbs
 
-      - name: Build DTBO Image
+      - name: Build and Sign DTBO (Force Version 1)
         run: |
           wget https://raw.githubusercontent.com/K-Blaaaack/mkdtboimg/master/mkdtboimg.py -O mkdtboimg.py
           DTBO_FILES=$(find kernel/out/arch/arm64/boot/dts/ -name "*.dtbo")
-          if [ -n "$DTBO_FILES" ]; then
-            python3 mkdtboimg.py create dtbo.img $DTBO_FILES
-          fi
+          # Creăm imaginea DTBO forțând versiunea 1 (pe care bootloader-ul S10 Lite o preferă)
+          python3 mkdtboimg.py create dtbo.img --version=1 $DTBO_FILES
 
-      - name: Upload Artifacts
+      - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-SM8150-A82-Drivers
+          name: Kernel-SM8150-Final-v5
           path: |
             kernel/out/arch/arm64/boot/Image.gz-dtb
             dtbo.img
