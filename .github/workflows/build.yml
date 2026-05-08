@@ -84,14 +84,19 @@ jobs:
           GCC32_BIN=$(pwd)/../gcc-arm/bin
           export PATH="$CLANG_BIN:$GCC64_BIN:$GCC32_BIN:$PATH"
           
-          # Flag-uri pentru a ignora erorile non-critice și a forța integer math
-          export KCFLAGS="-mgeneral-regs-only -Wno-error -fno-builtin"
+          # Flag-uri critice pentru relocare și floating point
+          export KCFLAGS="-mgeneral-regs-only -Wno-error -fno-builtin -fno-pic"
 
           mkdir -p out
           cat arch/arm64/configs/sm8150_sec_defconfig > out/.config
           cat arch/arm64/configs/sm8150_sec_r5q_eur_open.config >> out/.config
           
-          # Injectăm manual flag-urile pentru noile componente
+          # FIX pentru erorile de relocare R_AARCH64_ABS32 (__crc symbols)
+          sed -i 's/CONFIG_MODVERSIONS=y/CONFIG_MODVERSIONS=n/g' out/.config
+          echo "CONFIG_MODVERSIONS=n" >> out/.config
+          echo "CONFIG_ASM_MODVERSIONS=n" >> out/.config
+
+          # Injectăm manual flag-urile pentru noile componente importate anterior
           {
             echo "CONFIG_BUILD_ARM64_DTB_OVERLAY=y"
             echo "CONFIG_CCIC_S2MU004=y"
@@ -103,10 +108,9 @@ jobs:
             echo "CONFIG_USB_DWC3_MSM=y"
           } >> out/.config
 
-          # Sincronizare .config
           make O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-android- olddefconfig
 
-          # Build Final (Am eliminat WLAN_CFG_OVERRIDE pentru a evita eroarea de separator)
+          # Adăugăm KBUILD_CFLAGS_KERNEL="-fno-pic" pentru a forța evitarea relocărilor ABS32
           make -j$(nproc --all) O=out \
               ARCH=arm64 \
               CC=clang \
@@ -120,6 +124,7 @@ jobs:
               OBJDUMP=llvm-strip \
               DTC=$CUSTOM_DTC_PATH \
               KCFLAGS="$KCFLAGS" \
+              KBUILD_CFLAGS_KERNEL="-fno-pic" \
               CONFIG_SAMSUNG_PRODUCT_SHIP=y \
               Image.gz-dtb dtbs
 
