@@ -42,59 +42,40 @@ jobs:
           rm -rf kernel/drivers/power/supply && cp -a a82_source/drivers/power/supply kernel/drivers/power/
           rm -rf a82_source
 
-      - name: Hard Patch to Bypass Kernel Panic & Fix Errors
+      - name: Hard Patch - Disable USB Manager Completely
         run: |
           cd kernel
-          # 1. FIX: usbpd_manager msleep & headers
-          sed -i '1i #include <linux/delay.h>\n#include <linux/usb_notify.h>' drivers/ccic/usbpd_manager.c
-
-          # 2. FIX: Timespec64 error in f_fs.c
-          sed -i 's/struct timespec ts = current_time/struct timespec64 ts = current_time/g' drivers/usb/gadget/function/f_fs.c
-
-          # 3. FIX: Căutăm usb_typec_manager.c și aplicăm return 0 pentru crash
-          MANAGER_FILE=$(find drivers/usb/ -name "usb_typec_manager.c" | head -n 1)
-          if [ -n "$MANAGER_FILE" ]; then
-            echo "Patching $MANAGER_FILE"
-            # Inserăm return 0 imediat sub acolada de deschidere a funcției
-            sed -i '/int manager_set_alternate_mode(int mode)/!b;n;a return 0;' "$MANAGER_FILE"
-            sed -i 's/blocking_notifier_call_chain(&manager_notifier_list/ \/\/ blocking_notifier_call_chain/g' "$MANAGER_FILE"
+          # 1. Identificăm unde este Makefile-ul care se ocupă de manager
+          USB_MAKEFILE=$(find drivers/usb/ -name "Makefile" | xargs grep -l "usb_typec_manager" | head -n 1)
+          
+          if [ -n "$USB_MAKEFILE" ]; then
+            echo "Dezactivăm usb_typec_manager din $USB_MAKEFILE"
+            # Punem un '#' în fața liniei care compilează managerul
+            sed -i 's/obj-$(CONFIG_USB_TYPEC_MANAGER)/# obj-$(CONFIG_USB_TYPEC_MANAGER)/g' "$USB_MAKEFILE"
+            sed -i 's/obj-y += usb_typec_manager.o/# obj-y += usb_typec_manager.o/g' "$USB_MAKEFILE"
           fi
 
-          # 4. FIX: Eliminăm Camera din Makefile (cauză secundară de crash)
+          # 2. Fix pentru eroarea de compilare Timespec64 (obligatoriu)
+          find drivers/usb/ -name "*.c" -exec sed -i 's/struct timespec ts = current_time/struct timespec64 ts = current_time/g' {} + || true
+
+          # 3. FIX: usbpd_manager msleep & headers
+          sed -i '1i #include <linux/delay.h>\n#include <linux/usb_notify.h>' drivers/ccic/usbpd_manager.c
+
+          # 4. Dezactivăm și camerele (pentru siguranță, să nu avem alt Panic)
           sed -i 's/obj-$(CONFIG_MSM_CAMERA)/# obj-$(CONFIG_MSM_CAMERA)/g' drivers/media/platform/msm/camera/Makefile || true
 
-      - name: Config & Build Kernel
+      - name: Build and Sign DTBO (S10 Lite Version)
         run: |
           cd kernel
+          # Compilăm kernel-ul
           export PATH="$(pwd)/../clang/bin:$(pwd)/../gcc-arm64/bin:$(pwd)/../gcc-arm/bin:$PATH"
           export KCFLAGS="-mgeneral-regs-only -Wno-error -fno-builtin -fno-pic"
-          
-          mkdir -p out
-          cat arch/arm64/configs/sm8150_sec_defconfig arch/arm64/configs/sm8150_sec_r5q_eur_open.config > out/.config
-          {
-            echo "CONFIG_BLK_DEV_LOOP=y"
-            echo "CONFIG_BLK_DEV_LOOP_MIN_COUNT=16"
-            echo "CONFIG_USB_NOTIFY=y"
-            echo "CONFIG_CCIC_S2MU004=y"
-            echo "CONFIG_BATTERY_SAMSUNG=y"
-            echo "CONFIG_BUILD_ARM64_DTB_OVERLAY=y"
-          } >> out/.config
-          
           make O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-android- olddefconfig
-          make -j$(nproc --all) O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-android- CROSS_COMPILE_ARM32=arm-linux-androideabi- LD=ld.lld DTC=$CUSTOM_DTC_PATH KCFLAGS="$KCFLAGS" CONFIG_SAMSUNG_PRODUCT_SHIP=y Image.gz-dtb dtbs
-
-      - name: Build DTBO Image (Version 2 Fix)
-        run: |
-          cd kernel
-          # Descărcăm scriptul oficial de generare DTBO din sursele Android
-          wget https://android.googlesource.com/platform/system/libufdt/+/master/utils/src/mkdtboimg.py?format=TEXT -O mkdtboimg_encoded.py
-          base64 -d mkdtboimg_encoded.py > mkdtboimg.py
+          make -j$(nproc --all) O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-android- CROSS_COMPILE_ARM32=arm-linux-androideabi- DTC=$CUSTOM_DTC_PATH KCFLAGS="$KCFLAGS" CONFIG_SAMSUNG_PRODUCT_SHIP=y Image.gz-dtb dtbs
           
-          # Căutăm fișierele .dtbo
+          # Creăm DTBO cu aliniere Samsung
+          wget https://raw.githubusercontent.com/lineage-mirror/scripts/master/mkdtboimg.py -O mkdtboimg.py
           DTBO_FILES=$(find out/arch/arm64/boot/dts/ -name "*.dtbo")
-          
-          # Creăm imaginea. Am eliminat parametrii care dădeau eroare și am folosit o structură simplă, 
-          # dar am păstrat page_size pentru alinierea Samsung.
           python3 mkdtboimg.py create ../dtbo.img --page_size=4096 $DTBO_FILES
 
       - name: Upload Artifacts
