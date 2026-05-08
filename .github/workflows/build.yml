@@ -51,7 +51,7 @@ jobs:
           
           # 3. Import POWER SUPPLY (complet)
           rm -rf kernel/drivers/power/supply
-          cp -r a82_source/drivers/power/supply kernel/drivers/
+          cp -a a82_source/drivers/power/supply/. kernel/drivers/power/supply/
           
           rm -rf a82_source
 
