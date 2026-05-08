@@ -59,55 +59,46 @@ jobs:
       - name: Patch and Fix Source Errors
         run: |
           cd kernel
-          # 1. Fix usbpd_manager.c (Asigurăm integrarea curată cu headerele sistemului)
+          # Fix USB & CCIC (Delay și Headers)
           sed -i '1i #include <linux/delay.h>' drivers/ccic/usbpd_manager.c
-          if ! grep -q "#include <linux/usb_notify.h>" drivers/ccic/usbpd_manager.c; then
-            sed -i '2i #include <linux/usb_notify.h>' drivers/ccic/usbpd_manager.c
-          fi
-
-          # 2. Fix ICNSS Buffer Overflow
-          sed -i 's/char antbuffer\[2\]/char antbuffer[5]/g' drivers/soc/qcom/icnss.c || true
+          sed -i '2i #include <linux/usb_notify.h>' drivers/ccic/usbpd_manager.c
           
-          # 3. Fix USB timespec64 (A82 code uses old timespec)
+          # Fix ICNSS & USB Timespec64
+          sed -i 's/char antbuffer\[2\]/char antbuffer[5]/g' drivers/soc/qcom/icnss.c || true
           sed -i 's/struct timespec ts = current_time/struct timespec64 ts = current_time/g' drivers/usb/gadget/function/f_fs.c || true
           
-          # 4. Fix Camera Undefined Symbols
+          # Fix Camera & OIS
           echo "int ois_gain_rear3_result = 0;" >> drivers/media/platform/msm/camera/cam_sensor_module/cam_sensor_utils/cam_sysfs_init.c
           echo "int ois_sr_rear3_result = 0;" >> drivers/media/platform/msm/camera/cam_sensor_module/cam_sensor_utils/cam_sysfs_init.c
           sed -i 's/double/int/g' drivers/media/platform/msm/camera/cam_sensor_module/cam_ois/cam_ois_rumba_s4.c || true
           
-          # 5. Link CCIC în Makefile-ul de bază
-          if ! grep -q "obj-y += ccic/" drivers/Makefile; then
-            echo 'obj-y += ccic/' >> drivers/Makefile
-          fi
+          # Link CCIC
+          if ! grep -q "obj-y += ccic/" drivers/Makefile; then echo 'obj-y += ccic/' >> drivers/Makefile; fi
 
       - name: Merge Config and Build
         run: |
           cd kernel
           export ARCH=arm64
           export PATH="$(pwd)/../clang/bin:$(pwd)/../gcc-arm64/bin:$(pwd)/../gcc-arm/bin:$PATH"
-          
-          # Flag-uri de compilare pentru stabilitate
           export KCFLAGS="-mgeneral-regs-only -Wno-error -fno-builtin -fno-pic"
 
           mkdir -p out
           cat arch/arm64/configs/sm8150_sec_defconfig > out/.config
           cat arch/arm64/configs/sm8150_sec_r5q_eur_open.config >> out/.config
           
-          # Configurații pentru a forța noile drivere și a opri conflictele
           {
             echo "CONFIG_MODVERSIONS=n"
             echo "CONFIG_ASM_MODVERSIONS=n"
             echo "CONFIG_BUILD_ARM64_DTB_OVERLAY=y"
+            # FIX PENTRU APEXD (Loop devices)
+            echo "CONFIG_BLK_DEV_LOOP=y"
+            echo "CONFIG_BLK_DEV_LOOP_MIN_COUNT=16"
+            # FIX PENTRU POWER & USB
             echo "CONFIG_CCIC_S2MU004=y"
             echo "CONFIG_CCIC_NOTIFIER=y"
             echo "CONFIG_USB_TYPEC_MANAGER_NOTIFIER=y"
             echo "CONFIG_BATTERY_SAMSUNG=y"
             echo "CONFIG_POWER_SUPPLY=y"
-            echo "CONFIG_USB_G_ANDROID=y"
-            echo "CONFIG_USB_DWC3=y"
-            echo "CONFIG_USB_DWC3_MSM=y"
-            # Activăm oficial notificatorul pentru a valida headerele
             echo "CONFIG_USB_NOTIFY=y"
           } >> out/.config
 
