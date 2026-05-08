@@ -78,14 +78,14 @@ jobs:
           GCC32_BIN=$(pwd)/../gcc-arm/bin
           export PATH="$CLANG_BIN:$GCC64_BIN:$GCC32_BIN:$PATH"
           
-          # Flag-uri critice pentru linkare corectă
           export KCFLAGS="-mgeneral-regs-only -Wno-error -fno-builtin"
 
           mkdir -p out
           cat arch/arm64/configs/sm8150_sec_defconfig > out/.config
           cat arch/arm64/configs/sm8150_sec_r5q_eur_open.config >> out/.config
           
-          # Configurații pentru noile subsisteme
+          # Forțăm configurația WLAN și restul de drivere direct în .config
+          # Eliminăm necesitatea parametrului WLAN_CFG_OVERRIDE din comanda make
           {
             echo "CONFIG_BUILD_ARM64_DTB_OVERLAY=y"
             echo "CONFIG_CCIC_S2MU004=y"
@@ -95,10 +95,14 @@ jobs:
             echo "CONFIG_USB_G_ANDROID=y"
             echo "CONFIG_USB_DWC3=y"
             echo "CONFIG_USB_DWC3_MSM=y"
+            echo "CONFIG_PRIMA_WLAN_OKC=y"
+            echo "CONFIG_WLAN_FEATURE_FILS=y"
           } >> out/.config
 
+          # Sincronizare config
           make O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-android- olddefconfig
 
+          # Build Final - ATENȚIE: Am scos WLAN_CFG_OVERRIDE=y care cauza eroarea
           make -j$(nproc --all) O=out \
               ARCH=arm64 \
               CC=clang \
@@ -113,7 +117,6 @@ jobs:
               DTC=$CUSTOM_DTC_PATH \
               KCFLAGS="$KCFLAGS" \
               CONFIG_SAMSUNG_PRODUCT_SHIP=y \
-              WLAN_CFG_OVERRIDE=y \
               Image.gz-dtb dtbs
 
       - name: Build DTBO Image
