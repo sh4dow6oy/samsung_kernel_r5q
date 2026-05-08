@@ -31,19 +31,26 @@ jobs:
           echo "$(pwd)" >> $GITHUB_PATH
           echo "CUSTOM_DTC_PATH=$(pwd)/dtc" >> $GITHUB_ENV
 
-      - name: Import Drivers and Clean Duplicates
+      - name: Import Drivers and Hard Clean
         run: |
           git clone --depth=1 -b openela-4.14.356 https://github.com/Andy2660/android_kernel_samsung_a82xq a82_source
           
-          # Curățare pentru a evita eroarea "already registered"
+          # --- CURĂȚARE EXTREMĂ (Pentru a evita "already registered") ---
+          # Ștergem folderele de bază care conțin notificatori vechi
           rm -rf kernel/drivers/ccic
           rm -rf kernel/drivers/usb/notify
           rm -rf kernel/drivers/usb/manager
+          rm -rf kernel/drivers/usb/host/notify
           
-          # Import drivere A82xq
+          # --- IMPORT COD NOU ---
+          # Import CCIC (noul stack)
           cp -a a82_source/drivers/ccic kernel/drivers/
+          
+          # Înlocuim complet USB Stack
           rm -rf kernel/drivers/usb
           cp -a a82_source/drivers/usb kernel/drivers/
+          
+          # Înlocuim complet Power Supply
           rm -rf kernel/drivers/power/supply
           cp -a a82_source/drivers/power/supply kernel/drivers/power/
           
@@ -52,27 +59,24 @@ jobs:
       - name: Patch and Fix Source Errors
         run: |
           cd kernel
-          # 1. Fix usbpd_manager.c
-          # În loc de stub-uri manuale, includem headerele care deja EXISTĂ în kernel-ul tău
-          # msleep are nevoie de delay.h
+          # 1. Fix usbpd_manager.c (Asigurăm integrarea curată cu headerele sistemului)
           sed -i '1i #include <linux/delay.h>' drivers/ccic/usbpd_manager.c
-          # Ne asigurăm că usb_notify.h este inclus (el conține otg_notify și restul)
           if ! grep -q "#include <linux/usb_notify.h>" drivers/ccic/usbpd_manager.c; then
             sed -i '2i #include <linux/usb_notify.h>' drivers/ccic/usbpd_manager.c
           fi
 
-          # 2. Fix ICNSS Buffer
+          # 2. Fix ICNSS Buffer Overflow
           sed -i 's/char antbuffer\[2\]/char antbuffer[5]/g' drivers/soc/qcom/icnss.c || true
           
-          # 3. Fix USB timespec64
+          # 3. Fix USB timespec64 (A82 code uses old timespec)
           sed -i 's/struct timespec ts = current_time/struct timespec64 ts = current_time/g' drivers/usb/gadget/function/f_fs.c || true
           
-          # 4. Fix Camera Symbols
+          # 4. Fix Camera Undefined Symbols
           echo "int ois_gain_rear3_result = 0;" >> drivers/media/platform/msm/camera/cam_sensor_module/cam_sensor_utils/cam_sysfs_init.c
           echo "int ois_sr_rear3_result = 0;" >> drivers/media/platform/msm/camera/cam_sensor_module/cam_sensor_utils/cam_sysfs_init.c
           sed -i 's/double/int/g' drivers/media/platform/msm/camera/cam_sensor_module/cam_ois/cam_ois_rumba_s4.c || true
           
-          # 5. Link CCIC
+          # 5. Link CCIC în Makefile-ul de bază
           if ! grep -q "obj-y += ccic/" drivers/Makefile; then
             echo 'obj-y += ccic/' >> drivers/Makefile
           fi
@@ -82,12 +86,15 @@ jobs:
           cd kernel
           export ARCH=arm64
           export PATH="$(pwd)/../clang/bin:$(pwd)/../gcc-arm64/bin:$(pwd)/../gcc-arm/bin:$PATH"
+          
+          # Flag-uri de compilare pentru stabilitate
           export KCFLAGS="-mgeneral-regs-only -Wno-error -fno-builtin -fno-pic"
 
           mkdir -p out
           cat arch/arm64/configs/sm8150_sec_defconfig > out/.config
           cat arch/arm64/configs/sm8150_sec_r5q_eur_open.config >> out/.config
           
+          # Configurații pentru a forța noile drivere și a opri conflictele
           {
             echo "CONFIG_MODVERSIONS=n"
             echo "CONFIG_ASM_MODVERSIONS=n"
@@ -100,7 +107,7 @@ jobs:
             echo "CONFIG_USB_G_ANDROID=y"
             echo "CONFIG_USB_DWC3=y"
             echo "CONFIG_USB_DWC3_MSM=y"
-            # Activăm notificatorul USB pentru a avea definițiile din usb_notify.h
+            # Activăm oficial notificatorul pentru a valida headerele
             echo "CONFIG_USB_NOTIFY=y"
           } >> out/.config
 
@@ -124,7 +131,7 @@ jobs:
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-SM8150-Final-v4
+          name: Kernel-SM8150-A82-Drivers
           path: |
             kernel/out/arch/arm64/boot/Image.gz-dtb
             dtbo.img
