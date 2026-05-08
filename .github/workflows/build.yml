@@ -42,38 +42,58 @@ jobs:
           rm -rf kernel/drivers/power/supply && cp -a a82_source/drivers/power/supply kernel/drivers/power/
           rm -rf a82_source
 
-      - name: Hard Patch - Disable USB Manager Completely
+      - name: Hard Patch - Fix Source Errors & Disable USB Manager
         run: |
           cd kernel
-          # 1. Identificăm unde este Makefile-ul care se ocupă de manager
+          # 1. FIX: Eroarea 'ptep' în hugetlbpage.c (Bug de cod sursă)
+          sed -i 's/ptep = huge_pmd_share/pte = huge_pmd_share/g' arch/arm64/mm/hugetlbpage.c
+
+          # 2. FIX: Erorile 'sec_debug' din traps.c
+          # Comentăm funcțiile de debug Samsung care lipsesc și opresc build-ul
+          sed -i 's/sec_debug_sched_msg/ \/\/ sec_debug_sched_msg/g' arch/arm64/kernel/traps.c
+          sed -i 's/sec_debug_summary_save_die_info/ \/\/ sec_debug_summary_save_die_info/g' arch/arm64/kernel/traps.c
+          sed -i 's/sec_debug_save_badmode_info/ \/\/ sec_debug_save_badmode_info/g' arch/arm64/kernel/traps.c
+
+          # 3. KILL: Dezactivăm complet USB Manager din Makefile
           USB_MAKEFILE=$(find drivers/usb/ -name "Makefile" | xargs grep -l "usb_typec_manager" | head -n 1)
-          
           if [ -n "$USB_MAKEFILE" ]; then
-            echo "Dezactivăm usb_typec_manager din $USB_MAKEFILE"
-            # Punem un '#' în fața liniei care compilează managerul
+            echo "Killing USB Manager in $USB_MAKEFILE"
             sed -i 's/obj-$(CONFIG_USB_TYPEC_MANAGER)/# obj-$(CONFIG_USB_TYPEC_MANAGER)/g' "$USB_MAKEFILE"
             sed -i 's/obj-y += usb_typec_manager.o/# obj-y += usb_typec_manager.o/g' "$USB_MAKEFILE"
           fi
 
-          # 2. Fix pentru eroarea de compilare Timespec64 (obligatoriu)
+          # 4. FIX: Timespec64 pentru driverele USB importate
           find drivers/usb/ -name "*.c" -exec sed -i 's/struct timespec ts = current_time/struct timespec64 ts = current_time/g' {} + || true
 
-          # 3. FIX: usbpd_manager msleep & headers
+          # 5. FIX: Header missing în usbpd_manager.c
           sed -i '1i #include <linux/delay.h>\n#include <linux/usb_notify.h>' drivers/ccic/usbpd_manager.c
 
-          # 4. Dezactivăm și camerele (pentru siguranță, să nu avem alt Panic)
-          sed -i 's/obj-$(CONFIG_MSM_CAMERA)/# obj-$(CONFIG_MSM_CAMERA)/g' drivers/media/platform/msm/camera/Makefile || true
-
-      - name: Build and Sign DTBO (S10 Lite Version)
+      - name: Config & Build Kernel
         run: |
           cd kernel
-          # Compilăm kernel-ul
           export PATH="$(pwd)/../clang/bin:$(pwd)/../gcc-arm64/bin:$(pwd)/../gcc-arm/bin:$PATH"
           export KCFLAGS="-mgeneral-regs-only -Wno-error -fno-builtin -fno-pic"
-          make O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-android- olddefconfig
-          make -j$(nproc --all) O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-android- CROSS_COMPILE_ARM32=arm-linux-androideabi- DTC=$CUSTOM_DTC_PATH KCFLAGS="$KCFLAGS" CONFIG_SAMSUNG_PRODUCT_SHIP=y Image.gz-dtb dtbs
           
-          # Creăm DTBO cu aliniere Samsung
+          mkdir -p out
+          cat arch/arm64/configs/sm8150_sec_defconfig arch/arm64/configs/sm8150_sec_r5q_eur_open.config > out/.config
+          
+          # Forțăm dezactivarea unor opțiuni care cauzează erori de compilare
+          {
+            echo "CONFIG_BLK_DEV_LOOP=y"
+            echo "CONFIG_BLK_DEV_LOOP_MIN_COUNT=16"
+            echo "CONFIG_USB_NOTIFY=y"
+            echo "CONFIG_CCIC_S2MU004=y"
+            echo "CONFIG_BUILD_ARM64_DTB_OVERLAY=y"
+            echo "CONFIG_SECTION_MISMATCH_WARN_ONLY=y"
+          } >> out/.config
+          
+          make O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-android- olddefconfig
+          # Am scos CONFIG_SAMSUNG_PRODUCT_SHIP din comanda finală pentru a evita alte erori de debug
+          make -j$(nproc --all) O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-android- CROSS_COMPILE_ARM32=arm-linux-androideabi- LD=ld.lld DTC=$CUSTOM_DTC_PATH KCFLAGS="$KCFLAGS" Image.gz-dtb dtbs
+
+      - name: Build DTBO Image
+        run: |
+          cd kernel
           wget https://raw.githubusercontent.com/lineage-mirror/scripts/master/mkdtboimg.py -O mkdtboimg.py
           DTBO_FILES=$(find out/arch/arm64/boot/dts/ -name "*.dtbo")
           python3 mkdtboimg.py create ../dtbo.img --page_size=4096 $DTBO_FILES
@@ -81,7 +101,7 @@ jobs:
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-S10Lite-Survivor-v10
+          name: Kernel-S10Lite-Survivor-v12
           path: |
             kernel/out/arch/arm64/boot/Image.gz-dtb
             dtbo.img
