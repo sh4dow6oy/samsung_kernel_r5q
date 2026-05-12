@@ -15,22 +15,22 @@ jobs:
         ref: auriana
         path: kernel
 
-    - name: Install Build Dependencies
+    - name: Install Build Dependencies & Legacy Libs
       run: |
         sudo apt-get update
-        sudo apt-get install -y bc build-essential flex bison libssl-dev libelf-dev clang lld llvm libncurses-dev
+        # Am adăugat libtinfo5 și libncurses5 pentru compatibilitate cu toolchain-ul Me2
+        sudo apt-get install -y bc build-essential flex bison libssl-dev libelf-dev clang lld llvm libncurses-dev libtinfo5 libncurses5
+        
+        # Uneori libtinfo5 este instalat dar nu e găsit sub numele exact căutat
+        sudo ln -sf /lib/x86_64-linux-gnu/libtinfo.so.6 /lib/x86_64-linux-gnu/libtinfo.so.5 || true
 
     - name: Download Me2 Toolchain
       run: |
         git clone https://github.com/mk7x7/Me2.git toolchain
         
-        # Definim căile exacte bazate pe link-urile tale
+        # Căile identificate anterior
         GCC_64_BIN=$(pwd)/toolchain/toolchain/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/bin
         LLVM_BIN=$(pwd)/toolchain/toolchain/llvm-arm-toolchain-ship/10.0/bin
-        
-        # Verificăm dacă folderele există
-        ls -d $GCC_64_BIN || (echo "GCC Path missing!"; exit 1)
-        ls -d $LLVM_BIN || (echo "LLVM Path missing!"; exit 1)
         
         echo "GCC_64_BIN=$GCC_64_BIN" >> $GITHUB_ENV
         echo "LLVM_BIN=$LLVM_BIN" >> $GITHUB_ENV
@@ -39,13 +39,11 @@ jobs:
       run: |
         cd kernel
         
-        # Adăugăm ambele căi în PATH
         export PATH="${{ env.LLVM_BIN }}:${{ env.GCC_64_BIN }}:$PATH"
-        
         export ARCH=arm64
         export SUBARCH=arm64
         
-        # Configurare Hybrid: CC vine din LLVM, restul uneltelor (binutils) din GCC
+        # Variabilele de mediu hibride
         export KERNEL_MAKE_ENV="DTC_EXT=$(pwd)/scripts/dtc/dtc \
                                 CONFIG_BUILD_ARM64_DT_OVERLAY=y \
                                 CONFIG_WLAN_VARIANT=samsung \
@@ -60,18 +58,17 @@ jobs:
                                 OBJDUMP=${{ env.LLVM_BIN }}/llvm-objdump \
                                 STRIP=${{ env.LLVM_BIN }}/llvm-strip"
 
-        # 1. Configurare prin CAT
+        # 1. Configurare
         cat arch/arm64/configs/sm8150_sec_defconfig arch/arm64/configs/sm8150_sec_r5q_eur_open.config > arch/arm64/configs/combined_defconfig
         
-        # Forțăm dezactivarea stack protector dacă eșuează testul de compilator
+        # Fix pentru eroarea de compilator anterioară
         echo "CONFIG_CC_STACKPROTECTOR_NONE=y" >> arch/arm64/configs/combined_defconfig
         echo "# CONFIG_CC_STACKPROTECTOR_STRONG is not set" >> arch/arm64/configs/combined_defconfig
 
         make O=out $KERNEL_MAKE_ENV combined_defconfig
         make O=out $KERNEL_MAKE_ENV olddefconfig
 
-        # 2. Build propriu-zis
-        # KCFLAGS="-w" ascunde warning-urile care pot bloca build-ul pe Clang 10
+        # 2. Compilare
         make -j$(nproc --all) O=out $KERNEL_MAKE_ENV KCFLAGS="-w"
         
     - name: Upload Artifact
