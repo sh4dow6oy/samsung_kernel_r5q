@@ -20,42 +20,48 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y bc build-essential flex bison libssl-dev libelf-dev clang lld llvm libncurses-dev wget git
 
-    - name: Download AOSP Clang
+    - name: Setup AOSP Clang (r383902)
       run: |
-        # Descarcă Clang r383902 (Android 11) - stabil și compatibil cu SM8150
         mkdir -p clang
-        wget https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/master/clang-r383902.tar.gz
+        # Descarcă arhiva folosind link-ul specificat
+        wget https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/3857008389202edac32d57008bb8c99d2c957f9d/clang-r383902.tar.gz
         tar -xf clang-r383902.tar.gz -C clang
         echo "CLANG_BIN=$(pwd)/clang/bin" >> $GITHUB_ENV
 
-    - name: Download AOSP GCC (Binutils)
+    - name: Download AOSP GCC 4.9 (Binutils)
       run: |
-        # Avem nevoie de binutils pentru asamblare (aarch64 4.9 pentru compatibilitate arm64)
-        git clone --depth=1 https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 gcc-arm64
-        git clone --depth=1 https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9 gcc-arm32
-        echo "GCC64_BIN=$(pwd)/gcc-arm64/bin" >> $GITHUB_ENV
-        echo "GCC32_BIN=$(pwd)/gcc-arm32/bin" >> $GITHUB_ENV
+        # Chiar dacă folosim Clang, avem nevoie de asamblorul GNU (gas) pentru anumite porțiuni din kernel
+        git clone --depth=1 https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 gcc64
+        git clone --depth=1 https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9 gcc32
+        echo "GCC64_BIN=$(pwd)/gcc64/bin" >> $GITHUB_ENV
+        echo "GCC32_BIN=$(pwd)/gcc32/bin" >> $GITHUB_ENV
 
     - name: Build Kernel
       run: |
         cd kernel
         
-        # Setează PATH-ul corect (Clang primul, apoi GCC)
+        # Path-ul trebuie să prioritizeze Clang-ul descărcat
         export PATH="${{ env.CLANG_BIN }}:${{ env.GCC64_BIN }}:${{ env.GCC32_BIN }}:$PATH"
         
         export ARCH=arm64
         export SUBARCH=arm64
         
-        # Variabile de build pentru AOSP Toolchain
+        # Variabilele de mediu optimizate pentru AOSP Clang
         export KERNEL_MAKE_ENV="O=out \
                                 DTC_EXT=$(pwd)/scripts/dtc/dtc \
                                 CONFIG_BUILD_ARM64_DT_OVERLAY=y \
+                                CONFIG_WLAN_VARIANT=samsung \
                                 CC=clang \
                                 HOSTCC=gcc \
                                 CROSS_COMPILE=aarch64-linux-android- \
                                 CROSS_COMPILE_ARM32=arm-linux-androideabi- \
                                 CLANG_TRIPLE=aarch64-linux-gnu- \
-                                LD=ld.lld"
+                                LD=ld.lld \
+                                AR=llvm-ar \
+                                NM=llvm-nm \
+                                OBJCOPY=llvm-objcopy \
+                                OBJDUMP=llvm-objdump \
+                                STRIP=llvm-strip"
 
         # 2. Configurare
         cat arch/arm64/configs/sm8150_sec_defconfig arch/arm64/configs/sm8150_sec_r5q_eur_open.config > arch/arm64/configs/combined_defconfig
@@ -63,8 +69,9 @@ jobs:
         make $KERNEL_MAKE_ENV olddefconfig
 
         # 3. Compilare
-        # Folosim HOSTCC=gcc din sistem pentru a evita eroarea de libc pe care ai avut-o
+        # Folosim HOSTCC=gcc (cel de sistem) pentru a evita erorile de linkare a utilitarelor de build
         make -j$(nproc --all) $KERNEL_MAKE_ENV KCFLAGS="-w"
+        
     - name: Upload Artifact
       uses: actions/upload-artifact@v4
       with:
