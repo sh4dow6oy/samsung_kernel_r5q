@@ -57,6 +57,11 @@ jobs:
                                 OBJDUMP=${{ env.LLVM_BIN }}/llvm-objdump \
                                 STRIP=${{ env.LLVM_BIN }}/llvm-strip"
 
+        # --- FIX: ELIMINARE FLAG NECOMPATIBIL ---
+        # Căutăm flag-ul problematic în Makefile-uri și îl eliminăm
+        sed -i 's/-ftrivial-auto-var-init=zero//g' Makefile
+        sed -i 's/-ftrivial-auto-var-init=zero//g' scripts/Makefile.gcc-plugins || true
+
         # 1. Configurare Kernel
         cat arch/arm64/configs/sm8150_sec_defconfig arch/arm64/configs/sm8150_sec_r5q_eur_open.config > arch/arm64/configs/combined_defconfig
         
