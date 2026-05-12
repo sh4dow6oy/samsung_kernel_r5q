@@ -23,14 +23,12 @@ jobs:
     - name: Setup AOSP Clang (r383902)
       run: |
         mkdir -p clang
-        # Descarcă arhiva folosind link-ul specificat
         wget https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/3857008389202edac32d57008bb8c99d2c957f9d/clang-r383902.tar.gz
         tar -xf clang-r383902.tar.gz -C clang
         echo "CLANG_BIN=$(pwd)/clang/bin" >> $GITHUB_ENV
 
     - name: Download AOSP GCC 4.9 (Binutils)
       run: |
-        # Chiar dacă folosim Clang, avem nevoie de asamblorul GNU (gas) pentru anumite porțiuni din kernel
         git clone --depth=1 https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 gcc64
         git clone --depth=1 https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9 gcc32
         echo "GCC64_BIN=$(pwd)/gcc64/bin" >> $GITHUB_ENV
@@ -40,13 +38,11 @@ jobs:
       run: |
         cd kernel
         
-        # Path-ul trebuie să prioritizeze Clang-ul descărcat
         export PATH="${{ env.CLANG_BIN }}:${{ env.GCC64_BIN }}:${{ env.GCC32_BIN }}:$PATH"
-        
         export ARCH=arm64
         export SUBARCH=arm64
         
-        # Variabilele de mediu optimizate pentru AOSP Clang
+        # Variabilele de mediu
         export KERNEL_MAKE_ENV="O=out \
                                 DTC_EXT=$(pwd)/scripts/dtc/dtc \
                                 CONFIG_BUILD_ARM64_DT_OVERLAY=y \
@@ -63,14 +59,23 @@ jobs:
                                 OBJDUMP=llvm-objdump \
                                 STRIP=llvm-strip"
 
-        # 2. Configurare
+
+        # 2. Configurare & Forțare dezactivare Stack Protector
         cat arch/arm64/configs/sm8150_sec_defconfig arch/arm64/configs/sm8150_sec_r5q_eur_open.config > arch/arm64/configs/combined_defconfig
+        
+        # Eliminăm orice urmă de Stack Protector din config pentru a evita check-ul
+        sed -i '/CONFIG_CC_STACKPROTECTOR/d' arch/arm64/configs/combined_defconfig
+        echo 'CONFIG_CC_STACKPROTECTOR_NONE=y' >> arch/arm64/configs/combined_defconfig
+        echo '# CONFIG_CC_STACKPROTECTOR_STRONG is not set' >> arch/arm64/configs/combined_defconfig
+
         make $KERNEL_MAKE_ENV combined_defconfig
+        
+        # Aplicăm schimbarile și forțăm dezactivarea opțiunilor de securitate conflictuale
         make $KERNEL_MAKE_ENV olddefconfig
 
         # 3. Compilare
-        # Folosim HOSTCC=gcc (cel de sistem) pentru a evita erorile de linkare a utilitarelor de build
-        make -j$(nproc --all) $KERNEL_MAKE_ENV KCFLAGS="-w"
+        # Adăugăm -fno-stack-protector în KCFLAGS pentru a asigura compilatorul că nu vrem protecție
+        make -j$(nproc --all) $KERNEL_MAKE_ENV KCFLAGS="-w -fno-stack-protector"
         
     - name: Upload Artifact
       uses: actions/upload-artifact@v4
