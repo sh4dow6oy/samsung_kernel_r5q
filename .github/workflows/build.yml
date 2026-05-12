@@ -34,13 +34,9 @@ jobs:
           
           cd s
           chmod +x tools/mkdtimg
-          # Dezactivăm DEFEX pentru că e buguit în sursele OpenELA, dar lăsăm RKP
-          sed -i 's/CONFIG_SECURITY_DEFEX=y/CONFIG_SECURITY_DEFEX=n/g' arch/arm64/configs/r5q_defconfig || true
-          # 1. FIX: Eliminăm referințele la funcțiile de securitate Samsung care lipsesc (RKP/KDP)
-          # Această comandă dezactivează apelurile către rkp_cred_enable, rkp_free_security etc.
-          sed -i 's/CONFIG_RKP_KDP=y/CONFIG_RKP_KDP=n/g' arch/arm64/configs/r5q_eur_open_defconfig || true
-          sed -i 's/CONFIG_RKP_NS_PROT=y/CONFIG_RKP_NS_PROT=n/g' arch/arm64/configs/r5q_eur_open_defconfig || true
-          sed -i 's/select RKP_KDP//g' arch/arm64/Kconfig || true
+          # Comanda de mai jos șterge 4 linii începând cu linia 2761
+          sed -i '2761,2764d' drivers/clk/clk.c
+          echo "Patch aplicat pentru drivers/clk/clk.c"
           sed -i 's/.*ois_gain_rear3_result.*/\/\/ &/' drivers/media/platform/msm/camera/cam_sensor_module/cam_eeprom/cam_eeprom_core.c || true
           sed -i 's/.*ois_sr_rear3_result.*/\/\/ &/' drivers/media/platform/msm/camera/cam_sensor_module/cam_eeprom/cam_eeprom_core.c || true
           sed -i 's/ptep = huge_pmd_share/pte = huge_pmd_share/g' arch/arm64/mm/hugetlbpage.c || true
