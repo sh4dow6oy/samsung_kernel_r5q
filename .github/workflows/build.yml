@@ -1,133 +1,60 @@
-name: Build Samsung SM8150 (Auriana)
+name: Build Samsung SM8150 Kernel (Auriana)
 
 on:
   workflow_dispatch:
 
 jobs:
   build:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
+
     steps:
-      - name: Cleanup and Install Dependencies
-        run: |
-          sudo apt-get update
-          sudo add-apt-repository universe -y
-          sudo apt-get update
-          sudo apt-get install -y python2-minimal bc build-essential flex bison ncurses-dev libssl-dev libelf-dev xz-utils libfl-dev git-core ccache zip zstd binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi
-          # Setăm Python 2 ca binar 'python' pentru scripturile Samsung (RKP)
-          sudo ln -sf /usr/bin/python2 /usr/bin/python
-      - name: Clone Kernel Source
-        run: git clone --depth=1 -b auriana https://github.com/sh4dow6oy/android_kernel_samsung_sm8150.git s
+    - name: Checkout Kernel Source
+      uses: actions/checkout@v4
+      with:
+        repository: LumiPlayground/android_kernel_samsung_sm8150
+        ref: auriana
+        path: kernel
 
-      - name: Download Proton Clang
-        run: git clone --depth=1 https://github.com/kdrag0n/proton-clang.git llvm-proton
+    - name: Install Build Dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y bc build-essential flex bison libssl-dev libelf-dev clang lld llvm libncurses-dev
 
-      - name: Fix clk.c redefinition and syntax error
-        run: |
-          # Mergem la fișierul cu probleme
-          FILE="drivers/clk/clk.c"
-          
-          # Identificăm ultima apariție a listei "all_lists" (cea care cauzează redefinirea)
-          # și ștergem tot blocul (de obicei are 4 linii: definitia, 2 itemi, inchiderea)
-          
-          # Căutăm linia de start a celei de-a doua definiții
-          TARGET_LINE=$(grep -n "static struct hlist_head \*all_lists" $FILE | tail -n 1 | cut -d: -f1)
-          
-          if [ ! -z "$TARGET_LINE" ]; then
-            echo "S-a găsit redefinirea la linia $TARGET_LINE. Se aplică patch-ul..."
-            # Ștergem 4 linii începând cu acea linie (definiția completă a array-ului)
-            sed -i "${TARGET_LINE},$(($TARGET_LINE+3))d" $FILE
-          else
-            echo "Redefinirea nu a fost găsită prin grep, verificăm dacă a rămas doar o acoladă orfană la 2761..."
-            # Dacă grep-ul nu mai găsește definiția, dar eroarea zice că la 2761 e o acoladă în plus:
-            sed -i '2761d' $FILE
-          fi
+    - name: Download Me2 Toolchain
+      run: |
+        git clone https://github.com/mk7x7/Me2.git toolchain
+        # Setăm calea către binarele toolchain-ului
+        echo "TOOLCHAIN_PATH=$(pwd)/toolchain/toolchain/bin" >> $GITHUB_ENV
 
-      - name: Build Kernel
-        run: |
-          export ARCH=arm64
-          TOOLCHAIN_PATH="${{ github.workspace }}/llvm-proton/bin"
-          export PATH="$TOOLCHAIN_PATH:$PATH"
-          
-          # Fix compatibilitate unelte
-          ln -sf $TOOLCHAIN_PATH/llvm-objdump $TOOLCHAIN_PATH/aarch64-linux-gnu-objdump
-          ln -sf $TOOLCHAIN_PATH/llvm-readelf $TOOLCHAIN_PATH/aarch64-linux-gnu-readelf
-          ln -sf $TOOLCHAIN_PATH/llvm-nm $TOOLCHAIN_PATH/aarch64-linux-gnu-nm
-          
-          cd s
-          chmod +x tools/mkdtimg
-          # Comanda de mai jos șterge 4 linii începând cu linia 2761
-          sed -i '2761,2764d' drivers/clk/clk.c
-          echo "Patch aplicat pentru drivers/clk/clk.c"
-          sed -i 's/.*ois_gain_rear3_result.*/\/\/ &/' drivers/media/platform/msm/camera/cam_sensor_module/cam_eeprom/cam_eeprom_core.c || true
-          sed -i 's/.*ois_sr_rear3_result.*/\/\/ &/' drivers/media/platform/msm/camera/cam_sensor_module/cam_eeprom/cam_eeprom_core.c || true
-          sed -i 's/ptep = huge_pmd_share/pte = huge_pmd_share/g' arch/arm64/mm/hugetlbpage.c || true
-          
-          # --- COMPILARE ---
-          MAKE_ARGS="ARCH=arm64 \
-            O=out \
-            CC=clang \
-            LD=ld.lld \
-            AR=llvm-ar \
-            NM=llvm-nm \
-            OBJCOPY=llvm-objcopy \
-            OBJDUMP=llvm-objdump \
-            STRIP=llvm-strip \
-            READELF=aarch64-linux-gnu-readelf \
-            CROSS_COMPILE=aarch64-linux-gnu- \
-            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-            LLVM=1 \
-            LLVM_IAS=0 \
-            PYTHON=python"
-          # 3. Config & Build
-          make $MAKE_ARGS r5q_defconfig
-          
-            ./scripts/config --file out/.config \
-            -d CONFIG_RKP_KDP \
-            -d CONFIG_RKP_NS_PROT \
-            -d CONFIG_RKP_CFP \
-            -d CONFIG_RKP_CFP_JOPP \
-            -d CONFIG_LTO_CLANG \
-            -d CONFIG_THINLTO \
-            -e CONFIG_LTO_NONE \
-            -d CONFIG_SECURITY_DEFEX \
-            -d CONFIG_SAMSUNG_PRODUCT_SHIP
-          
-          make $MAKE_ARGS olddefconfig
-          
-          # Generăm Image.gz și DTBO-urile (.dtbo)
-          make -j$(nproc --all) $MAKE_ARGS LDFLAGS="-z notext" KCFLAGS="-fcommon -fno-pic -Wno-error" Image.gz dtbs
-      - name: Create Flashable Package
-        run: |
-          # 1. Generare DTBO.img folosind binarul tău din 'tools'
-          # CRITIC: --version=2 rezolvă eroarea "Dtbo_Version = 0"
-          MKDTIMG="${{ github.workspace }}/s/tools/mkdtimg"
-          chmod +x $MKDTIMG
-          DTBO_FILES=$(find s/out/arch/arm64/boot/dts/ -name "*.dtbo")
-          $MKDTIMG create dtbo.img --version=2 --page_size=4096 --id=0x10000000 $DTBO_FILES
-          
-          # 2. Setup AnyKernel3
-          git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git AnyKernel
-          cp s/out/arch/arm64/boot/Image.gz AnyKernel/Image.gz
-          cp dtbo.img AnyKernel/dtbo.img
-          
-          # 3. Configurare AnyKernel3 pentru Samsung S10 Lite / A82 (Header V2)
-          cd AnyKernel
-          sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-          sed -i 's/header_version=0/header_version=2/g' anykernel.sh
-          
-          # Injectăm logica de flash DTBO în scriptul de instalare
-          sed -i '/write_boot;/a \
-          \
-          ## dtbo install\
-          if [ -f $home/dtbo.img ]; then\
-            ui_print " "; ui_print "Flashing DTBO...";\
-            flash_dtbo;\
-          fi;' anykernel.sh
-          
-          zip -r9 ../Kernel-Auriana-Final.zip *
-      
-      - name: Upload Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: Kernel-Auriana-SM8150
-          path: Kernel-Auriana-Final.zip
+    - name: Build Kernel
+      run: |
+        cd kernel
+        
+        # Definire variabile de mediu
+        export ARCH=arm64
+        export SUBARCH=arm64
+        export CROSS_COMPILE=${{ env.TOOLCHAIN_PATH }}/aarch64-linux-android-
+        
+        # Definire KERNEL_MAKE_ENV conform cerinței tale
+        # DTC_EXT indică script-ului de build să folosească binarul dtc din sursa kernelului
+        export KERNEL_MAKE_ENV="DTC_EXT=$(pwd)/scripts/dtc/dtc CONFIG_BUILD_ARM64_DT_OVERLAY=y"
+        
+        # 1. Configurare (Merge Defconfigs)
+        make O=out sm8150_sec_defconfig
+        scripts/kconfig/merge_config.sh -O out out/.config arch/arm64/configs/sm8150_sec_r5q_eur_open.config
+        
+        # Re-aplicăm variabilele pentru a genera .config-ul final
+        make O=out $KERNEL_MAKE_ENV olddefconfig
+        
+        # 2. Compilare
+        # Transmitem KERNEL_MAKE_ENV direct în comanda make
+        make -j$(nproc --all) O=out $KERNEL_MAKE_ENV
+
+    - name: Upload Artifacts
+      uses: upload-artifact@v4
+      with:
+        name: Kernel-SM8150-r5q
+        path: |
+          kernel/out/arch/arm64/boot/Image.gz-dtb
+          kernel/out/arch/arm64/boot/dtbo.img
+          kernel/out/.config
