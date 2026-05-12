@@ -43,12 +43,13 @@ jobs:
         export HOSTCC=clang
         export CLANG_TRIPLE=aarch64-linux-gnu-
         
-        # --- FIX: ELIMINARE FLAG-URI MODERNE ---
-        # Dezactivăm warnings-as-errors și scoatem flag-urile pe care Clang 10 nu le știe
-        sed -i 's/-Werror//g' Makefile
-        sed -i 's/-Wno-enum-compare-conditional//g' Makefile
-        sed -i 's/-Wno-enum-enum-conversion//g' Makefile
+        # --- FIX AGRESIV PENTRU FLAG-URI ---
+        # Eliminăm flag-ul care blochează GCC și restul flag-urilor moderne
+        sed -i 's/-Wimplicit-function-declaration//g' Makefile
         sed -i 's/-ftrivial-auto-var-init=zero//g' Makefile
+        sed -i 's/-Werror//g' Makefile
+        # Uneori flag-ul este sub forma -implicit-function-declaration (fără W)
+        sed -i 's/-implicit-function-declaration//g' Makefile
 
         # Variabile pentru compilare
         MAKE_ARGS="O=out \
@@ -65,16 +66,16 @@ jobs:
         # 1. Configurare
         cat arch/arm64/configs/sm8150_sec_defconfig arch/arm64/configs/sm8150_sec_r5q_eur_open.config > arch/arm64/configs/combined_defconfig
         
+        echo "CONFIG_WLAN_VARIANT=samsung" >> arch/arm64/configs/combined_defconfig
         echo "CONFIG_CC_STACKPROTECTOR_NONE=y" >> arch/arm64/configs/combined_defconfig
         echo "# CONFIG_CC_STACKPROTECTOR_STRONG is not set" >> arch/arm64/configs/combined_defconfig
-        echo "# CONFIG_INIT_STACK_ALL_ZERO is not set" >> arch/arm64/configs/combined_defconfig
 
         make $MAKE_ARGS combined_defconfig
         make $MAKE_ARGS olddefconfig
 
         # 2. Compilare
-        # Adăugăm flag-uri globale de ignorare a erorilor de warning pentru a fi siguri
-        make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-w -Wno-error -Wno-unknown-warning-option" HOSTCFLAGS="-w"
+        # Adăugăm flag-uri pentru a forța Clang și a ignora erorile de tip GCC unrecognized
+        make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-w -fno-stack-protector" HOSTCFLAGS="-w"
         
     - name: Upload Artifact
       uses: actions/upload-artifact@v4
