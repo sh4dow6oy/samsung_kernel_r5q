@@ -45,9 +45,6 @@ jobs:
         # --- FIX: ELIMINARE VERIFICARE VERSIUNE GCC ---
         # Această linie șterge eroarea care blochează build-ul cu GCC 4.9
         sed -i '/#error Sorry, your version of GCC is too old/d' include/linux/compiler-gcc.h
-        
-        # Fix suplimentar pentru WLAN (din log-ul tău vedem că încă mai apare "default"_defconfig)
-        sed -i 's/CONFIG_WLAN_VARIANT="default"/CONFIG_WLAN_VARIANT="samsung"/g' arch/arm64/configs/sm8150_sec_defconfig || true
 
         # Variabile pentru make
         MAKE_ARGS="O=out \
