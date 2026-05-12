@@ -57,13 +57,11 @@ jobs:
         echo "Verificăm prezența fișierelor în kernel/out/arch/arm64/boot/:"
         ls -R kernel/out/arch/arm64/boot/ || echo "Fișierele nu au fost găsite!"
 
-    - name: Upload Artifacts
-      if: success()
-      uses: upload-artifact@v4
+    - name: Upload Artifact
+      uses: actions/upload-artifact@v4
       with:
-        name: Kernel_SM8150_Final
+        name: Kernel-SM8150-r5q
         path: |
-          kernel/out/arch/arm64/boot/Image*
-          kernel/out/arch/arm64/boot/*.img
+          kernel/out/arch/arm64/boot/Image.gz-dtb
+          kernel/out/arch/arm64/boot/dtbo.img
           kernel/out/.config
-        if-no-files-found: error
