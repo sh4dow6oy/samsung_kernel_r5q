@@ -11,7 +11,7 @@ jobs:
     - name: Checkout Kernel Source
       uses: actions/checkout@v4
       with:
-        repository: LumiPlayground/android_kernel_samsung_sm8150
+        repository: sh4dow6oy/android_kernel_samsung_sm8150
         ref: auriana
         path: kernel
 
@@ -27,7 +27,7 @@ jobs:
         tar -xf clang-r383902.tar.gz -C clang
         echo "CLANG_BIN=$(pwd)/clang/bin" >> $GITHUB_ENV
 
-    - name: Download AOSP GCC 4.9 (Binutils)
+    - name: Download AOSP GCC 4.9
       run: |
         git clone --depth=1 https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 gcc64
         git clone --depth=1 https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9 gcc32
@@ -42,40 +42,34 @@ jobs:
         export ARCH=arm64
         export SUBARCH=arm64
         
-        # Variabilele de mediu
-        export KERNEL_MAKE_ENV="O=out \
-                                DTC_EXT=$(pwd)/scripts/dtc/dtc \
-                                CONFIG_BUILD_ARM64_DT_OVERLAY=y \
-                                CONFIG_WLAN_VARIANT=samsung \
-                                CC=clang \
-                                HOSTCC=gcc \
-                                CROSS_COMPILE=aarch64-linux-android- \
-                                CROSS_COMPILE_ARM32=arm-linux-androideabi- \
-                                CLANG_TRIPLE=aarch64-linux-gnu- \
-                                LD=ld.lld \
-                                AR=llvm-ar \
-                                NM=llvm-nm \
-                                OBJCOPY=llvm-objcopy \
-                                OBJDUMP=llvm-objdump \
-                                STRIP=llvm-strip"
+        # Setează variabilele de bază
+        export CC=clang
+        export HOSTCC=gcc
+        export CROSS_COMPILE=aarch64-linux-android-
+        export CROSS_COMPILE_ARM32=arm-linux-androideabi-
+        export CLANG_TRIPLE=aarch64-linux-gnu-
 
+        # --- FIX 1: BYPASS CLANG ERROR ---
+        # Adăugăm flag-ul de confirmare cerut de Clang direct în Makefile-ul principal
+        # sau îl putem pasa în KCFLAGS. Cea mai sigură metodă este în Makefile.
+        sed -i 's/-ftrivial-auto-var-init=zero/-ftrivial-auto-var-init=zero -enable-trivial-auto-var-init-zero-knowing-it-will-be-removed-from-clang/g' Makefile
 
-        # 2. Configurare & Forțare dezactivare Stack Protector
+        # Configurare
         cat arch/arm64/configs/sm8150_sec_defconfig arch/arm64/configs/sm8150_sec_r5q_eur_open.config > arch/arm64/configs/combined_defconfig
         
-        # Eliminăm orice urmă de Stack Protector din config pentru a evita check-ul
-        sed -i '/CONFIG_CC_STACKPROTECTOR/d' arch/arm64/configs/combined_defconfig
-        echo 'CONFIG_CC_STACKPROTECTOR_NONE=y' >> arch/arm64/configs/combined_defconfig
-        echo '# CONFIG_CC_STACKPROTECTOR_STRONG is not set' >> arch/arm64/configs/combined_defconfig
+        # Dezactivăm Stack Protector Strong care a eșuat anterior
+        echo "CONFIG_CC_STACKPROTECTOR_NONE=y" >> arch/arm64/configs/combined_defconfig
+        echo "# CONFIG_CC_STACKPROTECTOR_STRONG is not set" >> arch/arm64/configs/combined_defconfig
 
-        make $KERNEL_MAKE_ENV combined_defconfig
-        
-        # Aplicăm schimbarile și forțăm dezactivarea opțiunilor de securitate conflictuale
-        make $KERNEL_MAKE_ENV olddefconfig
+        make O=out DTC_EXT=$(pwd)/scripts/dtc/dtc combined_defconfig
+        make O=out DTC_EXT=$(pwd)/scripts/dtc/dtc olddefconfig
 
-        # 3. Compilare
-        # Adăugăm -fno-stack-protector în KCFLAGS pentru a asigura compilatorul că nu vrem protecție
-        make -j$(nproc --all) $KERNEL_MAKE_ENV KCFLAGS="-w -fno-stack-protector"
+        # Compilare
+        # Pasăm manual flag-ul și în KCFLAGS pentru a fi 100% siguri că e acoperit peste tot
+        make -j$(nproc --all) O=out \
+             DTC_EXT=$(pwd)/scripts/dtc/dtc \
+             LD=ld.lld \
+             KCFLAGS="-w -fno-stack-protector -enable-trivial-auto-var-init-zero-knowing-it-will-be-removed-from-clang"
         
     - name: Upload Artifact
       uses: actions/upload-artifact@v4
