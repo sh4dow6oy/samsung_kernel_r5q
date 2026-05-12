@@ -1,87 +1,119 @@
-name: Build Samsung SM8150 Final Survivor
+name: Build Samsung SM8150 (Auriana)
+
 on:
   workflow_dispatch:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
-      - name: Checkout Kernel Source
-        uses: actions/checkout@v5
-        with:
-          repository: sh4dow6oy/android_kernel_samsung_sm8150
-          ref: auriana
-          path: kernel
-
-      - name: Install Dependencies
+      - name: Cleanup and Install Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y bc build-essential bison flex libssl-dev libelf-dev xz-utils libncurses5-dev python3
-      - name: Download Toolchains
+          sudo add-apt-repository universe -y
+          sudo apt-get update
+          sudo apt-get install -y python2-minimal bc build-essential flex bison ncurses-dev libssl-dev libelf-dev xz-utils libfl-dev git-core ccache zip zstd binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi
+          # Setăm Python 2 ca binar 'python' pentru scripturile Samsung (RKP)
+          sudo ln -sf /usr/bin/python2 /usr/bin/python
+      - name: Clone Kernel Source
+        run: git clone --depth=1 -b auriana https://github.com/sh4dow6oy/android_kernel_samsung_sm8150.git s
+
+      - name: Download Proton Clang
+        run: git clone --depth=1 https://github.com/kdrag0n/proton-clang.git llvm-proton
+
+      - name: Build Kernel
         run: |
-          git clone --depth=1 https://github.com/LineageOS/android_prebuilts_clang_kernel_linux-x86_clang-r416183b clang
-          git clone --depth=1 https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9 gcc-arm64
-          git clone --depth=1 https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9 gcc-arm
-      - name: Build Custom DTC
-        run: |
-          git clone --depth=1 https://git.kernel.org/pub/scm/utils/dtc/dtc.git dtc-src
-          cd dtc-src && make -j$(nproc)
-          echo "$(pwd)" >> $GITHUB_PATH
-          echo "CUSTOM_DTC_PATH=$(pwd)/dtc" >> $GITHUB_ENV
-      - name: Import Drivers & Purge
-        run: |
-          git clone --depth=1 -b openela-4.14.356 https://github.com/Andy2660/android_kernel_samsung_a82xq a82_source
-          # Curățare totală
-          rm -rf kernel/drivers/ccic kernel/drivers/usb/notify kernel/drivers/usb/manager
-          # Import nou
-          cp -a a82_source/drivers/ccic kernel/drivers/
-          rm -rf kernel/drivers/usb && cp -a a82_source/drivers/usb kernel/drivers/
-          rm -rf kernel/drivers/power/supply && cp -a a82_source/drivers/power/supply kernel/drivers/power/
-          rm -rf a82_source
-      - name: Hard Patch for Kernel Panic
-        run: |
-          cd kernel
-          # 1. Fix usbpd_manager msleep & headers
-          sed -i '1i #include <linux/delay.h>\n#include <linux/usb_notify.h>' drivers/ccic/usbpd_manager.c
+          export ARCH=arm64
+          TOOLCHAIN_PATH="${{ github.workspace }}/llvm-proton/bin"
+          export PATH="$TOOLCHAIN_PATH:$PATH"
           
-          # 2. CRITICAL: Patch manager_set_alternate_mode pentru a opri Kernel Panic (Oops: 86000005)
-          # Căutăm funcția care dă crash și îi punem un "return" preventiv dacă datele sunt invalide
-          sed -i '/manager_set_alternate_mode(int mode)/a if (mode > 100) return;' drivers/usb/manager/usb_typec_manager.c || true
-          # 3. Fix Camera & OIS crash
-          sed -i 's/obj-$(CONFIG_MSM_CAMERA)/# obj-$(CONFIG_MSM_CAMERA)/g' drivers/media/platform/msm/camera/Makefile || true
+          # Fix compatibilitate unelte
+          ln -sf $TOOLCHAIN_PATH/llvm-objdump $TOOLCHAIN_PATH/aarch64-linux-gnu-objdump
+          ln -sf $TOOLCHAIN_PATH/llvm-readelf $TOOLCHAIN_PATH/aarch64-linux-gnu-readelf
+          ln -sf $TOOLCHAIN_PATH/llvm-nm $TOOLCHAIN_PATH/aarch64-linux-gnu-nm
           
-          # 4. Fix USB Timespec64
-          find drivers/usb/ -name "*.c" -exec sed -i 's/struct timespec ts = current_time/struct timespec64 ts = current_time/g' {} + || true
+          cd s
+          chmod +x tools/mkdtimg
+          # Dezactivăm DEFEX pentru că e buguit în sursele OpenELA, dar lăsăm RKP
+          sed -i 's/CONFIG_SECURITY_DEFEX=y/CONFIG_SECURITY_DEFEX=n/g' arch/arm64/configs/r5q_defconfig || true
+          # 1. FIX: Eliminăm referințele la funcțiile de securitate Samsung care lipsesc (RKP/KDP)
+          # Această comandă dezactivează apelurile către rkp_cred_enable, rkp_free_security etc.
+          sed -i 's/CONFIG_RKP_KDP=y/CONFIG_RKP_KDP=n/g' arch/arm64/configs/r5q_eur_open_defconfig || true
+          sed -i 's/CONFIG_RKP_NS_PROT=y/CONFIG_RKP_NS_PROT=n/g' arch/arm64/configs/r5q_eur_open_defconfig || true
+          sed -i 's/select RKP_KDP//g' arch/arm64/Kconfig || true
+          # 2. FIX: Cod C (CLK, Camera, PTEP)
+          sed -i 's/msm_bus_scale_client_update_request(clk_debugfs_bus_cl_id/\/\/ &/' drivers/clk/clk.c || true
+          sed -i 's/clk_debugfs_bus_cl_id =/\/\/ &/' drivers/clk/clk.c || true
+          sed -i 's/if (!clk_debugfs_bus_cl_id)/\/\/ &/' drivers/clk/clk.c || true
+          sed -i 's/.*ois_gain_rear3_result.*/\/\/ &/' drivers/media/platform/msm/camera/cam_sensor_module/cam_eeprom/cam_eeprom_core.c || true
+          sed -i 's/.*ois_sr_rear3_result.*/\/\/ &/' drivers/media/platform/msm/camera/cam_sensor_module/cam_eeprom/cam_eeprom_core.c || true
+          sed -i 's/ptep = huge_pmd_share/pte = huge_pmd_share/g' arch/arm64/mm/hugetlbpage.c || true
+          # --- COMPILARE ---
+          MAKE_ARGS="ARCH=arm64 \
+            O=out \
+            CC=clang \
+            LD=ld.lld \
+            AR=llvm-ar \
+            NM=llvm-nm \
+            OBJCOPY=llvm-objcopy \
+            OBJDUMP=llvm-objdump \
+            STRIP=llvm-strip \
+            READELF=aarch64-linux-gnu-readelf \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            LLVM=1 \
+            LLVM_IAS=0 \
+            PYTHON=python"
+          # 3. Config & Build
+          make $MAKE_ARGS r5q_defconfig
           
-          # 5. Link CCIC
-          if ! grep -q "obj-y += ccic/" drivers/Makefile; then echo 'obj-y += ccic/' >> drivers/Makefile; fi
-      - name: Config & Build
+            ./scripts/config --file out/.config \
+            -d CONFIG_RKP_KDP \
+            -d CONFIG_RKP_NS_PROT \
+            -d CONFIG_RKP_CFP \
+            -d CONFIG_RKP_CFP_JOPP \
+            -d CONFIG_LTO_CLANG \
+            -d CONFIG_THINLTO \
+            -e CONFIG_LTO_NONE \
+            -d CONFIG_SECURITY_DEFEX \
+            -d CONFIG_SAMSUNG_PRODUCT_SHIP
+          
+          make $MAKE_ARGS olddefconfig
+          
+          # Generăm Image.gz și DTBO-urile (.dtbo)
+          make -j$(nproc --all) $MAKE_ARGS LDFLAGS="-z notext" KCFLAGS="-fcommon -fno-pic -Wno-error" Image.gz dtbs
+      - name: Create Flashable Package
         run: |
-          cd kernel
-          export PATH="$(pwd)/../clang/bin:$(pwd)/../gcc-arm64/bin:$(pwd)/../gcc-arm/bin:$PATH"
-          export KCFLAGS="-mgeneral-regs-only -Wno-error -fno-builtin -fno-pic"
-          mkdir -p out
-          cat arch/arm64/configs/sm8150_sec_defconfig arch/arm64/configs/sm8150_sec_r5q_eur_open.config > out/.config
-          {
-            echo "CONFIG_BLK_DEV_LOOP=y"
-            echo "CONFIG_BLK_DEV_LOOP_MIN_COUNT=16"
-            echo "CONFIG_USB_NOTIFY=y"
-            echo "CONFIG_CCIC_S2MU004=y"
-            echo "CONFIG_BATTERY_SAMSUNG=y"
-            echo "CONFIG_BUILD_ARM64_DTB_OVERLAY=y"
-          } >> out/.config
-          make O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-android- olddefconfig
-          make -j$(nproc --all) O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-android- CROSS_COMPILE_ARM32=arm-linux-androideabi- LD=ld.lld DTC=$CUSTOM_DTC_PATH KCFLAGS="$KCFLAGS" CONFIG_SAMSUNG_PRODUCT_SHIP=y Image.gz-dtb dtbs
-      - name: Build and Sign DTBO (S10 Lite Specific)
-        run: |
-          wget https://raw.githubusercontent.com/K-Blaaaack/mkdtboimg/master/mkdtboimg.py -O mkdtboimg.py
-          DTBO_FILES=$(find kernel/out/arch/arm64/boot/dts/ -name "*.dtbo")
-          # Forțăm versiunea 1 și paginarea de 4096 (standard Samsung SM8150)
-          python3 mkdtboimg.py create dtbo.img --version=1 --page_size=4096 $DTBO_FILES
-      - name: Upload Artifacts
+          # 1. Generare DTBO.img folosind binarul tău din 'tools'
+          # CRITIC: --version=2 rezolvă eroarea "Dtbo_Version = 0"
+          MKDTIMG="${{ github.workspace }}/s/tools/mkdtimg"
+          chmod +x $MKDTIMG
+          DTBO_FILES=$(find s/out/arch/arm64/boot/dts/ -name "*.dtbo")
+          $MKDTIMG create dtbo.img --version=2 --page_size=4096 --id=0x10000000 $DTBO_FILES
+          
+          # 2. Setup AnyKernel3
+          git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git AnyKernel
+          cp s/out/arch/arm64/boot/Image.gz AnyKernel/Image.gz
+          cp dtbo.img AnyKernel/dtbo.img
+          
+          # 3. Configurare AnyKernel3 pentru Samsung S10 Lite / A82 (Header V2)
+          cd AnyKernel
+          sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
+          sed -i 's/header_version=0/header_version=2/g' anykernel.sh
+          
+          # Injectăm logica de flash DTBO în scriptul de instalare
+          sed -i '/write_boot;/a \
+          \
+          ## dtbo install\
+          if [ -f $home/dtbo.img ]; then\
+            ui_print " "; ui_print "Flashing DTBO...";\
+            flash_dtbo;\
+          fi;' anykernel.sh
+          
+          zip -r9 ../Kernel-Auriana-Final.zip *
+      
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-S10Lite-Survivor
-          path: |
-            kernel/out/arch/arm64/boot/Image.gz-dtb
-            dtbo.img
+          name: Kernel-Auriana-SM8150
+          path: Kernel-Auriana-Final.zip
