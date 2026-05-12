@@ -17,20 +17,17 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y bc build-essential bison flex libssl-dev libelf-dev xz-utils libncurses5-dev python3
-
       - name: Download Toolchains
         run: |
           git clone --depth=1 https://github.com/LineageOS/android_prebuilts_clang_kernel_linux-x86_clang-r416183b clang
           git clone --depth=1 https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9 gcc-arm64
           git clone --depth=1 https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9 gcc-arm
-
       - name: Build Custom DTC
         run: |
           git clone --depth=1 https://git.kernel.org/pub/scm/utils/dtc/dtc.git dtc-src
           cd dtc-src && make -j$(nproc)
           echo "$(pwd)" >> $GITHUB_PATH
           echo "CUSTOM_DTC_PATH=$(pwd)/dtc" >> $GITHUB_ENV
-
       - name: Import Drivers & Purge
         run: |
           git clone --depth=1 -b openela-4.14.356 https://github.com/Andy2660/android_kernel_samsung_a82xq a82_source
@@ -41,67 +38,50 @@ jobs:
           rm -rf kernel/drivers/usb && cp -a a82_source/drivers/usb kernel/drivers/
           rm -rf kernel/drivers/power/supply && cp -a a82_source/drivers/power/supply kernel/drivers/power/
           rm -rf a82_source
-
-      - name: Hard Patch - Fix Source Errors & Disable USB Manager
+      - name: Hard Patch for Kernel Panic
         run: |
           cd kernel
-          # 1. FIX: Eroarea 'ptep' în hugetlbpage.c (Bug de cod sursă)
-          sed -i 's/ptep = huge_pmd_share/pte = huge_pmd_share/g' arch/arm64/mm/hugetlbpage.c
-
-          # 2. FIX: Erorile 'sec_debug' din traps.c
-          # Comentăm funcțiile de debug Samsung care lipsesc și opresc build-ul
-          sed -i 's/sec_debug_sched_msg/ \/\/ sec_debug_sched_msg/g' arch/arm64/kernel/traps.c
-          sed -i 's/sec_debug_summary_save_die_info/ \/\/ sec_debug_summary_save_die_info/g' arch/arm64/kernel/traps.c
-          sed -i 's/sec_debug_save_badmode_info/ \/\/ sec_debug_save_badmode_info/g' arch/arm64/kernel/traps.c
-
-          # 3. KILL: Dezactivăm complet USB Manager din Makefile
-          USB_MAKEFILE=$(find drivers/usb/ -name "Makefile" | xargs grep -l "usb_typec_manager" | head -n 1)
-          if [ -n "$USB_MAKEFILE" ]; then
-            echo "Killing USB Manager in $USB_MAKEFILE"
-            sed -i 's/obj-$(CONFIG_USB_TYPEC_MANAGER)/# obj-$(CONFIG_USB_TYPEC_MANAGER)/g' "$USB_MAKEFILE"
-            sed -i 's/obj-y += usb_typec_manager.o/# obj-y += usb_typec_manager.o/g' "$USB_MAKEFILE"
-          fi
-
-          # 4. FIX: Timespec64 pentru driverele USB importate
-          find drivers/usb/ -name "*.c" -exec sed -i 's/struct timespec ts = current_time/struct timespec64 ts = current_time/g' {} + || true
-
-          # 5. FIX: Header missing în usbpd_manager.c
+          # 1. Fix usbpd_manager msleep & headers
           sed -i '1i #include <linux/delay.h>\n#include <linux/usb_notify.h>' drivers/ccic/usbpd_manager.c
-
-      - name: Config & Build Kernel
+          
+          # 2. CRITICAL: Patch manager_set_alternate_mode pentru a opri Kernel Panic (Oops: 86000005)
+          # Căutăm funcția care dă crash și îi punem un "return" preventiv dacă datele sunt invalide
+          sed -i '/manager_set_alternate_mode(int mode)/a if (mode > 100) return;' drivers/usb/manager/usb_typec_manager.c || true
+          # 3. Fix Camera & OIS crash
+          sed -i 's/obj-$(CONFIG_MSM_CAMERA)/# obj-$(CONFIG_MSM_CAMERA)/g' drivers/media/platform/msm/camera/Makefile || true
+          
+          # 4. Fix USB Timespec64
+          find drivers/usb/ -name "*.c" -exec sed -i 's/struct timespec ts = current_time/struct timespec64 ts = current_time/g' {} + || true
+          
+          # 5. Link CCIC
+          if ! grep -q "obj-y += ccic/" drivers/Makefile; then echo 'obj-y += ccic/' >> drivers/Makefile; fi
+      - name: Config & Build
         run: |
           cd kernel
           export PATH="$(pwd)/../clang/bin:$(pwd)/../gcc-arm64/bin:$(pwd)/../gcc-arm/bin:$PATH"
           export KCFLAGS="-mgeneral-regs-only -Wno-error -fno-builtin -fno-pic"
-          
           mkdir -p out
           cat arch/arm64/configs/sm8150_sec_defconfig arch/arm64/configs/sm8150_sec_r5q_eur_open.config > out/.config
-          
-          # Forțăm dezactivarea unor opțiuni care cauzează erori de compilare
           {
             echo "CONFIG_BLK_DEV_LOOP=y"
             echo "CONFIG_BLK_DEV_LOOP_MIN_COUNT=16"
             echo "CONFIG_USB_NOTIFY=y"
             echo "CONFIG_CCIC_S2MU004=y"
+            echo "CONFIG_BATTERY_SAMSUNG=y"
             echo "CONFIG_BUILD_ARM64_DTB_OVERLAY=y"
-            echo "CONFIG_SECTION_MISMATCH_WARN_ONLY=y"
           } >> out/.config
-          
           make O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-android- olddefconfig
-          # Am scos CONFIG_SAMSUNG_PRODUCT_SHIP din comanda finală pentru a evita alte erori de debug
-          make -j$(nproc --all) O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-android- CROSS_COMPILE_ARM32=arm-linux-androideabi- LD=ld.lld DTC=$CUSTOM_DTC_PATH KCFLAGS="$KCFLAGS" Image.gz-dtb dtbs
-
-      - name: Build DTBO Image
+          make -j$(nproc --all) O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-android- CROSS_COMPILE_ARM32=arm-linux-androideabi- LD=ld.lld DTC=$CUSTOM_DTC_PATH KCFLAGS="$KCFLAGS" CONFIG_SAMSUNG_PRODUCT_SHIP=y Image.gz-dtb dtbs
+      - name: Build and Sign DTBO (S10 Lite Specific)
         run: |
-          cd kernel
-          wget https://raw.githubusercontent.com/lineage-mirror/scripts/master/mkdtboimg.py -O mkdtboimg.py
-          DTBO_FILES=$(find out/arch/arm64/boot/dts/ -name "*.dtbo")
-          python3 mkdtboimg.py create ../dtbo.img --page_size=4096 $DTBO_FILES
-
+          wget https://raw.githubusercontent.com/K-Blaaaack/mkdtboimg/master/mkdtboimg.py -O mkdtboimg.py
+          DTBO_FILES=$(find kernel/out/arch/arm64/boot/dts/ -name "*.dtbo")
+          # Forțăm versiunea 1 și paginarea de 4096 (standard Samsung SM8150)
+          python3 mkdtboimg.py create dtbo.img --version=1 --page_size=4096 $DTBO_FILES
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-S10Lite-Survivor-v12
+          name: Kernel-S10Lite-Survivor
           path: |
             kernel/out/arch/arm64/boot/Image.gz-dtb
             dtbo.img
