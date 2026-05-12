@@ -41,10 +41,6 @@ jobs:
           sed -i 's/CONFIG_RKP_KDP=y/CONFIG_RKP_KDP=n/g' arch/arm64/configs/r5q_eur_open_defconfig || true
           sed -i 's/CONFIG_RKP_NS_PROT=y/CONFIG_RKP_NS_PROT=n/g' arch/arm64/configs/r5q_eur_open_defconfig || true
           sed -i 's/select RKP_KDP//g' arch/arm64/Kconfig || true
-          # 2. FIX: Cod C (CLK, Camera, PTEP)
-          sed -i 's/msm_bus_scale_client_update_request(clk_debugfs_bus_cl_id/\/\/ &/' drivers/clk/clk.c || true
-          sed -i 's/clk_debugfs_bus_cl_id =/\/\/ &/' drivers/clk/clk.c || true
-          sed -i 's/if (!clk_debugfs_bus_cl_id)/\/\/ &/' drivers/clk/clk.c || true
           sed -i 's/.*ois_gain_rear3_result.*/\/\/ &/' drivers/media/platform/msm/camera/cam_sensor_module/cam_eeprom/cam_eeprom_core.c || true
           sed -i 's/.*ois_sr_rear3_result.*/\/\/ &/' drivers/media/platform/msm/camera/cam_sensor_module/cam_eeprom/cam_eeprom_core.c || true
           sed -i 's/ptep = huge_pmd_share/pte = huge_pmd_share/g' arch/arm64/mm/hugetlbpage.c || true
