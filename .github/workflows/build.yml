@@ -20,34 +20,29 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y bc build-essential flex bison libssl-dev libelf-dev clang lld llvm libncurses-dev
         
-        # Descărcăm manual pachetele libtinfo5 și libncurses5 (pentru arhitectura x86_64 a runner-ului)
-        curl -o libtinfo5.deb http://mirrors.kernel.org/ubuntu/pool/universe/n/ncurses/libtinfo5_6.3-2ubuntu0.1_amd64.deb
-        curl -o libncurses5.deb http://mirrors.kernel.org/ubuntu/pool/universe/n/ncurses/libncurses5_6.3-2ubuntu0.1_amd64.deb
-        
-        # Instalăm pachetele descărcate
-        sudo dpkg -i libtinfo5.deb
-        sudo dpkg -i libncurses5.deb
+        # Descarcă și instalează manual librăriile legacy necesare pentru Clang 10
+        wget http://security.ubuntu.com/ubuntu/pool/universe/n/ncurses/libtinfo5_6.3-2ubuntu0.1_amd64.deb
+        wget http://security.ubuntu.com/ubuntu/pool/universe/n/ncurses/libncurses5_6.3-2ubuntu0.1_amd64.deb
+        sudo apt install -y ./libtinfo5_6.3-2ubuntu0.1_amd64.deb ./libncurses5_6.3-2ubuntu0.1_amd64.deb
 
     - name: Download Me2 Toolchain
       run: |
         git clone https://github.com/mk7x7/Me2.git toolchain
         
-        # Căile din repo-ul indicat de tine
-        GCC_64_BIN=$(pwd)/toolchain/toolchain/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/bin
-        LLVM_BIN=$(pwd)/toolchain/toolchain/llvm-arm-toolchain-ship/10.0/bin
-        
-        echo "GCC_64_BIN=$GCC_64_BIN" >> $GITHUB_ENV
-        echo "LLVM_BIN=$LLVM_BIN" >> $GITHUB_ENV
+        # Setează căile conform structurii Me2
+        echo "GCC_64_BIN=$(pwd)/toolchain/toolchain/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/bin" >> $GITHUB_ENV
+        echo "LLVM_BIN=$(pwd)/toolchain/toolchain/llvm-arm-toolchain-ship/10.0/bin" >> $GITHUB_ENV
 
     - name: Build Kernel
       run: |
         cd kernel
         
+        # Exportăm căile pentru compilator
         export PATH="${{ env.LLVM_BIN }}:${{ env.GCC_64_BIN }}:$PATH"
         export ARCH=arm64
         export SUBARCH=arm64
         
-        # Variabilele de mediu hibride
+        # Definirea mediului de compilare
         export KERNEL_MAKE_ENV="DTC_EXT=$(pwd)/scripts/dtc/dtc \
                                 CONFIG_BUILD_ARM64_DT_OVERLAY=y \
                                 CONFIG_WLAN_VARIANT=samsung \
@@ -62,10 +57,10 @@ jobs:
                                 OBJDUMP=${{ env.LLVM_BIN }}/llvm-objdump \
                                 STRIP=${{ env.LLVM_BIN }}/llvm-strip"
 
-        # 1. Configurare
+        # 1. Configurare Kernel
         cat arch/arm64/configs/sm8150_sec_defconfig arch/arm64/configs/sm8150_sec_r5q_eur_open.config > arch/arm64/configs/combined_defconfig
         
-        # Forțăm dezactivarea stack protector
+        # Dezactivăm manual Stack Protector pentru a evita erorile de compiler-check
         echo "CONFIG_CC_STACKPROTECTOR_NONE=y" >> arch/arm64/configs/combined_defconfig
         echo "# CONFIG_CC_STACKPROTECTOR_STRONG is not set" >> arch/arm64/configs/combined_defconfig
 
@@ -73,6 +68,7 @@ jobs:
         make O=out $KERNEL_MAKE_ENV olddefconfig
 
         # 2. Compilare
+        # -w dezactivează avertismentele care pot opri build-ul
         make -j$(nproc --all) O=out $KERNEL_MAKE_ENV KCFLAGS="-w"
         
     - name: Upload Artifact
