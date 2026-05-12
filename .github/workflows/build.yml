@@ -20,48 +20,51 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y bc build-essential flex bison libssl-dev libelf-dev clang lld llvm libncurses-dev wget git
 
-    - name: Download Modern Toolchain (Clang 13 + GCC 9.3)
+    - name: Download AOSP Clang
       run: |
-        # Folosim Proton Clang, un toolchain foarte popular pentru kernel-uri Android
-        git clone --depth=1 https://github.com/kdrag0n/proton-clang.git toolchain
-        echo "TC_BIN=$(pwd)/toolchain/bin" >> $GITHUB_ENV
+        # Descarcă Clang r383902 (Android 11) - stabil și compatibil cu SM8150
+        mkdir -p clang
+        wget https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/master/clang-r383902.tar.gz
+        tar -xf clang-r383902.tar.gz -C clang
+        echo "CLANG_BIN=$(pwd)/clang/bin" >> $GITHUB_ENV
+
+    - name: Download AOSP GCC (Binutils)
+      run: |
+        # Avem nevoie de binutils pentru asamblare (aarch64 4.9 pentru compatibilitate arm64)
+        git clone --depth=1 https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 gcc-arm64
+        git clone --depth=1 https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9 gcc-arm32
+        echo "GCC64_BIN=$(pwd)/gcc-arm64/bin" >> $GITHUB_ENV
+        echo "GCC32_BIN=$(pwd)/gcc-arm32/bin" >> $GITHUB_ENV
 
     - name: Build Kernel
       run: |
         cd kernel
         
-        # Setup PATH către noul toolchain
-        export PATH="${{ env.TC_BIN }}:$PATH"
+        # Setează PATH-ul corect (Clang primul, apoi GCC)
+        export PATH="${{ env.CLANG_BIN }}:${{ env.GCC64_BIN }}:${{ env.GCC32_BIN }}:$PATH"
         
         export ARCH=arm64
         export SUBARCH=arm64
-        export CROSS_COMPILE=aarch64-linux-gnu-
-        export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
-        export CC=clang
-        export AR=llvm-ar
-        export NM=llvm-nm
-        export OBJCOPY=llvm-objcopy
-        export OBJDUMP=llvm-objdump
-        export STRIP=llvm-strip
         
-        # Variabile specifice Samsung/Qualcomm
-        export KERNEL_MAKE_ENV="DTC_EXT=$(pwd)/scripts/dtc/dtc \
+        # Variabile de build pentru AOSP Toolchain
+        export KERNEL_MAKE_ENV="O=out \
+                                DTC_EXT=$(pwd)/scripts/dtc/dtc \
                                 CONFIG_BUILD_ARM64_DT_OVERLAY=y \
-                                CLANG_TRIPLE=aarch64-linux-gnu-"
+                                CC=clang \
+                                HOSTCC=gcc \
+                                CROSS_COMPILE=aarch64-linux-android- \
+                                CROSS_COMPILE_ARM32=arm-linux-androideabi- \
+                                CLANG_TRIPLE=aarch64-linux-gnu- \
+                                LD=ld.lld"
 
-        # 1. Configurare (Metoda CAT)
+        # 2. Configurare
         cat arch/arm64/configs/sm8150_sec_defconfig arch/arm64/configs/sm8150_sec_r5q_eur_open.config > arch/arm64/configs/combined_defconfig
-        
+        make $KERNEL_MAKE_ENV combined_defconfig
+        make $KERNEL_MAKE_ENV olddefconfig
 
-        make O=out $KERNEL_MAKE_ENV combined_defconfig
-        
-        # Aplicăm setările automate (acest toolchain va trece de verificarea 5.1)
-        make O=out $KERNEL_MAKE_ENV olddefconfig
-
-        # 2. Build
-        # Proton Clang suportă -ftrivial-auto-var-init=zero, deci nu mai e nevoie de sed pe Makefile
-        make -j$(nproc --all) O=out $KERNEL_MAKE_ENV KCFLAGS="-w"
-
+        # 3. Compilare
+        # Folosim HOSTCC=gcc din sistem pentru a evita eroarea de libc pe care ai avut-o
+        make -j$(nproc --all) $KERNEL_MAKE_ENV KCFLAGS="-w"
     - name: Upload Artifact
       uses: actions/upload-artifact@v4
       with:
