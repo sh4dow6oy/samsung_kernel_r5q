@@ -21,6 +21,27 @@ jobs:
       - name: Download Proton Clang
         run: git clone --depth=1 https://github.com/kdrag0n/proton-clang.git llvm-proton
 
+      - name: Fix clk.c redefinition and syntax error
+        run: |
+          # Mergem la fișierul cu probleme
+          FILE="drivers/clk/clk.c"
+          
+          # Identificăm ultima apariție a listei "all_lists" (cea care cauzează redefinirea)
+          # și ștergem tot blocul (de obicei are 4 linii: definitia, 2 itemi, inchiderea)
+          
+          # Căutăm linia de start a celei de-a doua definiții
+          TARGET_LINE=$(grep -n "static struct hlist_head \*all_lists" $FILE | tail -n 1 | cut -d: -f1)
+          
+          if [ ! -z "$TARGET_LINE" ]; then
+            echo "S-a găsit redefinirea la linia $TARGET_LINE. Se aplică patch-ul..."
+            # Ștergem 4 linii începând cu acea linie (definiția completă a array-ului)
+            sed -i "${TARGET_LINE},$(($TARGET_LINE+3))d" $FILE
+          else
+            echo "Redefinirea nu a fost găsită prin grep, verificăm dacă a rămas doar o acoladă orfană la 2761..."
+            # Dacă grep-ul nu mai găsește definiția, dar eroarea zice că la 2761 e o acoladă în plus:
+            sed -i '2761d' $FILE
+          fi
+
       - name: Build Kernel
         run: |
           export ARCH=arm64
@@ -40,6 +61,7 @@ jobs:
           sed -i 's/.*ois_gain_rear3_result.*/\/\/ &/' drivers/media/platform/msm/camera/cam_sensor_module/cam_eeprom/cam_eeprom_core.c || true
           sed -i 's/.*ois_sr_rear3_result.*/\/\/ &/' drivers/media/platform/msm/camera/cam_sensor_module/cam_eeprom/cam_eeprom_core.c || true
           sed -i 's/ptep = huge_pmd_share/pte = huge_pmd_share/g' arch/arm64/mm/hugetlbpage.c || true
+          
           # --- COMPILARE ---
           MAKE_ARGS="ARCH=arm64 \
             O=out \
