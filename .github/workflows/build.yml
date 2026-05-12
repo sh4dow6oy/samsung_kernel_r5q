@@ -1,4 +1,4 @@
-name: Build Samsung SM8150 Kernel (Auriana)
+name: Build Samsung SM8150 Kernel
 
 on:
   workflow_dispatch:
@@ -23,38 +23,47 @@ jobs:
     - name: Download Me2 Toolchain
       run: |
         git clone https://github.com/mk7x7/Me2.git toolchain
-        # Setăm calea către binarele toolchain-ului
-        echo "TOOLCHAIN_PATH=$(pwd)/toolchain/toolchain/bin" >> $GITHUB_ENV
+        echo "TC_BIN=$(pwd)/toolchain/toolchain/bin" >> $GITHUB_ENV
 
     - name: Build Kernel
       run: |
         cd kernel
-        
-        # Definire variabile de mediu
         export ARCH=arm64
         export SUBARCH=arm64
-        export CROSS_COMPILE=${{ env.TOOLCHAIN_PATH }}/aarch64-linux-android-
+        export PATH="${{ env.TC_BIN }}:$PATH"
         
-        # Definire KERNEL_MAKE_ENV conform cerinței tale
-        # DTC_EXT indică script-ului de build să folosească binarul dtc din sursa kernelului
-        export KERNEL_MAKE_ENV="DTC_EXT=$(pwd)/scripts/dtc/dtc CONFIG_BUILD_ARM64_DT_OVERLAY=y"
+        # Variabilele tale solicitate
+        CLANG_TRIPLE=aarch64-linux-gnu-
+        CROSS_COMPILE=${{ env.TC_BIN }}/aarch64-linux-android-
+        CROSS_COMPILE_ARM32=${{ env.TC_BIN }}/arm-linux-androideabi-
         
-        # 1. Configurare (Merge Defconfigs)
-        make O=out sm8150_sec_defconfig
+        export KERNEL_MAKE_ENV="DTC_EXT=$(pwd)/scripts/dtc/dtc \
+                                CONFIG_BUILD_ARM64_DT_OVERLAY=y \
+                                CC=clang \
+                                CLANG_TRIPLE=$CLANG_TRIPLE \
+                                CROSS_COMPILE=$CROSS_COMPILE \
+                                CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32"
+
+        # Generare config
+        make O=out $KERNEL_MAKE_ENV sm8150_sec_defconfig
         scripts/kconfig/merge_config.sh -O out out/.config arch/arm64/configs/sm8150_sec_r5q_eur_open.config
-        
-        # Re-aplicăm variabilele pentru a genera .config-ul final
         make O=out $KERNEL_MAKE_ENV olddefconfig
         
-        # 2. Compilare
-        # Transmitem KERNEL_MAKE_ENV direct în comanda make
-        make -j$(nproc --all) O=out $KERNEL_MAKE_ENV
-       
-        - name: Upload Artifact
-        uses: actions/upload-artifact@v4
-        with:
-        name: Kernel-SM8150-r5q
+        # Compilare
+        make -j$(nproc --all) O=out $KERNEL_MAKE_ENV || exit 1
+
+    - name: Debug Output (Check if files exist)
+      run: |
+        echo "Verificăm prezența fișierelor în kernel/out/arch/arm64/boot/:"
+        ls -R kernel/out/arch/arm64/boot/ || echo "Fișierele nu au fost găsite!"
+
+    - name: Upload Artifacts
+      if: success()
+      uses: upload-artifact@v4
+      with:
+        name: Kernel_SM8150_Final
         path: |
-          kernel/out/arch/arm64/boot/Image.gz-dtb
-          kernel/out/arch/arm64/boot/dtbo.img
+          kernel/out/arch/arm64/boot/Image*
+          kernel/out/arch/arm64/boot/*.img
           kernel/out/.config
+        if-no-files-found: error
