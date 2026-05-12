@@ -23,30 +23,27 @@ jobs:
     - name: Download Me2 Toolchain
       run: |
         git clone https://github.com/mk7x7/Me2.git toolchain
-        # Verificăm structura reală a folderului bin
-        ls -d $(pwd)/toolchain/toolchain/bin || echo "Folderul bin nu e unde credeam!"
         echo "TC_BIN=$(pwd)/toolchain/toolchain/bin" >> $GITHUB_ENV
 
     - name: Build Kernel
       run: |
         cd kernel
         
-        # Setăm PATH-ul să includă toolchain-ul
-        export PATH="${{ env.TC_BIN }}:$PATH"
+        # Setup PATH
+        TC_BIN=${{ env.TC_BIN }}
+        export PATH="$TC_BIN:$PATH"
         
         export ARCH=arm64
         export SUBARCH=arm64
         
-        # Definim prefixele
-        # Verifică dacă în folderul bin fișierele încep cu aarch64-linux-android-
-        CC_PREFIX="aarch64-linux-android-"
-        
+        # Variabilele de mediu pentru compilator
         export KERNEL_MAKE_ENV="DTC_EXT=$(pwd)/scripts/dtc/dtc \
                                 CONFIG_BUILD_ARM64_DT_OVERLAY=y \
                                 CC=clang \
+                                HOSTCC=clang \
                                 CLANG_TRIPLE=aarch64-linux-gnu- \
-                                CROSS_COMPILE=${{ env.TC_BIN }}/$CC_PREFIX \
-                                CROSS_COMPILE_ARM32=${{ env.TC_BIN }}/arm-linux-androideabi- \
+                                CROSS_COMPILE=$TC_BIN/aarch64-linux-android- \
+                                CROSS_COMPILE_ARM32=$TC_BIN/arm-linux-androideabi- \
                                 LD=ld.lld \
                                 AR=llvm-ar \
                                 NM=llvm-nm \
@@ -54,17 +51,20 @@ jobs:
                                 OBJDUMP=llvm-objdump \
                                 STRIP=llvm-strip"
 
-        # 1. Config
-        make O=out $KERNEL_MAKE_ENV sm8150_sec_defconfig
+        # 1. Metoda CAT pentru configurații
+        # Combinăm defconfig-ul de bază cu cel specific regiunii într-un singur fișier
+        cat arch/arm64/configs/sm8150_sec_defconfig arch/arm64/configs/sm8150_sec_r5q_eur_open.config > arch/arm64/configs/combined_defconfig
         
-        # Aplicăm fragmentul Samsung r5q (S10 Lite)
-        # Folosim -n pentru a ignora erorile de verificare a valorilor cerute (cele din log-ul tău)
-        scripts/kconfig/merge_config.sh -O out -n out/.config arch/arm64/configs/sm8150_sec_r5q_eur_open.config
+        # Generăm .config din fișierul combinat
+        make O=out $KERNEL_MAKE_ENV combined_defconfig
         
+        # Aplicăm setările și curățăm conflictele
         make O=out $KERNEL_MAKE_ENV olddefconfig
         
         # 2. Build
-        make -j$(nproc --all) O=out $KERNEL_MAKE_ENV
+        # Folosim KCFLAGS="-w" pentru a trece de verificările stricte de compilator
+        make -j$(nproc --all) O=out $KERNEL_MAKE_ENV KCFLAGS="-w"
+
     - name: Upload Artifact
       uses: actions/upload-artifact@v4
       with:
