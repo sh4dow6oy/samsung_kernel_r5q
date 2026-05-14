@@ -43,13 +43,19 @@ jobs:
           
           cd s
           
-          # 1. FIX KERNELSU & STACK PROTECTOR
+          # --- 1. ELIMINARE FLAG-URI POLLY INVALIDE (Fix eroarea ta) ---
+          # Căutăm și ștergem argumentul care blochează Clang
+          find . -type f -name "Makefile*" -exec sed -i 's/-polly-loopfusion-greedy=1//g' {} +
+          find . -type f -name "*.mk" -exec sed -i 's/-polly-loopfusion-greedy=1//g' {} +
+          # Înlocuim cu varianta modernă dacă este necesar, sau pur și simplu ștergem
+          find . -type f -exec sed -i 's/-mllvm -polly-loopfusion-greedy=1//g' {} +
+
+          # --- 2. FIX KERNELSU & STACK PROTECTOR ---
           sed -i '/kernelsu/d' drivers/android/Kconfig || true
           
-          # 2. CONFIGURARE INITIALA
+          # --- 3. CONFIGURARE ---
           make ARCH=arm64 O=out r5q_defconfig
           
-          # 3. DEZACTIVARE STACK PROTECTOR SI ALTE FIX-URI (Lineage-20 compatibility)
           ./scripts/config --file out/.config \
             -d CONFIG_CC_STACKPROTECTOR_STRONG \
             -e CONFIG_CC_STACKPROTECTOR_NONE \
@@ -62,8 +68,7 @@ jobs:
 
           make ARCH=arm64 O=out olddefconfig
 
-          # 4. COMPILARE CU FLAG-URI DE COMPATIBILITATE
-          # Am adăugat 'HOSTCC=clang' și 'HOSTCXX=clang++' pentru a evita conflictele de mediu
+          # --- 4. COMPILARE ---
           MAKE_ARGS="ARCH=arm64 \
             O=out \
             CC=clang \
@@ -82,10 +87,10 @@ jobs:
             LLVM_IAS=0 \
             PYTHON=python"
 
-          # Adăugăm -fno-stack-protector în KCFLAGS pentru a liniști linker-ul
+          # Adăugăm -Wno-unused-command-line-argument pentru a ignora alte warning-uri de tip Polly
           make -j$(nproc --all) $MAKE_ARGS \
             LDFLAGS="-z notext" \
-            KCFLAGS="-fcommon -fno-pic -fno-stack-protector -Wno-error" \
+            KCFLAGS="-fcommon -fno-pic -fno-stack-protector -Wno-error -Wno-unused-command-line-argument" \
             Image.gz dtbs
 
       - name: Create and Sign Flashable Package
