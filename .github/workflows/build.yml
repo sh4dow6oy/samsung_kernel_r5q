@@ -1,4 +1,4 @@
-name: Build SM8150 - Roynas Lineage-20 Merge
+name: Build SM8150 - Roynas Lineage-20 Final
 
 on:
   workflow_dispatch:
@@ -24,8 +24,7 @@ jobs:
           git config user.name "Builder"
           git remote add lineage https://github.com/LineageOS/android_kernel_qcom_sm8150.git
           git fetch lineage lineage-20
-          # Merge folosind strategia 'ours' pentru a păstra driverele Samsung critice
-          git merge lineage/lineage-20 -s recursive -X ours --no-edit || echo "Merge realizat cu conflicte rezolvate automat"
+          git merge lineage/lineage-20 -s recursive -X ours --no-edit || echo "Merge partial cu conflicte rezolvate"
 
       - name: Download Proton Clang
         run: git clone --depth=1 https://github.com/kdrag0n/proton-clang.git llvm-proton
@@ -36,24 +35,32 @@ jobs:
           TOOLCHAIN_PATH="${{ github.workspace }}/llvm-proton/bin"
           export PATH="$TOOLCHAIN_PATH:$PATH"
           
-          # Link-uri vitale
+          # Link-uri vitale pentru scripturile de securitate Samsung
           ln -sf $TOOLCHAIN_PATH/llvm-objdump $TOOLCHAIN_PATH/aarch64-linux-gnu-objdump
           ln -sf $TOOLCHAIN_PATH/llvm-readelf $TOOLCHAIN_PATH/aarch64-linux-gnu-readelf
           ln -sf $TOOLCHAIN_PATH/llvm-nm $TOOLCHAIN_PATH/aarch64-linux-gnu-nm
           
           cd s
           
-          # --- 1. ELIMINARE FLAG-URI POLLY INVALIDE (Fix eroarea ta) ---
-          # Căutăm și ștergem argumentul care blochează Clang
-          find . -type f -name "Makefile*" -exec sed -i 's/-polly-loopfusion-greedy=1//g' {} +
-          find . -type f -name "*.mk" -exec sed -i 's/-polly-loopfusion-greedy=1//g' {} +
-          # Înlocuim cu varianta modernă dacă este necesar, sau pur și simplu ștergem
-          find . -type f -exec sed -i 's/-mllvm -polly-loopfusion-greedy=1//g' {} +
-
-          # --- 2. FIX KERNELSU & STACK PROTECTOR ---
-          sed -i '/kernelsu/d' drivers/android/Kconfig || true
+          # --- 1. NUCLEAR CLEANUP (Prevenim Polly Errors) ---
+          find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
+          find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm//g' {} +
+          find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-polly[^ ]*//g' {} +
           
-          # --- 3. CONFIGURARE ---
+          # --- 2. VDSO FIX (Anti-static link errors) ---
+          if [ -f arch/arm64/kernel/vdso/Makefile ]; then
+            sed -i 's/-static//g' arch/arm64/kernel/vdso/Makefile
+            sed -i 's/$(LDFLAGS)/$(filter-out -static,$(LDFLAGS))/g' arch/arm64/kernel/vdso/Makefile
+          fi
+
+          # --- 3. KERNELSU & SAMSUNG CLEANUP ---
+          sed -i '/kernelsu/d' drivers/android/Kconfig || true
+          sed -i '/kernelsu/d' drivers/android/Makefile || true
+          rm -rf drivers/kernelsu || true
+          # Dezactivăm gcc-wrapper-ul Samsung care cauzează bug-uri de mediu
+          sed -i 's/ifneq ($(wildcard $(srctree)\/scripts\/gcc-wrapper.py),)/ifeq (0,1)/g' Makefile
+
+          # --- 4. CONFIGURARE ---
           make ARCH=arm64 O=out r5q_defconfig
           
           ./scripts/config --file out/.config \
@@ -68,28 +75,11 @@ jobs:
 
           make ARCH=arm64 O=out olddefconfig
 
-          # --- 4. COMPILARE ---
-          MAKE_ARGS="ARCH=arm64 \
-            O=out \
-            CC=clang \
-            LD=ld.lld \
-            AR=llvm-ar \
-            NM=llvm-nm \
-            OBJCOPY=llvm-objcopy \
-            OBJDUMP=llvm-objdump \
-            STRIP=llvm-strip \
-            READELF=aarch64-linux-gnu-readelf \
-            HOSTCC=clang \
-            HOSTCXX=clang++ \
-            CROSS_COMPILE=aarch64-linux-gnu- \
-            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-            LLVM=1 \
-            LLVM_IAS=0 \
-            PYTHON=python"
+          # --- 5. COMPILARE ---
+          MAKE_ARGS="ARCH=arm64 O=out CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip READELF=aarch64-linux-gnu-readelf HOSTCC=clang HOSTCXX=clang++ CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=0 PYTHON=python"
 
-          # Adăugăm -Wno-unused-command-line-argument pentru a ignora alte warning-uri de tip Polly
           make -j$(nproc --all) $MAKE_ARGS \
-            LDFLAGS="-z notext" \
+            LDFLAGS="-z notext --thinlto-cache-dir=../lto-cache" \
             KCFLAGS="-fcommon -fno-pic -fno-stack-protector -Wno-error -Wno-unused-command-line-argument" \
             Image.gz dtbs
 
@@ -101,11 +91,11 @@ jobs:
           DTBO_FILES=$(find s/out/arch/arm64/boot/dts/ -name "*.dtbo")
           $MKDTIMG create dtbo-unsigned.img --version=2 --page_size=4096 $DTBO_FILES
           
-          # Semnare AVB pentru a trece de bootloader
+          # AVB Sign (Fix Dtbo_Version = 0)
           wget https://raw.githubusercontent.com/tiann/avbtool/master/avbtool.py
           python3 avbtool.py add_hash_footer --image dtbo-unsigned.img --partition_size 8388608 --partition_name dtbo --output dtbo.img
 
-          # Pregătire AnyKernel3
+          # AnyKernel3 Setup
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git AnyKernel
           cp s/out/arch/arm64/boot/Image.gz AnyKernel/Image.gz
           cp dtbo.img AnyKernel/dtbo.img
@@ -115,10 +105,10 @@ jobs:
           sed -i 's/header_version=0/header_version=2/g' anykernel.sh
           printf '\nflash_dtbo;\n' >> anykernel.sh
           
-          zip -r9 ../Kernel-Auriana-Lineage20.zip *
+          zip -r9 ../Kernel-Auriana-Final.zip *
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-Lineage20
-          path: Kernel-Auriana-Lineage20.zip
+          name: Kernel-Merged-Final
+          path: Kernel-Auriana-Final.zip
