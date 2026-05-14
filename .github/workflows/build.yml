@@ -36,42 +36,56 @@ jobs:
           TOOLCHAIN_PATH="${{ github.workspace }}/llvm-proton/bin"
           export PATH="$TOOLCHAIN_PATH:$PATH"
           
-          # Link-uri simbolice pentru uneltele LLVM (necesare pentru scripturile Samsung)
+          # Link-uri vitale
           ln -sf $TOOLCHAIN_PATH/llvm-objdump $TOOLCHAIN_PATH/aarch64-linux-gnu-objdump
           ln -sf $TOOLCHAIN_PATH/llvm-readelf $TOOLCHAIN_PATH/aarch64-linux-gnu-readelf
           ln -sf $TOOLCHAIN_PATH/llvm-nm $TOOLCHAIN_PATH/aarch64-linux-gnu-nm
           
           cd s
           
-          # --- 1. FIX KERNELSU (Dezactivare referință lipsă) ---
+          # 1. FIX KERNELSU & STACK PROTECTOR
           sed -i '/kernelsu/d' drivers/android/Kconfig || true
           
-          # --- 2. CONFIGURARE ---
-          # Folosim r5q_defconfig ca bază
+          # 2. CONFIGURARE INITIALA
           make ARCH=arm64 O=out r5q_defconfig
           
-          # Dezactivăm securitatea Samsung (RKP/CFP) și activăm LTO pentru Lineage-20
+          # 3. DEZACTIVARE STACK PROTECTOR SI ALTE FIX-URI (Lineage-20 compatibility)
           ./scripts/config --file out/.config \
+            -d CONFIG_CC_STACKPROTECTOR_STRONG \
+            -e CONFIG_CC_STACKPROTECTOR_NONE \
             -e CONFIG_LTO_CLANG \
             -e CONFIG_THINLTO \
-            -e CONFIG_RKP_KDP \
-            -e CONFIG_RKP_NS_PROT \
-            -d CONFIG_RKP_CFP \
             -d CONFIG_MODVERSIONS \
+            -d CONFIG_RKP_CFP \
             -d CONFIG_SECURITY_DEFEX \
-            -d CONFIG_SAMSUNG_PRODUCT_SHIP \
-            -d CONFIG_MSM_WATCHDOG_VTD \
             -d CONFIG_WERROR
 
           make ARCH=arm64 O=out olddefconfig
 
-          # --- 3. COMPILARE ---
-          MAKE_ARGS="ARCH=arm64 O=out CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip READELF=aarch64-linux-gnu-readelf CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=0 PYTHON=python"
+          # 4. COMPILARE CU FLAG-URI DE COMPATIBILITATE
+          # Am adăugat 'HOSTCC=clang' și 'HOSTCXX=clang++' pentru a evita conflictele de mediu
+          MAKE_ARGS="ARCH=arm64 \
+            O=out \
+            CC=clang \
+            LD=ld.lld \
+            AR=llvm-ar \
+            NM=llvm-nm \
+            OBJCOPY=llvm-objcopy \
+            OBJDUMP=llvm-objdump \
+            STRIP=llvm-strip \
+            READELF=aarch64-linux-gnu-readelf \
+            HOSTCC=clang \
+            HOSTCXX=clang++ \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            LLVM=1 \
+            LLVM_IAS=0 \
+            PYTHON=python"
 
-          # Compilăm Image.gz și dtbs
+          # Adăugăm -fno-stack-protector în KCFLAGS pentru a liniști linker-ul
           make -j$(nproc --all) $MAKE_ARGS \
-            LDFLAGS="-z notext --thinlto-cache-dir=../lto-cache" \
-            KCFLAGS="-fcommon -fno-pic -Wno-error -Wno-stringop-truncation" \
+            LDFLAGS="-z notext" \
+            KCFLAGS="-fcommon -fno-pic -fno-stack-protector -Wno-error" \
             Image.gz dtbs
 
       - name: Create and Sign Flashable Package
