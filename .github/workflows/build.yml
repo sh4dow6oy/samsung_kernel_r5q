@@ -33,21 +33,23 @@ jobs:
         git clone --depth=1 https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9 gcc32
         echo "GCC64_PREFIX=$(pwd)/gcc64/bin/aarch64-linux-android-" >> $GITHUB_ENV
         echo "GCC32_PREFIX=$(pwd)/gcc32/bin/arm-linux-androideabi-" >> $GITHUB_ENV
-        echo "TOOLCHAIN_PATH=$(pwd)/gcc64/bin:$(pwd)/gcc32/bin" >> $GITHUB_ENV
 
     - name: Build Kernel
       run: |
         cd kernel
         
-        # Setup PATH - Adăugăm și folderul GCC în PATH pentru ca Clang să găsească 'as'
-        export PATH="${{ env.CLANG_PATH }}:${{ env.TOOLCHAIN_PATH }}:$PATH"
+        # Extragem calea către binarele GCC pentru AS
+        GCC_AS="${{ env.GCC64_PREFIX }}as"
+        
+        # Setup PATH
+        export PATH="${{ env.CLANG_PATH }}:$(dirname ${{ env.GCC64_PREFIX }}):$PATH"
         
         # --- FIXURI SURSĂ ---
         # 1. Bypass Clang Safety Switch
         CLANG_SAFE_FLAG="-enable-trivial-auto-var-init-zero-knowing-it-will-be-removed-from-clang"
         sed -i "s/-ftrivial-auto-var-init=zero/-ftrivial-auto-var-init=zero $CLANG_SAFE_FLAG/g" Makefile
         
-        # 2. Fix WLAN Variant (Qualcomm)
+        # 2. Fix WLAN Variant
         sed -i 's/$(CONFIG_WLAN_VARIANT)_defconfig/samsung_defconfig/g' drivers/net/wireless/qualcomm/wcn39xx/qcacld-3.0/Kbuild || true
         
         # 3. Bypass GCC Version Check
@@ -58,21 +60,21 @@ jobs:
         echo "CONFIG_CC_STACKPROTECTOR_NONE=y" >> arch/arm64/configs/combined_defconfig
         echo "# CONFIG_CC_STACKPROTECTOR_STRONG is not set" >> arch/arm64/configs/combined_defconfig
 
-        # Parametrii de Build
-        # CRITICAL: -fno-integrated-as forțează Clang să folosească asamblorul extern (GCC gas)
+        # Argumente de build
+        # Am adăugat AS= pentru a forța asamblorul de ARM64
         MAKE_ARGS="O=out ARCH=arm64 \
              CC=clang HOSTCC=gcc \
-             CLANG_TRIPLE=aarch64-linux-gnu- \
+             AS=$GCC_AS \
              CROSS_COMPILE=${{ env.GCC64_PREFIX }} \
              CROSS_COMPILE_ARM32=${{ env.GCC32_PREFIX }} \
-             LD=ld.lld DTC_EXT=$(pwd)/scripts/dtc/dtc \
-             KCFLAGS=-fno-integrated-as"
+             CLANG_TRIPLE=aarch64-linux-gnu- \
+             LD=ld.lld DTC_EXT=$(pwd)/scripts/dtc/dtc"
 
         make $MAKE_ARGS combined_defconfig
         make $MAKE_ARGS olddefconfig
 
-        # Compilare finală
-        make -j$(nproc --all) $MAKE_ARGS
+        # Compilare finală - adăugăm flag-ul de ignorare a asamblorului integrat
+        make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-w -fno-stack-protector -fno-integrated-as"
         
     - name: Upload Artifact
       uses: actions/upload-artifact@v4
