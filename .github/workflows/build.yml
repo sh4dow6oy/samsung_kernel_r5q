@@ -99,4 +99,7 @@ jobs:
           zip -r9 ../Kernel-Auriana-Lineage20.zip *
 
       - name: Upload Artifact
-        uses
+        uses: actions/upload-artifact@v4
+        with:
+          name: Kernel-Lineage20
+          path: Kernel-Auriana-Lineage20.zip
