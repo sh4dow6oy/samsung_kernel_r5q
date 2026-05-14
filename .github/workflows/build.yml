@@ -22,9 +22,9 @@ jobs:
           git config user.email "build@auriana.local"
           git config user.name "Builder"
           git remote add lineage https://github.com/LineageOS/android_kernel_qcom_sm8150.git
-          git fetch lineage lineage-18.1 # Sau branch-ul dorit (18.1/19.1)
+          git fetch lineage lineage-20 # Sau branch-ul dorit (18.1/19.1)
           # Încercăm merge-ul. Dacă sunt conflicte, le rezolvăm prin "ours" (păstrăm Roynas pentru fișierele Samsung)
-          git merge lineage/lineage-18.1 -s recursive -X ours --no-edit || echo "Conflicte detectate, dar continuăm cu baza Roynas"
+          git merge lineage/lineage-20 -s recursive -X ours --no-edit || echo "Conflicte detectate, dar continuăm cu baza Roynas"
 
       - name: Download Proton Clang
         run: git clone --depth=1 https://github.com/kdrag0n/proton-clang.git llvm-proton
