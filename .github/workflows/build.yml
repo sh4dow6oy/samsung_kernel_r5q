@@ -39,11 +39,11 @@ jobs:
       run: |
         cd kernel
         
-        # Setup PATH
+        # Setup PATH - Adăugăm și folderul GCC în PATH pentru ca Clang să găsească 'as'
         export PATH="${{ env.CLANG_PATH }}:${{ env.TOOLCHAIN_PATH }}:$PATH"
         
         # --- FIXURI SURSĂ ---
-        # 1. Bypass Clang Safety Switch (modificăm direct Makefile-ul ca să nu mai pasăm flag-ul lung prin terminal)
+        # 1. Bypass Clang Safety Switch
         CLANG_SAFE_FLAG="-enable-trivial-auto-var-init-zero-knowing-it-will-be-removed-from-clang"
         sed -i "s/-ftrivial-auto-var-init=zero/-ftrivial-auto-var-init=zero $CLANG_SAFE_FLAG/g" Makefile
         
@@ -58,33 +58,21 @@ jobs:
         echo "CONFIG_CC_STACKPROTECTOR_NONE=y" >> arch/arm64/configs/combined_defconfig
         echo "# CONFIG_CC_STACKPROTECTOR_STRONG is not set" >> arch/arm64/configs/combined_defconfig
 
-        # Definim argumentele fără a folosi variabile de shell care strică parsing-ul
-        # Rulăm direct comenzile pentru a fi siguri de interpretare
-        
-        make O=out ARCH=arm64 \
+        # Parametrii de Build
+        # CRITICAL: -fno-integrated-as forțează Clang să folosească asamblorul extern (GCC gas)
+        MAKE_ARGS="O=out ARCH=arm64 \
              CC=clang HOSTCC=gcc \
              CLANG_TRIPLE=aarch64-linux-gnu- \
              CROSS_COMPILE=${{ env.GCC64_PREFIX }} \
              CROSS_COMPILE_ARM32=${{ env.GCC32_PREFIX }} \
              LD=ld.lld DTC_EXT=$(pwd)/scripts/dtc/dtc \
-             combined_defconfig
+             KCFLAGS=-fno-integrated-as"
 
-        make O=out ARCH=arm64 \
-             CC=clang HOSTCC=gcc \
-             CLANG_TRIPLE=aarch64-linux-gnu- \
-             CROSS_COMPILE=${{ env.GCC64_PREFIX }} \
-             CROSS_COMPILE_ARM32=${{ env.GCC32_PREFIX }} \
-             LD=ld.lld DTC_EXT=$(pwd)/scripts/dtc/dtc \
-             olddefconfig
+        make $MAKE_ARGS combined_defconfig
+        make $MAKE_ARGS olddefconfig
 
         # Compilare finală
-        make -j$(nproc --all) O=out ARCH=arm64 \
-             CC=clang HOSTCC=gcc \
-             CLANG_TRIPLE=aarch64-linux-gnu- \
-             CROSS_COMPILE=${{ env.GCC64_PREFIX }} \
-             CROSS_COMPILE_ARM32=${{ env.GCC32_PREFIX }} \
-             LD=ld.lld DTC_EXT=$(pwd)/scripts/dtc/dtc \
-             KCFLAGS="-w -fno-stack-protector"
+        make -j$(nproc --all) $MAKE_ARGS
         
     - name: Upload Artifact
       uses: actions/upload-artifact@v4
