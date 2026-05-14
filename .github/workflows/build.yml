@@ -1,86 +1,93 @@
-name: Build Samsung SM8150 Kernel
+name: Build Samsung SM8150 - Merge Roynas & LineageOS
 
 on:
   workflow_dispatch:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
-
+    runs-on: ubuntu-22.04
     steps:
-    - name: Checkout Kernel Source
-      uses: actions/checkout@v4
-      with:
-        repository: sh4dow6oy/android_kernel_samsung_sm8150
-        ref: auriana
-        path: kernel
+      - name: Cleanup and Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python2-minimal bc build-essential flex bison ncurses-dev libssl-dev libelf-dev xz-utils libfl-dev git-core ccache zip zstd binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi
+          sudo ln -sf /usr/bin/python2 /usr/bin/python
 
-    - name: Install Build Dependencies
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y bc build-essential flex bison libssl-dev libelf-dev clang lld llvm libncurses-dev wget git
+      - name: Clone Roynas Kernel (Base)
+        run: git clone --depth=100 https://github.com/Roynas-Android-Playground/kernel_samsung_r3q.git s
 
-    - name: Setup AOSP Clang (r383902)
-      run: |
-        mkdir -p clang
-        wget https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/3857008389202edac32d57008bb8c99d2c957f9d/clang-r383902.tar.gz
-        tar -xf clang-r383902.tar.gz -C clang
-        echo "CLANG_PATH=$(pwd)/clang/bin" >> $GITHUB_ENV
+      - name: Fetch and Merge LineageOS SM8150
+        run: |
+          cd s
+          git config user.email "build@auriana.local"
+          git config user.name "Builder"
+          git remote add lineage https://github.com/LineageOS/android_kernel_qcom_sm8150.git
+          git fetch lineage lineage-18.1 # Sau branch-ul dorit (18.1/19.1)
+          # Încercăm merge-ul. Dacă sunt conflicte, le rezolvăm prin "ours" (păstrăm Roynas pentru fișierele Samsung)
+          git merge lineage/lineage-18.1 -s recursive -X ours --no-edit || echo "Conflicte detectate, dar continuăm cu baza Roynas"
 
-    - name: Download AOSP GCC 4.9
-      run: |
-        git clone --depth=1 https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 gcc64
-        git clone --depth=1 https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9 gcc32
-        echo "GCC64_PREFIX=$(pwd)/gcc64/bin/aarch64-linux-android-" >> $GITHUB_ENV
-        echo "GCC32_PREFIX=$(pwd)/gcc32/bin/arm-linux-androideabi-" >> $GITHUB_ENV
+      - name: Download Proton Clang
+        run: git clone --depth=1 https://github.com/kdrag0n/proton-clang.git llvm-proton
 
-    - name: Build Kernel
-      run: |
-        cd kernel
-        
-        # Extragem calea către binarele GCC pentru AS
-        GCC_AS="${{ env.GCC64_PREFIX }}as"
-        
-        # Setup PATH
-        export PATH="${{ env.CLANG_PATH }}:$(dirname ${{ env.GCC64_PREFIX }}):$PATH"
-        
-        # --- FIXURI SURSĂ ---
-        # 1. Bypass Clang Safety Switch
-        CLANG_SAFE_FLAG="-enable-trivial-auto-var-init-zero-knowing-it-will-be-removed-from-clang"
-        sed -i "s/-ftrivial-auto-var-init=zero/-ftrivial-auto-var-init=zero $CLANG_SAFE_FLAG/g" Makefile
-        
-        # 2. Fix WLAN Variant
-        sed -i 's/$(CONFIG_WLAN_VARIANT)_defconfig/samsung_defconfig/g' drivers/net/wireless/qualcomm/wcn39xx/qcacld-3.0/Kbuild || true
-        
-        # 3. Bypass GCC Version Check
-        find . -name "compiler-gcc.h" -exec sed -i '/#error Sorry, your version of GCC is too old/d' {} +
+      - name: Build Kernel
+        run: |
+          export ARCH=arm64
+          TOOLCHAIN_PATH="${{ github.workspace }}/llvm-proton/bin"
+          export PATH="$TOOLCHAIN_PATH:$PATH"
+          ln -sf llvm-readelf $TOOLCHAIN_PATH/aarch64-linux-gnu-readelf
+          
+          cd s
+          chmod +x tools/mkdtimg
+          
+          # --- CONFIGURARE PENTRU COMPATIBILITATE POST-MERGE ---
+          # 1. Aplicăm r5q_defconfig
+          make ARCH=arm64 O=out r5q_defconfig
+          
+          # 2. Dezactivăm Securitatea Samsung (RKP/DEFEX/TIMA) 
+          # Este OBLIGATORIU după merge cu LineageOS deoarece simbolurile vor lipsi
+          ./scripts/config --file out/.config \
+            -d CONFIG_RKP_KDP \
+            -d CONFIG_RKP_NS_PROT \
+            -d CONFIG_RKP_CFP \
+            -d CONFIG_SECURITY_DEFEX \
+            -d CONFIG_TIMA \
+            -d CONFIG_MODVERSIONS \
+            -e CONFIG_LTO_NONE \
+            -d CONFIG_WERROR
 
-        # Configurare
-        cat arch/arm64/configs/sm8150_sec_defconfig arch/arm64/configs/sm8150_sec_r5q_eur_open.config > arch/arm64/configs/combined_defconfig
-        echo "CONFIG_CC_STACKPROTECTOR_NONE=y" >> arch/arm64/configs/combined_defconfig
-        echo "# CONFIG_CC_STACKPROTECTOR_STRONG is not set" >> arch/arm64/configs/combined_defconfig
+          # 3. Fix-uri rapide pentru cod (CLK & PTEP)
+          sed -i 's/msm_bus_scale_client_update_request(clk_debugfs_bus_cl_id/\/\/ &/' drivers/clk/clk.c || true
+          sed -i 's/ptep = huge_pmd_share/pte = huge_pmd_share/g' arch/arm64/mm/hugetlbpage.c || true
 
-        # Argumente de build
-        # Am adăugat AS= pentru a forța asamblorul de ARM64
-        MAKE_ARGS="O=out ARCH=arm64 \
-             CC=clang HOSTCC=gcc \
-             AS=$GCC_AS \
-             CROSS_COMPILE=${{ env.GCC64_PREFIX }} \
-             CROSS_COMPILE_ARM32=${{ env.GCC32_PREFIX }} \
-             CLANG_TRIPLE=aarch64-linux-gnu- \
-             LD=ld.lld DTC_EXT=$(pwd)/scripts/dtc/dtc"
+          make ARCH=arm64 O=out olddefconfig
 
-        make $MAKE_ARGS combined_defconfig
-        make $MAKE_ARGS olddefconfig
+          # --- COMPILARE ---
+          MAKE_ARGS="ARCH=arm64 O=out CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip READELF=aarch64-linux-gnu-readelf CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=0 PYTHON=python"
 
-        # Compilare finală - adăugăm flag-ul de ignorare a asamblorului integrat
-        make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-w -fno-stack-protector -fno-integrated-as"
-        
-    - name: Upload Artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: Kernel-SM8150-r5q
-        path: |
-          kernel/out/arch/arm64/boot/Image.gz-dtb
-          kernel/out/arch/arm64/boot/dtbo.img
-          kernel/out/.config
+          make -j$(nproc --all) $MAKE_ARGS LDFLAGS="-z notext" KCFLAGS="-fcommon -fno-pic -Wno-error" Image.gz dtbs
+
+      - name: Create Flashable Package
+        run: |
+          # Generare DTBO cu unealta Samsung
+          MKDTIMG="${{ github.workspace }}/s/tools/mkdtimg"
+          chmod +x $MKDTIMG
+          DTBO_FILES=$(find s/out/arch/arm64/boot/dts/ -name "*.dtbo")
+          $MKDTIMG create dtbo.img --version=2 --page_size=4096 $DTBO_FILES
+          
+          # AnyKernel3 Setup
+          git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git AnyKernel
+          cp s/out/arch/arm64/boot/Image.gz AnyKernel/Image.gz
+          cp dtbo.img AnyKernel/dtbo.img
+          
+          cd AnyKernel
+          sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
+          sed -i 's/header_version=0/header_version=2/g' anykernel.sh
+          printf '\nflash_dtbo;\n' >> anykernel.sh
+          
+          zip -r9 ../Kernel-Merged-r5q.zip *
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Kernel-Merged-r5q
+          path: Kernel-Merged-r5q.zip
