@@ -9,7 +9,7 @@ jobs:
       - name: Checkout Source
         uses: actions/checkout@v4
         with:
-          repository: Roynas-Android-Playground/kernel_samsung_r3q
+          repository: sh4dow6oy/kernel_samsung_r3q
           ref: master
           fetch-depth: 1
 
