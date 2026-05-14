@@ -11,7 +11,7 @@ jobs:
     - name: Checkout Kernel Source
       uses: actions/checkout@v4
       with:
-        repository: sh4dow6oy/android_kernel_samsung_sm8150
+        repository: LumiPlayground/android_kernel_samsung_sm8150
         ref: auriana
         path: kernel
 
@@ -25,14 +25,12 @@ jobs:
         mkdir -p clang
         wget https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/3857008389202edac32d57008bb8c99d2c957f9d/clang-r383902.tar.gz
         tar -xf clang-r383902.tar.gz -C clang
-        # Salvăm calea absolută
         echo "CLANG_PATH=$(pwd)/clang/bin" >> $GITHUB_ENV
 
     - name: Download AOSP GCC 4.9
       run: |
         git clone --depth=1 https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 gcc64
         git clone --depth=1 https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9 gcc32
-        # Salvăm căile absolute către binare (inclusiv prefixul)
         echo "GCC64_PREFIX=$(pwd)/gcc64/bin/aarch64-linux-android-" >> $GITHUB_ENV
         echo "GCC32_PREFIX=$(pwd)/gcc32/bin/arm-linux-androideabi-" >> $GITHUB_ENV
         echo "TOOLCHAIN_PATH=$(pwd)/gcc64/bin:$(pwd)/gcc32/bin" >> $GITHUB_ENV
@@ -41,42 +39,52 @@ jobs:
       run: |
         cd kernel
         
-        # Setează PATH-ul să includă toate uneltele
+        # Setup PATH
         export PATH="${{ env.CLANG_PATH }}:${{ env.TOOLCHAIN_PATH }}:$PATH"
         
-        export ARCH=arm64
-        export SUBARCH=arm64
-        
         # --- FIXURI SURSĂ ---
-        # 1. Bypass Clang Safety Switch
-        sed -i 's/-ftrivial-auto-var-init=zero/-ftrivial-auto-var-init=zero -enable-trivial-auto-var-init-zero-knowing-it-will-be-removed-from-clang/g' Makefile
+        # 1. Bypass Clang Safety Switch (modificăm direct Makefile-ul ca să nu mai pasăm flag-ul lung prin terminal)
+        CLANG_SAFE_FLAG="-enable-trivial-auto-var-init-zero-knowing-it-will-be-removed-from-clang"
+        sed -i "s/-ftrivial-auto-var-init=zero/-ftrivial-auto-var-init=zero $CLANG_SAFE_FLAG/g" Makefile
         
+        # 2. Fix WLAN Variant (Qualcomm)
+        sed -i 's/$(CONFIG_WLAN_VARIANT)_defconfig/samsung_defconfig/g' drivers/net/wireless/qualcomm/wcn39xx/qcacld-3.0/Kbuild || true
+        
+        # 3. Bypass GCC Version Check
+        find . -name "compiler-gcc.h" -exec sed -i '/#error Sorry, your version of GCC is too old/d' {} +
 
         # Configurare
         cat arch/arm64/configs/sm8150_sec_defconfig arch/arm64/configs/sm8150_sec_r5q_eur_open.config > arch/arm64/configs/combined_defconfig
-        
-        # Injectăm manual opțiunile de securitate pentru a evita check-ul de compiler
         echo "CONFIG_CC_STACKPROTECTOR_NONE=y" >> arch/arm64/configs/combined_defconfig
         echo "# CONFIG_CC_STACKPROTECTOR_STRONG is not set" >> arch/arm64/configs/combined_defconfig
 
-        # Variabilele de Build cu CĂI ABSOLUTE
-        MAKE_VARS="O=out \
-                   ARCH=arm64 \
-                   CC=clang \
-                   HOSTCC=gcc \
-                   CLANG_TRIPLE=aarch64-linux-gnu- \
-                   CROSS_COMPILE=${{ env.GCC64_PREFIX }} \
-                   CROSS_COMPILE_ARM32=${{ env.GCC32_PREFIX }} \
-                   LD=ld.lld \
-                   DTC_EXT=$(pwd)/scripts/dtc/dtc \
-                   KCFLAGS='-w -fno-stack-protector -enable-trivial-auto-var-init-zero-knowing-it-will-be-removed-from-clang'"
+        # Definim argumentele fără a folosi variabile de shell care strică parsing-ul
+        # Rulăm direct comenzile pentru a fi siguri de interpretare
+        
+        make O=out ARCH=arm64 \
+             CC=clang HOSTCC=gcc \
+             CLANG_TRIPLE=aarch64-linux-gnu- \
+             CROSS_COMPILE=${{ env.GCC64_PREFIX }} \
+             CROSS_COMPILE_ARM32=${{ env.GCC32_PREFIX }} \
+             LD=ld.lld DTC_EXT=$(pwd)/scripts/dtc/dtc \
+             combined_defconfig
 
-        # Execuție configurare
-        make $MAKE_VARS combined_defconfig
-        make $MAKE_VARS olddefconfig
+        make O=out ARCH=arm64 \
+             CC=clang HOSTCC=gcc \
+             CLANG_TRIPLE=aarch64-linux-gnu- \
+             CROSS_COMPILE=${{ env.GCC64_PREFIX }} \
+             CROSS_COMPILE_ARM32=${{ env.GCC32_PREFIX }} \
+             LD=ld.lld DTC_EXT=$(pwd)/scripts/dtc/dtc \
+             olddefconfig
 
-        # Compilare propriu-zisă
-        make -j$(nproc --all) $MAKE_VARS
+        # Compilare finală
+        make -j$(nproc --all) O=out ARCH=arm64 \
+             CC=clang HOSTCC=gcc \
+             CLANG_TRIPLE=aarch64-linux-gnu- \
+             CROSS_COMPILE=${{ env.GCC64_PREFIX }} \
+             CROSS_COMPILE_ARM32=${{ env.GCC32_PREFIX }} \
+             LD=ld.lld DTC_EXT=$(pwd)/scripts/dtc/dtc \
+             KCFLAGS="-w -fno-stack-protector"
         
     - name: Upload Artifact
       uses: actions/upload-artifact@v4
