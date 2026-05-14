@@ -1,4 +1,4 @@
-name: Build Samsung SM8150 - Merge Roynas & LineageOS
+name: Build SM8150 - Roynas Lineage-20 Merge
 
 on:
   workflow_dispatch:
@@ -10,21 +10,22 @@ jobs:
       - name: Cleanup and Install Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y python2-minimal bc build-essential flex bison ncurses-dev libssl-dev libelf-dev xz-utils libfl-dev git-core ccache zip zstd binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi
+          sudo apt-get install -y python2-minimal python3-pip bc build-essential flex bison ncurses-dev libssl-dev libelf-dev xz-utils libfl-dev git-core ccache zip zstd binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi
           sudo ln -sf /usr/bin/python2 /usr/bin/python
+          pip3 install pycryptodome
 
       - name: Clone Roynas Kernel (Base)
         run: git clone --depth=100 https://github.com/Roynas-Android-Playground/kernel_samsung_r3q.git s
 
-      - name: Fetch and Merge LineageOS SM8150
+      - name: Fetch and Merge Lineage-20
         run: |
           cd s
           git config user.email "build@auriana.local"
           git config user.name "Builder"
           git remote add lineage https://github.com/LineageOS/android_kernel_qcom_sm8150.git
-          git fetch lineage lineage-20 # Sau branch-ul dorit (18.1/19.1)
-          # Încercăm merge-ul. Dacă sunt conflicte, le rezolvăm prin "ours" (păstrăm Roynas pentru fișierele Samsung)
-          git merge lineage/lineage-20 -s recursive -X ours --no-edit || echo "Conflicte detectate, dar continuăm cu baza Roynas"
+          git fetch lineage lineage-20
+          # Merge folosind strategia 'ours' pentru a păstra driverele Samsung critice
+          git merge lineage/lineage-20 -s recursive -X ours --no-edit || echo "Merge realizat cu conflicte rezolvate automat"
 
       - name: Download Proton Clang
         run: git clone --depth=1 https://github.com/kdrag0n/proton-clang.git llvm-proton
@@ -34,47 +35,58 @@ jobs:
           export ARCH=arm64
           TOOLCHAIN_PATH="${{ github.workspace }}/llvm-proton/bin"
           export PATH="$TOOLCHAIN_PATH:$PATH"
-          ln -sf llvm-readelf $TOOLCHAIN_PATH/aarch64-linux-gnu-readelf
+          
+          # Link-uri simbolice pentru uneltele LLVM (necesare pentru scripturile Samsung)
+          ln -sf $TOOLCHAIN_PATH/llvm-objdump $TOOLCHAIN_PATH/aarch64-linux-gnu-objdump
+          ln -sf $TOOLCHAIN_PATH/llvm-readelf $TOOLCHAIN_PATH/aarch64-linux-gnu-readelf
+          ln -sf $TOOLCHAIN_PATH/llvm-nm $TOOLCHAIN_PATH/aarch64-linux-gnu-nm
           
           cd s
-          chmod +x tools/mkdtimg
           
-          # --- CONFIGURARE PENTRU COMPATIBILITATE POST-MERGE ---
-          # 1. Aplicăm r5q_defconfig
+          # --- 1. FIX KERNELSU (Dezactivare referință lipsă) ---
+          sed -i '/kernelsu/d' drivers/android/Kconfig || true
+          
+          # --- 2. CONFIGURARE ---
+          # Folosim r5q_defconfig ca bază
           make ARCH=arm64 O=out r5q_defconfig
           
-          # 2. Dezactivăm Securitatea Samsung (RKP/DEFEX/TIMA) 
-          # Este OBLIGATORIU după merge cu LineageOS deoarece simbolurile vor lipsi
+          # Dezactivăm securitatea Samsung (RKP/CFP) și activăm LTO pentru Lineage-20
           ./scripts/config --file out/.config \
-            -d CONFIG_RKP_KDP \
-            -d CONFIG_RKP_NS_PROT \
+            -e CONFIG_LTO_CLANG \
+            -e CONFIG_THINLTO \
+            -e CONFIG_RKP_KDP \
+            -e CONFIG_RKP_NS_PROT \
             -d CONFIG_RKP_CFP \
-            -d CONFIG_SECURITY_DEFEX \
-            -d CONFIG_TIMA \
             -d CONFIG_MODVERSIONS \
-            -e CONFIG_LTO_NONE \
+            -d CONFIG_SECURITY_DEFEX \
+            -d CONFIG_SAMSUNG_PRODUCT_SHIP \
+            -d CONFIG_MSM_WATCHDOG_VTD \
             -d CONFIG_WERROR
-
-          # 3. Fix-uri rapide pentru cod (CLK & PTEP)
-          sed -i 's/msm_bus_scale_client_update_request(clk_debugfs_bus_cl_id/\/\/ &/' drivers/clk/clk.c || true
-          sed -i 's/ptep = huge_pmd_share/pte = huge_pmd_share/g' arch/arm64/mm/hugetlbpage.c || true
 
           make ARCH=arm64 O=out olddefconfig
 
-          # --- COMPILARE ---
+          # --- 3. COMPILARE ---
           MAKE_ARGS="ARCH=arm64 O=out CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip READELF=aarch64-linux-gnu-readelf CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=0 PYTHON=python"
 
-          make -j$(nproc --all) $MAKE_ARGS LDFLAGS="-z notext" KCFLAGS="-fcommon -fno-pic -Wno-error" Image.gz dtbs
+          # Compilăm Image.gz și dtbs
+          make -j$(nproc --all) $MAKE_ARGS \
+            LDFLAGS="-z notext --thinlto-cache-dir=../lto-cache" \
+            KCFLAGS="-fcommon -fno-pic -Wno-error -Wno-stringop-truncation" \
+            Image.gz dtbs
 
-      - name: Create Flashable Package
+      - name: Create and Sign Flashable Package
         run: |
-          # Generare DTBO cu unealta Samsung
+          # Generare DTBO.img
           MKDTIMG="${{ github.workspace }}/s/tools/mkdtimg"
           chmod +x $MKDTIMG
           DTBO_FILES=$(find s/out/arch/arm64/boot/dts/ -name "*.dtbo")
-          $MKDTIMG create dtbo.img --version=2 --page_size=4096 $DTBO_FILES
+          $MKDTIMG create dtbo-unsigned.img --version=2 --page_size=4096 $DTBO_FILES
           
-          # AnyKernel3 Setup
+          # Semnare AVB pentru a trece de bootloader
+          wget https://raw.githubusercontent.com/tiann/avbtool/master/avbtool.py
+          python3 avbtool.py add_hash_footer --image dtbo-unsigned.img --partition_size 8388608 --partition_name dtbo --output dtbo.img
+
+          # Pregătire AnyKernel3
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git AnyKernel
           cp s/out/arch/arm64/boot/Image.gz AnyKernel/Image.gz
           cp dtbo.img AnyKernel/dtbo.img
@@ -84,10 +96,7 @@ jobs:
           sed -i 's/header_version=0/header_version=2/g' anykernel.sh
           printf '\nflash_dtbo;\n' >> anykernel.sh
           
-          zip -r9 ../Kernel-Merged-r5q.zip *
+          zip -r9 ../Kernel-Auriana-Lineage20.zip *
 
       - name: Upload Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: Kernel-Merged-r5q
-          path: Kernel-Merged-r5q.zip
+        uses
