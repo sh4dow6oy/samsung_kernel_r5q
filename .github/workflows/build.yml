@@ -14,7 +14,7 @@ jobs:
           ref: rawr-bpf
           path: kernel
 
-      - name: Replace Drivers Folder with Stock Drivers
+      - name: Replace Drivers Folder with Stock Drivers & Fix Squeezer
         run: |
           cd kernel
           # 1. Ștergem folderul drivers actual pentru a nu lăsa reziduuri
@@ -31,7 +31,7 @@ jobs:
           # 4. Curățăm fișierele temporare descărcate
           rm -rf s10lite-stock-kernel-main stock.zip
           
-          # 5. FIX PENTRU ERROARE: Eliminăm liniile care caută KernelSU în fișierele stock
+          # 5. FIX KERNELSU: Eliminăm liniile care caută KernelSU în fișierele stock
           if [ -f drivers/Kconfig ]; then
             sed -i '/kernelsu/d' drivers/Kconfig
           fi
@@ -39,7 +39,19 @@ jobs:
             sed -i '/kernelsu/d' drivers/Makefile
           fi
           
-          echo "Folderul drivers a fost înlocuit și curățat de referințele KernelSU!"
+          # 6. FIX SAMSUNG SQUEEZER (ZRAM): Comentăm liniile care generează erorile SQZR
+          if [ -f drivers/block/zram/zram_drv.c ]; then
+            echo "Dezactivăm contoarele specifice Samsung Squeezer din ZRAM..."
+            sed -i 's/count_vm_events(SQZR_/#//g' drivers/block/zram/zram_drv.c
+            sed -i 's/count_vm_event(SQZR_/#//g' drivers/block/zram/zram_drv.c
+            # Curățăm eventualele linii stricate de înlocuirea anterioară pentru a rămâne cod valid sau ignorat
+            sed -i '/#COUNT/d' drivers/block/zram/zram_drv.c
+            sed -i '/#OBJCNT/d' drivers/block/zram/zram_drv.c
+            sed -i '/#WRITE/d' drivers/block/zram/zram_drv.c
+            sed -i '/#READ/d' drivers/block/zram/zram_drv.c
+          fi
+          
+          echo "Folderul drivers a fost înlocuit, curățat de KernelSU și patch-uit pentru ZRAM Squeezer!"
       - name: Install Dependencies
         run: |
           sudo apt-get update
