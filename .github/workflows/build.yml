@@ -67,23 +67,29 @@ jobs:
             sed -i '/kperfmon/d' drivers/Makefile
           fi
 
-          # Neutralizăm comenzile 'tar' care caută KernelSU în Makefile-uri sau scripturi
-          echo "Neutralizăm apelurile tar fantomă pentru KernelSU..."
-          find . -type f \( -name "Makefile*" -o -name "*.mk" -o -name "*.sh" \) -exec sed -i 's/tar .*KernelSU.*/echo "Skipping KernelSU tar"/g' {} + || true
+          # Neutralizăm complet orice regulă din Makefile-uri care încearcă să ruleze ceva legat de KernelSU
+          echo "Eliminăm liniile cu apeluri KernelSU din Makefile-uri..."
+          find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i '/KernelSU/d' {} + || true
 
-          # 2. NUCLEAR CLEANUP (Prevenim Polly Errors experimentale global)
+          # 2. FIX C TYPE MISMATCH: Aliniem funcția path_umount cu fs/internal.h
+          if [ -f fs/namespace.c ]; then
+            echo "Patching fs/namespace.c pentru potrivirea semnăturii path_umount (adaugare const)..."
+            sed -i 's/int path_umount(struct path \*path/int path_umount(const struct path \*path/g' fs/namespace.c
+          fi
+
+          # 3. NUCLEAR CLEANUP (Prevenim Polly Errors experimentale global)
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm//g' {} +
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-polly[^ ]*//g' {} +
 
-          # 3. FIX SPECIFIC VDSO (Prevenim eroarea /usr/bin/as)
+          # 4. FIX SPECIFIC VDSO (Prevenim eroarea /usr/bin/as)
           if [ -f arch/arm64/kernel/vdso/Makefile ]; then
             sed -i 's/-static//g' arch/arm64/kernel/vdso/Makefile
             sed -i 's/$(LDFLAGS)/$(filter-out -static,$(LDFLAGS))/g' arch/arm64/kernel/vdso/Makefile
             sed -i 's/$(CROSS_COMPILE)as/clang/g' arch/arm64/kernel/vdso/Makefile
           fi
 
-          # 4. SETARE ARGUMENTE BUILD
+          # 5. SETARE ARGUMENTE BUILD
           MAKE_ARGS='ARCH=arm64 
             LLVM=1 
             LLVM_IAS=1 
