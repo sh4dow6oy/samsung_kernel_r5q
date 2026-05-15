@@ -35,33 +35,34 @@ jobs:
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm//g' {} +
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-polly[^ ]*//g' {} +
 
-          # 2. FIX SPECIFIC VDSO (Prevenim eroarea /usr/bin/as cu optiunea -EL)
+          # 2. FIX SPECIFIC VDSO (Prevenim eroarea /usr/bin/as fără a altera make global)
           if [ -f arch/arm64/kernel/vdso/Makefile ]; then
             sed -i 's/-static//g' arch/arm64/kernel/vdso/Makefile
             sed -i 's/$(LDFLAGS)/$(filter-out -static,$(LDFLAGS))/g' arch/arm64/kernel/vdso/Makefile
-            sed -i 's/$(CROSS_COMPILE)as/clang -target aarch64-linux-gnu/g' arch/arm64/kernel/vdso/Makefile
+            sed -i 's/$(CROSS_COMPILE)as/clang/g' arch/arm64/kernel/vdso/Makefile
           fi
 
-          # 3. SETARE ARGUMENTE BUILD (Definim explicit AS ca sa ocolească asamblorul x86_64 global)
-          MAKE_ARGS="ARCH=arm64 \
-            LLVM=1 \
-            LLVM_IAS=1 \
-            CC=clang \
-            LD=ld.lld \
-            AR=llvm-ar \
-            NM=llvm-nm \
-            OBJCOPY=llvm-objcopy \
-            OBJDUMP=llvm-objdump \
-            STRIP=llvm-strip \
-            AS=\"clang -target aarch64-linux-gnu\" \
-            CROSS_COMPILE=aarch64-linux-gnu- \
-            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-            CLANG_TRIPLE=aarch64-linux-gnu- \
-            HOSTCC=clang \
-            HOSTCXX=clang++ \
-            HOSTCFLAGS=-Wno-error \
-            O=out"
+          # 3. SETARE ARGUMENTE BUILD (Folosim ghilimele single exterioare pentru a proteja spatiile)
+          MAKE_ARGS='ARCH=arm64 
+            LLVM=1 
+            LLVM_IAS=1 
+            CC=clang 
+            LD=ld.lld 
+            AR=llvm-ar 
+            NM=llvm-nm 
+            OBJCOPY=llvm-objcopy 
+            OBJDUMP=llvm-objdump 
+            STRIP=llvm-strip 
+            AS=clang
+            CROSS_COMPILE=aarch64-linux-gnu- 
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi- 
+            CLANG_TRIPLE=aarch64-linux-gnu- 
+            HOSTCC=clang 
+            HOSTCXX=clang++ 
+            HOSTCFLAGS=-Wno-error 
+            O=out'
 
+          # Rulem configurarea defconfig
           make $MAKE_ARGS r5q_eur_open_defconfig
 
           # FORȚARE BPF JIT & CURĂȚARE SAMSUNG SECURITY
@@ -74,10 +75,12 @@ jobs:
 
           make $MAKE_ARGS olddefconfig
 
-          # COMPILARE FINALĂ (Căutăm să generăm direct fișierul Image.gz-dtb nativ)
-          # Flag-ul --no-rosegment trimis corect în LDFLAGS pentru a rezolva problemele de alocare ELF ale ld.lld
+          # COMPILARE FINALĂ
+          # Am mutat ținta arhitecturii direct în KCFLAGS și KASFLAGS pentru ca asamblorul (AS=clang) să o preia nativ,
+          # eliminând complet nevoia de spații sau ghilimele problematice în interiorul MAKE_ARGS.
           make -j$(nproc --all) $MAKE_ARGS Image.gz Image.gz-dtb dtbs \
             KCFLAGS="-w -fcommon --target=aarch64-linux-gnu" \
+            KASFLAGS="--target=aarch64-linux-gnu" \
             LDFLAGS="--no-rosegment"
 
       - name: Assemble AnyKernel3
