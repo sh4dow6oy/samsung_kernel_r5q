@@ -14,7 +14,7 @@ jobs:
           ref: rawr-bpf
           path: kernel
 
-      - name: Replace Drivers Folder with Stock Drivers & Fix Squeezer
+      - name: Replace Drivers Folder with Stock Drivers & Brutal Fixes
         run: |
           cd kernel
           # 1. Ștergem folderul drivers actual pentru a nu lăsa reziduuri
@@ -27,25 +27,37 @@ jobs:
           # 3. Extragem structura drivers direct în kernelul nostru
           unzip -q stock.zip 's10lite-stock-kernel-main/drivers/*'
           mv s10lite-stock-kernel-main/drivers .
-          
-          # 4. Curățăm fișierele temporare descărcate
           rm -rf s10lite-stock-kernel-main stock.zip
           
-          # 5. FIX KERNELSU: Eliminăm liniile care caută KernelSU în fișierele stock
-          if [ -f drivers/Kconfig ]; then
-            sed -i '/kernelsu/d' drivers/Kconfig
-          fi
-          if [ -f drivers/Makefile ]; then
-            sed -i '/kernelsu/d' drivers/Makefile
-          fi
+          # 4. FIX KERNELSU: Eliminăm liniile care caută KernelSU în fișierele stock
+          sed -i '/kernelsu/d' drivers/Kconfig || true
+          sed -i '/kernelsu/d' drivers/Makefile || true
           
-          # 6. FIX SAMSUNG SQUEEZER (ZRAM): Ștergem direct liniile problematice
+          # 5. FIX SAMSUNG SQUEEZER (ZRAM): Ștergem liniile SQZR din driverul ZRAM
           if [ -f drivers/block/zram/zram_drv.c ]; then
-            echo "Eliminăm complet liniile Squeezer (SQZR) din driverul ZRAM..."
             sed -i '/SQZR_/d' drivers/block/zram/zram_drv.c
           fi
           
-          echo "Folderul drivers a fost înlocuit, curățat de KernelSU și patch-uit pentru ZRAM!"
+          # 6. FIX GPU ADRENO (IDR_INIT): Injectăm header-ul lipsă în kgsl_device.h
+          if [ -f drivers/gpu/msm/kgsl_device.h ]; then
+            echo "Patching GPU MSM pentru IDR_INIT..."
+            sed -i '1s/^/#include <linux\/idr.h>\n/' drivers/gpu/msm/kgsl_device.h
+          fi
+          
+          # 7. FIX FS TASK_MMU (ZRAM CONTFLICT): Injectăm definițiile lipsă la începutul task_mmu.c
+          if [ -f fs/proc/task_mmu.c ]; then
+            echo "Patching fs/proc/task_mmu.c pentru compatibilitate ZRAM stock..."
+            sed -i '1s/^/#define ZRAM_WB_TYPE 0\n#define ZRAM_WB_HUGE_TYPE 0\n#define ZRAM_SAME_TYPE 0\n#define ZRAM_HUGE_TYPE 0\n/' fs/proc/task_mmu.c
+          fi
+          
+          # 8. FIX MEDIA SDE ROTATOR TRACE (dst_bw error): Dezactivăm trace-ul problematic
+          if [ -f drivers/media/platform/msm/sde/rotator/sde_rotator_trace.h ]; then
+            echo "Dezactivăm macro-urile stricate din sde_rotator_trace..."
+            # Forțăm dezactivarea încărcării TRACE_HEADER-ului pentru rotator ca să ocolească eroarea
+            sed -i 's/#define TRACE_INCLUDE_FILE/\/\/ #define TRACE_INCLUDE_FILE/g' drivers/media/platform/msm/sde/rotator/sde_rotator_trace.h
+          fi
+          
+          echo "Toate patch-urile de reconciliere între core-ul repo-ului și folderul drivers stock au fost aplicate!"
       - name: Install Dependencies
         run: |
           sudo apt-get update
