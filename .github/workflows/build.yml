@@ -17,21 +17,29 @@ jobs:
       - name: Replace Drivers Folder with Stock Drivers
         run: |
           cd kernel
-          # 1. Ștergem folderul drivers actual din repo-ul tău pentru a nu lăsa reziduuri
+          # 1. Ștergem folderul drivers actual pentru a nu lăsa reziduuri
           rm -rf drivers
           
-          # 2. Descărcăm doar arhiva parțială sau completă a repo-ului stock mk7x7
+          # 2. Descărcăm folderul drivers din kernelul stock mk7x7
           echo "Descărcăm folderul drivers din kernelul stock..."
           wget -q https://github.com/mk7x7/s10lite-stock-kernel/archive/refs/heads/main.zip -O stock.zip
           
-          # 3. Extragem doar folderul drivers din acea arhivă direct în kernelul nostru
+          # 3. Extragem structura drivers direct în kernelul nostru
           unzip -q stock.zip 's10lite-stock-kernel-main/drivers/*'
           mv s10lite-stock-kernel-main/drivers .
           
           # 4. Curățăm fișierele temporare descărcate
           rm -rf s10lite-stock-kernel-main stock.zip
-          echo "Folderul drivers a fost înlocuit cu succes cu cel Stock!"
-
+          
+          # 5. FIX PENTRU ERROARE: Eliminăm liniile care caută KernelSU în fișierele stock
+          if [ -f drivers/Kconfig ]; then
+            sed -i '/kernelsu/d' drivers/Kconfig
+          fi
+          if [ -f drivers/Makefile ]; then
+            sed -i '/kernelsu/d' drivers/Makefile
+          fi
+          
+          echo "Folderul drivers a fost înlocuit și curățat de referințele KernelSU!"
       - name: Install Dependencies
         run: |
           sudo apt-get update
