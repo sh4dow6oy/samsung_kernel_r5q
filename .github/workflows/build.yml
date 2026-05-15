@@ -35,15 +35,12 @@ jobs:
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm//g' {} +
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-polly[^ ]*//g' {} +
           
-          # 2. VDSO & FIX ASSEMBBLER DIRECT IN MAKEFILE (Bypass /usr/bin/as)
-          # Forțăm sistemul vDSO și Kbuild să folosească Clang ca asamblor, chiar dacă ignoră LLVM_IAS
-          find . -type f -name "Makefile*" -exec sed -i 's/$(CROSS_COMPILE)as/clang/g' {} +
-          
+          # 2. FIX SPECIFIC VDSO (Fără a strica restul Makefile-urilor global)
           if [ -f arch/arm64/kernel/vdso/Makefile ]; then
             sed -i 's/-static//g' arch/arm64/kernel/vdso/Makefile
             sed -i 's/$(LDFLAGS)/$(filter-out -static,$(LDFLAGS))/g' arch/arm64/kernel/vdso/Makefile
-            # Fix specific pentru target vDSO în Neutron
-            printf '\nVDSO_AFLAGS += --target=aarch64-linux-gnu\n' >> arch/arm64/kernel/vdso/Makefile
+            # Forțăm asamblorul vDSO să știe că e Clang LLVM cu target de ARM64
+            sed -i 's/$(CROSS_COMPILE)as/clang -target aarch64-linux-gnu/g' arch/arm64/kernel/vdso/Makefile
           fi
 
           # 3. KERNELSU & SAMSUNG CLEANUP
@@ -52,7 +49,7 @@ jobs:
           rm -rf drivers/kernelsu
           sed -i 's/ifneq ($(wildcard $(srctree)\/scripts\/gcc-wrapper.py),)/ifeq (0,1)/g' Makefile
 
-          # 4. Argumente Build (Definim explicit AS=clang cu target ARM64)
+          # 4. Argumente Build (Definim curat variabila AS cu LLVM IAS)
           MAKE_ARGS="ARCH=arm64 \
             LLVM=1 \
             LLVM_IAS=1 \
@@ -90,10 +87,9 @@ jobs:
 
           make $MAKE_ARGS olddefconfig
           
-          # 6. Compilare (Forțăm din nou parametrii ca măsuri redundante)
+          # 6. Compilare 
           make -j$(nproc --all) $MAKE_ARGS \
             CLANG_TRIPLE=aarch64-linux-gnu- \
-            AS="clang -target aarch64-linux-gnu" \
             KCFLAGS="-fcommon -Wno-error -Wno-unknown-warning-option -Wno-unused-command-line-argument -Wno-stringop-truncation --target=aarch64-linux-gnu" \
             Image.gz dtbs
 
@@ -104,7 +100,7 @@ jobs:
             IMAGE="$GITHUB_WORKSPACE/out/arch/arm64/boot/Image.gz"
           fi
           
-          # Generare automată DTBO.img din fișierele compilate separate
+          # Generare automată DTBO.img dacă lipsește binarul direct în out
           MKDTIMG="$GITHUB_WORKSPACE/s/tools/mkdtimg"
           if [ ! -f "$GITHUB_WORKSPACE/out/arch/arm64/boot/dtbo.img" ] && [ -f "$MKDTIMG" ]; then
             chmod +x $MKDTIMG
