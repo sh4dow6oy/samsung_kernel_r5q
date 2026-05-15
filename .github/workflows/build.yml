@@ -39,19 +39,13 @@ jobs:
             sed -i '/kernelsu/d' drivers/Makefile
           fi
           
-          # 6. FIX SAMSUNG SQUEEZER (ZRAM): Comentăm liniile care generează erorile SQZR
+          # 6. FIX SAMSUNG SQUEEZER (ZRAM): Ștergem direct liniile problematice
           if [ -f drivers/block/zram/zram_drv.c ]; then
-            echo "Dezactivăm contoarele specifice Samsung Squeezer din ZRAM..."
-            sed -i 's/count_vm_events(SQZR_/#//g' drivers/block/zram/zram_drv.c
-            sed -i 's/count_vm_event(SQZR_/#//g' drivers/block/zram/zram_drv.c
-            # Curățăm eventualele linii stricate de înlocuirea anterioară pentru a rămâne cod valid sau ignorat
-            sed -i '/#COUNT/d' drivers/block/zram/zram_drv.c
-            sed -i '/#OBJCNT/d' drivers/block/zram/zram_drv.c
-            sed -i '/#WRITE/d' drivers/block/zram/zram_drv.c
-            sed -i '/#READ/d' drivers/block/zram/zram_drv.c
+            echo "Eliminăm complet liniile Squeezer (SQZR) din driverul ZRAM..."
+            sed -i '/SQZR_/d' drivers/block/zram/zram_drv.c
           fi
           
-          echo "Folderul drivers a fost înlocuit, curățat de KernelSU și patch-uit pentru ZRAM Squeezer!"
+          echo "Folderul drivers a fost înlocuit, curățat de KernelSU și patch-uit pentru ZRAM!"
       - name: Install Dependencies
         run: |
           sudo apt-get update
