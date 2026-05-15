@@ -54,19 +54,22 @@ jobs:
         run: |
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           
-          # 1. FIX CONFLICTE DE FUZIUNE (Gator & KernelSU-Next)
-          echo "Curățăm punțile stricate aduse de fuziune..."
+          # 1. FIX CONFLICTE DE FUZIUNE EXTINSE (Gator, kperfmon & KernelSU-Next)
+          echo "Curățăm punțile stricate și modulele lipsă aduse de fuziune..."
           if [ -f drivers/Kconfig ]; then
             sed -i '/gator/d' drivers/Kconfig
             sed -i '/kernelsu/d' drivers/Kconfig
+            sed -i '/kperfmon/d' drivers/Kconfig
           fi
           if [ -f drivers/Makefile ]; then
             sed -i '/gator/d' drivers/Makefile
             sed -i '/kernelsu/d' drivers/Makefile
+            sed -i '/kperfmon/d' drivers/Makefile
           fi
 
-          # Neutralizăm scripturile Samsung sau experimentale care încearcă să ruleze 'tar' după KernelSU-Next
-          find . -type f -name "*.sh" -exec sed -i 's/tar .*KernelSU-Next.*/echo "Skipping KernelSU tar"/g' {} + || true
+          # Neutralizăm comenzile 'tar' care caută KernelSU în Makefile-uri sau scripturi
+          echo "Neutralizăm apelurile tar fantomă pentru KernelSU..."
+          find . -type f \( -name "Makefile*" -o -name "*.mk" -o -name "*.sh" \) -exec sed -i 's/tar .*KernelSU.*/echo "Skipping KernelSU tar"/g' {} + || true
 
           # 2. NUCLEAR CLEANUP (Prevenim Polly Errors experimentale global)
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
@@ -117,7 +120,6 @@ jobs:
             KCFLAGS="-w -fcommon --target=aarch64-linux-gnu" \
             KASFLAGS="--target=aarch64-linux-gnu" \
             LDFLAGS="--no-rosegment"
-
       - name: Assemble AnyKernel3
         run: |
           OUT="out/arch/arm64/boot"
