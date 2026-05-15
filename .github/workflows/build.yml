@@ -1,4 +1,4 @@
-name: Build R5Q - Lumi BPF V42 (Linker Final Fix)
+name: Build R5Q - Lumi BPF V43 (Stock Drivers Replacement)
 
 on:
   workflow_dispatch:
@@ -7,12 +7,30 @@ jobs:
   build:
     runs-on: ubuntu-24.04
     steps:
-      - name: Checkout LumiPlayground Kernel
+      - name: Checkout LumiPlayground Kernel (Baza ta)
         uses: actions/checkout@v4
         with:
           repository: LumiPlayground/android_kernel_samsung_sm8150
           ref: rawr-bpf
           path: kernel
+
+      - name: Replace Drivers Folder with Stock Drivers
+        run: |
+          cd kernel
+          # 1. Ștergem folderul drivers actual din repo-ul tău pentru a nu lăsa reziduuri
+          rm -rf drivers
+          
+          # 2. Descărcăm doar arhiva parțială sau completă a repo-ului stock mk7x7
+          echo "Descărcăm folderul drivers din kernelul stock..."
+          wget -q https://github.com/mk7x7/s10lite-stock-kernel/archive/refs/heads/main.zip -O stock.zip
+          
+          # 3. Extragem doar folderul drivers din acea arhivă direct în kernelul nostru
+          unzip -q stock.zip 's10lite-stock-kernel-main/drivers/*'
+          mv s10lite-stock-kernel-main/drivers .
+          
+          # 4. Curățăm fișierele temporare descărcate
+          rm -rf s10lite-stock-kernel-main stock.zip
+          echo "Folderul drivers a fost înlocuit cu succes cu cel Stock!"
 
       - name: Install Dependencies
         run: |
@@ -30,19 +48,19 @@ jobs:
           cd kernel
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           
-          # 1. NUCLEAR CLEANUP (Prevenim Polly Errors experimentale)
+          # 1. NUCLEAR CLEANUP (Prevenim Polly Errors pe noul folder drivers)
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm//g' {} +
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-polly[^ ]*//g' {} +
 
-          # 2. FIX SPECIFIC VDSO (Prevenim eroarea /usr/bin/as fără a altera make global)
+          # 2. FIX SPECIFIC VDSO (Prevenim eroarea /usr/bin/as)
           if [ -f arch/arm64/kernel/vdso/Makefile ]; then
             sed -i 's/-static//g' arch/arm64/kernel/vdso/Makefile
             sed -i 's/$(LDFLAGS)/$(filter-out -static,$(LDFLAGS))/g' arch/arm64/kernel/vdso/Makefile
             sed -i 's/$(CROSS_COMPILE)as/clang/g' arch/arm64/kernel/vdso/Makefile
           fi
 
-          # 3. SETARE ARGUMENTE BUILD (Folosim ghilimele single exterioare pentru a proteja spatiile)
+          # 3. SETARE ARGUMENTE BUILD
           MAKE_ARGS='ARCH=arm64 
             LLVM=1 
             LLVM_IAS=1 
@@ -62,7 +80,6 @@ jobs:
             HOSTCFLAGS=-Wno-error 
             O=out'
 
-          # Rulem configurarea defconfig
           make $MAKE_ARGS r5q_eur_open_defconfig
 
           # FORȚARE BPF JIT & CURĂȚARE SAMSUNG SECURITY
@@ -76,8 +93,6 @@ jobs:
           make $MAKE_ARGS olddefconfig
 
           # COMPILARE FINALĂ
-          # Am mutat ținta arhitecturii direct în KCFLAGS și KASFLAGS pentru ca asamblorul (AS=clang) să o preia nativ,
-          # eliminând complet nevoia de spații sau ghilimele problematice în interiorul MAKE_ARGS.
           make -j$(nproc --all) $MAKE_ARGS Image.gz Image.gz-dtb dtbs \
             KCFLAGS="-w -fcommon --target=aarch64-linux-gnu" \
             KASFLAGS="--target=aarch64-linux-gnu" \
@@ -86,8 +101,6 @@ jobs:
       - name: Assemble AnyKernel3
         run: |
           OUT="kernel/out/arch/arm64/boot"
-          
-          # Încercăm să luăm direct imaginea nativă compilată cu tabelele DTB înglobate corect de compilator
           if [ -f "$OUT/Image.gz-dtb" ]; then
             IMAGE_FINAL="$OUT/Image.gz-dtb"
           else
@@ -96,28 +109,18 @@ jobs:
           
           git clone https://github.com/osm0sis/AnyKernel3.git AK3
           rm -rf AK3/.git
-          
-          # Copiem imaginea finală de boot în AnyKernel
           cp "$IMAGE_FINAL" AK3/Image.gz
-          
-          # Dacă structura kernelului generează o tabelă dtbo.img separată, o împachetăm și pe ea
-          if [ -f "$OUT/dtbo.img" ]; then
-            cp "$OUT/dtbo.img" AK3/dtbo.img
-          fi
+          [ -f "$OUT/dtbo.img" ] && cp "$OUT/dtbo.img" AK3/dtbo.img
           
           cd AK3
           sed -i 's/device.name1=maguro/device.name1=r5q/g' anykernel.sh
           sed -i 's/device.name2=toroplus/device.name2=SM-G770F/g' anykernel.sh
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
           sed -i 's/header_version=0/header_version=2/g' anykernel.sh
-          
-          # Injectăm logica de instalare automată DTBO în recovery (dacă fișierul există)
-          printf '\n## dtbo flashing\nif [ -f $home/dtbo.img ]; then\n  ui_print "Flashing DTBO...";\n  flash_dtbo;\nfi;\n' >> anykernel.sh
-          
-          zip -r9 ../S10Lite_V42_BPF_LinkerFix.zip *
+          zip -r9 ../S10Lite_StockDrivers_BPF.zip *
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-V42
-          path: S10Lite_V42_BPF_LinkerFix.zip
+          name: S10Lite-StockDrivers
+          path: S10Lite_StockDrivers_BPF.zip
