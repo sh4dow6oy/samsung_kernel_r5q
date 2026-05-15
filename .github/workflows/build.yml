@@ -54,19 +54,33 @@ jobs:
         run: |
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           
-          # 1. NUCLEAR CLEANUP (Prevenim Polly Errors experimentale global)
+          # 1. FIX CONFLICTE DE FUZIUNE (Gator & KernelSU-Next)
+          echo "Curățăm punțile stricate aduse de fuziune..."
+          if [ -f drivers/Kconfig ]; then
+            sed -i '/gator/d' drivers/Kconfig
+            sed -i '/kernelsu/d' drivers/Kconfig
+          fi
+          if [ -f drivers/Makefile ]; then
+            sed -i '/gator/d' drivers/Makefile
+            sed -i '/kernelsu/d' drivers/Makefile
+          fi
+
+          # Neutralizăm scripturile Samsung sau experimentale care încearcă să ruleze 'tar' după KernelSU-Next
+          find . -type f -name "*.sh" -exec sed -i 's/tar .*KernelSU-Next.*/echo "Skipping KernelSU tar"/g' {} + || true
+
+          # 2. NUCLEAR CLEANUP (Prevenim Polly Errors experimentale global)
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm//g' {} +
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-polly[^ ]*//g' {} +
 
-          # 2. FIX SPECIFIC VDSO (Prevenim eroarea /usr/bin/as)
+          # 3. FIX SPECIFIC VDSO (Prevenim eroarea /usr/bin/as)
           if [ -f arch/arm64/kernel/vdso/Makefile ]; then
             sed -i 's/-static//g' arch/arm64/kernel/vdso/Makefile
             sed -i 's/$(LDFLAGS)/$(filter-out -static,$(LDFLAGS))/g' arch/arm64/kernel/vdso/Makefile
             sed -i 's/$(CROSS_COMPILE)as/clang/g' arch/arm64/kernel/vdso/Makefile
           fi
 
-          # 3. SETARE ARGUMENTE BUILD
+          # 4. SETARE ARGUMENTE BUILD
           MAKE_ARGS='ARCH=arm64 
             LLVM=1 
             LLVM_IAS=1 
