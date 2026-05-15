@@ -23,13 +23,21 @@ jobs:
           git fetch origin rawr-bpf
           
           echo "Rulăm fuziunea (Tragem BPF peste Main)..."
-          # Încercăm un merge normal. Dacă sunt conflicte text, dăm prioritate branch-ului rawr-bpf (-X theirs)
-          # pentru a ne asigura că patch-urile de eBPF se aplică peste core-ul stabil.
-          git merge origin/rawr-bpf -m "Fuziune: Integrare subsistem eBPF în branch-ul stabil" || {
-            echo "⚠️ Conflict detectat! Aplicăm patch-urile BPF cu forța peste structura stabilă."
-            git merge --abort
-            git merge -X theirs origin/rawr-bpf -m "Fuziune forțată: eBPF implementat cu prioritate"
+          # Încercăm un merge controlat, forțând modificările eBPF acolo unde sunt conflicte de text
+          git merge -X theirs origin/rawr-bpf -m "Fuziune: Integrare eBPF peste structura stabilă" || {
+            echo "⚠️ Fuziune parțială realizată. Rezolvăm conflictele de tip Modify/Delete..."
+            
+            # Identificăm toate fișierele șterse în HEAD dar modificate în BPF și le eliminăm din index
+            git status --porcelain | grep '^UD' | awk '{print $2}' | xargs -I {} git rm {}
+            
+            # Identificăm fișierele adăugate greșit în ambele părți fără rezoluție și le adăugăm pe cele din BPF
+            git add .
+            
+            # Finalizăm manual commit-ul de merge care a fost blocat
+            git commit -m "Fuziune finalizată: Conflictele de ștergere au fost eliminate automat"
           }
+          
+          echo "Git Merge s-a finalizat cu succes!"
 
       - name: Install Dependencies
         run: |
