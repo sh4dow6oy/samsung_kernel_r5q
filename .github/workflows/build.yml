@@ -1,4 +1,4 @@
-name: Build R5Q - Lumi BPF V45 (Merge BPF into Main)
+name: Build R5Q - Lumi BPF V46 (Custom DTC Integration)
 
 on:
   workflow_dispatch:
@@ -11,7 +11,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: LumiPlayground/android_kernel_samsung_sm8150
-          ref: rawr-rebase # <--- Punctul de pornire stabil (Main)
+          ref: rawr-rebase
           fetch-depth: 0
 
       - name: Configure Git & Merge Experimental BPF
@@ -23,26 +23,18 @@ jobs:
           git fetch origin rawr-bpf
           
           echo "Rulăm fuziunea (Tragem BPF peste Main)..."
-          # Încercăm un merge controlat, forțând modificările eBPF acolo unde sunt conflicte de text
           git merge -X theirs origin/rawr-bpf -m "Fuziune: Integrare eBPF peste structura stabilă" || {
             echo "⚠️ Fuziune parțială realizată. Rezolvăm conflictele de tip Modify/Delete..."
-            
-            # Identificăm toate fișierele șterse în HEAD dar modificate în BPF și le eliminăm din index
             git status --porcelain | grep '^UD' | awk '{print $2}' | xargs -I {} git rm {}
-            
-            # Identificăm fișierele adăugate greșit în ambele părți fără rezoluție și le adăugăm pe cele din BPF
             git add .
-            
-            # Finalizăm manual commit-ul de merge care a fost blocat
             git commit -m "Fuziune finalizată: Conflictele de ștergere au fost eliminate automat"
           }
-          
           echo "Git Merge s-a finalizat cu succes!"
 
       - name: Install Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu bc libssl-dev zstd zip python3 python-is-python3 libelf-dev
+          sudo apt-get install -y gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu bc libssl-dev zstd zip python3 python-is-python3 libelf-dev flex bison
 
       - name: Setup Toolchain (Neutron Clang)
         run: |
@@ -57,18 +49,15 @@ jobs:
           make -j$(nproc)
           # Salvăm calea absolută către binarul executabil dtc
           echo "CUSTOM_DTC_PATH=$(pwd)/dtc" >> $GITHUB_ENV
-          
+
       - name: Build Kernel
         run: |
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           
           # 1. TĂIEM DE LA RĂDĂCINĂ APELURILE JQ ȘI KERNELSU DIN MAKEFILE-URI
           echo "Dezactivăm scripturile de auto-patching care folosesc jq..."
-          # Căutăm orice linie din Makefile-uri care conține 'jq' sau 'KernelSU' și o eliminăm complet
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i '/jq /d' {} + || true
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i '/KernelSU/d' {} + || true
-          
-          # Sabotăm și eventualele scripturi shell (.sh) care rulează jq în background
           find . -type f -name "*.sh" -exec sed -i '/jq /d' {} + || true
 
           # 2. FIX CONFLICTE DE CONFIGURARE ÎN FIȘIERE (Kconfig)
@@ -90,20 +79,20 @@ jobs:
             sed -i 's/int path_umount(struct path \*path/int path_umount(const struct path \*path/g' fs/namespace.c
           fi
 
-          # 4. NUCLEAR CLEANUP (Prevenim Polly Errors experimentale global)
+          # 4. NUCLEAR CLEANUP (Prevenim Polly Errors)
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm//g' {} +
           find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-polly[^ ]*//g' {} +
 
-          # 5. FIX SPECIFIC VDSO (Prevenim eroarea /usr/bin/as)
+          # 5. FIX SPECIFIC VDSO
           if [ -f arch/arm64/kernel/vdso/Makefile ]; then
             sed -i 's/-static//g' arch/arm64/kernel/vdso/Makefile
             sed -i 's/$(LDFLAGS)/$(filter-out -static,$(LDFLAGS))/g' arch/arm64/kernel/vdso/Makefile
             sed -i 's/$(CROSS_COMPILE)as/clang/g' arch/arm64/kernel/vdso/Makefile
           fi
 
-          # 6. SETARE ARGUMENTE BUILD
-          MAKE_ARGS='ARCH=arm64 
+          # 6. SETARE ARGUMENTE BUILD (Am adăugat DTC=$CUSTOM_DTC_PATH la final)
+          MAKE_ARGS="ARCH=arm64 
             LLVM=1 
             LLVM_IAS=1 
             CC=clang 
@@ -123,6 +112,9 @@ jobs:
             O=out
             DTC=$CUSTOM_DTC_PATH"
 
+          # Notă: Am schimbat ghimelele simple (') cu ghimele duble (") la MAKE_ARGS 
+          # pentru ca Bash să poată citi corect variabila $CUSTOM_DTC_PATH exportată de pasul anterior.
+
           make $MAKE_ARGS r5q_eur_open_defconfig
 
           # FORȚARE BPF JIT & CURĂȚARE SAMSUNG SECURITY
@@ -140,6 +132,7 @@ jobs:
             KCFLAGS="-w -fcommon --target=aarch64-linux-gnu" \
             KASFLAGS="--target=aarch64-linux-gnu" \
             LDFLAGS="--no-rosegment"
+
       - name: Assemble AnyKernel3
         run: |
           OUT="out/arch/arm64/boot"
@@ -159,10 +152,10 @@ jobs:
           sed -i 's/device.name2=toroplus/device.name2=SM-G770F/g' anykernel.sh
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
           sed -i 's/header_version=0/header_version=2/g' anykernel.sh
-          zip -r9 ../S10Lite_InvertedMerge_BPF.zip *
+          zip -r9 ../S10Lite_DTC_BPF.zip *
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-Inverted-Kernel
-          path: S10Lite_InvertedMerge_BPF.zip
+          name: S10Lite-DTC-Kernel
+          path: S10Lite_DTC_BPF.zip
