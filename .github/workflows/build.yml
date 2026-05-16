@@ -50,6 +50,14 @@ jobs:
           wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
           tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
 
+      - name: Build New DTC
+        run: |
+          git clone --depth=1 https://git.kernel.org/pub/scm/utils/dtc/dtc.git
+          cd dtc
+          make -j$(nproc)
+          # Salvăm calea absolută către binarul executabil dtc
+          echo "CUSTOM_DTC_PATH=$(pwd)/dtc" >> $GITHUB_ENV
+          
       - name: Build Kernel
         run: |
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
@@ -112,7 +120,8 @@ jobs:
             HOSTCC=clang 
             HOSTCXX=clang++ 
             HOSTCFLAGS=-Wno-error 
-            O=out'
+            O=out
+            DTC=$CUSTOM_DTC_PATH"
 
           make $MAKE_ARGS r5q_eur_open_defconfig
 
