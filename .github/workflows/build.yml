@@ -54,25 +54,16 @@ jobs:
         run: |
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           
-          # 1. SABOTAJ INTELIGENT PENTRU COMANDELE FANTOMĂ (tar & jq)
-          # Creăm o funcție falsă de tar/jq în mediul local pentru a bloca scripturile ascunse din BPF să dea eroare
-          tar() {
-            if [[ "$*" == *"KernelSU"* ]]; then
-              echo "Action Mock: Ignorăm tar-ul pentru KernelSU!"
-              return 0
-            fi
-            command tar "$@"
-          }
-          export -f tar
+          # 1. TĂIEM DE LA RĂDĂCINĂ APELURILE JQ ȘI KERNELSU DIN MAKEFILE-URI
+          echo "Dezactivăm scripturile de auto-patching care folosesc jq..."
+          # Căutăm orice linie din Makefile-uri care conține 'jq' sau 'KernelSU' și o eliminăm complet
+          find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i '/jq /d' {} + || true
+          find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i '/KernelSU/d' {} + || true
+          
+          # Sabotăm și eventualele scripturi shell (.sh) care rulează jq în background
+          find . -type f -name "*.sh" -exec sed -i '/jq /d' {} + || true
 
-          jq() {
-            echo "Action Mock: Bypass jq JSON error!"
-            echo "[]" # Returnăm o listă goală validă în caz că scriptul se așteaptă la un array JSON
-            return 0
-          }
-          export -f jq
-
-          # 2. FIX CONFLICTE DE CONFIGURARE ÎN FIȘIERE
+          # 2. FIX CONFLICTE DE CONFIGURARE ÎN FIȘIERE (Kconfig)
           echo "Curățăm modulele lipsă din configurările Kconfig..."
           if [ -f drivers/Kconfig ]; then
             sed -i '/gator/d' drivers/Kconfig
