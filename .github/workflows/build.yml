@@ -66,10 +66,10 @@ jobs:
           
           # 3. Modificare Configurație (.config)
           ./scripts/config --file out/.config \
-            -e CONFIG_LTO_CLANG \
-            -e CONFIG_THINLTO \
+            -d CONFIG_LTO_CLANG \
+            -d CONFIG_THINLTO \
             -d CONFIG_WERROR \
-            -d CONFIG_LTO_NONE 
+            -e CONFIG_LTO_NONE 
             
           make $MAKE_ARGS olddefconfig
           
