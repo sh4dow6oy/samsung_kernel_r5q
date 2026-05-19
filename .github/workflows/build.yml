@@ -49,8 +49,15 @@ jobs:
             chmod 755 $TOOLCHAIN_PATH/secgetspf
           fi
           
-          # 3. Aplicăm patch-ul de msleep pe calea corectă din repository
+          # 3. PATCH-URI DIRECTE ÎN CODUL SURSĂ
+          # A) Patch pentru msleep în usbpd_manager.c
           sed -i '1s/^/#include <linux\/delay.h>\n/' $KERNEL_SRC_DIR/drivers/ccic/usbpd_manager.c
+          
+          # B) Patch pentru dwc3-msm.c (Ocolim variabila lipsă restarting_host_mode)
+          # Înlocuim logul dev_info care folosește variabila lipsă cu un log simplu
+          sed -i 's/enable, id, mdwc->restarting_host_mode/enable, id, 0/g' $KERNEL_SRC_DIR/drivers/usb/dwc3/dwc3-msm.c
+          # Înlocuim bucla while(mdwc->restarting_host_mode) cu o condiție falsă while(0) ca să sară peste ea
+          sed -i 's/while (mdwc->restarting_host_mode)/while (0)/g' $KERNEL_SRC_DIR/drivers/usb/dwc3/dwc3-msm.c
           
           # --- ARGUMENTE COMPILARE ---
           MAKE_ARGS="ARCH=arm64 \
