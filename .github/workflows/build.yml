@@ -45,8 +45,8 @@ jobs:
           fi
           # ----------------------------------------
 
-          - name: Patch usbpd_manager.c for msleep
-              run: |
+      - name: Patch usbpd_manager.c for msleep
+        run: |
           sed -i '1s/^/#include <linux\/delay.h>\n/' s/drivers/ccic/usbpd_manager.c
           
           # --- ARGUMENTE COMPILARE ---
