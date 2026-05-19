@@ -58,9 +58,13 @@ jobs:
           sed -i 's/while (mdwc->restarting_host_mode)/while (0)/g' $KERNEL_SRC_DIR/drivers/usb/dwc3/dwc3-msm.c
           
           # C) Patch pentru usb_notify.c (Oprim compilarea fișierului problematic din Makefile)
-          # Înlocuim adăugarea fișierului în Makefile cu un comentariu sau linie neutră
           if [ -f "$KERNEL_SRC_DIR/drivers/usb/notify/Makefile" ]; then
             sed -i 's/obj-$(CONFIG_USB_NOTIFY_LAYER) += usb_notify.o/# Fișier defect dezactivat/g' $KERNEL_SRC_DIR/drivers/usb/notify/Makefile
+          fi
+
+          # D) Patch pentru sec_debug.c (Înlocuim constanta lipsă de DRAM test cu Power Reset)
+          if [ -f "$KERNEL_SRC_DIR/drivers/samsung/debug/sec_debug.c" ]; then
+            sed -i 's/PON_RESTART_REASON_USER_DRAM_TEST/PON_RESTART_REASON_POWER_RESET/g' $KERNEL_SRC_DIR/drivers/samsung/debug/sec_debug.c
           fi
 
           # --- ARGUMENTE COMPILARE ---
