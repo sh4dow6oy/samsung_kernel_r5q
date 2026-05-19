@@ -1,161 +1,128 @@
-name: Build R5Q - Lumi BPF V46 (Custom DTC Integration)
+name: Build Samsung SM8150 (Auriana)
 
 on:
   workflow_dispatch:
 
 jobs:
   build:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-22.04
     steps:
-      - name: Checkout Clean Main Branch (rawr-rebase)
-        uses: actions/checkout@v4
-        with:
-          repository: LumiPlayground/android_kernel_samsung_sm8150
-          ref: rawr-rebase
-          fetch-depth: 0
-
-      - name: Configure Git & Merge Experimental BPF
+      - name: Cleanup and Install Dependencies
         run: |
-          git config --global user.name "GitHub Action"
-          git config --global user.email "action@github.com"
-          
-          echo "Aducem modificările din branch-ul experimental rawr-bpf..."
-          git fetch origin rawr-bpf
-          
-          echo "Rulăm fuziunea (Tragem BPF peste Main)..."
-          git merge -X theirs origin/rawr-bpf -m "Fuziune: Integrare eBPF peste structura stabilă" || {
-            echo "⚠️ Fuziune parțială realizată. Rezolvăm conflictele de tip Modify/Delete..."
-            git status --porcelain | grep '^UD' | awk '{print $2}' | xargs -I {} git rm {}
-            git add .
-            git commit -m "Fuziune finalizată: Conflictele de ștergere au fost eliminate automat"
-          }
-          echo "Git Merge s-a finalizat cu succes!"
-
-      - name: Install Dependencies
-        run: |
+          sudo dpkg --add-architecture i386
+          sudo add-apt-repository universe -y
           sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu bc libssl-dev zstd zip python3 python-is-python3 libelf-dev flex bison
+          sudo apt-get install -y python2-minimal bc build-essential flex bison ncurses-dev libssl-dev libelf-dev xz-utils libfl-dev git-core ccache zip zstd binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi gcc-multilib libc6:i386 libstdc++6:i386
+      - name: Clone Kernel Source
+        run: git clone --depth=1 -b auriana https://github.com/sh4dow6oy/android_kernel_samsung_sm8150.git s
 
-      - name: Setup Toolchain (Neutron Clang)
-        run: |
-          mkdir -p clang
-          wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
-          tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
-
-      - name: Build New DTC
-        run: |
-          git clone --depth=1 https://git.kernel.org/pub/scm/utils/dtc/dtc.git
-          cd dtc
-          make -j$(nproc)
-          # Salvăm calea absolută către binarul executabil dtc
-          echo "CUSTOM_DTC_PATH=$(pwd)/dtc" >> $GITHUB_ENV
+      - name: Download Proton Clang
+        run: git clone --depth=1 https://github.com/kdrag0n/proton-clang.git llvm-proton
 
       - name: Build Kernel
         run: |
-          export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
+          export ARCH=arm64
+          TOOLCHAIN_PATH="${{ github.workspace }}/llvm-proton/bin"
+          export PATH="$TOOLCHAIN_PATH:$PATH"
           
-          # 1. TĂIEM DE LA RĂDĂCINĂ APELURILE JQ ȘI KERNELSU DIN MAKEFILE-URI
-          echo "Dezactivăm scripturile de auto-patching care folosesc jq..."
-          find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i '/jq /d' {} + || true
-          find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i '/KernelSU/d' {} + || true
-          find . -type f -name "*.sh" -exec sed -i '/jq /d' {} + || true
-
-          # 2. FIX CONFLICTE DE CONFIGURARE ÎN FIȘIERE (Kconfig)
-          echo "Curățăm modulele lipsă din configurările Kconfig..."
-          if [ -f drivers/Kconfig ]; then
-            sed -i '/gator/d' drivers/Kconfig
-            sed -i '/kernelsu/d' drivers/Kconfig
-            sed -i '/kperfmon/d' drivers/Kconfig
-          fi
-          if [ -f drivers/Makefile ]; then
-            sed -i '/gator/d' drivers/Makefile
-            sed -i '/kernelsu/d' drivers/Makefile
-            sed -i '/kperfmon/d' drivers/Makefile
-          fi
-
-          # 3. FIX C TYPE MISMATCH (Adăugare const în fs/namespace.c)
-          if [ -f fs/namespace.c ]; then
-            echo "Aliniem semnătura path_umount cu fs/internal.h..."
-            sed -i 's/int path_umount(struct path \*path/int path_umount(const struct path \*path/g' fs/namespace.c
-          fi
-
-          # 4. NUCLEAR CLEANUP (Prevenim Polly Errors)
-          find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
-          find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm//g' {} +
-          find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-polly[^ ]*//g' {} +
-
-          # 5. FIX SPECIFIC VDSO
-          if [ -f arch/arm64/kernel/vdso/Makefile ]; then
-            sed -i 's/-static//g' arch/arm64/kernel/vdso/Makefile
-            sed -i 's/$(LDFLAGS)/$(filter-out -static,$(LDFLAGS))/g' arch/arm64/kernel/vdso/Makefile
-            sed -i 's/$(CROSS_COMPILE)as/clang/g' arch/arm64/kernel/vdso/Makefile
-          fi
-
-          # 6. SETARE ARGUMENTE BUILD (Am adăugat DTC=$CUSTOM_DTC_PATH la final)
-          MAKE_ARGS="ARCH=arm64 
-            LLVM=1 
-            LLVM_IAS=1 
-            CC=clang 
-            LD=ld.lld 
-            AR=llvm-ar 
-            NM=llvm-nm 
-            OBJCOPY=llvm-objcopy 
-            OBJDUMP=llvm-objdump 
-            STRIP=llvm-strip 
-            AS=clang
-            CROSS_COMPILE=aarch64-linux-gnu- 
-            CROSS_COMPILE_ARM32=arm-linux-gnueabi- 
-            CLANG_TRIPLE=aarch64-linux-gnu- 
-            HOSTCC=clang 
-            HOSTCXX=clang++ 
-            HOSTCFLAGS=-Wno-error 
-            O=out
-            DTC=$CUSTOM_DTC_PATH"
-
-          # Notă: Am schimbat ghimelele simple (') cu ghimele duble (") la MAKE_ARGS 
-          # pentru ca Bash să poată citi corect variabila $CUSTOM_DTC_PATH exportată de pasul anterior.
-
-          make $MAKE_ARGS r5q_eur_open_defconfig
-
-          # FORȚARE BPF JIT & CURĂȚARE SAMSUNG SECURITY
-          ./scripts/config --file out/.config \
-            -e CONFIG_BPF -e CONFIG_BPF_SYSCALL -e CONFIG_BPF_JIT -e CONFIG_BPF_JIT_ALWAYS_ON \
-            -e CONFIG_HAVE_EBPF_JIT -e CONFIG_NET_ACT_BPF -e CONFIG_NET_CLS_BPF \
-            -d CONFIG_SAMSUNG_RTIC -d CONFIG_SAMSUNG_RTIC_AMP \
-            -d CONFIG_CC_STACKPROTECTOR_STRONG -e CONFIG_CC_STACKPROTECTOR_NONE \
-            -d CONFIG_WERROR
-
-          make $MAKE_ARGS olddefconfig
-
-          # COMPILARE FINALĂ
-          make -j$(nproc --all) $MAKE_ARGS Image.gz Image.gz-dtb dtbs \
-            KCFLAGS="-w -fcommon --target=aarch64-linux-gnu" \
-            KASFLAGS="--target=aarch64-linux-gnu" \
-            LDFLAGS="--no-rosegment"
-
-      - name: Assemble AnyKernel3
-        run: |
-          OUT="out/arch/arm64/boot"
-          if [ -f "$OUT/Image.gz-dtb" ]; then
-            IMAGE_FINAL="$OUT/Image.gz-dtb"
+          cd s
+          chmod +x tools/mkdtimg
+          
+          # --- FIX PERMISIUNI secgetspf ORIGINAL ---
+          # Căutăm binarul original în surse
+          ORIGINAL_SPF=$(find . -name "secgetspf" -type f | head -n 1)
+          
+          if [ -z "$ORIGINAL_SPF" ]; then
+            echo "⚠️ secgetspf nu a fost găsit în surse! Fallback la dummy..."
+            echo -e '#!/bin/sh\nexit 0' > $TOOLCHAIN_PATH/secgetspf
+            chmod 755 $TOOLCHAIN_PATH/secgetspf
           else
-            IMAGE_FINAL="$OUT/Image.gz"
+            echo "✅ Găsit secgetspf original la: $ORIGINAL_SPF"
+            # Copiem binarul direct în PATH-ul toolchain-ului în loc de symlink (previne Permission Denied)
+            cp "$ORIGINAL_SPF" $TOOLCHAIN_PATH/secgetspf
+            # Forțăm permisiuni de execuție complete (Citire, Scriere, Execuție)
+            chmod 755 $TOOLCHAIN_PATH/secgetspf
           fi
+          # ----------------------------------------
           
-          git clone https://github.com/osm0sis/AnyKernel3.git AK3
-          rm -rf AK3/.git
-          cp "$IMAGE_FINAL" AK3/Image.gz
-          [ -f "$OUT/dtbo.img" ] && cp "$OUT/dtbo.img" AK3/dtbo.img
+          # --- ARGUMENTE COMPILARE ---
+          MAKE_ARGS="ARCH=arm64 \
+            O=out \
+            CC=clang \
+            LD=ld.lld \
+            AR=llvm-ar \
+            NM=llvm-nm \
+            OBJCOPY=llvm-objcopy \
+            OBJDUMP=llvm-objdump \
+            STRIP=llvm-strip \
+            READELF=llvm-readelf \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            LLVM=1 \
+            LLVM_IAS=0 \
+            PYTHON=python2"
+          # 2. Generare Configurație EUR_OPEN
+          make $MAKE_ARGS sm8150_sec_r5q_eur_open_defconfig
           
-          cd AK3
-          sed -i 's/device.name1=maguro/device.name1=r5q/g' anykernel.sh
-          sed -i 's/device.name2=toroplus/device.name2=SM-G770F/g' anykernel.sh
-          sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-          sed -i 's/header_version=0/header_version=2/g' anykernel.sh
-          zip -r9 ../S10Lite_DTC_BPF.zip *
+          # 3. Modificare Configurație (.config)
+          ./scripts/config --file out/.config \
+            -e CONFIG_LTO_CLANG \
+            -e CONFIG_THINLTO \
+            -d CONFIG_WERROR \
+            -e CONFIG_LTO_NONE 
+            
+          make $MAKE_ARGS olddefconfig
+          
+          # 4. Compilare Finală
+          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -Wno-error" Image.gz-dtb dtbs
+      - name: Create Flashable Package
+        run: |
+          # 1. Generăm o imagine DTBO curată folosind utilitarul nativ din surse (folosind formatul stabil v1 agreat de bootloader)
+          MKDTIMG="${{ github.workspace }}/s/tools/mkdtimg"
+          chmod +x $MKDTIMG
+          DTBO_FILES=$(find s/out/arch/arm64/boot/dts/ -name "*.dtbo")
+          $MKDTIMG create dtbo.img --version=1 --page_size=4096 $DTBO_FILES
+          
+          # 2. Clonare AnyKernel3 și mutare fișiere binare
+          git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git AnyKernel
+          cp s/out/arch/arm64/boot/Image.gz-dtb AnyKernel/Image.gz
+          cp dtbo.img AnyKernel/dtbo.img
+          
+          cd AnyKernel
 
-      - name: Upload
+          # =========================================================
+          # ANYKERNEL3 CONFIG
+          # =========================================================
+          
+          # dezactivează device check
+          sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
+          
+          # header modern Samsung/OpenELA
+          sed -i 's/header_version=0/header_version=2/g' anykernel.sh
+          
+          # device A/B
+          sed -i 's/IS_SLOT_DEVICE=0/IS_SLOT_DEVICE=1/g' anykernel.sh || true
+          
+          # boot block autodetect
+          sed -i 's|BLOCK=/dev/block/bootdevice/by-name/boot;|BLOCK=boot;|g' anykernel.sh || true
+          
+          # fără patch vbmeta
+          sed -i 's/PATCH_VBMETA_FLAG=auto/PATCH_VBMETA_FLAG=0/g' anykernel.sh || true
+          
+          # ramdisk auto detect
+          sed -i 's/RAMDISK_COMPRESSION=.*/RAMDISK_COMPRESSION=auto;/g' anykernel.sh || true
+          
+          # compatibilitate r5q
+          sed -i 's/device.name1=.*/device.name1=r5q/g' anykernel.sh || true
+          sed -i 's/device.name2=.*/device.name2=r5qxxx/g' anykernel.sh || true
+          
+          # fără modules externe
+          sed -i 's/do.modules=1/do.modules=0/g' anykernel.sh || true
+          
+          # Împachetarea în fișierul flashable .zip final
+          zip -r9 ../Kernel-Auriana-Final.zip *
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: S10Lite-DTC-Kernel
-          path: S10Lite_DTC_BPF.zip
+          name: Kernel-Auriana-SM8150
+          path: Kernel-Auriana-Final.zip
