@@ -69,7 +69,7 @@ jobs:
             -e CONFIG_LTO_CLANG \
             -e CONFIG_THINLTO \
             -d CONFIG_WERROR \
-            -e CONFIG_LTO_NONE 
+            -d CONFIG_LTO_NONE 
             
           make $MAKE_ARGS olddefconfig
           
