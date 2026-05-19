@@ -57,9 +57,18 @@ jobs:
           sed -i 's/enable, id, mdwc->restarting_host_mode/enable, id, 0/g' $KERNEL_SRC_DIR/drivers/usb/dwc3/dwc3-msm.c
           sed -i 's/while (mdwc->restarting_host_mode)/while (0)/g' $KERNEL_SRC_DIR/drivers/usb/dwc3/dwc3-msm.c
           
-          # C) Patch pentru usb_notify.c (Oprim compilarea fișierului problematic din Makefile)
-          if [ -f "$KERNEL_SRC_DIR/drivers/usb/notify/Makefile" ]; then
-            sed -i 's/obj-$(CONFIG_USB_NOTIFY_LAYER) += usb_notify.o/# Fișier defect dezactivat/g' $KERNEL_SRC_DIR/drivers/usb/notify/Makefile
+          # C) Patch avansat pentru usb_notify.c (Golim funcția defectă în loc să dezactivăm fișierul)
+          # Acest lucru păstrează simbolurile globale funcționale pentru f_ss_mon_gadget.c
+          if [ -f "$KERNEL_SRC_DIR/drivers/usb/notify/usb_notify.c" ]; then
+            # Căutăm zona funcției cu erori de sintaxă (în mod normal se numește otg_notify_block_set sau similar)
+            # Pentru siguranță absolută, comentăm doar liniile problematice specifice indicate în log
+            sed -i 's/usb_notify = NOTIFY_EVENT_ALL_DISABLE;/\/\/ usb_notify = NOTIFY_EVENT_ALL_DISABLE;/g' $KERNEL_SRC_DIR/drivers/usb/notify/usb_notify.c
+            sed -i 's/usb_notify_state = NOTIFY_EVENT_BLOCKED;/\/\/ usb_notify_state = NOTIFY_EVENT_BLOCKED;/g' $KERNEL_SRC_DIR/drivers/usb/notify/usb_notify.c
+            sed -i 's/usb_notify = NOTIFY_EVENT_HOST_DISABLE;/\/\/ usb_notify = NOTIFY_EVENT_HOST_DISABLE;/g' $KERNEL_SRC_DIR/drivers/usb/notify/usb_notify.c
+            sed -i 's/usb_notify = NOTIFY_EVENT_CLIENT_DISABLE;/\/\/ usb_notify = NOTIFY_EVENT_CLIENT_DISABLE;/g' $KERNEL_SRC_DIR/drivers/usb/notify/usb_notify.c
+            sed -i 's/usb_notify_state = NOTIFY_EVENT_DISABLED;/\/\/ usb_notify_state = NOTIFY_EVENT_DISABLED;/g' $KERNEL_SRC_DIR/drivers/usb/notify/usb_notify.c
+            # Eliminăm apelurile cu pointeri denaturați
+            sed -i 's/(void \*)&usb_notify, (void \*)&usb_notify_state/\/\/ (void \*)&usb_notify, (void \*)&usb_notify_state/g' $KERNEL_SRC_DIR/drivers/usb/notify/usb_notify.c
           fi
 
           # D) Patch pentru sec_debug.c (Înlocuim constanta lipsă de DRAM test cu Power Reset)
