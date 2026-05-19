@@ -47,7 +47,8 @@ jobs:
 
       - name: Patch usbpd_manager.c for msleep
         run: |
-          sed -i '1s/^/#include <linux\/delay.h>\n/' s/drivers/ccic/usbpd_manager.c
+          # Corectat: eliminat litera 's/' din fața căii fișierului
+          sed -i '1s/^/#include <linux\/delay.h>\n/' drivers/ccic/usbpd_manager.c
           
           # --- ARGUMENTE COMPILARE ---
           MAKE_ARGS="ARCH=arm64 \
