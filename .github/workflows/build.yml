@@ -1,56 +1,51 @@
-name: Build Samsung SM8150 (Auriana)
-
+name: Build Roynas R5Q - Neutron Clang Final
 on:
   workflow_dispatch:
 
 jobs:
   build:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     steps:
-      - name: Cleanup and Install Dependencies
+      - name: Checkout Source
+        uses: actions/checkout@v4
+        with:
+          repository: sh4dow6oy/kernel_samsung_r3q
+          ref: master
+          fetch-depth: 1
+
+      - name: Install Dependencies
         run: |
-          sudo dpkg --add-architecture i386
-          sudo add-apt-repository universe -y
           sudo apt-get update
-          sudo apt-get install -y python2-minimal bc build-essential flex bison ncurses-dev libssl-dev libelf-dev xz-utils libfl-dev git-core ccache zip zstd binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi gcc-multilib libc6:i386 libstdc++6:i386
-
-      - name: Clone Kernel Source
-        run: git clone --depth=1 -b auriana https://github.com/sh4dow6oy/android_kernel_samsung_sm8150.git s
-
-      - name: Download Proton Clang
-        run: git clone --depth=1 https://github.com/kdrag0n/proton-clang.git llvm-proton
-
-      - name: Build and Patch Kernel
+          sudo apt-get install -y bc build-essential flex bison lz4 libssl-dev libelf-dev \
+          ccache python3 python-is-python3 libarchive-tools wget zstd libtinfo6 zip
+      - name: Setup Neutron Clang
         run: |
-          # 1. Identificăm automat unde se află sursele kernelului
-          if [ -d "s/drivers" ]; then
-            KERNEL_SRC_DIR="s"
-          else
-            KERNEL_SRC_DIR="."
+          mkdir clang
+          wget -q https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst
+          tar -I zstd -xf neutron-clang-10032024.tar.zst -C clang
+      - name: Build Kernel
+        run: |
+          export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
+          
+          # 1. NUCLEAR CLEANUP (Prevenim Error 1)
+          find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm -polly[^ ]*//g' {} +
+          find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-mllvm//g' {} +
+          find . -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-polly[^ ]*//g' {} +
+          
+          # 2. VDSO FIX (Anti -static)
+          if [ -f arch/arm64/kernel/vdso/Makefile ]; then
+            sed -i 's/-static//g' arch/arm64/kernel/vdso/Makefile
+            sed -i 's/$(LDFLAGS)/$(filter-out -static,$(LDFLAGS))/g' arch/arm64/kernel/vdso/Makefile
           fi
-          echo "Sursele kernelului au fost găsite în: $KERNEL_SRC_DIR"
-          
-          # 2. Configurare mediu toolchain (Proton Clang)
-          export ARCH=arm64
-          TOOLCHAIN_PATH="${{ github.workspace }}/llvm-proton/bin"
-          export PATH="$TOOLCHAIN_PATH:$PATH"
-          
-          chmod +x $KERNEL_SRC_DIR/tools/mkdtimg
-          
-          # --- FIX PERMISIUNI secgetspf ORIGINAL ---
-          ORIGINAL_SPF=$(find . -name "secgetspf" -type f | head -n 1)
-          if [ -z "$ORIGINAL_SPF" ]; then
-            echo "⚠️ secgetspf nu a fost găsit în surse! Fallback la dummy..."
-            echo -e '#!/bin/sh\nexit 0' > $TOOLCHAIN_PATH/secgetspf
-            chmod 755 $TOOLCHAIN_PATH/secgetspf
-          else
-            echo "✅ Găsit secgetspf original la: $ORIGINAL_SPF"
-            cp "$ORIGINAL_SPF" $TOOLCHAIN_PATH/secgetspf
-            chmod 755 $TOOLCHAIN_PATH/secgetspf
-          fi
-
-          # --- ARGUMENTE COMPILARE ---
+          # 3. KERNELSU & SAMSUNG CLEANUP
+          sed -i '/kernelsu/d' drivers/android/Kconfig || true
+          sed -i '/kernelsu/d' drivers/android/Makefile || true
+          rm -rf drivers/kernelsu
+          sed -i 's/ifneq ($(wildcard $(srctree)\/scripts\/gcc-wrapper.py),)/ifeq (0,1)/g' Makefile
+          # 4. Argumente Build
           MAKE_ARGS="ARCH=arm64 \
+            LLVM=1 \
+            LLVM_IAS=1 \
             CC=clang \
             LD=ld.lld \
             AR=llvm-ar \
@@ -58,60 +53,45 @@ jobs:
             OBJCOPY=llvm-objcopy \
             OBJDUMP=llvm-objdump \
             STRIP=llvm-strip \
-            READELF=llvm-readelf \
             CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-            LLVM=1 \
-            LLVM_IAS=0 \
-            PYTHON=python2"
-          
-          # Intrăm în folderul fizic al surselor kernelului
-          cd $KERNEL_SRC_DIR
-          
-          # 4. Generare Configurație EUR_OPEN
-          mkdir -p out
-          make $MAKE_ARGS O=out sm8150_sec_r5q_eur_open_defconfig
-          
-          # 5. Modificare Configurație (.config) - Optimizări + Eliminare drivere blocaj Samsung
+            O=out"
+          # 5. Configurare
+          make $MAKE_ARGS r5q_defconfig
           ./scripts/config --file out/.config \
-            -d CONFIG_LTO_CLANG \
-            -d CONFIG_THINLTO \
-            -d CONFIG_WERROR \
-            -e CONFIG_LTO_NONE \
-            -e CONFIG_CMDLINE_FORCE \
-            --set-str CONFIG_CMDLINE "rcupdate.rcu_expedited=1 rcu_nocbs=0-7 cgroup.memory=nokmem,nosocket console=null androidboot.hardware=qcom androidboot.console=ttyMSM0 androidboot.memcg=1 lpm_levels.sleep_disabled=1 video=vfb:640x400,bpp=32,memsize=3072000 msm_rtb.filter=0x237 service_locator.enable=1 swiotlb=2048 androidboot.usbcontroller=a600000.dwc3 firmware_class.path=/vendor/firmware_mnt/image androidboot.selinux=permissive buildvariant=userdebug androidboot.verifiedbootstate=orange androidboot.keymaster=1 androidboot.ulcnt=3 androidboot.bootdevice=1d84000.ufshc androidboot.fstab_suffix=default androidboot.boot_devices=soc/1d84000.ufshc androidboot.serialno=RF8N6195TND androidboot.baseband=msm msm_drm.dsi_display0=ss_dsi_panel_S6E3FA9_AMB667UM01_FHD: lcd_id=0x814001 window_color= androidboot.dtbo_idx=4 androidboot.dtb_idx=1 androidboot.sec_atd.tty=/dev/ttyHS8 androidboot.revision=9 androidboot.subpcb=0 androidboot.ap_serial=0xEFB622C5 ccic_info=1 fg_reset=0 sec_log=0x200000@0xC1600000 sec_dbg=0x1FF000@0xC1400000 sec_dbg_ex_info=0x1000@0xC15FF000 androidboot.debug_level=0x4f4c sec_debug.enable=0 sec_debug.enable_user=0 msm_rtb.enable=0 androidboot.cp_debug_level=0x55FF sec_debug.enable_cp_debug=0 softdog.soft_margin=100 softdog.soft_panic=1 androidboot.cp_reserved_mem=off androidboot.reserve_mem_region=0x0 androidboot.force_upload=0x0 androidboot.upload_offset=9438196 sec_debug.dump_sink=0x0 sec_debug.reboot_multicmd=0x1 signoff=0x7277 androidboot.boot_recovery=0 androidboot.force_normal_boot=1 ufshcd.skip_pm_qos=1 androidboot.carrierid.param.offset=9437644 androidboot.carrierid=DBT androidboot.sales.param.offset=9437648 androidboot.sales_code=XSG androidboot.prototype.param.offset=9437660 androidboot.im.param.offset=9437232 androidboot.me.param.offset=9437312 androidboot.sn.param.offset=9437392 androidboot.pr.param.offset=9437472 androidboot.sku.param.offset=9437552 androidboot.prodcode.param.offset=9445416 androidboot.windowcolor.param.offset=9445496 androidboot.fastbootd=false androidboot.warranty_bit=1 androidboot.wb.hs=30C androidboot.wb.snapQB=76443505R androidboot.ucs_mode=0 androidboot.swp_config=0 androidboot.rp=9 androidboot.svb.ver=SVB1.0 androidboot.em.did=2030A5EFB622C511 androidboot.em.model=SM-G770F androidboot.em.status=0x0 androidboot.sb.debug0=0x0 androidboot.em.rdx_dump=false androidboot.bootloader=G770FXXS9HXA1 androidboot.edtbo=0 charging_mode=0x00 afc_disable=0x30 uart_sel=0x02 sapa=0 androidboot.ddr_start_type=1 androidboot.dram_info=01,07,00,8G androidboot.usrf=9438192 sec_dqa=0220 factory_mode=0 androidboot.hardware.sku=hcesimese"
-            
-          # Sincronizăm configurațiile cu fișierul modificat
-          make $MAKE_ARGS O=out olddefconfig
+            -d CONFIG_LTO -d CONFIG_LTO_CLANG -e CONFIG_LTO_NONE \
+            -d CONFIG_CC_STACKPROTECTOR_STRONG -e CONFIG_CC_STACKPROTECTOR_NONE \
+            -d CONFIG_SHADOW_CALL_STACK -d CONFIG_KNOX_KAP -d CONFIG_SECURITY_SAMSUNG_KNOX \
+            -d CONFIG_ASSIST_KSU -d CONFIG_KSU
+          make $MAKE_ARGS olddefconfig
           
-          # 6. Compilare Finală stabilă
-          make -j$(nproc --all) $MAKE_ARGS O=out KCFLAGS="-fcommon -Wno-error" Image.gz-dtb dtbs
-
-      - name: Create Flashable Package
+          # 6. Compilare
+          make -j$(nproc --all) $MAKE_ARGS KCFLAGS="-fcommon -Wno-error -Wno-unknown-warning-option -Wno-unused-command-line-argument"
+      - name: Package with AnyKernel3
         run: |
-          MKDTIMG="${{ github.workspace }}/s/tools/mkdtimg"
-          chmod +x $MKDTIMG
-          DTBO_FILES=$(find s/out/arch/arm64/boot/dts/ -name "*.dtbo")
-          $MKDTIMG create dtbo.img --version=1 --page_size=4096 $DTBO_FILES
+          # Identificăm fișierele generate
+          IMAGE="$GITHUB_WORKSPACE/out/arch/arm64/boot/Image.gz-dtb"
+          if [ ! -f "$IMAGE" ]; then
+            IMAGE="$GITHUB_WORKSPACE/out/arch/arm64/boot/Image.gz"
+          fi
+          DTBO="$GITHUB_WORKSPACE/out/arch/arm64/boot/dtbo.img"
+          # Clonăm AnyKernel3 pentru ambalare
+          git clone https://github.com/osm0sis/AnyKernel3.git
+          rm -rf AnyKernel3/.git
           
-          git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git AnyKernel
-          cp s/out/arch/arm64/boot/Image.gz-dtb AnyKernel/Image.gz
-          cp dtbo.img AnyKernel/dtbo.img
+          # Copiem kernelul și DTBO în folderul AnyKernel
+          cp $IMAGE AnyKernel3/Image.gz
+          [ -f "$DTBO" ] && cp $DTBO AnyKernel3/dtbo.img
+          # Configurăm anykernel.sh pentru S10 Lite (r5q)
+          sed -i 's/device.name1=maguro/device.name1=r5q/g' AnyKernel3/anykernel.sh
+          sed -i 's/device.name2=toroplus/device.name2=SM-G770F/g' AnyKernel3/anykernel.sh
+          sed -i 's/device.name3=toro/device.name3=r5q/g' AnyKernel3/anykernel.sh
           
-          cd AnyKernel
-          sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-          sed -i 's/header_version=0/header_version=2/g' anykernel.sh
-          sed -i 's/IS_SLOT_DEVICE=0/IS_SLOT_DEVICE=1/g' anykernel.sh || true
-          sed -i 's|BLOCK=/dev/block/bootdevice/by-name/boot;|BLOCK=boot;|g' anykernel.sh || true
-          sed -i 's/PATCH_VBMETA_FLAG=auto/PATCH_VBMETA_FLAG=0/g' anykernel.sh || true
-          sed -i 's/RAMDISK_COMPRESSION=.*/RAMDISK_COMPRESSION=auto;/g' anykernel.sh || true
-          sed -i 's/device.name1=.*/device.name1=r5q/g' anykernel.sh || true
-          sed -i 's/device.name2=.*/device.name2=r5qxxx/g' anykernel.sh || true
-          sed -i 's/do.modules=1/do.modules=0/g' anykernel.sh || true
-          zip -r9 ../Kernel-Auriana-Final.zip *
-
-      - name: Upload Artifact
+          # Creăm arhiva ZIP finală
+          cd AnyKernel3
+          zip -r9 ../Kernel-S10Lite-R5Q-Neutron.zip *
+      - name: Upload Flashable Kernel
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-Auriana-SM8150
-          path: Kernel-Auriana-Final.zip
+          name: Kernel-S10Lite-R5Q
+          path: Kernel-S10Lite-R5Q-Neutron.zip
