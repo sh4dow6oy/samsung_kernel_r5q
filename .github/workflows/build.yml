@@ -9,8 +9,8 @@ jobs:
       - name: Checkout Source
         uses: actions/checkout@v4
         with:
-          repository: sh4dow6oy/kernel_samsung_r3q
-          ref: master
+          repository: sh4dow6oy/android_kernel_samsung_r5q
+          ref: rawr-bpf
           fetch-depth: 1
 
       - name: Install Dependencies
@@ -57,7 +57,7 @@ jobs:
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             O=out"
           # 5. Configurare
-          make $MAKE_ARGS r5q_defconfig
+          make $MAKE_ARGS r5q_eur_open_defconfig
           ./scripts/config --file out/.config \
             -d CONFIG_LTO -d CONFIG_LTO_CLANG -e CONFIG_LTO_NONE \
             -d CONFIG_CC_STACKPROTECTOR_STRONG -e CONFIG_CC_STACKPROTECTOR_NONE \
